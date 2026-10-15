@@ -160,16 +160,19 @@ def _parse_rows(text: str, delimiter: str, quotechar: str) -> list[list[str]]:
 def _detect_format(text: str) -> tuple[str, str]:
     """Выбирает пару (разделитель, кавычка), при которой строки самые ровные по числу полей.
 
-    При равенстве побеждает более раннее сочетание: сначала ``"``, затем ``'``.
+    Приоритет признаков: доля строк с самым частым числом полей; кавычка действительно
+    используется (какое-то поле начинается с неё); число полей. При равенстве побеждает
+    более раннее сочетание: сначала ``"``, затем ``'``.
     """
-    best, best_score = (DELIMITERS[0], QUOTES[0]), 0.0
+    best, best_score = (DELIMITERS[0], QUOTES[0]), (0.0, False, 0)
     for quotechar in QUOTES:
         for delimiter in DELIMITERS:
             widths = [len(row) for row in _parse_rows(text, delimiter, quotechar)]
             if not widths:
                 continue
             width, count = Counter(widths).most_common(1)[0]
-            score = (count / len(widths)) * (width > 1) * (1 + width / 1000)
+            used = re.search(rf"(?:^|\n|{re.escape(delimiter)}){re.escape(quotechar)}", text)
+            score = (count / len(widths) if width > 1 else 0.0, used is not None, width)
             if score > best_score:
                 best, best_score = (delimiter, quotechar), score
     return best

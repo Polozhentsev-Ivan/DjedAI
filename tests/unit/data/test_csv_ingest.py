@@ -419,3 +419,30 @@ def test_unbalanced_quotes_error_names_original_file(con, tmp_path):
     assert "broken.csv" in str(error.value)
     assert "utf8.csv" not in str(error.value)
     assert _tables(con) <= {"_djedai_sources"}
+
+
+def test_single_quotes_without_header_give_two_columns(con, tmp_path):
+    path = tmp_path / "single_noheader.csv"
+    path.write_text("001;'hello;world'\n002;'bye;world'\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert (table.delimiter, table.quotechar, table.header) == (";", "'", False)
+    assert table.columns == ("column1", "column2")
+    assert rows(con, table.raw_table) == [("001", "hello;world"), ("002", "bye;world")]
+
+
+@pytest.mark.parametrize(
+    ("text", "delimiter", "quotechar"),
+    [
+        ("001;'a;b'\n002;'c;d'\n", ";", "'"),
+        ('001;"a;b"\n002;"c;d"\n', ";", '"'),
+        ("a,b\n1,2\n", ",", '"'),
+        ("a,b\n1,it's\n2,o'k\n", ",", '"'),
+        ("a|b\n'x|y'|1\n'z|w'|2\n", "|", "'"),
+    ],
+)
+def test_delimiter_and_quote_detection_together(text, delimiter, quotechar):
+    dialect = detect_dialect(text)
+
+    assert (dialect.delimiter, dialect.quotechar) == (delimiter, quotechar)
