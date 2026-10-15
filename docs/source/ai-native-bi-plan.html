@@ -1,0 +1,338 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>План AI-Native BI</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+/* Layout: заголовок с вехами → фильтр ролей → таблица-гант (липкая колонка задач, 17 дней) → зависимости */
+:root {
+  --bg: #F6F7F9;
+  --surface: #FFFFFF;
+  --fg: #1B1F27;
+  --muted: #5E6573;
+  --line: #E1E4EA;
+  --line-strong: #C9CED8;
+  --weekend: #EEF0F4;
+  --accent: #D9442B;
+  --accent-soft: #FBE6E1;
+  --c-pm: #6A7A16;  --c-mle: #4B53C4; --c-be: #0F8576; --c-de: #B06C05; --c-da: #B83A4B; --c-all: #3D4452;
+  --bar-ink: #FFFFFF;
+  --f-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --f-body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --label-w: 300px;
+  --day-w: minmax(38px, 1fr);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151B; --surface: #1A1E26; --fg: #E7E9EE; --muted: #9BA2B0; --line: #2A303B; --line-strong: #3A4150;
+    --weekend: #161A21; --accent: #FF7A5C; --accent-soft: #3A221D;
+    --c-pm: #B5C65A; --c-mle: #9CA3FF; --c-be: #4FD1BC; --c-de: #F2B24A; --c-da: #FF8A98; --c-all: #C3C9D4;
+    --bar-ink: #12151B; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151B; --surface: #1A1E26; --fg: #E7E9EE; --muted: #9BA2B0; --line: #2A303B; --line-strong: #3A4150;
+  --weekend: #161A21; --accent: #FF7A5C; --accent-soft: #3A221D;
+  --c-pm: #B5C65A; --c-mle: #9CA3FF; --c-be: #4FD1BC; --c-de: #F2B24A; --c-da: #FF8A98; --c-all: #C3C9D4;
+  --bar-ink: #12151B; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+header { display: flex; flex-direction: column; gap: 10px; }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(22px, 3.2vw, 32px); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0; max-width: 70ch; }
+.milestones { display: flex; flex-wrap: wrap; gap: 8px; }
+.ms { display: inline-flex; align-items: baseline; gap: 8px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); }
+.ms b { font-family: var(--f-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ms.key { border-color: var(--accent); background: var(--accent-soft); }
+.ms.key b { color: var(--accent); }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.chip { font: inherit; display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg); cursor: pointer; }
+.chip .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+.chip[aria-pressed="false"] { opacity: 0.45; }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.scroller { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.gantt { min-width: calc(var(--label-w) + 17 * 38px); }
+.row { display: grid; grid-template-columns: var(--label-w) repeat(17, var(--day-w)); align-items: stretch; position: relative; }
+.row > * { grid-row: 1; }
+.cell { border-left: 1px solid var(--line); min-height: 30px; }
+.cell.we { background: var(--weekend); }
+.cell.cp { background: var(--accent-soft); }
+.label { grid-column: 1; position: sticky; left: 0; z-index: 2; background: var(--surface); padding: 6px 12px; display: flex; gap: 10px; align-items: baseline; min-width: 0; border-right: 1px solid var(--line-strong); }
+.label .id { font-family: var(--f-mono); font-size: 11px; color: var(--muted); flex: 0 0 auto; min-width: 44px; }
+.label .t { min-width: 0; }
+.bar { z-index: 1; align-self: center; height: 20px; margin: 0 3px; border-radius: 4px; background: var(--c); color: var(--bar-ink); font-family: var(--f-mono); font-size: 11px; font-weight: 600; display: flex; align-items: center; padding: 0 6px; white-space: nowrap; overflow: hidden; }
+.bar.with { background: repeating-linear-gradient(135deg, var(--c) 0 6px, color-mix(in srgb, var(--c) 72%, var(--surface)) 6px 12px); }
+.bar.long { height: 8px; opacity: 0.7; }
+
+.head { position: sticky; top: 0; z-index: 3; background: var(--surface); border-bottom: 1px solid var(--line-strong); }
+.head .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; align-items: flex-end; }
+.day { border-left: 1px solid var(--line); text-align: center; padding: 6px 0 4px; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; gap: 1px; }
+.day .d { font-family: var(--f-mono); font-weight: 600; font-size: 13px; }
+.day .w { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.day.we { background: var(--weekend); }
+.day.cp { background: var(--accent-soft); }
+.day.cp .d { color: var(--accent); }
+.day .flag { font-size: 9px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.1; }
+.day.today { box-shadow: inset 0 -3px 0 var(--fg); }
+
+.group .label { padding-top: 14px; padding-bottom: 6px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.group .label .rn { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.group .label .rn::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+.group .label .rd { color: var(--muted); font-size: 12px; }
+.group { border-top: 1px solid var(--line-strong); }
+.group .cell { min-height: 0; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 18px; color: var(--muted); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 26px; height: 12px; border-radius: 3px; background: var(--c-all); display: inline-block; }
+.sw.with { background: repeating-linear-gradient(135deg, var(--c-all) 0 5px, color-mix(in srgb, var(--c-all) 60%, var(--surface)) 5px 10px); }
+.sw.long { height: 6px; opacity: 0.7; }
+.sw.cp { background: var(--accent-soft); border: 1px solid var(--accent); }
+.sw.we { background: var(--weekend); border: 1px solid var(--line-strong); }
+
+section h2 { font-family: var(--f-display); font-weight: 500; font-size: 18px; margin: 0 0 10px; }
+.deps { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.dep { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dep .when { font-family: var(--f-mono); font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.dep .what { font-weight: 600; }
+.dep .why { color: var(--muted); }
+.notes { color: var(--muted); max-width: 80ch; margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+
+@media (max-width: 640px) {
+  :root { --label-w: 190px; }
+  .label .id { display: none; }
+}
+@media (prefers-reduced-motion: no-preference) { .chip { transition: opacity .15s ease; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>План AI-Native BI</h1>
+    <p class="lede">Кто, что и когда делает с 14 по 30 октября. Задачи сгруппированы по ролям, коды задач совпадают со спецификацией. Штриховка — задача делается вместе с другой ролью.</p>
+    <div class="milestones" id="ms"></div>
+  </header>
+
+  <div class="filters" id="filters"><span class="lbl">Роли</span></div>
+
+  <div class="scroller"><div class="gantt" id="gantt" role="table" aria-label="Диаграмма Ганта"></div></div>
+
+  <div class="legend">
+    <span><i class="sw"></i>своя задача</span>
+    <span><i class="sw with"></i>совместно с другой ролью</span>
+    <span><i class="sw long"></i>идёт фоном весь период</span>
+    <span><i class="sw cp"></i>чекпоинт / сдача</span>
+    <span><i class="sw we"></i>выходной</span>
+  </div>
+
+  <section>
+    <h2>Что кого блокирует</h2>
+    <div class="deps" id="deps"></div>
+  </section>
+
+  <section>
+    <h2>Допущения</h2>
+    <ul class="notes">
+      <li>Окончание 30 октября и валидация 26–28 октября взяты из командного плана; дату финала стоит подтвердить у организаторов.</li>
+      <li>Критерии первого чекпоинта неизвестны. До 19 октября цель — сквозной сценарий: загрузил CSV, задал вопрос, получил ответ.</li>
+      <li>Реальные данные ещё не выложены. До их появления все работают на синтетическом датасете DA; прогон на реальных данных запланирован на 24–25 октября и сдвигается вместе с публикацией.</li>
+      <li>Выходные считаются рабочими днями, но выделены, чтобы было видно, где запас.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const START = new Date(2026, 9, 14);
+const DAYS = 17;
+const WD = ["вс","пн","вт","ср","чт","пт","сб"];
+const MILESTONES = { 5: "ЧП 1", 12: "ЧП 2", 15: "Фриз", 16: "Финал" };
+
+const ROLES = [
+  { key: "all", name: "Вся команда", desc: "общие шаги", color: "--c-all" },
+  { key: "pm",  name: "PM/BA", desc: "требования, UX, golden dataset, QA", color: "--c-pm" },
+  { key: "mle", name: "MLE", desc: "модель, граф агента, память", color: "--c-mle" },
+  { key: "be",  name: "BE", desc: "API, хранилище, интерфейс, docker", color: "--c-be" },
+  { key: "de",  name: "DE", desc: "загрузка CSV, профайлер, связи, адаптеры БД", color: "--c-de" },
+  { key: "da",  name: "DA", desc: "аналитические инструменты", color: "--c-da" },
+];
+
+// [role, id, title, startDay, endDay(incl), kind] kind: "" | "with" | "long"
+const TASKS = [
+  ["all", "—",     "Утверждение контрактов (каталог, ToolResult, ChartSpec, API)", 0, 1, ""],
+  ["all", "—",     "Чекпоинт 1: сквозной сценарий", 5, 5, ""],
+  ["all", "—",     "Чекпоинт 2: сценарии 1–2 + подключение датасета", 12, 12, ""],
+  ["all", "—",     "Код-фриз, только багфиксы", 15, 15, ""],
+
+  ["pm", "—",      "Бизнес-правила сценариев, список «неудобных» вопросов", 0, 2, ""],
+  ["pm", "B4-0",   "Вайрфреймы экранов", 1, 3, ""],
+  ["pm", "B1-3",   "Набор грязных тестовых CSV (с DE)", 2, 4, "with"],
+  ["pm", "B3-9",   "Golden dataset v1: сценарии 1–2", 3, 6, ""],
+  ["pm", "B4-9",   "UX-прогон, раунд 1", 6, 7, ""],
+  ["pm", "B3-5",   "Правила выбора графиков, тексты UI (B4-8)", 7, 9, "with"],
+  ["pm", "B3-9",   "Golden dataset v2: сценарии 3–10", 8, 11, ""],
+  ["pm", "QA",     "Прогон golden dataset, баг-лист", 12, 14, ""],
+  ["pm", "B4-9",   "UX-прогон, раунд 2", 13, 14, ""],
+  ["pm", "—",      "Презентация и аргументация решения", 14, 16, ""],
+
+  ["mle", "B5-7",  "vLLM: запуск, тест стабильности JSON", 0, 1, ""],
+  ["mle", "B3-1",  "Клиент модели + guided decoding", 1, 2, ""],
+  ["mle", "B3-2",  "Каркас графа, AgentState", 2, 3, ""],
+  ["mle", "B3-4",  "plan → execute → compose (с ретраями)", 3, 5, ""],
+  ["mle", "B5-4",  "Стриминг шагов агента в UI (с BE)", 4, 5, "with"],
+  ["mle", "B3-3",  "understand + clarify", 6, 7, ""],
+  ["mle", "B1-6",  "Промпты описаний каталога (с DE)", 7, 8, "with"],
+  ["mle", "B3-9",  "Прогонщик eval и отчёт", 8, 8, ""],
+  ["mle", "B3-5",  "visualize: выбор ChartSpec", 8, 9, ""],
+  ["mle", "B3-6",  "verify: проверка чисел", 10, 10, ""],
+  ["mle", "B3-7",  "Память, «покажи в другом виде»", 11, 12, ""],
+  ["mle", "B3-8",  "Ветка дашборда", 13, 14, ""],
+  ["mle", "—",     "Few-shot и описания инструментов для сценариев 7–10", 14, 15, ""],
+
+  ["be", "B5-1",   "Скелет FastAPI, пакет contracts/", 0, 1, ""],
+  ["be", "B5-2",   "Хранилище: чаты, результаты, дашборды", 1, 2, ""],
+  ["be", "B5-8",   "docker-compose, .env, README", 2, 3, ""],
+  ["be", "B4-1",   "Каркас интерфейса, API-клиент", 2, 4, ""],
+  ["be", "B5-3",   "Эндпоинты датасетов (вызов блока DE)", 3, 4, "with"],
+  ["be", "B4-2",   "Экран загрузки + чат с текстом (B4-4)", 4, 5, ""],
+  ["be", "B5-5",   "Реестр результатов, /results/{id}/data", 6, 7, ""],
+  ["be", "B4-6",   "«Как посчитано», «На дашборд»", 7, 8, ""],
+  ["be", "B4-5",   "Рендерер ChartSpec → ECharts", 8, 10, ""],
+  ["be", "B4-3",   "Экран каталога данных", 10, 11, "with"],
+  ["be", "B4-4",   "Чат: кнопки уточнений, подсказки", 11, 12, ""],
+  ["be", "B5-6",   "Дашборды: API и refresh", 12, 13, ""],
+  ["be", "B4-7",   "Экран дашбордов", 13, 14, ""],
+  ["be", "B4-8",   "Полировка UI, финальная сборка docker", 14, 15, "with"],
+
+  ["de", "—",      "Контракт каталога, проверка 5 грязных CSV", 0, 1, ""],
+  ["de", "B1-10",  "Заглушка интерфейса ingest/connect/catalog", 1, 1, ""],
+  ["de", "B1-1",   "Движок загрузки CSV → DuckDB", 1, 3, ""],
+  ["de", "B1-3",   "Набор грязных тестовых CSV (с PM/BA)", 2, 4, "with"],
+  ["de", "B1-2",   "Вывод типов, typed views, лог трансформаций", 3, 5, ""],
+  ["de", "B1-4",   "Профайлер + модель каталога (B1-7)", 4, 5, ""],
+  ["de", "B1-5",   "Граф связей по пересечению ID", 6, 8, ""],
+  ["de", "B1-6",   "LLM-описания колонок и таблиц (с MLE)", 7, 8, "with"],
+  ["de", "B1-8",   "Адаптер PostgreSQL", 9, 10, ""],
+  ["de", "—",      "Прогон на реальных данных, крайние случаи", 10, 11, ""],
+  ["de", "B1-9",   "Адаптер ClickHouse", 12, 13, ""],
+  ["de", "B5-9",   "Демо-БД Postgres/ClickHouse с датасетом", 13, 14, ""],
+  ["de", "—",      "Оптимизация SQL, поддержка", 14, 15, ""],
+
+  ["da", "—",      "Контракт ToolResult, синтетический датасет", 0, 2, ""],
+  ["da", "B2-1",   "Реестр инструментов + JSON-схемы (с MLE)", 1, 2, "with"],
+  ["da", "B2-2",   "run_sql: валидация, лимиты", 2, 3, ""],
+  ["da", "B2-3",   "describe_dataset, describe_column, value_counts", 3, 5, ""],
+  ["da", "B2-8",   "Тесты на синтетике (по ходу)", 3, 14, "long"],
+  ["da", "B2-4",   "time_aggregate, find_duplicates, detect_anomalies", 6, 8, ""],
+  ["da", "B2-5",   "seasonality, segment_profile, compare_segments", 8, 10, ""],
+  ["da", "B2-6",   "correlation, lagged_correlation", 10, 12, ""],
+  ["da", "B2-7",   "forecast (+ what_if, если успеем)", 12, 14, ""],
+];
+
+const DEPS = [
+  ["15.10", "DE → BE", "Заглушка интерфейса блока данных", "BE подключает эндпоинты загрузки к заглушке и не ждёт готового движка."],
+  ["15.10", "MLE → все", "Тест vLLM на стабильность JSON", "Если модель ломает JSON больше чем в 20% ответов, упрощаем контракты до начала работы над графом."],
+  ["16.10", "DA → MLE", "Реестр инструментов и ToolResult", "Без него у агента нечего вызывать: plan → execute стартует 17.10."],
+  ["20.10", "PM/BA → MLE", "Golden dataset v1", "Прогонщик eval и проверка сценариев 1–2 к чекпоинту 2."],
+  ["21.10", "BE → BE, MLE", "Реестр результатов", "На нём держатся «как посчитано», графики по result_id и дашборды."],
+  ["22.10", "PM/BA + MLE → BE", "Правила выбора графиков и ChartSpec", "Рендерер графиков строится по утверждённой спеке, до этого тестируется на ручных спеках."],
+];
+
+function day(i) { const d = new Date(START); d.setDate(d.getDate() + i); return d; }
+function isWe(i) { const w = day(i).getDay(); return w === 0 || w === 6; }
+function todayIdx() {
+  const n = new Date(); const t = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  const i = Math.round((t - START) / 86400000); return i >= 0 && i < DAYS ? i : -1;
+}
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+function colCls(i) { return (MILESTONES[i] ? " cp" : isWe(i) ? " we" : ""); }
+function fmt(i) { const d = day(i); return d.getDate() + "." + String(d.getMonth() + 1).padStart(2, "0"); }
+
+let hidden = new Set();
+try { hidden = new Set(JSON.parse(localStorage.getItem("gantt-hidden") || "[]")); } catch (e) {}
+
+function render() {
+  const g = document.getElementById("gantt"); g.innerHTML = "";
+  const ti = todayIdx();
+  const head = el("div", "row head"); head.setAttribute("role", "row");
+  head.appendChild(el("div", "label", "Задача"));
+  for (let i = 0; i < DAYS; i++) {
+    const d = day(i);
+    const c = el("div", "day" + colCls(i) + (i === ti ? " today" : ""),
+      `<span class="d">${d.getDate()}</span><span class="w">${WD[d.getDay()]}</span>` + (MILESTONES[i] ? `<span class="flag">${MILESTONES[i]}</span>` : ""));
+    c.style.gridColumn = (i + 2);
+    head.appendChild(c);
+  }
+  g.appendChild(head);
+
+  for (const r of ROLES) {
+    if (hidden.has(r.key)) continue;
+    const grp = el("div", "row group"); grp.style.setProperty("--c", `var(${r.color})`);
+    grp.appendChild(el("div", "label", `<span class="rn">${r.name}</span><span class="rd">${r.desc}</span>`));
+    for (let i = 0; i < DAYS; i++) { const c = el("div", "cell" + colCls(i)); c.style.gridColumn = i + 2; grp.appendChild(c); }
+    g.appendChild(grp);
+    for (const t of TASKS.filter(t => t[0] === r.key)) {
+      const [, id, title, s, e, kind] = t;
+      const row = el("div", "row"); row.setAttribute("role", "row");
+      row.style.setProperty("--c", `var(${r.color})`);
+      const lab = el("div", "label"); lab.appendChild(el("span", "id", id)); const tt = el("span", "t"); tt.textContent = title; lab.appendChild(tt);
+      row.appendChild(lab);
+      for (let i = 0; i < DAYS; i++) { const c = el("div", "cell" + colCls(i)); c.style.gridColumn = i + 2; row.appendChild(c); }
+      const bar = el("div", "bar" + (kind ? " " + kind : ""));
+      bar.style.gridColumn = `${s + 2} / ${e + 3}`;
+      bar.title = `${r.name} · ${id !== "—" ? id + " · " : ""}${title} · ${fmt(s)}${e !== s ? "–" + fmt(e) : ""}`;
+      if (kind !== "long") bar.textContent = (e - s >= 1 ? `${fmt(s)}–${fmt(e)}` : fmt(s));
+      row.appendChild(bar);
+      g.appendChild(row);
+    }
+  }
+}
+
+function initFilters() {
+  const f = document.getElementById("filters");
+  for (const r of ROLES) {
+    const b = el("button", "chip", `<span class="dot"></span>${r.name}`);
+    b.type = "button"; b.id = "f-" + r.key;
+    b.style.setProperty("--c", `var(${r.color})`);
+    b.setAttribute("aria-pressed", hidden.has(r.key) ? "false" : "true");
+    b.addEventListener("click", () => {
+      if (hidden.has(r.key)) hidden.delete(r.key); else hidden.add(r.key);
+      b.setAttribute("aria-pressed", hidden.has(r.key) ? "false" : "true");
+      try { localStorage.setItem("gantt-hidden", JSON.stringify([...hidden])); } catch (e) {}
+      render();
+    });
+    f.appendChild(b);
+  }
+}
+
+function initMilestones() {
+  const m = document.getElementById("ms");
+  const items = [["14.10", "Старт, контракты", false], ["19.10", "Чекпоинт 1", true], ["26.10", "Чекпоинт 2", true], ["26–28.10", "Валидация", false], ["29.10", "Код-фриз", false], ["30.10", "Финал", true]];
+  for (const [d, t, k] of items) m.appendChild(el("span", "ms" + (k ? " key" : ""), `<b>${d}</b>${t}`));
+}
+
+function initDeps() {
+  const box = document.getElementById("deps");
+  for (const [when, who, what, why] of DEPS) {
+    const c = el("div", "dep");
+    c.appendChild(el("span", "when", `${when} · ${who}`));
+    const a = el("span", "what"); a.textContent = what; c.appendChild(a);
+    const b = el("span", "why"); b.textContent = why; c.appendChild(b);
+    box.appendChild(c);
+  }
+}
+
+initMilestones(); initFilters(); initDeps(); render();
+</script>
+
+</body></html>
