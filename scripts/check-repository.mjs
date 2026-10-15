@@ -30,31 +30,93 @@ export function forbiddenTrackedFile(file) {
   return /\.(?:gguf|safetensors|pt|pth|pyc|pyo)$/i.test(file);
 }
 
-// Ignore code examples and comments: links written as examples are not navigation.
-export function markdownLinks(text) {
+// Remove block examples before collecting either links or reference definitions.
+function markdownProse(text) {
   const visible = [];
   let fence = null;
-  for (const line of text.split(/\r?\n/)) {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (marker) {
-      if (!fence) fence = marker[1];
-      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+  let paragraph = false;
+  let quoteDepth = 0;
+  let listIndents = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    // Tabs use four-column stops, including after quote and list markers.
+    let line = rawLine.split('\t').reduce((expanded, part) => expanded + ' '.repeat(4 - expanded.length % 4) + part);
+    let depth = 0;
+    while ((!fence || depth < quoteDepth) && /^ {0,3}> ?/.test(line)) {
+      line = line.replace(/^ {0,3}> ?/, '');
+      depth++;
+    }
+    if (depth !== quoteDepth) {
+      fence = null;
+      paragraph = false;
+      listIndents = [];
+      quoteDepth = depth;
+    }
+    if (line.trim()) {
+      const indent = line.match(/^ */)[0].length;
+      while (listIndents.length && indent < listIndents.at(-1)) {
+        listIndents.pop();
+        fence = null;
+        paragraph = false;
+      }
+      line = line.slice(listIndents.at(-1) ?? 0);
+    }
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+      visible.push('');
       continue;
     }
-    if (!fence) visible.push(line);
+    if (!line.trim()) {
+      paragraph = false;
+      visible.push('');
+      continue;
+    }
+    // Measure indentation relative to a list item's content, not the document.
+    const list = line.match(/^( {0,3}(?:[-+*]|\d{1,9}[.)]))( +)(.*)$/);
+    const thematic = /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);
+    if (list && !thematic) {
+      const padding = list[2].length > 4 ? 1 : list[2].length;
+      const width = list[1].length + padding;
+      listIndents.push((listIndents.at(-1) ?? 0) + width);
+      line = line.slice(width);
+      paragraph = false;
+    }
+    // An indented block cannot interrupt a paragraph (CommonMark section 4.4).
+    if (line.startsWith('    ') && !paragraph) {
+      visible.push('');
+      continue;
+    }
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (opening && (opening[1][0] === '~' || !opening[2].includes('`'))) {
+      fence = opening[1];
+      paragraph = false;
+      visible.push('');
+      continue;
+    }
+    visible.push(line);
+    paragraph = !thematic && !/^ {0,3}(?:#{1,6}(?: |$)|[=-]+ *$|\[[^\]]+\]:)/.test(line);
   }
-  const content = visible.join('\n').replace(/<!--[\s\S]*?-->/g, '').replace(/(`+)[^\n]*?\1/g, '');
-  const destinations = [];
-  const pattern = /!?\[[^\]\n]*\]\(\s*(<[^>\n]+>|(?:\\.|[^\s()]|\([^()]*\))+)(?:\s+["'][^\n]*?["'])?\s*\)/g;
-  for (const match of content.matchAll(pattern)) {
-    destinations.push(match[1].replace(/^<|>$/g, '').replace(/\\([() ])/g, '$1'));
-  }
+  return visible.join('\n');
+}
+
+// Ignore code examples and comments: links written as examples are not navigation.
+export function markdownLinks(text) {
+  let content = markdownProse(text).replace(/<!--[\s\S]*?-->/g, '').replace(/(`+)[^\n]*?\1/g, '');
+  const normalizeLabel = label => label.trim().replace(/\s+/g, ' ').toLowerCase();
   const definitions = new Map();
-  for (const match of content.matchAll(/^\s{0,3}\[([^\]]+)\]:\s*(<[^>\n]+>|\S+)/gm)) {
-    definitions.set(match[1].trim().toLowerCase(), match[2].replace(/^<|>$/g, ''));
-  }
-  for (const match of content.matchAll(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g)) {
-    const destination = definitions.get((match[2] || match[1]).trim().toLowerCase());
+  // Definitions are metadata, so their labels must not become shortcut links.
+  content = content.replace(/^ {0,3}\[([^\]\n]+)\]:\s*(<[^>\n]+>|\S+)[^\n]*$/gm, (_, label, target) => {
+    const key = normalizeLabel(label);
+    if (!definitions.has(key)) definitions.set(key, target.replace(/^<|>$/g, ''));
+    return '';
+  });
+  const destinations = [];
+  // Consume inline/full/collapsed links before considering a shortcut label.
+  const pattern = /(?<!\\)!?\[([^\[\]\n]*)\](?:\(\s*(<[^>\n]+>|(?:\\.|[^\s()]|\([^()]*\))+)(?:\s+["'][^\n]*?["'])?\s*\)|\[([^\]\n]*)\])?/g;
+  for (const match of content.matchAll(pattern)) {
+    const destination = match[2]
+      ? match[2].replace(/^<|>$/g, '').replace(/\\([() ])/g, '$1')
+      : definitions.get(normalizeLabel(match[3] || match[1]));
     if (destination) destinations.push(destination);
   }
   return destinations;

@@ -83,6 +83,88 @@ test('links in fenced/inline examples and comments are ignored', () => {
   assert.deepEqual(markdownLinks(text), ['README.md']);
 });
 
+test('shortcut references and images use normalized labels and the first definition', () => {
+  const text = [
+    '[Guide]', '![Diagram]', '[guide][]', '[Read more][  GUIDE ]', '[Build   guide]',
+    '', '[guide]: README.md', '[GUIDE]: ignored.md', '[diagram]: diagram.svg',
+    '[build guide]: CONTRIBUTING.md',
+  ].join('\n');
+  assert.deepEqual(markdownLinks(text), [
+    'README.md', 'diagram.svg', 'README.md', 'README.md', 'CONTRIBUTING.md',
+  ]);
+});
+
+test('a broken shortcut reference fails repository validation', t => {
+  const f = fixture(t);
+  f.add('README.md', '[Guide]\n\n[Guide]: missing.md\n');
+  const report = f.report();
+  assert.equal(report.ok, false);
+  assert.equal(report.markdownLinks, 1);
+  assert.ok(report.errors.some(error => error.includes('README.md -> missing.md')));
+});
+
+test('unused definitions and labels belonging to other link forms are not shortcuts', () => {
+  const text = [
+    '[Guide](README.md)', '[Guide][Other]', '\\[Guide]', '[Unknown]',
+    '', '[Guide]: missing.md', '[Other]: CONTRIBUTING.md', '[Unused]: missing.md',
+  ].join('\n');
+  assert.deepEqual(markdownLinks(text), ['README.md', 'CONTRIBUTING.md']);
+});
+
+test('images without alternative text still have their targets checked', t => {
+  const f = fixture(t);
+  f.add('README.md', '![](missing.png)\n');
+  assert.ok(f.report().errors.some(error => error.includes('README.md -> missing.png')));
+});
+
+test('code blocks do not create links or reference definitions', async t => {
+  const examples = {
+    indented: 'Example:\n\n    [Example](missing.md)\n    [Guide]: missing.md',
+    tabbed: 'Example:\n\n\t[Example](missing.md)\n\t[Guide]: missing.md',
+    quoted: '> ```md\n> [Example](missing.md)\n> [Guide]: missing.md\n> ```',
+    'nested quote': '> > ~~~md\n> > [Example](missing.md)\n> > [Guide]: missing.md\n> > ~~~',
+    'quoted indentation': '> Example:\n>\n>     [Example](missing.md)\n>     [Guide]: missing.md',
+    'list fence': '- ```md\n  [Example](missing.md)\n  [Guide]: missing.md\n  ```',
+    'list indentation': '- Example:\n\n      [Example](missing.md)\n      [Guide]: missing.md',
+    'quote syntax inside a fence': '```md\n> [Example](missing.md)\n> [Guide]: missing.md\n```',
+    'nested quote syntax inside a quoted fence': '> ```md\n> > [Example](missing.md)\n> > [Guide]: missing.md\n> ```',
+  };
+  for (const [name, example] of Object.entries(examples)) {
+    await t.test(name, child => {
+      const f = fixture(child);
+      f.add('README.md', `${example}\n\n[Guide]\n\n[real](CONTRIBUTING.md)\n`);
+      assert.deepEqual(markdownLinks(fs.readFileSync(path.join(f.root, 'README.md'), 'utf8')), ['CONTRIBUTING.md']);
+      const report = f.report();
+      assert.deepEqual(report.errors, []);
+      assert.equal(report.markdownLinks, 1);
+    });
+  }
+});
+
+test('indentation in paragraphs and list continuation still contains navigation', () => {
+  for (const text of [
+    'Paragraph\n    [real](README.md)',
+    '> Paragraph\n>     [real](README.md)',
+    '- Paragraph\n\n    [real](README.md)',
+    '- Outer\n  - Inner\n\n      [real](README.md)',
+  ]) assert.deepEqual(markdownLinks(text), ['README.md'], text);
+});
+
+test('an unclosed fence stops at the end of its quote or list container', () => {
+  for (const text of [
+    '> ```md\n> [Example](missing.md)\n\n[real](README.md)',
+    '- ```md\n  [Example](missing.md)\n\n[real](README.md)',
+  ]) assert.deepEqual(markdownLinks(text), ['README.md'], text);
+});
+
+test('a closing fence must match the opening marker and contain no info string', () => {
+  const text = [
+    '````md', '```', '[Example](missing.md)', '````md', '[Example](missing.md)',
+    '~~~~', '[Example](missing.md)', '````', '[real](README.md)',
+  ].join('\n');
+  assert.deepEqual(markdownLinks(text), ['README.md']);
+});
+
 test('broken local links do not pass because an untracked file exists', t => {
   const f = fixture(t);
   f.add('README.md', '[Missing](untracked.md)\n');

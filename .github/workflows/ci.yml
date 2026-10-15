@@ -57,7 +57,7 @@ jobs:
       - name: Check Python formatting
         run: uv run --locked ruff format --check .
       - name: Test Python application
-        run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov=src/djedai --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
   required:
     name: required
