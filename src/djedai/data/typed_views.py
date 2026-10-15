@@ -184,7 +184,9 @@ def create_typed_view(connection: duckdb.DuckDBPyConnection, raw: RawTable) -> T
             connection.rollback()
             raise
     except duckdb.Error as error:
-        raise TypedViewError(raw.raw_table, f"не удалось построить представление ({error})") from error
+        raise TypedViewError(
+            raw.raw_table, f"не удалось построить представление ({error})"
+        ) from error
     return TypedView(raw.raw_table, view_name, tuple(plan.column for plan in plans))
 
 
@@ -302,20 +304,16 @@ def _number_pattern(decimal: str, *, integer: bool = False) -> str:
     частью (``1.234,56``); для ``.`` — пробелом, запятой или апострофом. Одиночное
     ``1,234`` подходит под оба шаблона: выбор между ними делает ``_try_number``.
     """
-    fraction = "" if integer else (",\\d+" if decimal == "," else r"\.\d+")
+    fraction = "" if integer else (r"(?:,\d+)?" if decimal == "," else r"(?:\.\d+)?")
     if decimal == ",":
         core = (
-            rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}]\d{{3}})+(?:{fraction})?"
-            rf"|\d{{1,3}}(?:\.\d{{3}})+,\d+|\d+(?:{fraction})?)"
+            rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}]\d{{3}})+{fraction}"
+            rf"|\d{{1,3}}(?:\.\d{{3}})+,\d+|\d+{fraction})"
         )
     else:
-        core = (
-            rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}',]\d{{3}})+(?:{fraction})?|\d+(?:{fraction})?)"
-        )
+        core = rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}',]\d{{3}})+{fraction}|\d+{fraction})"
     currency = f"(?:{_CURRENCY_ANY})"
-    return (
-        rf"(?i){_WS}(?:{currency}{_WS})?{core}(?:{_WS}{currency})?(?:{_WS}%)?{_WS}"
-    )
+    return rf"(?i){_WS}(?:{currency}{_WS})?{core}(?:{_WS}{currency})?(?:{_WS}%)?{_WS}"
 
 
 def _clean_number(value: str, decimal: str) -> str:
@@ -326,9 +324,7 @@ def _clean_number(value: str, decimal: str) -> str:
     return f"regexp_replace({stripped}, '[^0-9.+-]', '', 'g')"
 
 
-def _stats(
-    connection: duckdb.DuckDBPyConnection, table: str, column: str
-) -> dict[str, int]:
+def _stats(connection: duckdb.DuckDBPyConnection, table: str, column: str) -> dict[str, int]:
     """Один проход по колонке: сколько значений подходит под каждый кандидат."""
     value = f"trim({column})"
     checks = {
@@ -413,7 +409,11 @@ def _infer_column(
         entries += (
             (
                 "unparsed_values",
-                {"count": non_empty - parsed, "examples": examples, "target": outcome.semantic_type},
+                {
+                    "count": non_empty - parsed,
+                    "examples": examples,
+                    "target": outcome.semantic_type,
+                },
             ),
         )
     return _Plan(typed, outcome.expr, entries)
@@ -435,7 +435,10 @@ def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
     value = f"lower(trim({column}))"
     true_list = ", ".join(map(_lit, TRUE_WORDS))
     false_list = ", ".join(map(_lit, FALSE_WORDS))
-    expr = f"CASE WHEN {value} IN ({true_list}) THEN TRUE WHEN {value} IN ({false_list}) THEN FALSE END"
+    expr = (
+        f"CASE WHEN {value} IN ({true_list}) THEN TRUE "
+        f"WHEN {value} IN ({false_list}) THEN FALSE END"
+    )
     return _Candidate("parse_bool", "BOOLEAN", "bool", None, expr, {})
 
 
@@ -466,7 +469,8 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
     )
     row = connection.execute(
         f"SELECT count(*) FILTER (WHERE {guard} AND contains({value}, '%')), "
-        f"coalesce(max(length(regexp_extract({clean}, '\\.([0-9]+)$', 1))) FILTER (WHERE {guard}), 0), "
+        f"coalesce(max(length(regexp_extract({clean}, '\\.([0-9]+)$', 1))) "
+        f"FILTER (WHERE {guard}), 0), "
         f"{currency_counts} FROM {_ident(table)}"
     ).fetchone()
     percent, scale, per_currency = row[0], row[1], row[2:]
@@ -484,7 +488,8 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
     if currencies or percent:
         semantic = "money" if currencies else "percent"
         physical, action = f"DECIMAL(18,{scale})", f"parse_{semantic}"
-        detail.update(currency=currencies[0]) if currencies else None
+        if currencies:
+            detail["currency"] = currencies[0]
         fmt = f"{separator}, {currencies[0]}" if currencies else f"{separator}, percent"
     elif is_int:
         semantic, physical, action, fmt = "integer", "BIGINT", "parse_integer", separator
@@ -508,7 +513,13 @@ def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | 
     value = f"trim({column})"
     parsed = f"try_strptime({value}, {_lit(fmt)})"
     if kind == "date":
-        expr, physical = f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN CAST({parsed} AS DATE) END", "DATE"
+        expr, physical = (
+            f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN CAST({parsed} AS DATE) END",
+            "DATE",
+        )
     else:
-        expr, physical = f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN {parsed} END", "TIMESTAMP"
+        expr, physical = (
+            f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN {parsed} END",
+            "TIMESTAMP",
+        )
     return _Candidate(f"parse_{kind}", physical, kind, fmt, expr, {"format": fmt})
