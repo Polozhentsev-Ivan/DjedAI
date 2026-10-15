@@ -2,7 +2,10 @@
 
 Каждый файл попадает в таблицу ``raw_<имя>``, все колонки — VARCHAR: значения
 сохраняются как в файле (``00123`` остаётся ``00123``). Пустое поле без кавычек
-DuckDB записывает как NULL. Преобразование в числа и даты — отдельный этап (B1-2).
+записывается как NULL, пустая строка в кавычках ``""`` — как пустая строка.
+Заголовок, разделитель и кавычки определяются по образцу; если определение
+неоднозначно, наличие заголовка можно задать явно (``header=``).
+Преобразование в числа и даты — отдельный этап (B1-2).
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import io
 import re
 import tempfile
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +35,8 @@ _SOURCE_FIELDS = (
 SAMPLE_BYTES = 1 << 20  # Выделяем переменной 1 МБ памяти переменной
 SAMPLE_ROWS = 50
 DELIMITERS = (",", ";", "\t", "|")
-QUOTE = '"'
+QUOTES = ('"', "'")
+FIELD_SIZE_LIMIT = 2**31 - 1  # у csv по умолчанию 131072 символа в поле
 CHUNK_CHARS = 1 << 20
 # Типичные кодировки для русскоязычных выгрузок: проверяются раньше остальных,
 # иначе короткий кириллический текст нередко определяется как cp949/gb18030.
@@ -100,14 +106,27 @@ def detect_encoding(sample: bytes, file_name: str = "") -> str:
     return "utf-8" if match.encoding == "ascii" else match.encoding
 
 
-def detect_dialect(text: str) -> CsvDialect:
-    """Определяет разделитель и наличие заголовка по первым строкам текста."""
-    delimiter = _detect_delimiter(text)
-    rows = _parse_rows(text, delimiter)
-    header = _has_header(rows)
+def detect_dialect(text: str, header: bool | None = None) -> CsvDialect:
+    """Определяет разделитель, кавычки и наличие заголовка по первым строкам текста.
+
+    ``header`` задаёт наличие заголовка явно; ``None`` — определить автоматически.
+    """
+    delimiter, quotechar = _detect_format(text)
+    rows = _parse_rows(text, delimiter, quotechar)
+    has_header = _has_header(rows) if header is None else header
     width = len(rows[0]) if rows else 1
-    names = _column_names(rows[0] if header else [], width)
-    return CsvDialect(delimiter=delimiter, quotechar=QUOTE, header=header, columns=names)
+    names = _column_names(rows[0] if has_header else [], width)
+    return CsvDialect(delimiter=delimiter, quotechar=quotechar, header=has_header, columns=names)
+
+
+@contextmanager
+def _unbounded_fields() -> Iterator[None]:
+    """Снимает лимит csv на размер поля, чтобы он не расходился с лимитами DuckDB."""
+    previous = csv.field_size_limit(FIELD_SIZE_LIMIT)
+    try:
+        yield
+    finally:
+        csv.field_size_limit(previous)
 
 
 def _column_names(header_cells: list[str], width: int) -> tuple[str, ...]:
@@ -123,30 +142,36 @@ def _column_names(header_cells: list[str], width: int) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _parse_rows(text: str, delimiter: str) -> list[list[str]]:
+def _parse_rows(text: str, delimiter: str, quotechar: str) -> list[list[str]]:
     rows: list[list[str]] = []
-    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, quotechar=QUOTE)
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, quotechar=quotechar)
     try:
-        for row in reader:
-            if row:
-                rows.append(row)
-            if len(rows) >= SAMPLE_ROWS:
-                break
+        with _unbounded_fields():
+            for row in reader:
+                if row:
+                    rows.append(row)
+                if len(rows) >= SAMPLE_ROWS:
+                    break
     except csv.Error:
         pass
     return rows
 
 
-def _detect_delimiter(text: str) -> str:
-    best, best_score = DELIMITERS[0], 0.0
-    for delimiter in DELIMITERS:
-        widths = [len(row) for row in _parse_rows(text, delimiter)]
-        if not widths:
-            continue
-        width, count = Counter(widths).most_common(1)[0]
-        score = (count / len(widths)) * (width > 1) * (1 + width / 1000)
-        if score > best_score:
-            best, best_score = delimiter, score
+def _detect_format(text: str) -> tuple[str, str]:
+    """Выбирает пару (разделитель, кавычка), при которой строки самые ровные по числу полей.
+
+    При равенстве побеждает более раннее сочетание: сначала ``"``, затем ``'``.
+    """
+    best, best_score = (DELIMITERS[0], QUOTES[0]), 0.0
+    for quotechar in QUOTES:
+        for delimiter in DELIMITERS:
+            widths = [len(row) for row in _parse_rows(text, delimiter, quotechar)]
+            if not widths:
+                continue
+            width, count = Counter(widths).most_common(1)[0]
+            score = (count / len(widths)) * (width > 1) * (1 + width / 1000)
+            if score > best_score:
+                best, best_score = (delimiter, quotechar), score
     return best
 
 
@@ -155,12 +180,24 @@ def _is_number(value: str) -> bool:
 
 
 def _has_header(rows: list[list[str]]) -> bool:
-    if len(rows) < 2:
+    """Первая строка — заголовок, если она похожа на названия и не повторяется в данных.
+
+    Заголовком не считается строка с числами, пустыми или повторяющимися ячейками, а
+    также строка, значения которой встречаются в тех же колонках ниже. Если признаков
+    «данных» нет, строка считается заголовком; для спорных файлов есть явный параметр.
+    """
+    if not rows:
         return True
     first = [cell.strip() for cell in rows[0]]
     if not all(first) or len(set(first)) != len(first):
         return False
-    return not any(_is_number(cell) for cell in first)
+    if any(_is_number(cell) for cell in first):
+        return False
+    return not any(
+        index < len(row) and row[index].strip() == cell
+        for row in rows[1:]
+        for index, cell in enumerate(first)
+    )
 
 
 def raw_table_name(file_name: str, taken: set[str]) -> str:
@@ -176,9 +213,17 @@ def raw_table_name(file_name: str, taken: set[str]) -> str:
 
 
 def load_raw_csv(
-    connection: duckdb.DuckDBPyConnection, path: str | Path, original_name: str | None = None
+    connection: duckdb.DuckDBPyConnection,
+    path: str | Path,
+    original_name: str | None = None,
+    *,
+    header: bool | None = None,
 ) -> RawTable:
-    """Загружает один CSV в ``raw_*``; при невозможности чтения бросает ``CsvReadError``."""
+    """Загружает один CSV в ``raw_*``; при невозможности чтения бросает ``CsvReadError``.
+
+    Загрузка атомарна: при любой ошибке таблица ``raw_*`` и запись об источнике не остаются.
+    ``header`` задаёт наличие строки заголовка явно, ``None`` — определить автоматически.
+    """
     path = Path(path)
     name = original_name or path.name
     try:
@@ -195,7 +240,7 @@ def load_raw_csv(
         text = codecs.getincrementaldecoder(encoding)(errors="ignore").decode(sample)
     except (LookupError, UnicodeError) as error:
         raise CsvReadError(name, f"кодировка {encoding} не поддерживается") from error
-    dialect = detect_dialect(text)
+    dialect = detect_dialect(text, header)
 
     taken = {
         row[0] for row in connection.execute("SELECT table_name FROM duckdb_tables()").fetchall()
@@ -205,24 +250,29 @@ def load_raw_csv(
         utf8_copy = Path(directory) / "utf8.csv"
         digest = _transcode(path, utf8_copy, encoding, name)
         _create_table(connection, table, utf8_copy, dialect, name)
-        expected = _count_records(utf8_copy, dialect) - (1 if dialect.header else 0)
-    rows = connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
-    if rows != expected:
-        connection.execute(f'DROP TABLE "{table}"')
-        raise CsvReadError(name, f"прочитано {rows} строк из {expected}: файл разобран неполностью")
-    result = RawTable(
-        raw_table=table,
-        original_name=name,
-        row_count=rows,
-        columns=dialect.columns,
-        encoding=encoding,
-        delimiter=dialect.delimiter,
-        quotechar=dialect.quotechar,
-        header=dialect.header,
-        size_bytes=size,
-        sha256=digest,
-    )
-    _record_source(connection, result)
+        try:
+            expected = _count_records(utf8_copy, dialect, name) - (1 if dialect.header else 0)
+            rows = connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+            if rows != expected:
+                raise CsvReadError(
+                    name, f"прочитано {rows} строк из {expected}: файл разобран неполностью"
+                )
+            result = RawTable(
+                raw_table=table,
+                original_name=name,
+                row_count=rows,
+                columns=dialect.columns,
+                encoding=encoding,
+                delimiter=dialect.delimiter,
+                quotechar=dialect.quotechar,
+                header=dialect.header,
+                size_bytes=size,
+                sha256=digest,
+            )
+            _record_source(connection, result)
+        except Exception:
+            connection.execute(f'DROP TABLE IF EXISTS "{table}"')
+            raise
     return result
 
 
@@ -264,13 +314,21 @@ def _record_source(connection: duckdb.DuckDBPyConnection, table: RawTable) -> No
     )
 
 
-def load_raw_csvs(connection: duckdb.DuckDBPyConnection, paths: list[str | Path]) -> RawLoadReport:
-    """Загружает несколько файлов; ошибка одного файла не мешает остальным."""
+def load_raw_csvs(
+    connection: duckdb.DuckDBPyConnection,
+    paths: list[str | Path],
+    *,
+    header: bool | None = None,
+) -> RawLoadReport:
+    """Загружает несколько файлов; ошибка одного файла не мешает остальным.
+
+    ``header`` (если задан) применяется ко всем файлам.
+    """
     loaded: list[RawTable] = []
     errors: list[CsvReadError] = []
     for path in paths:
         try:
-            loaded.append(load_raw_csv(connection, path))
+            loaded.append(load_raw_csv(connection, path, header=header))
         except CsvReadError as error:
             errors.append(error)
     return RawLoadReport(loaded=tuple(loaded), errors=tuple(errors))
@@ -293,14 +351,15 @@ def _transcode(source: Path, target: Path, encoding: str, name: str) -> str:
     return digest.hexdigest()
 
 
-def _count_records(source: Path, dialect: CsvDialect) -> int:
+def _count_records(source: Path, dialect: CsvDialect, name: str) -> int:
     """Независимый подсчёт записей (включая заголовок) для сверки с загруженным."""
     with source.open(encoding="utf-8", newline="") as handle:
         reader = csv.reader(handle, delimiter=dialect.delimiter, quotechar=dialect.quotechar)
         try:
-            return sum(1 for row in reader if row)
+            with _unbounded_fields():
+                return sum(1 for row in reader if row)
         except csv.Error as error:
-            raise CsvReadError(source.name, f"нарушена разметка кавычек ({error})") from error
+            raise CsvReadError(name, f"нарушена разметка кавычек ({error})") from error
 
 
 def _create_table(
@@ -314,7 +373,8 @@ def _create_table(
     try:
         connection.execute(
             f'CREATE TABLE "{table}" AS SELECT * FROM read_csv(?, delim=?, quote=?, escape=?, '
-            f"header=?, all_varchar=true, auto_detect=false, columns={{{columns}}})",
+            "header=?, all_varchar=true, allow_quoted_nulls=false, auto_detect=false, "
+            f"columns={{{columns}}})",
             [str(source), dialect.delimiter, dialect.quotechar, dialect.quotechar, dialect.header],
         )
     except duckdb.Error as error:

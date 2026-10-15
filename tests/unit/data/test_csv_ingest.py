@@ -164,7 +164,7 @@ def test_bytes_invalid_beyond_the_sample_are_reported(con, tmp_path, monkeypatch
 
 def test_multiline_quoted_field_and_blank_lines(con, tmp_path):
     path = tmp_path / "multiline.csv"
-    path.write_text('id,note\n001,"строка 1\nстрока 2"\n\n002,x\n', encoding="utf-8")
+    path.write_text('id,note\n001,"строка 1\nстрока 2"\n\n002,x\n', encoding="utf-8", newline="\n")
 
     table = load_raw_csv(con, path)
 
@@ -301,3 +301,121 @@ def test_sources_survive_reconnect(tmp_path):
         assert read_sources(reopened) == [loaded]
     finally:
         reopened.close()
+
+
+def test_single_numeric_record_is_data_not_header(con, tmp_path):
+    path = tmp_path / "one.csv"
+    path.write_text("00123,Ann\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is False
+    assert table.columns == ("column1", "column2")
+    assert rows(con, table.raw_table) == [("00123", "Ann")]
+
+
+def test_text_file_without_header_keeps_first_record(con, tmp_path):
+    path = tmp_path / "cities.csv"
+    path.write_text("Moscow,Russia\nKazan,Russia\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is False
+    assert rows(con, table.raw_table) == [("Kazan", "Russia"), ("Moscow", "Russia")]
+
+
+@pytest.mark.parametrize(
+    ("header", "expected_columns", "expected_rows"),
+    [
+        (True, ("Moscow", "Russia"), [("Kazan", "Belarus")]),
+        (False, ("column1", "column2"), [("Kazan", "Belarus"), ("Moscow", "Russia")]),
+    ],
+)
+def test_explicit_header_overrides_detection(
+    con, tmp_path, header, expected_columns, expected_rows
+):
+    path = tmp_path / "ambiguous.csv"
+    path.write_text("Moscow,Russia\nKazan,Belarus\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csvs(con, [path], header=header).loaded[0]
+
+    assert table.header is header
+    assert table.columns == expected_columns
+    assert rows(con, table.raw_table) == expected_rows
+
+
+def test_quoted_empty_string_differs_from_missing_value(con, tmp_path):
+    path = tmp_path / "quoted.csv"
+    path.write_text('id,note\n001,""\n002,\n', encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert rows(con, table.raw_table) == [("001", ""), ("002", None)]
+
+
+def test_single_quote_character_is_detected(con, tmp_path):
+    path = tmp_path / "single.csv"
+    path.write_text("id;note\n001;'hello;world'\n002;'bye;world'\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert (table.delimiter, table.quotechar) == (";", "'")
+    assert rows(con, table.raw_table) == [("001", "hello;world"), ("002", "bye;world")]
+    assert read_sources(con)[0].quotechar == "'"
+
+
+def test_apostrophes_in_text_do_not_change_quote_character():
+    assert detect_dialect("id,name\n1,O'Brien\n2,D'Arcy\n").quotechar == '"'
+
+
+def test_field_longer_than_csv_default_limit_is_loaded(con, tmp_path):
+    path = tmp_path / "long.csv"
+    path.write_text('id,note\n001,"' + "x" * 150_000 + '"\n', encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert con.execute(f'SELECT length(note) FROM "{table.raw_table}"').fetchone() == (150_000,)
+
+
+def _tables(con):
+    return {row[0] for row in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+
+
+def test_late_failure_removes_table_and_allows_clean_retry(con, monkeypatch):
+    def fail(*args, **kwargs):
+        raise CsvReadError("orders.csv", "сбой проверки")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("djedai.data.csv_ingest._count_records", fail)
+        report = load_raw_csvs(con, [FIXTURES / "orders_utf8_comma.csv"])
+
+    assert [str(e) for e in report.errors] == ["Файл «orders.csv»: сбой проверки"]
+    assert _tables(con) <= {"_djedai_sources"}
+    assert read_sources(con) == []
+    assert (
+        load_raw_csv(con, FIXTURES / "orders_utf8_comma.csv").raw_table == "raw_orders_utf8_comma"
+    )
+
+
+def test_failed_source_record_removes_table(con, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("диск недоступен")
+
+    monkeypatch.setattr("djedai.data.csv_ingest._record_source", fail)
+
+    with pytest.raises(RuntimeError):
+        load_raw_csv(con, FIXTURES / "customers_utf8_semicolon.csv")
+
+    assert _tables(con) <= {"_djedai_sources"}
+
+
+def test_unbalanced_quotes_error_names_original_file(con, tmp_path):
+    path = tmp_path / "broken.csv"
+    path.write_text('id,note\n001,"abc\n', encoding="utf-8", newline="\n")
+
+    with pytest.raises(CsvReadError) as error:
+        load_raw_csv(con, path)
+
+    assert "broken.csv" in str(error.value)
+    assert "utf8.csv" not in str(error.value)
+    assert _tables(con) <= {"_djedai_sources"}
