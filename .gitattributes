@@ -11,3 +11,6 @@
 *.gif binary
 *.webp binary
 *.zip binary
+
+# Фикстуры CSV хранятся побайтно: кодировка и переводы строк — часть проверки
+tests/fixtures/csv/* -text
