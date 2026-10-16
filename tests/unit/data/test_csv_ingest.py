@@ -239,13 +239,60 @@ def test_delimiter_detection(text, delimiter):
     [
         ("id,name\n1,Ann\n", True),
         ("1,Ann\n2,Bob\n", False),
-        ("id,id\n1,2\n", False),
-        ("a,,c\n1,2,3\n", False),
+        ("id,id\n1,2\n", True),
+        ("a,,c\n1,2,3\n", True),
+        (",A,B\n1,x,2\n", True),
+        (",name\n1,Alice\n2,Bob\n", True),
+        ("id,name,Name,,name\n1,a,b,c,d\n", True),
+        ("id,created,created\n1,2026-03-25,2026-03-26\n", True),
         ("only\n", True),
+        # повторы и пропуски без числовых колонок ниже: доказательств заголовка нет
+        ("a,a\nb,c\n", False),
+        ("Иван,Иван,,Москва\nАнна,Ольга,,Казань\n", False),
+        ("a,,c\n", False),
+        (",,\n1,2,3\n", False),
+        ("2026-03-25,2026-03-25\n2026-03-26,2026-03-27\n", False),
+        ("25.03.2026,25.03.2026\n26.03.2026,27.03.2026\n", False),
+        # значения первой строки повторяются ниже: это данные
+        ("id,id\nid,2\n", False),
     ],
 )
 def test_header_detection(text, header):
     assert detect_dialect(text).header is header
+
+
+def test_unnamed_index_column_header_is_detected(con, tmp_path):
+    path = tmp_path / "index.csv"
+    path.write_text(",name\n1,Alice\n2,Bob\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is True
+    assert table.columns == ("column1", "name")
+    assert rows(con, table.raw_table) == [("1", "Alice"), ("2", "Bob")]
+
+
+def test_dated_records_without_header_keep_both_rows(con, tmp_path):
+    path = tmp_path / "dates.csv"
+    path.write_text(
+        "2026-03-25,2026-03-25\n2026-03-26,2026-03-27\n", encoding="utf-8", newline="\n"
+    )
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is False
+    assert table.row_count == 2
+
+
+def test_header_with_duplicate_and_empty_names_gives_unique_columns(con, tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("id,name,Name,,name\n1,a,b,c,d\n2,e,f,g,h\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is True
+    assert table.columns == ("id", "name", "Name_2", "column4", "name_3")
+    assert table.row_count == 2
 
 
 def test_encoding_detection_edge_cases():

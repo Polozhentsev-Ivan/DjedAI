@@ -182,24 +182,38 @@ def _is_number(value: str) -> bool:
     return bool(re.fullmatch(r"[-+]?\d[\d\s.,]*%?", value.strip()))
 
 
+def _is_typed_value(value: str) -> bool:
+    """Число или дата: значение, которое вряд ли стоит в строке с названиями колонок."""
+    return _is_number(value) or bool(re.fullmatch(r"\d{1,4}([./-])\d{1,2}\1\d{1,4}", value.strip()))
+
+
 def _has_header(rows: list[list[str]]) -> bool:
     """Первая строка — заголовок, если она похожа на названия и не повторяется в данных.
 
-    Заголовком не считается строка с числами, пустыми или повторяющимися ячейками, а
-    также строка, значения которой встречаются в тех же колонках ниже. Если признаков
-    «данных» нет, строка считается заголовком; для спорных файлов есть явный параметр.
+    Заголовком не считается строка без текста, строка с числами, а также строка, значения
+    которой встречаются в тех же колонках ниже. Если в строке есть пустые или повторяющиеся
+    ячейки, нужно доказательство, что это названия: ниже в одной из колонок стоят числа
+    или даты, а в первой строке там пусто или текст (безымянный индекс тоже подходит).
+    Без него такая строка считается данными; для спорных файлов есть явный параметр.
+    Числа и даты в первой строке означают данные: названиями они не бывают.
     """
     if not rows:
         return True
     first = [cell.strip() for cell in rows[0]]
-    if not all(first) or len(set(first)) != len(first):
+    if not any(first) or any(_is_typed_value(cell) for cell in first):
         return False
-    if any(_is_number(cell) for cell in first):
-        return False
-    return not any(
-        index < len(row) and row[index].strip() == cell
+    if any(
+        cell and index < len(row) and row[index].strip() == cell
         for row in rows[1:]
         for index, cell in enumerate(first)
+    ):
+        return False
+    if all(first) and len(set(first)) == len(first):
+        return True
+    return any(
+        index < len(row) and _is_typed_value(row[index])
+        for row in rows[1:]
+        for index in range(len(first))
     )
 
 
