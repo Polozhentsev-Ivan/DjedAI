@@ -239,13 +239,34 @@ def test_delimiter_detection(text, delimiter):
     [
         ("id,name\n1,Ann\n", True),
         ("1,Ann\n2,Bob\n", False),
-        ("id,id\n1,2\n", False),
-        ("a,,c\n1,2,3\n", False),
+        ("id,id\n1,2\n", True),
+        ("a,,c\n1,2,3\n", True),
+        (",A,B\n1,x,2\n", True),
+        ("id,name,Name,,name\n1,a,b,c,d\n", True),
+        ("id,created,created\n1,2026-03-25,2026-03-26\n", True),
         ("only\n", True),
+        # повторы и пропуски без числовых колонок ниже: доказательств заголовка нет
+        ("a,a\nb,c\n", False),
+        ("Иван,Иван,,Москва\nАнна,Ольга,,Казань\n", False),
+        ("a,,c\n", False),
+        (",,\n1,2,3\n", False),
+        # значения первой строки повторяются ниже: это данные
+        ("id,id\nid,2\n", False),
     ],
 )
 def test_header_detection(text, header):
     assert detect_dialect(text).header is header
+
+
+def test_header_with_duplicate_and_empty_names_gives_unique_columns(con, tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("id,name,Name,,name\n1,a,b,c,d\n2,e,f,g,h\n", encoding="utf-8", newline="\n")
+
+    table = load_raw_csv(con, path)
+
+    assert table.header is True
+    assert table.columns == ("id", "name", "Name_2", "column4", "name_3")
+    assert table.row_count == 2
 
 
 def test_encoding_detection_edge_cases():
