@@ -193,13 +193,14 @@ def _has_header(rows: list[list[str]]) -> bool:
     Заголовком не считается строка без текста, строка с числами, а также строка, значения
     которой встречаются в тех же колонках ниже. Если в строке есть пустые или повторяющиеся
     ячейки, нужно доказательство, что это названия: ниже в одной из колонок стоят числа
-    или даты, а в первой строке там текст. Без него такая строка считается данными; для
-    спорных файлов есть явный параметр.
+    или даты, а в первой строке там пусто или текст (безымянный индекс тоже подходит).
+    Без него такая строка считается данными; для спорных файлов есть явный параметр.
+    Числа и даты в первой строке означают данные: названиями они не бывают.
     """
     if not rows:
         return True
     first = [cell.strip() for cell in rows[0]]
-    if not any(first) or any(_is_number(cell) for cell in first):
+    if not any(first) or any(_is_typed_value(cell) for cell in first):
         return False
     if any(
         cell and index < len(row) and row[index].strip() == cell
@@ -210,9 +211,9 @@ def _has_header(rows: list[list[str]]) -> bool:
     if all(first) and len(set(first)) == len(first):
         return True
     return any(
-        cell and index < len(row) and _is_typed_value(row[index])
+        index < len(row) and _is_typed_value(row[index])
         for row in rows[1:]
-        for index, cell in enumerate(first)
+        for index in range(len(first))
     )
 
 
