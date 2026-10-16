@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "dataset_id": "ds_0001",
+  "name": "missing_values.csv",
+  "created_at": "2026-10-20T12:00:00+03:00",
+  "source": { "kind": "csv_upload" },
+  "tables": [
+    {
+      "table_id": "missing_values",
+      "raw_table": "raw_missing_values",
+      "original_name": "missing_values.csv",
+      "row_count": 3,
+      "source": { "file": "missing_values.csv", "encoding": "utf-8", "delimiter": ",", "header": true },
+      "primary_key_candidates": ["id"],
+      "time_columns": [],
+      "duplicate_rows": 0,
+      "columns": [
+        {
+          "name": "id",
+          "original_name": "id",
+          "physical_type": "VARCHAR",
+          "semantic_type": "id",
+          "role": "id",
+          "null_ratio": 0.0,
+          "distinct_count": 3,
+          "is_unique": true,
+          "sample_values": ["1", "2", "3"],
+          "top_values": [
+            { "value": "1", "count": 1 },
+            { "value": "2", "count": 1 },
+            { "value": "3", "count": 1 }
+          ]
+        },
+        {
+          "name": "empty_col",
+          "original_name": "empty_col",
+          "physical_type": "VARCHAR",
+          "semantic_type": "text",
+          "role": "text",
+          "null_ratio": 1.0,
+          "distinct_count": 0,
+          "is_unique": false
+        }
+      ]
+    }
+  ],
+  "transformations": [
+    { "table": "missing_values", "column": "empty_col", "action": "keep_text", "detail": { "reason": "empty_column" } }
+  ]
+}
