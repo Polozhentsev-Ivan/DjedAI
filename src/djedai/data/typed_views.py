@@ -241,9 +241,25 @@ def _ensure_tables(connection: duckdb.DuckDBPyConnection) -> None:
 
 
 def _view_name(connection: duckdb.DuckDBPyConnection, raw_table: str) -> str:
-    """Имя представления — имя сырой таблицы без ``raw_``; при коллизии суффикс ``_typed``."""
+    """Имя представления — имя сырой таблицы без ``raw_``; при коллизии суффикс ``_typed``.
+
+    Занятыми считаются таблицы, чужие представления DuckDB и представления других
+    raw-таблиц из реестра. Своё прежнее представление можно пересоздать под тем же именем.
+    """
     base = raw_table.removeprefix("raw_") or raw_table
+    own = {
+        r[0]
+        for r in connection.execute(
+            f"SELECT view_name FROM {COLUMNS_TABLE} WHERE raw_table = ?", [raw_table]
+        ).fetchall()
+    }
     taken = {r[0] for r in connection.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+    taken |= {
+        r[0]
+        for r in connection.execute(
+            "SELECT view_name FROM duckdb_views() WHERE NOT internal"
+        ).fetchall()
+    } - own
     taken |= {
         r[0]
         for r in connection.execute(
@@ -306,10 +322,9 @@ def _number_pattern(decimal: str, *, integer: bool = False) -> str:
     """
     fraction = "" if integer else (r"(?:,\d+)?" if decimal == "," else r"(?:\.\d+)?")
     if decimal == ",":
-        core = (
-            rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}]\d{{3}})+{fraction}"
-            rf"|\d{{1,3}}(?:\.\d{{3}})+,\d+|\d+{fraction})"
-        )
+        # точка как разделитель разрядов (1.234,56) бывает только с дробной частью
+        dotted = "" if integer else r"|\d{1,3}(?:\.\d{3})+,\d+"
+        core = rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}]\d{{3}})+{fraction}{dotted}|\d+{fraction})"
     else:
         core = rf"[-+]?(?:\d{{1,3}}(?:[ {_SPACES}',]\d{{3}})+{fraction}|\d+{fraction})"
     currency = f"(?:{_CURRENCY_ANY})"

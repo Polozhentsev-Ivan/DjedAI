@@ -261,3 +261,29 @@ def test_create_typed_views_for_all_sources(con):
     report = create_typed_views(con)
     assert report.errors == ()
     assert {v.raw_table for v in report.views} == {r.raw_table for r in read_sources(con)}
+
+
+def test_european_thousands_keep_fraction(con, tmp_path):
+    _, column, out = typed(con, tmp_path, ["1.234,56", "2.345,67"])
+    assert column.semantic_type == "float"
+    assert [float(x) for x in out] == [1234.56, 2345.67]
+    assert journal(con, "parse_number")[0].detail["decimal_separator"] == ","
+    assert journal(con, "parse_integer") == []
+
+
+def test_existing_view_is_not_overwritten(con, tmp_path):
+    con.execute('CREATE VIEW "t" AS SELECT 999 AS sentinel')
+    raw = load(con, tmp_path, "v", ["10", "20"])
+    view = create_typed_view(con, raw)
+    assert view.view_name == "t_typed"
+    assert con.execute('SELECT sentinel FROM "t"').fetchall() == [(999,)]
+    assert con.execute('SELECT v FROM "t_typed"').fetchall() == [(10,), (20,)]
+
+
+def test_recreating_keeps_own_view_name_next_to_foreign_view(con, tmp_path):
+    con.execute('CREATE VIEW "t" AS SELECT 999 AS sentinel')
+    raw = load(con, tmp_path, "v", ["10", "20"])
+    first = create_typed_view(con, raw)
+    second = create_typed_view(con, raw)
+    assert first.view_name == second.view_name == "t_typed"
+    assert con.execute('SELECT sentinel FROM "t"').fetchall() == [(999,)]
