@@ -203,12 +203,15 @@ def _has_header(rows: list[list[str]]) -> bool:
     )
 
 
+def slugify(text: str, default: str = "table") -> str:
+    """Транслит в нижний регистр: латиница, цифры и ``_``; пустой результат — ``default``."""
+    slug = "".join(_TRANSLIT.get(ch, ch) for ch in text.lower())
+    return re.sub(r"[^a-z0-9]+", "_", slug).strip("_") or default
+
+
 def raw_table_name(file_name: str, taken: set[str]) -> str:
     """Имя ``raw_<транслит>``: латиница, цифры и ``_``; повторы получают суффикс."""
-    stem = Path(file_name).stem.lower()
-    slug = "".join(_TRANSLIT.get(ch, ch) for ch in stem)
-    slug = re.sub(r"[^a-z0-9]+", "_", slug).strip("_") or "table"
-    name = f"raw_{slug}"
+    name = f"raw_{slugify(Path(file_name).stem)}"
     candidate, number = name, 2
     while candidate in taken:
         candidate, number = f"{name}_{number}", number + 1
