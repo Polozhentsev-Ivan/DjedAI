@@ -5,20 +5,24 @@ from pydantic import BaseModel, Field
 
 class RunSqlParams(BaseModel):
     """Модель параметров для функции run_sql."""
+
     sql: str = Field(description="SQL-запрос (только SELECT) для получения данных.")
     source_result_id: str | None = Field(
         default=None,
-        description="ID предыдущего результата, если нужно сделать запрос поверх уже посчитанных данных.",
+        description="ID предыдущего результата, если нужно сделать запрос "
+        "поверх уже посчитанных данных.",
     )
 
 
 class DescribeDatasetParams(BaseModel):
     """Модель параметров для describe_dataset. У этой функции нет параметров."""
+
     pass
 
 
 class ToolDefinition(BaseModel):
     """Описание инструмента для нейросети (MLE)."""
+
     name: str
     description: str
     # Теперь мы храним саму модель (класс), а не просто словарь схемы

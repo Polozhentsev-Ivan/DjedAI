@@ -16,9 +16,7 @@ class ToolResult(BaseModel):
 
     result_id: str = Field(description="Уникальный ID результата, например 'r_17'")
     # Жестко ограничиваем статус через Literal
-    status: Literal["ok", "error", "empty"] = Field(
-        description="Статус: 'ok', 'error' или 'empty'"
-    )
+    status: Literal["ok", "error", "empty"] = Field(description="Статус: 'ok', 'error' или 'empty'")
 
     # Данные и факты
     data: dict[str, Any] | None = Field(default=None, description="Данные (колонки и строки)")
@@ -32,7 +30,9 @@ class ToolResult(BaseModel):
 
     # Метаданные
     tool: str | None = Field(default=None, description="Имя инструмента")
-    params: dict[str, Any] | None = Field(default=None, description="Параметры, с которыми вызвали инструмент")
+    params: dict[str, Any] | None = Field(
+        default=None, description="Параметры, с которыми вызвали инструмент"
+    )
     sql: str | None = Field(default=None, description="SQL-запрос, если он выполнялся")
 
     # Связь с предыдущими результатами
