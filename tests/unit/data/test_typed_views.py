@@ -14,6 +14,7 @@ from djedai.data.typed_views import (
     create_typed_views,
     normalize_column_names,
     read_journal,
+    read_typed_views,
 )
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "csv"
@@ -278,6 +279,19 @@ def test_existing_view_is_not_overwritten(con, tmp_path):
     assert view.view_name == "t_typed"
     assert con.execute('SELECT sentinel FROM "t"').fetchall() == [(999,)]
     assert con.execute('SELECT v FROM "t_typed"').fetchall() == [(10,), (20,)]
+
+
+def test_read_typed_views_matches_created_views(con):
+    load_raw_csv(con, FIXTURES / "orders_utf8_comma.csv")
+    load_raw_csv(con, FIXTURES / "customers_utf8_semicolon.csv")
+    report = create_typed_views(con)
+    expected = sorted(report.views, key=lambda v: v.raw_table)
+    assert read_typed_views(con) == expected
+    assert all(len(v.columns) > 1 for v in expected)  # порядок колонок проверяется на деле
+
+
+def test_read_typed_views_empty_registry(con):
+    assert read_typed_views(con) == []
 
 
 def test_recreating_keeps_own_view_name_next_to_foreign_view(con, tmp_path):
