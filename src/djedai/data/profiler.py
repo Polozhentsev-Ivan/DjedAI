@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import duckdb
 
@@ -25,6 +25,7 @@ TABLE_PROFILES = "_djedai_table_profiles"
 COLUMN_PROFILES = "_djedai_column_profiles"
 TOP_VALUES = 10
 SAMPLE_VALUES = 5
+EXACT_DIGITS = 60  # точность Decimal для среднего и медианы: сумма HUGEINT — до 39 цифр
 
 NUMERIC = ("integer", "float", "money", "percent")
 TEMPORAL = ("date", "datetime")
@@ -207,9 +208,13 @@ def _column_from_json(data: dict) -> ColumnProfile:
 
 
 def _json_value(value: object) -> object:
-    """Значение DuckDB → JSON-совместимое: DECIMAL → float, даты и время → ISO-строка."""
+    """Значение DuckDB → JSON-совместимое без потери точности.
+
+    DECIMAL (деньги, проценты) → точная десятичная строка: float не различает, например,
+    ``100000000000000.01`` и ``100000000000000.02``. Даты и время → ISO-строка.
+    """
     if isinstance(value, Decimal):
-        return float(value)
+        return format(value, "f")
     if isinstance(value, datetime | date):
         return value.isoformat()
     return value
@@ -235,13 +240,19 @@ def _profile_column(
     }
     semantic = column.semantic_type
     if semantic in NUMERIC:
-        number = f"CAST({value} AS DOUBLE)"
+        # Предварительный CAST в DOUBLE сливает соседние большие значения (2**53 и 2**53 + 1,
+        # 100000000000000.01 и .02). Поэтому сумма и середины берутся в точном типе (HUGEINT
+        # для целых, DECIMAL для денег и процентов), а std — по сдвигу от минимума: в DOUBLE
+        # попадают уже малые разности. Среднее и медиана собираются в Python через Decimal.
+        exact = f"CAST({value} AS HUGEINT)" if semantic == "integer" else value
+        delta = f"CAST({exact} - (SELECT min({exact}) FROM {table}) AS DOUBLE)"
         checks |= {
             "min": f"min({value})",
             "max": f"max({value})",
-            "mean": f"avg({number})",
-            "median": f"median({number})",
-            "std": f"stddev_samp({number})",
+            "sum": f"sum({exact})",
+            "mid_low": f"quantile_disc({exact}, 0.5)",  # нижний из средних элементов
+            "mid_high": f"-quantile_disc(-{exact}, 0.5)",  # верхний из средних элементов
+            "std": f"stddev_samp({delta})",
         }
     elif semantic in TEMPORAL:
         day = f"CAST({value} AS DATE)"
@@ -293,7 +304,18 @@ def _profile_column(
 
 def _stats(semantic: str, row: dict) -> dict:
     if semantic in NUMERIC:
-        return {key: _json_value(row[key]) for key in ("min", "max", "mean", "median", "std")}
+        mean = median = None
+        if row["present"]:
+            with localcontext(prec=EXACT_DIGITS):
+                mean = float(Decimal(row["sum"]) / row["present"])
+                median = float((Decimal(row["mid_low"]) + Decimal(row["mid_high"])) / 2)
+        return {
+            "min": _json_value(row["min"]),
+            "max": _json_value(row["max"]),
+            "mean": mean,
+            "median": median,
+            "std": row["std"],
+        }
     if semantic in TEMPORAL:
         return {
             "min": _json_value(row["min"]),

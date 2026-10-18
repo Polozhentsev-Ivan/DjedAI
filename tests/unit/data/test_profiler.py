@@ -12,6 +12,7 @@ import random
 import statistics
 from collections import Counter
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -89,12 +90,17 @@ def test_full_duplicate_rows(con, tmp_path):
     assert table.duplicate_rows == len(rows) - len(set(rows)) == 3
 
 
+def cents(value: Decimal) -> str:
+    """Ожидаемая запись DECIMAL(18,2) в профиле: точная строка с двумя знаками."""
+    return format(value.quantize(Decimal("0.01")), "f")
+
+
 def number_columns(seed: int = 7, n: int = 60) -> tuple[dict, dict]:
     rng = random.Random(seed)
     ints = [rng.randint(-50, 500) for _ in range(n)]
     floats = [round(rng.uniform(-10, 10), 3) for _ in range(n)]
-    money = [round(rng.uniform(0, 5000), 2) for _ in range(n)]
-    percents = [round(rng.uniform(0, 100), 1) for _ in range(n)]
+    money = [Decimal(rng.randint(0, 500_000)) / 100 for _ in range(n)]
+    percents = [Decimal(rng.randint(0, 1000)) / 10 for _ in range(n)]
     text = {
         "qty": [str(v) for v in ints],
         "ratio": [repr(v) for v in floats],
@@ -105,22 +111,66 @@ def number_columns(seed: int = 7, n: int = 60) -> tuple[dict, dict]:
 
 
 @pytest.mark.parametrize(
-    ("name", "semantic"),
-    [("qty", "integer"), ("ratio", "float"), ("price", "money"), ("share", "percent")],
+    ("name", "semantic", "exact"),
+    [
+        ("qty", "integer", lambda v: v),
+        ("ratio", "float", lambda v: v),
+        ("price", "money", cents),  # DECIMAL хранится точной строкой
+        ("share", "percent", cents),
+    ],
 )
-def test_number_stats_match_statistics(con, tmp_path, name, semantic):
+def test_number_stats_match_statistics(con, tmp_path, name, semantic, exact):
     text, values = number_columns()
     profiled = column(profile(con, tmp_path, text), name)
     data = values[name]
     assert profiled.semantic_type == semantic
     assert profiled.stats == {
-        "min": pytest.approx(min(data)),
-        "max": pytest.approx(max(data)),
-        "mean": pytest.approx(statistics.mean(data)),
-        "median": pytest.approx(statistics.median(data)),
-        "std": pytest.approx(statistics.stdev(data)),
+        "min": exact(min(data)),
+        "max": exact(max(data)),
+        "mean": pytest.approx(float(statistics.mean(data))),
+        "median": pytest.approx(float(statistics.median(data))),
+        "std": pytest.approx(float(statistics.stdev(data))),
     }
     assert profiled.distinct_count == len(set(data))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [2**53, 2**53 + 1],  # соседние целые, которые float не различает
+        [2**53, 2**53 + 1, 2**53 + 3],
+        [-(2**63) + 1, 2**63 - 1],  # разность не помещается в BIGINT
+    ],
+)
+def test_large_integers_keep_spread(con, tmp_path, values):
+    text = {"qty": [str(v) for v in values], "k": ["x"] * len(values)}
+    profiled = column(profile(con, tmp_path, text), "qty")
+    assert profiled.semantic_type == "integer"
+    assert profiled.stats == {
+        "min": min(values),
+        "max": max(values),
+        "mean": pytest.approx(float(statistics.mean(values))),
+        "median": pytest.approx(float(statistics.median(values))),
+        "std": pytest.approx(statistics.stdev(values)),
+    }
+    assert profiled.stats["std"] > 0
+
+
+def test_money_keeps_exact_values(con, tmp_path):
+    amounts = [Decimal("100000000000000.01"), Decimal("100000000000000.02")]
+    text = {"price": [f"{v} RUB" for v in amounts], "k": ["x", "x"]}
+    table = profile(con, tmp_path, text)
+    profiled = column(table, "price")
+    assert (profiled.semantic_type, profiled.physical_type) == ("money", "DECIMAL(18,2)")
+
+    expected = [str(v) for v in amounts]
+    assert profiled.distinct_count == 2
+    assert [t.value for t in profiled.top_values] == expected
+    assert list(profiled.sample_values) == expected
+    assert (profiled.stats["min"], profiled.stats["max"]) == tuple(expected)
+    assert profiled.stats["mean"] == pytest.approx(float(statistics.mean(amounts)))
+    assert profiled.stats["std"] == pytest.approx(float(statistics.stdev(amounts)))
+    assert read_profiles(con) == [table]  # сохранение и чтение не теряют копейки
 
 
 def test_single_number_has_no_std(con, tmp_path):
