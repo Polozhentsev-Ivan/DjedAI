@@ -202,6 +202,20 @@ def create_typed_views(connection: duckdb.DuckDBPyConnection) -> TypedViewReport
     return TypedViewReport(views=tuple(views), errors=tuple(errors))
 
 
+def read_typed_views(connection: duckdb.DuckDBPyConnection) -> list[TypedView]:
+    """Читает построенные представления из реестра ``_djedai_columns`` (по имени raw-таблицы)."""
+    _ensure_tables(connection)
+    cursor = connection.execute(
+        f"SELECT raw_table, view_name, original_name, normalized_name, physical_type, "
+        f"semantic_type, format, non_empty, parsed FROM {COLUMNS_TABLE} "
+        f"ORDER BY raw_table, position"
+    )
+    views: dict[tuple[str, str], list[TypedColumn]] = {}
+    for raw_table, view_name, *column in cursor.fetchall():
+        views.setdefault((raw_table, view_name), []).append(TypedColumn(*column))
+    return [TypedView(raw, view, tuple(columns)) for (raw, view), columns in views.items()]
+
+
 def read_journal(
     connection: duckdb.DuckDBPyConnection, raw_table: str | None = None
 ) -> list[JournalEntry]:

@@ -276,9 +276,6 @@
       "duplicate_headers",
       "empty_header"
     ],
-    "load_options": {
-      "header": true
-    },
     "expect": {
       "status": "loaded",
       "encoding": "utf-8",
