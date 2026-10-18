@@ -14,3 +14,4 @@
 
 # Фикстуры CSV хранятся побайтно: кодировка и переводы строк — часть проверки
 tests/fixtures/csv/* -text
+tests/fixtures/csv/dirty/* -text

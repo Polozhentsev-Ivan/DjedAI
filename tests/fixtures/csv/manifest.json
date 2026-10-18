@@ -1,0 +1,1056 @@
+{
+  "dirty/bom_utf8.csv": {
+    "problem": "UTF-8 с BOM: BOM не должен попасть в имя первой колонки.",
+    "tags": [
+      "encoding",
+      "bom"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8-sig",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "name",
+        "city"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "1",
+          "Иван",
+          "Москва"
+        ],
+        [
+          "2",
+          "Анна",
+          "Казань"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id",
+          "physical_type": "VARCHAR"
+        },
+        "name": {
+          "semantic_type": "text"
+        },
+        "city": {
+          "semantic_type": "text"
+        }
+      }
+    }
+  },
+  "dirty/utf16_semicolon.csv": {
+    "problem": "UTF-16 с BOM и разделителем «;»: кодировка и разделитель определяются автоматически.",
+    "tags": [
+      "encoding",
+      "delimiter"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-16",
+      "delimiter": ";",
+      "header": true,
+      "columns": [
+        "id",
+        "name",
+        "city"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "1",
+          "Иван",
+          "Москва"
+        ],
+        [
+          "2",
+          "Анна",
+          "Казань"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "name": {
+          "semantic_type": "text"
+        },
+        "city": {
+          "semantic_type": "text"
+        }
+      }
+    }
+  },
+  "dirty/cp1251_cyrillic_headers.csv": {
+    "problem": "cp1251, кириллические заголовки, CRLF, «;», десятичная запятая, ID с ведущими нулями, даты dd.mm.yyyy. Имена колонок транслитерируются, оригиналы сохраняются.",
+    "tags": [
+      "encoding",
+      "delimiter",
+      "leading_zero_ids",
+      "decimal_comma",
+      "dates",
+      "cyrillic_headers"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "cp1251",
+      "delimiter": ";",
+      "header": true,
+      "columns": [
+        "Номер заказа",
+        "Сумма заказа",
+        "Дата"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "00123",
+          "1 234,56",
+          "25.03.2026"
+        ],
+        [
+          "00124",
+          "99,90",
+          "26.03.2026"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "nomer_zakaza": {
+          "semantic_type": "id",
+          "physical_type": "VARCHAR"
+        },
+        "summa_zakaza": {
+          "semantic_type": "float",
+          "physical_type": "DOUBLE"
+        },
+        "data": {
+          "semantic_type": "date",
+          "physical_type": "DATE"
+        }
+      },
+      "journal": [
+        {
+          "column": "nomer_zakaza",
+          "action": "rename_column",
+          "detail": {
+            "from": "Номер заказа"
+          }
+        },
+        {
+          "column": "nomer_zakaza",
+          "action": "keep_text",
+          "detail": {
+            "reason": "id_leading_zeros"
+          }
+        },
+        {
+          "column": "summa_zakaza",
+          "action": "parse_number",
+          "detail": {
+            "decimal_separator": ","
+          }
+        },
+        {
+          "column": "data",
+          "action": "parse_date",
+          "detail": {
+            "format": "%d.%m.%Y"
+          }
+        }
+      ],
+      "typed_rows": [
+        [
+          "00123",
+          "1234.56",
+          "2026-03-25"
+        ],
+        [
+          "00124",
+          "99.9",
+          "2026-03-26"
+        ]
+      ]
+    }
+  },
+  "dirty/pipe_delimiter.csv": {
+    "problem": "Разделитель — вертикальная черта; в значениях есть пробел-разделитель тысяч и десятичная запятая.",
+    "tags": [
+      "delimiter",
+      "decimal_comma"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": "|",
+      "header": true,
+      "columns": [
+        "sku",
+        "title",
+        "price"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "A-001",
+          "Кружка",
+          "350,00"
+        ],
+        [
+          "A-002",
+          "Чайник",
+          "1 200,00"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "sku": {
+          "semantic_type": "text"
+        },
+        "title": {
+          "semantic_type": "text"
+        },
+        "price": {
+          "semantic_type": "float",
+          "physical_type": "DOUBLE"
+        }
+      }
+    }
+  },
+  "dirty/tab_delimiter.csv": {
+    "problem": "Разделитель — табуляция; артикулы с дефисом остаются текстом.",
+    "tags": [
+      "delimiter"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": "\t",
+      "header": true,
+      "columns": [
+        "sku",
+        "title",
+        "qty"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "A-001",
+          "Кружка",
+          "10"
+        ],
+        [
+          "A-002",
+          "Чайник",
+          "3"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "sku": {
+          "semantic_type": "text"
+        },
+        "title": {
+          "semantic_type": "text"
+        },
+        "qty": {
+          "semantic_type": "integer",
+          "physical_type": "BIGINT"
+        }
+      }
+    }
+  },
+  "dirty/duplicate_headers.csv": {
+    "problem": "Дубли и пустое имя в заголовке (id,name,Name,,name): дубли без учёта регистра получают суффикс _2, _3, пустое имя — column<N>.",
+    "tags": [
+      "duplicate_headers",
+      "empty_header"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "name",
+        "Name_2",
+        "column4",
+        "name_3"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "1",
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "2",
+          "e",
+          "f",
+          "g",
+          "h"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "name": {
+          "semantic_type": "text"
+        },
+        "name_2": {
+          "semantic_type": "text"
+        },
+        "column4": {
+          "semantic_type": "text"
+        },
+        "name_3": {
+          "semantic_type": "text"
+        }
+      },
+      "journal": [
+        {
+          "column": "name_2",
+          "action": "rename_column",
+          "detail": {
+            "from": "Name_2"
+          }
+        }
+      ]
+    },
+    "known_issue": "Без явного header=True строка с дублями принимается за данные (см. test_duplicate_headers_are_detected_without_hint)."
+  },
+  "dirty/ragged_rows.csv": {
+    "problem": "Строки разной длины: во 2-й записи данных не хватает поля, в 3-й лишнее. Файл не загружается целиком, значения не сдвигаются молча.",
+    "tags": [
+      "ragged_rows",
+      "broken_structure"
+    ],
+    "expect": {
+      "status": "error",
+      "error_contains": [
+        "ragged_rows.csv",
+        "не удалось разобрать содержимое",
+        "строка 3"
+      ]
+    }
+  },
+  "dirty/unclosed_quote.csv": {
+    "problem": "Незакрытая кавычка: остаток файла «съедается» одним полем. Загрузка должна отказать.",
+    "tags": [
+      "broken_structure"
+    ],
+    "expect": {
+      "status": "error",
+      "error_contains": [
+        "unclosed_quote.csv",
+        "не удалось разобрать содержимое"
+      ]
+    }
+  },
+  "dirty/missing_values.csv": {
+    "problem": "Пропуски: пустое поле без кавычек → NULL, «\"\"» → пустая строка, колонка из одних пропусков остаётся, пустые строки в конце файла не считаются данными.",
+    "tags": [
+      "missing_values",
+      "empty_column",
+      "trailing_blank_lines"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "name",
+        "note",
+        "empty_col"
+      ],
+      "row_count": 3,
+      "rows": [
+        [
+          "1",
+          "Иван",
+          null,
+          null
+        ],
+        [
+          "2",
+          null,
+          "",
+          null
+        ],
+        [
+          "3",
+          "Олег",
+          "текст",
+          null
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "name": {
+          "semantic_type": "text"
+        },
+        "note": {
+          "semantic_type": "text"
+        },
+        "empty_col": {
+          "semantic_type": "text"
+        }
+      },
+      "journal": [
+        {
+          "column": "empty_col",
+          "action": "keep_text",
+          "detail": {
+            "reason": "empty_column"
+          }
+        }
+      ]
+    }
+  },
+  "dirty/mixed_date_formats.csv": {
+    "problem": "Даты в двух форматах в одной колонке (dd.mm.yyyy и ISO): ни один формат не набирает 95%, колонка остаётся текстом, значения не искажаются.",
+    "tags": [
+      "mixed_dates"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "order_id",
+        "created"
+      ],
+      "row_count": 4,
+      "rows": [
+        [
+          "1",
+          "25.03.2026"
+        ],
+        [
+          "2",
+          "2026-03-26"
+        ],
+        [
+          "3",
+          "27.03.2026"
+        ],
+        [
+          "4",
+          "2026-03-28"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "order_id": {
+          "semantic_type": "id"
+        },
+        "created": {
+          "semantic_type": "text",
+          "physical_type": "VARCHAR"
+        }
+      },
+      "journal": [
+        {
+          "column": "created",
+          "action": "keep_text",
+          "detail": {
+            "reason": "text"
+          }
+        }
+      ],
+      "typed_rows": [
+        [
+          "1",
+          "25.03.2026"
+        ],
+        [
+          "2",
+          "2026-03-26"
+        ],
+        [
+          "3",
+          "27.03.2026"
+        ],
+        [
+          "4",
+          "2026-03-28"
+        ]
+      ]
+    }
+  },
+  "dirty/ambiguous_dates.csv": {
+    "problem": "Неоднозначные даты 03/04/2026: день и месяц не различить (dd/mm или mm/dd), ничего не угадываем — колонка остаётся текстом, причина в журнале.",
+    "tags": [
+      "mixed_dates",
+      "ambiguous_dates"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "order_id",
+        "created"
+      ],
+      "row_count": 3,
+      "rows": [
+        [
+          "1",
+          "03/04/2026"
+        ],
+        [
+          "2",
+          "05/06/2026"
+        ],
+        [
+          "3",
+          "07/08/2026"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "order_id": {
+          "semantic_type": "id"
+        },
+        "created": {
+          "semantic_type": "text",
+          "physical_type": "VARCHAR"
+        }
+      },
+      "journal": [
+        {
+          "column": "created",
+          "action": "keep_text",
+          "detail": {
+            "reason": "ambiguous_date"
+          }
+        }
+      ]
+    }
+  },
+  "dirty/leading_zero_ids.csv": {
+    "problem": "ID, индексы и телефоны с ведущими нулями (00123, 010203, 007912345) не превращаются в числа; соседняя числовая колонка при этом приводится к целому.",
+    "tags": [
+      "leading_zero_ids"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "customer_id",
+        "zip",
+        "phone",
+        "amount"
+      ],
+      "row_count": 3,
+      "rows": [
+        [
+          "00123",
+          "010203",
+          "007912345",
+          "10"
+        ],
+        [
+          "0007",
+          "000045",
+          "008800555",
+          "20"
+        ],
+        [
+          "00123",
+          "010203",
+          "007912345",
+          "30"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "customer_id": {
+          "semantic_type": "id",
+          "physical_type": "VARCHAR"
+        },
+        "zip": {
+          "semantic_type": "id",
+          "physical_type": "VARCHAR"
+        },
+        "phone": {
+          "semantic_type": "id",
+          "physical_type": "VARCHAR"
+        },
+        "amount": {
+          "semantic_type": "integer",
+          "physical_type": "BIGINT"
+        }
+      },
+      "journal": [
+        {
+          "column": "customer_id",
+          "action": "keep_text",
+          "detail": {
+            "reason": "id_leading_zeros"
+          }
+        },
+        {
+          "column": "zip",
+          "action": "keep_text",
+          "detail": {
+            "reason": "id_leading_zeros"
+          }
+        },
+        {
+          "column": "phone",
+          "action": "keep_text",
+          "detail": {
+            "reason": "id_leading_zeros"
+          }
+        }
+      ],
+      "typed_rows": [
+        [
+          "00123",
+          "010203",
+          "007912345",
+          "10"
+        ],
+        [
+          "0007",
+          "000045",
+          "008800555",
+          "20"
+        ],
+        [
+          "00123",
+          "010203",
+          "007912345",
+          "30"
+        ]
+      ]
+    }
+  },
+  "dirty/numbers_currency_percent.csv": {
+    "problem": "Десятичная запятая и пробел-разделитель тысяч, валюта ($), проценты (12,5%, 100 %), дата в кавычках. Проценты хранятся числом без деления на 100, валюта — в журнале.",
+    "tags": [
+      "decimal_comma",
+      "currency",
+      "percent",
+      "dates"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "price",
+        "total",
+        "discount",
+        "date"
+      ],
+      "row_count": 3,
+      "rows": [
+        [
+          "1 234,56",
+          "$99.90",
+          "12,5%",
+          "25.03.2026"
+        ],
+        [
+          "99,90",
+          "$1,000.00",
+          "7%",
+          "26.03.2026"
+        ],
+        [
+          "0,00",
+          "$5.00",
+          "100 %",
+          "27.03.2026"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "price": {
+          "semantic_type": "float",
+          "physical_type": "DOUBLE"
+        },
+        "total": {
+          "semantic_type": "money",
+          "physical_type": "DECIMAL(18,2)"
+        },
+        "discount": {
+          "semantic_type": "percent",
+          "physical_type": "DECIMAL(18,2)"
+        },
+        "date": {
+          "semantic_type": "date",
+          "physical_type": "DATE"
+        }
+      },
+      "journal": [
+        {
+          "column": "price",
+          "action": "parse_number",
+          "detail": {
+            "decimal_separator": ","
+          }
+        },
+        {
+          "column": "total",
+          "action": "parse_money",
+          "detail": {
+            "currency": "USD",
+            "decimal_separator": "."
+          }
+        },
+        {
+          "column": "discount",
+          "action": "parse_percent",
+          "detail": {
+            "decimal_separator": ","
+          }
+        },
+        {
+          "column": "date",
+          "action": "parse_date",
+          "detail": {
+            "format": "%d.%m.%Y"
+          }
+        }
+      ],
+      "typed_rows": [
+        [
+          "1234.56",
+          "99.90",
+          "12.50",
+          "2026-03-25"
+        ],
+        [
+          "99.9",
+          "1000.00",
+          "7.00",
+          "2026-03-26"
+        ],
+        [
+          "0.0",
+          "5.00",
+          "100.00",
+          "2026-03-27"
+        ]
+      ]
+    }
+  },
+  "dirty/multiline_quoted.csv": {
+    "problem": "Перевод строки внутри поля в кавычках: это одна запись, а не две.",
+    "tags": [
+      "quoted_newline"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "comment"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "1",
+          "первая строка\nвторая строка"
+        ],
+        [
+          "2",
+          "простой"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "comment": {
+          "semantic_type": "text"
+        }
+      }
+    }
+  },
+  "dirty/no_header.csv": {
+    "problem": "Файл без строки заголовка: первая строка — данные, колонки получают имена column<N>.",
+    "tags": [
+      "no_header"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": false,
+      "columns": [
+        "column1",
+        "column2",
+        "column3"
+      ],
+      "row_count": 3,
+      "rows": [
+        [
+          "1",
+          "Иван",
+          "100"
+        ],
+        [
+          "2",
+          "Анна",
+          "200"
+        ],
+        [
+          "3",
+          "Олег",
+          "300"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "column1": {
+          "semantic_type": "integer",
+          "physical_type": "BIGINT"
+        },
+        "column2": {
+          "semantic_type": "text"
+        },
+        "column3": {
+          "semantic_type": "integer",
+          "physical_type": "BIGINT"
+        }
+      }
+    }
+  },
+  "dirty/header_only.csv": {
+    "problem": "Только заголовок, данных нет: загрузка успешна, 0 строк, колонки сохраняются.",
+    "tags": [
+      "no_rows"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "name",
+        "city"
+      ],
+      "row_count": 0,
+      "rows": []
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "text"
+        },
+        "name": {
+          "semantic_type": "text"
+        },
+        "city": {
+          "semantic_type": "text"
+        }
+      },
+      "journal": [
+        {
+          "column": "id",
+          "action": "keep_text",
+          "detail": {
+            "reason": "empty_column"
+          }
+        }
+      ]
+    }
+  },
+  "dirty/trailing_junk_and_crlf.csv": {
+    "problem": "Переводы строк CRLF и пустые строки в конце файла: лишних записей не появляется.",
+    "tags": [
+      "crlf",
+      "trailing_blank_lines"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "name"
+      ],
+      "row_count": 2,
+      "rows": [
+        [
+          "1",
+          "Иван"
+        ],
+        [
+          "2",
+          "Анна"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "name": {
+          "semantic_type": "text"
+        }
+      }
+    }
+  },
+  "dirty/unparseable_values.csv": {
+    "problem": "60 строк; в колонке amount два нераспознаваемых значения (n/a, abc), в created — одно (not a date). Колонки приводятся к типу (≥95%), непонятные значения → NULL в представлении, оригиналы остаются в raw, примеры и счётчик — в журнале.",
+    "tags": [
+      "unparsed_values"
+    ],
+    "expect": {
+      "status": "loaded",
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "header": true,
+      "columns": [
+        "id",
+        "amount",
+        "created"
+      ],
+      "row_count": 60,
+      "rows": [
+        [
+          "1",
+          "100",
+          "25.03.2026"
+        ],
+        [
+          "2",
+          "n/a",
+          "26.03.2026"
+        ],
+        [
+          "3",
+          "200",
+          "27.03.2026"
+        ]
+      ]
+    },
+    "typing": {
+      "columns": {
+        "id": {
+          "semantic_type": "id"
+        },
+        "amount": {
+          "semantic_type": "integer",
+          "physical_type": "BIGINT"
+        },
+        "created": {
+          "semantic_type": "date",
+          "physical_type": "DATE"
+        }
+      },
+      "journal": [
+        {
+          "column": "amount",
+          "action": "unparsed_values",
+          "detail": {
+            "count": 2,
+            "examples": [
+              "abc",
+              "n/a"
+            ]
+          }
+        },
+        {
+          "column": "created",
+          "action": "unparsed_values",
+          "detail": {
+            "count": 1,
+            "examples": [
+              "not a date"
+            ]
+          }
+        }
+      ],
+      "typed_rows": [
+        [
+          "1",
+          "100",
+          "2026-03-25"
+        ],
+        [
+          "2",
+          null,
+          "2026-03-26"
+        ],
+        [
+          "3",
+          "200",
+          "2026-03-27"
+        ]
+      ]
+    }
+  },
+  "binary.csv": {
+    "problem": "Бинарный мусор вместо текста: кодировка не определяется, загрузка отказывает с понятным сообщением.",
+    "tags": [
+      "encoding",
+      "corrupted_file"
+    ],
+    "expect": {
+      "status": "error",
+      "error_contains": [
+        "binary.csv",
+        "не удалось определить кодировку"
+      ]
+    }
+  },
+  "empty.csv": {
+    "problem": "Пустой файл (0 байт): загрузка отказывает.",
+    "tags": [
+      "empty_file"
+    ],
+    "expect": {
+      "status": "error",
+      "error_contains": [
+        "empty.csv",
+        "файл пуст"
+      ]
+    }
+  }
+}
