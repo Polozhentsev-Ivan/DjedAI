@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "dataset_id": "ds_7f3a",
+  "name": "Продажи",
+  "created_at": "2026-10-20T12:00:00Z",
+  "source": { "kind": "csv_upload" },
+  "summary": "Заказы и клиенты за 2021–2024 годы: 2 таблицы, связаны через client_id.",
+  "tables": [
+    {
+      "table_id": "orders",
+      "raw_table": "raw_orders",
+      "original_name": "Заказы_2024.csv",
+      "description": "Каждая строка — один заказ",
+      "row_count": 125430,
+      "source": { "file": "Заказы_2024.csv", "encoding": "cp1251", "delimiter": ";", "header": true },
+      "primary_key_candidates": ["order_id"],
+      "time_columns": ["created_at"],
+      "duplicate_rows": 12,
+      "columns": [
+        {
+          "name": "order_id",
+          "original_name": "Номер заказа",
+          "physical_type": "VARCHAR",
+          "semantic_type": "id",
+          "role": "id",
+          "null_ratio": 0.0,
+          "distinct_count": 125430,
+          "is_unique": true,
+          "sample_values": ["000123", "000124", "000125", "000126", "000127"],
+          "top_values": [
+            { "value": "000123", "count": 1 },
+            { "value": "000124", "count": 1 }
+          ],
+          "stats": {},
+          "parse": null,
+          "description": "Номер заказа"
+        },
+        {
+          "name": "client_id",
+          "original_name": "Клиент",
+          "physical_type": "VARCHAR",
+          "semantic_type": "id",
+          "role": "id",
+          "null_ratio": 0.0,
+          "distinct_count": 8391,
+          "is_unique": false,
+          "sample_values": ["C-1042", "C-0007", "C-3315", "C-0918", "C-2210"],
+          "top_values": [
+            { "value": "C-0007", "count": 214 },
+            { "value": "C-1042", "count": 187 }
+          ],
+          "stats": {},
+          "description": "Клиент, оформивший заказ"
+        },
+        {
+          "name": "created_at",
+          "original_name": "Дата создания",
+          "physical_type": "TIMESTAMP",
+          "semantic_type": "datetime",
+          "role": "time",
+          "null_ratio": 0.002,
+          "distinct_count": 98211,
+          "is_unique": false,
+          "sample_values": ["2023-03-12T14:05:00", "2023-03-12T14:07:00", "2023-03-12T15:30:00"],
+          "top_values": [{ "value": "2024-11-29T10:00:00", "count": 10 }],
+          "stats": { "min": "2021-01-01T00:05:00", "max": "2024-12-31T23:40:00", "granularity": "minute" },
+          "parse": { "format": "%d.%m.%Y %H:%M", "success_ratio": 0.998, "failed_examples": ["--"] },
+          "description": "Дата и время оформления заказа"
+        },
+        {
+          "name": "amount",
+          "original_name": "Сумма",
+          "physical_type": "DECIMAL(18,2)",
+          "semantic_type": "money",
+          "role": "measure",
+          "null_ratio": 0.012,
+          "distinct_count": 40517,
+          "is_unique": false,
+          "sample_values": [1234.56, 99.9, 0.0, 15000.0, 780.4],
+          "top_values": [{ "value": 990.0, "count": 1311 }],
+          "stats": { "min": 0.0, "max": 250000.0, "mean": 3120.47, "median": 1490.0, "std": 5208.13 },
+          "parse": { "format": "decimal_comma, RUB", "success_ratio": 0.988, "failed_examples": ["н/д", "?"] },
+          "description": "Сумма заказа в рублях"
+        },
+        {
+          "name": "status",
+          "original_name": "Статус",
+          "physical_type": "VARCHAR",
+          "semantic_type": "category",
+          "role": "dimension",
+          "null_ratio": 0.0,
+          "distinct_count": 3,
+          "is_unique": false,
+          "sample_values": ["доставлен", "отменён", "в пути"],
+          "top_values": [
+            { "value": "доставлен", "count": 110204 },
+            { "value": "отменён", "count": 9811 },
+            { "value": "в пути", "count": 5415 }
+          ],
+          "description": "Состояние заказа"
+        }
+      ]
+    },
+    {
+      "table_id": "clients",
+      "raw_table": "raw_clients",
+      "original_name": "clients.csv",
+      "description": "Справочник клиентов",
+      "row_count": 8402,
+      "source": { "file": "clients.csv", "encoding": "utf-8", "delimiter": ",", "header": true },
+      "primary_key_candidates": ["id"],
+      "time_columns": [],
+      "duplicate_rows": 0,
+      "columns": [
+        {
+          "name": "id",
+          "original_name": "id",
+          "physical_type": "VARCHAR",
+          "semantic_type": "id",
+          "role": "id",
+          "null_ratio": 0.0,
+          "distinct_count": 8402,
+          "is_unique": true,
+          "sample_values": ["C-0001", "C-0002", "C-0003", "C-0004", "C-0005"],
+          "top_values": [{ "value": "C-0001", "count": 1 }],
+          "description": "Идентификатор клиента"
+        },
+        {
+          "name": "is_vip",
+          "original_name": "VIP",
+          "physical_type": "BOOLEAN",
+          "semantic_type": "bool",
+          "role": "dimension",
+          "null_ratio": 0.0,
+          "distinct_count": 2,
+          "is_unique": false,
+          "sample_values": [false, true],
+          "top_values": [
+            { "value": false, "count": 7950 },
+            { "value": true, "count": 452 }
+          ],
+          "description": "Признак VIP-клиента"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": { "table": "orders", "column": "client_id" },
+      "to": { "table": "clients", "column": "id" },
+      "overlap": 0.97,
+      "jaccard": 0.81,
+      "cardinality": "N:1",
+      "confidence": "high"
+    }
+  ],
+  "warnings": ["В orders.amount 1.2% значений не распознаны как число"],
+  "transformations": [
+    { "table": "orders", "column": "order_id", "action": "rename_column", "detail": { "from": "Номер заказа", "to": "order_id" } },
+    { "table": "orders", "column": "amount", "action": "parse_money", "detail": { "decimal_separator": ",", "currency": "RUB", "success_ratio": 0.988 } },
+    { "table": "orders", "column": "amount", "action": "unparsed_values", "detail": { "count": 1505, "examples": ["н/д", "?"], "target": "money" } }
+  ]
+}

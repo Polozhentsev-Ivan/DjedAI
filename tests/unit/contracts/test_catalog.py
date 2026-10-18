@@ -1,0 +1,137 @@
+"""Контракт ``DatasetCatalog`` (B1-7): валидация примеров и компактный ``to_prompt()``."""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from djedai.contracts.catalog import DatasetCatalog
+
+EXAMPLES = Path(__file__).parents[3] / "src" / "djedai" / "contracts" / "examples"
+FULL = json.loads((EXAMPLES / "dataset_catalog.json").read_text(encoding="utf-8"))
+MINIMAL = json.loads((EXAMPLES / "dataset_catalog_minimal.json").read_text(encoding="utf-8"))
+PROMPT = (EXAMPLES / "dataset_catalog.prompt.txt").read_text(encoding="utf-8").rstrip("\n")
+
+
+@pytest.mark.parametrize("data", [FULL, MINIMAL], ids=["full", "minimal"])
+def test_examples_are_valid_and_round_trip(data):
+    catalog = DatasetCatalog.model_validate(data)
+    dumped = catalog.model_dump(mode="json")
+    assert DatasetCatalog.model_validate(dumped) == catalog
+    assert DatasetCatalog.model_validate_json(catalog.model_dump_json()) == catalog
+
+
+def test_relation_is_serialized_with_spec_names():
+    relation = DatasetCatalog.model_validate(FULL).model_dump(mode="json")["relations"][0]
+    assert relation["from"] == {"table": "orders", "column": "client_id"}
+    assert "from_" not in relation
+
+
+def test_optional_parts_have_defaults():
+    catalog = DatasetCatalog.model_validate(MINIMAL)
+    assert (catalog.summary, catalog.relations, catalog.warnings) == (None, [], [])
+    column = catalog.tables[0].column("empty_col")
+    assert column.description is None
+    assert (column.sample_values, column.top_values, column.stats.min) == ([], [], None)
+
+
+def mutated(change) -> dict:
+    data = copy.deepcopy(FULL)
+    change(data)
+    return data
+
+
+def orders(data):
+    return data["tables"][0]
+
+
+def column(data, name: str) -> dict:
+    return next(c for c in orders(data)["columns"] if c["name"] == name)
+
+
+INVALID = {
+    "нет dataset_id": lambda d: d.pop("dataset_id"),
+    "лишнее поле": lambda d: d.update(extra=1),
+    "другая версия схемы": lambda d: d.update(schema_version=2),
+    "время без часового пояса": lambda d: d.update(created_at="2026-10-20T12:00:00"),
+    "неизвестный источник": lambda d: d["source"].update(kind="excel"),
+    "повтор table_id": lambda d: d["tables"][1].update(table_id="orders"),
+    "таблица без колонок": lambda d: orders(d).update(columns=[]),
+    "повтор имени колонки": lambda d: column(d, "status").update(name="amount"),
+    "ключ без колонки": lambda d: orders(d).update(primary_key_candidates=["nope"]),
+    "время без колонки": lambda d: orders(d).update(time_columns=["nope"]),
+    "дублей больше строк": lambda d: orders(d).update(duplicate_rows=10**9),
+    "отрицательное число строк": lambda d: orders(d).update(row_count=-1),
+    "доля пропусков > 1": lambda d: column(d, "amount").update(null_ratio=1.5),
+    "неизвестный тип": lambda d: column(d, "amount").update(semantic_type="number"),
+    "неизвестная роль": lambda d: column(d, "amount").update(role="metric"),
+    "больше 10 top-values": lambda d: column(d, "status").update(
+        top_values=[{"value": str(i), "count": 1} for i in range(11)]
+    ),
+    "больше 5 примеров": lambda d: column(d, "status").update(sample_values=list("abcdef")),
+    "нулевая частота": lambda d: column(d, "status").update(
+        top_values=[{"value": "a", "count": 0}]
+    ),
+    "среднее у текста": lambda d: column(d, "status").update(stats={"mean": 1.0}),
+    "min/max у текста": lambda d: column(d, "status").update(stats={"min": "a", "max": "b"}),
+    "гранулярность у числа": lambda d: column(d, "amount")["stats"].update(granularity="day"),
+    "неизвестная гранулярность": lambda d: column(d, "created_at")["stats"].update(
+        granularity="decade"
+    ),
+    "связь на нет колонки": lambda d: d["relations"][0]["to"].update(column="nope"),
+    "связь на нет таблицы": lambda d: d["relations"][0]["from"].update(table="nope"),
+    "неизвестная кардинальность": lambda d: d["relations"][0].update(cardinality="M:N"),
+    "overlap > 1": lambda d: d["relations"][0].update(overlap=1.2),
+    "преобразование без колонки": lambda d: d["transformations"][0].update(column="nope"),
+}
+
+
+@pytest.mark.parametrize("change", INVALID.values(), ids=INVALID.keys())
+def test_invalid_catalogs_are_rejected(change):
+    with pytest.raises(ValidationError):
+        DatasetCatalog.model_validate(mutated(change))
+
+
+def test_catalog_is_immutable():
+    catalog = DatasetCatalog.model_validate(FULL)
+    with pytest.raises(ValidationError):
+        catalog.name = "другое"
+
+
+def test_prompt_matches_reference():
+    assert DatasetCatalog.model_validate(FULL).to_prompt() == PROMPT
+
+
+def test_prompt_keeps_structure():
+    catalog = DatasetCatalog.model_validate(FULL)
+    prompt = catalog.to_prompt()
+    for table in catalog.tables:
+        assert f"Таблица {table.table_id}" in prompt
+        for col in table.columns:
+            assert f"- {col.name}: {col.semantic_type}, {col.role}" in prompt
+            assert col.description in prompt
+    for relation in catalog.relations:
+        assert f"{relation.from_.table}.{relation.from_.column} → " in prompt
+        assert relation.cardinality in prompt
+
+
+def test_prompt_has_no_heavy_lists():
+    catalog = DatasetCatalog.model_validate(FULL)
+    prompt = catalog.to_prompt()
+    heavy = {
+        str(value)
+        for table in catalog.tables
+        for col in table.columns
+        for value in [
+            *col.sample_values,
+            *(t.value for t in col.top_values),
+            *(col.parse.failed_examples if col.parse else []),
+        ]
+    }
+    assert [value for value in heavy if value in prompt] == []
+    assert "rename_column" not in prompt  # журнал преобразований в промпт не идёт
+    assert len(prompt) < len(catalog.model_dump_json()) / 3
