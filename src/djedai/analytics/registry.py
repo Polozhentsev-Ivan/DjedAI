@@ -8,7 +8,7 @@ class RunSqlParams(BaseModel):
     sql: str = Field(description="SQL-запрос (только SELECT) для получения данных.")
     source_result_id: str | None = Field(
         default=None,
-        description="Если нужно сделать запрос поверх " \
+        description="Если нужно сделать запрос поверх "
         "другого результата (например, поверх графика).",
     )
 
@@ -30,13 +30,13 @@ class ToolDefinition(BaseModel):
 TOOLS_REGISTRY = [
     ToolDefinition(
         name="run_sql",
-        description="Выполняет безопасный SQL-запрос (только SELECT) " \
+        description="Выполняет безопасный SQL-запрос (только SELECT) "
         "для получения данных из таблиц.",
         parameters_schema=RunSqlParams.model_json_schema(),
     ),
     ToolDefinition(
         name="describe_dataset",
-        description="Показывает общую информацию о загруженных " \
+        description="Показывает общую информацию о загруженных "
         "данных (список таблиц, колонок и связи).",
         parameters_schema=DescribeDatasetParams.model_json_schema(),
     ),
