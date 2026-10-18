@@ -13,6 +13,7 @@ median/std, для дат — диапазон и гранулярность. Д
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal, localcontext
@@ -26,6 +27,7 @@ COLUMN_PROFILES = "_djedai_column_profiles"
 TOP_VALUES = 10
 SAMPLE_VALUES = 5
 EXACT_DIGITS = 60  # точность Decimal для среднего и медианы: сумма HUGEINT — до 39 цифр
+_DECIMAL = re.compile(r"DECIMAL\(\d+,\s*(\d+)\)")
 
 NUMERIC = ("integer", "float", "money", "percent")
 TEMPORAL = ("date", "datetime")
@@ -244,7 +246,10 @@ def _profile_column(
         # 100000000000000.01 и .02). Поэтому сумма и середины берутся в точном типе (HUGEINT
         # для целых, DECIMAL для денег и процентов), а std — по сдвигу от минимума: в DOUBLE
         # попадают уже малые разности. Среднее и медиана собираются в Python через Decimal.
-        exact = f"CAST({value} AS HUGEINT)" if semantic == "integer" else value
+        # Тип расширяется до вычитания: разность max - min может не поместиться в исходный
+        # (BIGINT, DECIMAL(18,s)), и DuckDB падает с переполнением.
+        wide = _wide_type(column.physical_type, semantic)
+        exact = f"CAST({value} AS {wide})" if wide else value
         delta = f"CAST({exact} - (SELECT min({exact}) FROM {table}) AS DOUBLE)"
         checks |= {
             "min": f"min({value})",
@@ -300,6 +305,18 @@ def _profile_column(
         sample_values=tuple(_json_value(r[0]) for r in samples),
         stats=_stats(semantic, row),
     )
+
+
+def _wide_type(physical_type: str, semantic: str) -> str | None:
+    """Точный тип, в котором разность и сумма значений колонки не переполняются.
+
+    Целые → HUGEINT, ``DECIMAL(p,s)`` → ``DECIMAL(38,s)`` (максимальная точность DuckDB
+    с тем же масштабом); у DOUBLE переполнения нет — ``None``.
+    """
+    if semantic == "integer":
+        return "HUGEINT"
+    scale = _DECIMAL.fullmatch(physical_type)
+    return f"DECIMAL(38,{scale[1]})" if scale else None
 
 
 def _stats(semantic: str, row: dict) -> dict:

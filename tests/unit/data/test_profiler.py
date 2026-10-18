@@ -173,6 +173,26 @@ def test_money_keeps_exact_values(con, tmp_path):
     assert read_profiles(con) == [table]  # сохранение и чтение не теряют копейки
 
 
+@pytest.mark.parametrize(
+    ("suffix", "semantic"),
+    [(" RUB", "money"), ("%", "percent")],
+)
+def test_decimal_full_range_does_not_overflow(con, tmp_path, suffix, semantic):
+    # разность max - min не помещается в DECIMAL(18,2): тип расширяется до вычитания
+    edge = Decimal("9999999999999999.99")
+    values = [-edge, Decimal("0.01"), edge]
+    text = {"v": [f"{v}{suffix}" for v in values], "k": ["x"] * len(values)}
+    profiled = column(profile(con, tmp_path, text), "v")
+    assert (profiled.semantic_type, profiled.physical_type) == (semantic, "DECIMAL(18,2)")
+    assert profiled.stats == {
+        "min": str(-edge),
+        "max": str(edge),
+        "mean": pytest.approx(float(statistics.mean(values))),
+        "median": pytest.approx(float(statistics.median(values))),
+        "std": pytest.approx(float(statistics.stdev(values))),
+    }
+
+
 def test_single_number_has_no_std(con, tmp_path):
     profiled = column(profile(con, tmp_path, {"qty": ["5"], "k": ["x"]}), "qty")
     assert profiled.stats == {"min": 5, "max": 5, "mean": 5.0, "median": 5.0, "std": None}
