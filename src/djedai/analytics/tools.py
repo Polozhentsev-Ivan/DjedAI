@@ -37,37 +37,29 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 ),
             )
 
-        # 3. БЛОКИРУЕМ ЧТЕНИЕ ФАЙЛОВ/СЕТИ
-        forbidden_functions = [
-            "read_csv",
-            "read_parquet",
-            "read_json",
-            "read_text",
-            "sqlite_scan",
-            "postgres_scan",
-        ]
-        sql_lower = sql.lower()
-        for func in forbidden_functions:
-            if func in sql_lower:
-                return ToolResult(
-                    result_id=str(uuid.uuid4()),
-                    status="error",
-                    error=ToolError(
-                        code="forbidden_function",
-                        message=f"Использование функции {func} запрещено.",
-                        suggestion="Запрашивайте данные только из уже загруженных таблиц.",
-                    ),
-                )
+        # 3. ДОБАВЛЯЕМ ЛИМИТ (на уровне SQL, чтобы база не считала лишнее)
+        # Проверяем, есть ли LIMIT в запросе. Если нет или он больше max_rows — ставим свой.
+        limit_node = parsed.args.get("limit")
+        rewrite_limit = True
+        if limit_node:
+            try:
+                # Пытаемся вытащить число из LIMIT. Если там LIMIT ALL — выдаст ошибку,
+                # и мы перезапишем.
+                limit_val = int(limit_node.expression.this)
+                if limit_val <= max_rows:
+                    rewrite_limit = False  # Если лимит адекватный, оставляем как есть
+            except Exception:
+                pass  # Если не смогли распарсить, принудительно перезапишем
 
-        # 4. ДОБАВЛЯЕМ ЛИМИТ (на уровне SQL, чтобы база не считала лишнее)
-        if not parsed.args.get("limit"):
+        if rewrite_limit:
             parsed = parsed.limit(max_rows)
             sql = parsed.sql(dialect="duckdb")
 
-        # 5. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
+        # 4. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = duckdb.connect(database=":memory:")
 
-        # [P1] БЛОКИРУЕМ ВНЕШНИЕ ИСТОЧНИКИ НА УРОВНЕ ДВИЖКА DUCKDB
+        # [P1] БЛОКИРУЕМ ВНЕШНИЕ ИСТОЧНИКИ (чтение файлов, сеть) НА УРОВНЕ ДВИЖКА
+        # Это отсекает все обходы, включая read_text, SELECT * FROM '/path', etc.
         con.execute("SET enable_external_access = false;")
 
         # Создаем тестовые данные
@@ -78,14 +70,14 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
         timer.start()
 
         try:
-            # [P2] ИСПОЛЬЗУЕМ FETCHMANY, ЧТОБЫ НЕ ЗАГРУЖАТЬ БОЛЬШЕ max_rows В ПАМЯТЬ
             cursor = con.execute(sql)
+            # [P2] FETCHMANY гарантирует, что в память Python попадет не больше строк, чем max_rows
             result = cursor.fetchmany(max_rows)
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
         finally:
             timer.cancel()
 
-        # 6. УПАКОВЫВАЕМ
+        # 5. УПАКОВЫВАЕМ
         data = {
             "columns": columns,
             "rows": result,
@@ -109,6 +101,11 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
             suggestion = (
                 "Запрос выполнялся слишком долго. Попробуйте упростить запрос или "
                 "добавить фильтры (WHERE)."
+            )
+        elif "external" in error_msg.lower() or "permission" in error_msg.lower():
+            suggestion = (
+                "Запрещено обращаться к внешним файлам или сети."
+                " Используйте только загруженные таблицы."
             )
 
         return ToolResult(

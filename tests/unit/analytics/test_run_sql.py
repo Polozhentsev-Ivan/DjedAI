@@ -40,21 +40,19 @@ def test_run_sql_forbidden_file_read():
     # Проверяем, что попытка прочитать файл блокируется
     result = run_sql("SELECT * FROM read_csv('secret.csv')")
     assert result.status == "error"
-    assert result.error.code == "forbidden_function"
+    # Теперь DuckDB сам блокирует это из-за enable_external_access = false
+    assert result.error.code == "database_error"
 
 
 def test_run_sql_forbidden_path_read():
     # Проверяем обход через прямое имя файла
     result = run_sql("SELECT * FROM '/etc/passwd'")
     assert result.status == "error"
-    # Ошибка будет либо forbidden_function, либо database_error из-за отключенного
-    # enable_external_access
-    assert result.error is not None
+    assert result.error.code == "database_error"
 
 
 def test_run_sql_hard_limit():
-    # Проверяем, что даже если в SQL написан LIMIT 6000, мы получим только 5000
-    # (range генерирует последовательность чисел)
+    # Проверяем, что даже если в SQL написан LIMIT 6000, мы получим только 5 (наше max_rows)
     result = run_sql("SELECT * FROM range(6000) LIMIT 6000", max_rows=5)
     assert result.status == "ok"
     assert result.data["row_count"] == 5
