@@ -5,9 +5,16 @@ from djedai.contracts.agent import AgentState, Block, Entities, Understanding
 
 
 def load_ctx(state: AgentState) -> dict:
-    """Loads the catalog and context for the specific dataset."""
+    """Loads the catalog and context for the specific dataset, and resets per-turn state."""
     # Stub: Real implementation will fetch from DB based on state["dataset_id"]
-    return {"catalog_prompt": f"Catalog mapped for {state.get('dataset_id')}"}
+    return {
+        "catalog_prompt": f"Catalog mapped for {state.get('dataset_id')}",
+        "plan": [],
+        "results": [],
+        "charts": [],
+        "answer_blocks": [],
+        "retries": 0,
+    }
 
 
 def understand(state: AgentState) -> dict:
@@ -19,7 +26,6 @@ def understand(state: AgentState) -> dict:
 
     return {
         "understanding": Understanding(intent=intent, entities=Entities()),
-        "retries": state.get("retries", 0),
     }
 
 

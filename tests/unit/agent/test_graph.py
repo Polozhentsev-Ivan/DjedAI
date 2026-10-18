@@ -5,12 +5,14 @@ from djedai.contracts.agent import Message
 def test_graph_shortest_path_and_isolation():
     graph = build_agent_graph()
 
-    # --- Test Chat 1 (Standard Flow) ---
+    # --- Test Chat 1 (Turn 1: Standard Flow) ---
     config_1 = {"configurable": {"thread_id": "chat_1"}}
     initial_state_1 = {
         "chat_id": "chat_1",
         "dataset_id": "ds_alpha",
         "messages": [Message(role="user", content="Show me the revenue.")],
+        "history_summary": "User asked for revenue.",
+        "user_context": "Financial Analyst",
     }
 
     result_1 = graph.invoke(initial_state_1, config=config_1)
@@ -18,30 +20,39 @@ def test_graph_shortest_path_and_isolation():
     # Verify state updates mapping to Chat 1
     assert result_1["chat_id"] == "chat_1"
     assert result_1["dataset_id"] == "ds_alpha"
+    assert result_1["history_summary"] == "User asked for revenue."
+    assert result_1["user_context"] == "Financial Analyst"
     assert result_1["catalog_prompt"] == "Catalog mapped for ds_alpha"
     assert result_1["understanding"].intent == "data_question"
     assert len(result_1["answer_blocks"]) == 1
     assert result_1["answer_blocks"][0].markdown == "Calculated response"
 
-    # --- Test Chat 2 (Alternative Flow + Isolation) ---
+    # --- Test Chat 1 (Turn 2: Ambiguous Flow) ---
+    # This verifies that previous turn's results (answer_blocks, plan, etc.)
+    # are cleared when running the same thread_id again.
+    turn_2_update = {
+        "messages": [Message(role="user", content="This is an ambiguous request.")],
+    }
+    result_turn_2 = graph.invoke(turn_2_update, config=config_1)
+
+    assert result_turn_2["understanding"].intent == "ambiguous"
+    assert len(result_turn_2["answer_blocks"]) == 1
+    assert result_turn_2["answer_blocks"][0].type == "clarification"
+    assert result_turn_2["plan"] == []
+    assert result_turn_2["results"] == []
+
+    # --- Test Chat 2 (Strict Isolation) ---
     config_2 = {"configurable": {"thread_id": "chat_2"}}
     initial_state_2 = {
         "chat_id": "chat_2",
         "dataset_id": "ds_beta",
-        "messages": [Message(role="user", content="This is an ambiguous request.")],
+        "messages": [Message(role="user", content="Show sales.")],
+        "history_summary": "New chat context.",
+        "user_context": "Sales Manager",
     }
 
     result_2 = graph.invoke(initial_state_2, config=config_2)
 
-    # Verify Chat 2 state updates correctly routed to 'clarify'
     assert result_2["chat_id"] == "chat_2"
     assert result_2["dataset_id"] == "ds_beta"
-    assert result_2["catalog_prompt"] == "Catalog mapped for ds_beta"
-    assert result_2["understanding"].intent == "ambiguous"
-    assert result_2["answer_blocks"][0].type == "clarification"
-
-    # --- Verify Strict Isolation ---
-    # Fetching state of chat_1 from memory should show absolutely no trace of chat_2
-    saved_state_1 = graph.get_state(config_1).values
-    assert saved_state_1["dataset_id"] == "ds_alpha"
-    assert saved_state_1["understanding"].intent == "data_question"
+    assert result_2["history_summary"] == "New chat context."

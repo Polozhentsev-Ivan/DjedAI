@@ -1,5 +1,5 @@
 import json
-from typing import Literal
+from typing import Any, Literal
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
@@ -10,7 +10,7 @@ class ModelResponse[T: BaseModel](BaseModel):
     data: T | None = None
     error_type: str | None = None
     message: str | None = None
-    raw_response: str | dict | None = None
+    raw_response: Any = None
 
 
 class BIModelClient:
@@ -22,29 +22,29 @@ class BIModelClient:
         self, system_prompt: str, user_prompt: str, response_model: type[T]
     ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
-        schema_str = json.dumps(schema_json, indent=2)
 
-        guided_system_prompt = (
-            f"{system_prompt}\n\nОтвечай СТРОГО валидным JSON по следующей схеме:\n{schema_str}"
-        )
+        structured_format = {
+            "type": "json_schema",
+            "json_schema": {"name": response_model.__name__, "schema": schema_json, "strict": True},
+        }
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": guided_system_prompt},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "json_object"},
+                response_format=structured_format,
                 temperature=0.1,
             )
 
             raw_content = response.choices[0].message.content.strip()
 
-            # Clean markdown code blocks and array wrappers (e.g. for Gemma)
+            # Clean markdown code blocks, add array wrapper (e.g. for Gemma) if needed
             clean_content = raw_content.removeprefix("```json").removesuffix("```").strip()
-            if clean_content.startswith("[") and clean_content.endswith("]"):
-                clean_content = clean_content[1:-1]
+            # if clean_content.startswith("[") and clean_content.endswith("]"):
+            # clean_content = clean_content[1:-1]
 
             parsed_json = json.loads(clean_content)
             validated_data = response_model.model_validate(parsed_json)

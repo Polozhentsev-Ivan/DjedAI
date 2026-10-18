@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from djedai.contracts.tool_result import ToolResult
 
+
 class Entities(BaseModel):
     tables: list[str] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
@@ -59,6 +60,8 @@ class AgentState(TypedDict, total=False):
     dataset_id: str
     messages: list[Message]
     catalog_prompt: str
+    history_summary: str | None
+    user_context: str | None
     understanding: Understanding | None
     plan: list[PlannedCall]
     results: list[ToolResult]
