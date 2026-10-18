@@ -1,4 +1,4 @@
-from src.djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.contracts.tool_result import ToolError, ToolResult
 
 
 def test_tool_result_creation():
