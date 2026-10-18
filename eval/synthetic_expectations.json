@@ -1,0 +1,21 @@
+{
+  "description": "Эталонные ожидания для синтетического датасета (3 таблицы: stores, products, sales). Данные сгенерированы скриптом scripts/generate_synthetic_data.py с seed=42.",
+  "metrics": {
+    "total_rows_in_sales": {
+      "expected_value": 4618,
+      "description": "Общее количество строк в таблице sales (включая заложенные дубли)."
+    },
+    "seasonality_peak_month": {
+      "expected_value": 12,
+      "description": "Пик продаж должен приходиться на декабрь (12-й месяц) из-за заложенного коэффициента x3."
+    },
+    "lag_spike_date": {
+      "expected_value": "2023-06-06",
+      "description": "После рекламной кампании 1 июня, пик продаж должен быть ровно через 5 дней (лаг)."
+    },
+    "anomalies_max_amount": {
+      "expected_value": 48266240.0,
+      "description": "В данных заложен выброс (аномалия) с количеством 1000 шт. Максимальная сумма покупки должна быть равна этому значению."
+    }
+  }
+}
