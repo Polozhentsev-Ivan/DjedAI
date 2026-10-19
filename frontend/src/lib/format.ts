@@ -37,6 +37,13 @@ export function formatMillions(value: number, unit?: string): string {
   return unit ? `${text}${NBSP}${unit}` : text;
 }
 
+/** 19293798 → «18,4 МБ». */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}${NBSP}Б`;
+  if (bytes < 1024 * 1024) return `${oneDecimal.format(bytes / 1024)}${NBSP}КБ`;
+  return `${oneDecimal.format(bytes / 1024 / 1024)}${NBSP}МБ`;
+}
+
 /** 12.5 → «12,5%». The value is already in percent. */
 export function formatPercent(value: number): string {
   return `${withMinus(oneDecimal.format(value))}%`;
@@ -69,4 +76,28 @@ export function formatDate(value: Date | string): string {
 export function formatDateTime(value: Date | string): string {
   const d = toDate(value);
   return `${date.format(d)} ${time.format(d)}`;
+}
+
+/** Russian noun form for a count: plural(5, ['строка', 'строки', 'строк']) → «строк». */
+export function plural(count: number, [one, few, many]: readonly [string, string, string]): string {
+  const n = Math.abs(count) % 100;
+  const last = n % 10;
+  if (n > 10 && n < 20) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** «Сегодня, 14:05», «Вчера, 17:40» or «12.10.2026» for older dates (chat history). */
+export function formatRelativeDay(value: Date | string, now: Date = new Date()): string {
+  const d = toDate(value);
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(d, now)) return `Сегодня, ${time.format(d)}`;
+  if (sameDay(d, yesterday)) return `Вчера, ${time.format(d)}`;
+  return date.format(d);
 }

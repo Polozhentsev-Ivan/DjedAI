@@ -1,13 +1,15 @@
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { msw } from 'msw/vite';
 import { defineConfig } from 'vitest/config';
 
 // Backend address for the dev proxy; the browser itself always talks to /api.
 const apiTarget = process.env.DJEDAI_API_PROXY ?? 'http://localhost:8000';
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  // msw() serves the mock worker in dev only; production builds never import virtual:msw.
+  plugins: [react(), tailwindcss(), msw()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
@@ -34,7 +36,9 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/fixtures/**', 'src/api/generated.ts', 'src/main.tsx', 'src/vite-env.d.ts'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/fixtures/**', 'src/api/generated.ts', 'src/main.tsx', 'src/vite-env.d.ts',
+        // Dev-only bootstrap of the mock API; it needs a real Service Worker, which jsdom lacks.
+        'src/mocks/browser.ts'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: { lines: 80 },
     },

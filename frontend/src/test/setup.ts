@@ -1,10 +1,25 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterEach, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest';
+import { File as NodeFile } from 'node:buffer';
+import { resetServer, server } from './server';
 
+// jsdom's FormData/File are not understood by Node's fetch, so multipart uploads would arrive
+// broken. Tests use Node's own classes; the browser build is untouched.
+const nodeFormData = (await new Response('', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }).formData()).constructor;
+Object.defineProperty(globalThis, 'FormData', { configurable: true, writable: true, value: nodeFormData });
+Object.defineProperty(globalThis, 'File', { configurable: true, writable: true, value: NodeFile });
+
+beforeAll(() => { server.listen({ onUnhandledFrame: 'error' }); });
+beforeEach(() => {
+  resetServer();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
 afterEach(() => {
   cleanup();
 });
+afterAll(() => { server.close(); });
 
 // jsdom has no layout APIs that charts and the theme rely on.
 if (typeof window.matchMedia !== 'function') {

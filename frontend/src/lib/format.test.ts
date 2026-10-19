@@ -1,7 +1,7 @@
 import { deltaTone, formatCount, formatMillions, formatDate, formatDateTime, formatDelta, formatMoney, formatMoneyShort, formatPercent } from './format';
 
-// Intl uses no-break spaces between digit groups; compare with plain spaces for readability.
-const plain = (text: string) => text.replace(/[\u00a0\u202f]/g, ' ');
+// Intl separates digit groups with no-break spaces; \s matches them.
+const plain = (text: string) => text.replace(/\s/g, ' ');
 
 describe('format', () => {
   it('groups digits with spaces', () => {

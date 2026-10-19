@@ -33,6 +33,8 @@ interface WidgetCardProps {
   state?: WidgetState | undefined;
   onRemove?: (() => void) | undefined;
   onRetry?: (() => void) | undefined;
+  errorTitle?: string | undefined;
+  errorText?: string | undefined;
 }
 
 function KpiBody({ kpi }: { kpi: Kpi }) {
@@ -41,9 +43,10 @@ function KpiBody({ kpi }: { kpi: Kpi }) {
       <span className="text-xs text-muted-foreground">{kpi.caption}</span>
       <div className="flex flex-wrap items-baseline gap-3">
         <span className="tabular font-display text-3xl font-semibold leading-tight tracking-display">{kpi.value}</span>
-        <StatusBadge tone={kpi.deltaTone} label={kpi.delta} dot={false} />
+        {kpi.delta && <StatusBadge tone={kpi.deltaTone} label={kpi.delta} dot={false} />}
       </div>
-      <span className="text-muted-foreground">{kpi.target}</span>
+      {kpi.target && <span className="text-muted-foreground">{kpi.target}</span>}
+      {kpi.stats.length > 0 && (
       <div className="mt-2 grid grid-cols-2 gap-3 border-t border-border-subtle pt-3">
         {kpi.stats.map((stat) => (
           <div key={stat.label}>
@@ -55,12 +58,16 @@ function KpiBody({ kpi }: { kpi: Kpi }) {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }
 
 /** Dashboard widget: chart or KPI; «Как посчитано» replaces the content while open. */
-export function WidgetCard({ title, subtitle, how, chart, kpi, state = 'default', onRemove, onRetry }: WidgetCardProps) {
+export function WidgetCard({
+  title, subtitle, how, chart, kpi, state = 'default', onRemove, onRetry,
+  errorTitle = 'Ошибка обновления данных', errorText = 'Источник не ответил за 30 сек.',
+}: WidgetCardProps) {
   const [showHow, setShowHow] = useState(false);
   const error = state === 'error';
   return (
@@ -88,7 +95,7 @@ export function WidgetCard({ title, subtitle, how, chart, kpi, state = 'default'
       <div className="relative flex flex-1 flex-col px-3 pb-3">
         {error && (
           <div className="flex min-h-(--chart-height-md) flex-1 items-center justify-center">
-            <ErrorState size="compact" title="Ошибка обновления данных" text="Источник не ответил за 30 сек." onAction={onRetry} />
+            <ErrorState size="compact" title={errorTitle} text={errorText} onAction={onRetry} />
           </div>
         )}
         {!error && showHow && <HowCalculated variant="panel" {...how} />}
