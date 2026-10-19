@@ -1,8 +1,21 @@
 # Общие контракты
 
-Место для согласованных моделей `DatasetCatalog`, `ToolResult`, `AssistantMessage`, `ChartSpec`, `Dashboard`, пользователя, сессии и событий обмена.
+Единые Pydantic v2 модели для обмена данными между компонентами платформы (B5-1, PL-1).
 
-## DatasetCatalog (черновик, #59)
+## Модели пакета
+
+- `catalog.py` — `DatasetCatalog`, `Table`, `Column`, `Relation`, `Transformation` (§3.4);
+- `tool_result.py` — `ToolResult`, `Fact`, `ChartHint`, `ToolError`, `ToolResultData` (§4.3);
+- `chart.py` — `ChartSpec`, `XAxis`, `YMeasure`, `ColorField` (§6.2);
+- `message.py` — `AssistantMessage`, `TextBlock`, `ChartBlock`, `TableBlock`, `ClarificationBlock`, `DashboardLinkBlock` (§5.6);
+- `dashboard.py` — `Dashboard`, `DashboardWidget`, `WidgetToolCall`, `WidgetLayout` (§7.2);
+- `auth.py` — `UserCreate`, `UserLogin`, `UserRead`, `TokenResponse`;
+- `common.py` — `HealthCheck`, `ErrorResponse`, `DatasetSummary`;
+- `sse.py` — `AgentStreamEvent`, `DatasetStreamEvent` и события стриминга (`status`, `tool_call`, `tool_result`, `block`, `done`, `error`) (§7.3).
+
+Все модели экспортируются напрямую из пакета `djedai.contracts`.
+
+## DatasetCatalog (#59)
 
 `catalog.py` — Pydantic-модель каталога датасета по §3.4 спецификации: источник, таблицы, колонки с типами и статистикой профайлера, связи, предупреждения и журнал преобразований. Модель неизменяема и отклоняет лишние поля. Проверяется и согласованность ссылок: ключи, временные колонки, связи и преобразования должны указывать на существующие таблицы и колонки.
 
