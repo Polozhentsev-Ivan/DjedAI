@@ -1,9 +1,14 @@
 """Профиль таблиц и колонок по типизированным представлениям (B1-4).
 
-Для каждой колонки считаются доля пропусков, число различных значений, признак
-уникальности, top-10 значений с частотами и 5 примеров; для чисел — min/max/mean/
-median/std, для дат — диапазон и гранулярность. Для таблицы — число строк, полные
-дубли, временные колонки и кандидаты в первичный ключ.
+Для каждой колонки считаются доля пропусков, число нераспознанных значений, число
+различных значений, признак уникальности, top-10 значений с частотами и 5 примеров;
+для чисел — min/max/mean/median/std, для дат — диапазон и гранулярность. Для таблицы —
+число строк, полные дубли, временные колонки и кандидаты в первичный ключ.
+
+Пропуск — пустое значение исходных данных (NULL или строка из пробелов). Значение,
+которое не удалось привести к типу колонки, в представлении тоже NULL, но пропуском не
+считается: оно учитывается отдельно в ``unparsed_count``. Вместе они дают все NULL
+представления. Число различных значений и уникальность считаются по распознанным.
 
 Вся статистика считается в DuckDB, в Python приходят только агрегаты. Профиль
 сохраняется в ``_djedai_table_profiles`` и ``_djedai_column_profiles``; имена полей
@@ -54,13 +59,14 @@ class ColumnProfile:  # значения в top_values/sample_values/stats уж�
     name: str
     physical_type: str
     semantic_type: str
-    null_count: int
+    null_count: int  # пустые значения исходных данных (NULL и пробелы), без нераспознанных
     null_ratio: float
-    distinct_count: int
-    is_unique: bool
+    distinct_count: int  # по распознанным значениям: нераспознанные в представлении NULL
+    is_unique: bool  # то же: нераспознанные значения не учитываются
     top_values: tuple[TopValue, ...]
     sample_values: tuple[object, ...]
     stats: dict
+    unparsed_count: int = 0  # непустые значения, не приведённые к типу (в представлении NULL)
 
 
 @dataclass(frozen=True)
@@ -292,13 +298,15 @@ def _profile_column(
     ).fetchall()
 
     present_count = row["present"]
-    null_count = row_count - present_count
+    # пустые считаем по исходным данным: в представлении нераспознанные значения тоже NULL
+    null_count = row_count - column.non_empty
     return ColumnProfile(
         name=name,
         physical_type=column.physical_type,
         semantic_type=semantic,
         null_count=null_count,
         null_ratio=null_count / row_count if row_count else 0.0,
+        unparsed_count=column.non_empty - column.parsed,
         distinct_count=row["distinct"],
         is_unique=present_count > 0 and row["distinct"] == present_count,
         top_values=tuple(TopValue(_json_value(v), n) for v, n in top),
@@ -356,11 +364,16 @@ def _granularity(row: dict) -> str:
 
 
 def _key_candidates(columns: tuple[ColumnProfile, ...], row_count: int) -> tuple[str, ...]:
-    """Уникальные колонки без пропусков; ID-подобные (по типу или имени) идут первыми."""
+    """Уникальные колонки без пропусков и нераспознанных; ID-подобные (по типу или имени) первые."""
     if not row_count:
         return ()
     found = [
-        c for c in columns if c.null_count == 0 and c.is_unique and c.semantic_type not in NOT_KEYS
+        c
+        for c in columns
+        if c.null_count == 0
+        and c.unparsed_count == 0
+        and c.is_unique
+        and c.semantic_type not in NOT_KEYS
     ]
     found.sort(key=lambda c: not (c.semantic_type == "id" or _ID_NAME.search(c.name)))
     return tuple(c.name for c in found)

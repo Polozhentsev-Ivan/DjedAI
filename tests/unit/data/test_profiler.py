@@ -65,14 +65,14 @@ def test_missing_values_counted_in_null_ratio(con, tmp_path):
     for i in (13, 17):
         names[i] = "   "  # строка из пробелов — тоже пропуск
     amounts = [f"{i}.5" for i in range(n)]
-    amounts[5] = "n/a"  # не распознано → NULL в представлении
+    amounts[5] = "n/a"  # не распознано: NULL в представлении, но не пропуск исходных данных
     amounts[9] = amounts[21] = None
     table = profile(
         con, tmp_path, {"id": [str(i) for i in range(n)], "name": names, "amount": amounts}
     )
 
     expected_names = sum(v is None or not v.strip() for v in names)
-    expected_amounts = sum(v is None or v == "n/a" for v in amounts)
+    expected_amounts = sum(v is None for v in amounts)
     assert (column(table, "name").null_count, column(table, "name").null_ratio) == (
         expected_names,
         expected_names / n,
@@ -80,7 +80,66 @@ def test_missing_values_counted_in_null_ratio(con, tmp_path):
     assert column(table, "amount").semantic_type == "float"
     assert column(table, "amount").null_count == expected_amounts
     assert column(table, "amount").null_ratio == pytest.approx(expected_amounts / n)
+    assert column(table, "amount").unparsed_count == 1
     assert column(table, "id").null_ratio == 0.0
+
+
+def test_unparsed_values_are_not_counted_as_missing(con, tmp_path):
+    n = 200
+    amounts = [f"{i}.5" for i in range(n)]
+    for i in (1, 2, 3):
+        amounts[i] = None  # пустые
+    for i in (10, 11, 12, 13):
+        amounts[i] = "н/д"  # непустые, но не числа
+    table = profile(con, tmp_path, {"amount": amounts})
+    amount = column(table, "amount")
+
+    assert amount.semantic_type == "float"
+    assert (amount.null_count, amount.unparsed_count) == (3, 4)
+    assert amount.null_ratio == 3 / n
+    # вместе они дают все NULL представления
+    nulls = con.execute(f'SELECT count(*) FROM "{table.view_name}" WHERE amount IS NULL')
+    assert nulls.fetchone()[0] == amount.null_count + amount.unparsed_count
+    assert amount.distinct_count == n - 7  # считается по распознанным значениям
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [str(i) for i in range(30)],
+        ["a", "b", "c"] * 10,
+        [None, "", "  "] * 10,
+    ],
+    ids=["numbers", "text", "only-empty"],
+)
+def test_column_without_parse_errors_has_no_unparsed_values(con, tmp_path, values):
+    table = profile(con, tmp_path, {"x": values})
+    assert column(table, "x").unparsed_count == 0
+
+
+def test_unparsed_values_are_stored_and_read_back(con, tmp_path):
+    amounts = [f"{i}.5" for i in range(50)]
+    amounts[0] = "н/д"
+    profile(con, tmp_path, {"amount": amounts})
+    stored = read_profiles(con)[0]
+    assert column(stored, "amount").unparsed_count == 1
+
+
+def test_profile_without_unparsed_count_still_reads(con, tmp_path):
+    profile(con, tmp_path, {"id": ["1", "2", "3"]})
+    old = json.loads(con.execute(f"SELECT profile FROM {COLUMN_PROFILES}").fetchone()[0])
+    old.pop("unparsed_count")  # профиль, сохранённый до появления поля
+    con.execute(f"UPDATE {COLUMN_PROFILES} SET profile = ?", [json.dumps(old)])
+    assert column(read_profiles(con)[0], "id").unparsed_count == 0
+
+
+def test_column_with_unparsed_values_is_not_a_key(con, tmp_path):
+    ids = [f"{i}.5" for i in range(50)]
+    ids[0] = "н/д"  # остальные значения уникальны, но один — не число
+    table = profile(con, tmp_path, {"code": ids})
+    code = column(table, "code")
+    assert (code.is_unique, code.null_count, code.unparsed_count) == (True, 0, 1)
+    assert table.primary_key_candidates == ()
 
 
 def test_full_duplicate_rows(con, tmp_path):
