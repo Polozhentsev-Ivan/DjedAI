@@ -11,6 +11,7 @@ Python-команды запускаем в среде проекта через
 - `export_schema.py` — экспорт полной схемы OpenAPI и отдельных JSON Schema контрактов для генерации TypeScript-типов frontend (#92, #83).
   - Проверка схемы: `uv run python scripts/export_schema.py --check`
   - Экспорт OpenAPI в файл: `uv run python scripts/export_schema.py -o openapi.json`
+  - Экспорт автономных JSON-схем моделей: `uv run python scripts/export_schema.py --schemas-dir contracts-schemas/`
   - Вывод команды кодогенерации TS: `uv run python scripts/export_schema.py --ts-command`
 
 Локальные скрипты публикации issues из родительской рабочей папки сюда не перенесены: это отдельные инструменты подготовки бэклога.

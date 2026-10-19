@@ -8,7 +8,7 @@
     # Экспорт OpenAPI-схемы в файл:
     uv run python scripts/export_schema.py --output openapi.json
 
-    # Экспорт отдельных JSON-схем в каталог:
+    # Экспорт автономных JSON-схем в каталог:
     uv run python scripts/export_schema.py --schemas-dir contracts-schemas/
 
     # Показать команду генерации TypeScript-типов:
@@ -21,7 +21,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -90,6 +92,78 @@ def check_schemas(schema: dict) -> list[str]:
     return missing
 
 
+def get_component_refs(schema_part: dict) -> set[str]:
+    """Извлекает имена всех схем компонентов OpenAPI (#/components/schemas/...)."""
+    raw = json.dumps(schema_part)
+    return set(re.findall(r"#/components/schemas/([a-zA-Z0-9_]+)", raw))
+
+
+def build_standalone_schema(name: str, components: dict[str, dict]) -> dict:
+    """Формирует автономную JSON Schema для одной модели с включением всех зависимостей в $defs.
+
+    Устраняет проблему PointerToNowhere при независимой валидации моделей:
+    - Собирает транзитивное замыкание всех зависимостей модели из components.schemas;
+    - Добавляет их в $defs корневого документа;
+    - Переписывает внутренние ссылки #/components/schemas/<dep> в #/$defs/<dep>
+      (и # для циклических ссылок на саму себя);
+    - Добавляет метаданные Draft 2020-12 ($schema и $id).
+    """
+    model_schema = components[name]
+
+    # Сбор транзитивных зависимостей
+    deps: dict[str, dict] = {}
+    to_visit = list(get_component_refs(model_schema) - {name})
+    visited: set[str] = set()
+
+    while to_visit:
+        dep_name = to_visit.pop()
+        if dep_name in visited or dep_name not in components:
+            continue
+        visited.add(dep_name)
+        dep_schema = copy.deepcopy(components[dep_name])
+        deps[dep_name] = dep_schema
+        for child_dep in get_component_refs(dep_schema):
+            if child_dep != name and child_dep not in visited:
+                to_visit.append(child_dep)
+
+    result = copy.deepcopy(model_schema)
+    if deps:
+        result["$defs"] = {dep_name: deps[dep_name] for dep_name in sorted(deps)}
+
+    # Переписываем ссылки OpenAPI в стандартные внутридокументные JSON Pointer
+    raw = json.dumps(result, ensure_ascii=False)
+    # Ссылки на саму модель -> корень документа '#'
+    raw = re.sub(rf"#/components/schemas/{re.escape(name)}\b", "#", raw)
+    # Ссылки на зависимости -> '#/$defs/<dep>'
+    raw = re.sub(r"#/components/schemas/([a-zA-Z0-9_]+)", r"#/$defs/\1", raw)
+
+    standalone = json.loads(raw)
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"{name}.json",
+        **standalone,
+    }
+
+
+def check_standalone_schemas(components: dict[str, dict]) -> list[str]:
+    """Проверяет, что все автономные схемы имеют замкнутый граф ссылок без висячих $ref."""
+    errors: list[str] = []
+    for name in components:
+        standalone = build_standalone_schema(name, components)
+        raw = json.dumps(standalone)
+        # 1. Не должно остаться открытых ссылок на #/components/schemas/
+        leftover_openapi = re.findall(r"#/components/schemas/([a-zA-Z0-9_]+)", raw)
+        if leftover_openapi:
+            errors.append(f"{name}: остались OpenAPI-ссылки: {set(leftover_openapi)}")
+        # 2. Все ссылки #/$defs/<dep> должны существовать в $defs
+        defs = standalone.get("$defs", {})
+        defs_refs = set(re.findall(r"#/\$defs/([a-zA-Z0-9_]+)", raw))
+        missing_defs = defs_refs - set(defs.keys())
+        if missing_defs:
+            errors.append(f"{name}: отсутствуют зависимости в $defs: {missing_defs}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Экспорт схемы OpenAPI и JSON Schema для генерации TypeScript-типов"
@@ -108,7 +182,7 @@ def main() -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Проверить наличие всех обязательных контрактов в схеме OpenAPI",
+        help="Проверить наличие всех обязательных контрактов и корректность автономных схем",
     )
     parser.add_argument(
         "--ts-command",
@@ -129,6 +203,15 @@ def main() -> int:
         if missing:
             print(f"Ошибка: в схеме отсутствуют обязательные контракты: {missing}", file=sys.stderr)
             return 1
+        standalone_errors = check_standalone_schemas(
+            schema.get("components", {}).get("schemas", {})
+        )
+        if standalone_errors:
+            print(
+                f"Ошибка: некорректные ссылки в автономных схемах: {standalone_errors}",
+                file=sys.stderr,
+            )
+            return 1
         schemas_count = len(schema.get("components", {}).get("schemas", {}))
         print(f"Схема проверена успешно. Всего экспортировано контрактов/схем: {schemas_count}")
         return 0
@@ -142,13 +225,14 @@ def main() -> int:
     if args.schemas_dir:
         args.schemas_dir.mkdir(parents=True, exist_ok=True)
         components = schema.get("components", {}).get("schemas", {})
-        for name, model_schema in components.items():
+        for name in components:
             file_path = args.schemas_dir / f"{name}.json"
+            standalone = build_standalone_schema(name, components)
             file_path.write_text(
-                json.dumps(model_schema, indent=2, ensure_ascii=False), encoding="utf-8"
+                json.dumps(standalone, indent=2, ensure_ascii=False), encoding="utf-8"
             )
         print(
-            f"Экспортировано {len(components)} JSON-схем в каталог {args.schemas_dir}",
+            f"Экспортировано {len(components)} автономных JSON-схем в каталог {args.schemas_dir}",
             file=sys.stderr,
         )
 
