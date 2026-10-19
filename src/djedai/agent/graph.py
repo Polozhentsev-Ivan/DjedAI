@@ -103,7 +103,9 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
                 # Prevents the injection of configuration parameters such as `max_rows`.
-                validated_args = RunSqlParams(**step.args).model_dump(exclude_unset=True)
+                validated_args = RunSqlParams(**step.args).model_dump(
+                    exclude_unset=True, exclude_none=True
+                )
                 res = run_sql(**validated_args)
 
             else:

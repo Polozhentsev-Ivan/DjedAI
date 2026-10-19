@@ -28,12 +28,12 @@ def test_live_agent_api_call():
 
     result = graph.invoke(initial_state, config=config)
 
-    assert result["understanding"].intent in [
-        "visualize",
-        "data_question",
-        "dashboard",
-        "ambiguous",
-    ]
+    assert not any(b.type == "error" for b in result.get("answer_blocks", [])), (
+        f"API call failed: {result.get('answer_blocks')}"
+    )
 
-    # Убеждаемся, что блоки ответа сформированы (либо ошибка, либо реальный ответ)
+    # Интент должен быть определен успешно, без fallback-ошибки
+    assert result["understanding"].intent in ["visualize", "data_question", "dashboard"]
+
+    # Блоки ответа сформированы успешно
     assert len(result["answer_blocks"]) >= 1
