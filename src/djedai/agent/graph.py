@@ -6,7 +6,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from djedai.agent.prompts import load_prompt
-from djedai.analytics.registry import get_tools_for_llm
+from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     AgentState,
@@ -42,8 +42,10 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         if response.status == "success" and response.data:
             return {"understanding": response.data}
         else:
-            # Fallback (например, при ошибке сервера)
-            return {"understanding": Understanding(intent="data_question")}
+            return {
+                "understanding": Understanding(intent="ambiguous"),
+                "answer_blocks": [Block(type="error", markdown=f"API Error: {response.message}")],
+            }
 
     intent = "ambiguous" if "ambiguous" in last_msg.lower() else "data_question"
     return {"understanding": Understanding(intent=intent, entities=Entities())}
@@ -67,15 +69,24 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     sys_prompt = load_prompt("plan").format(
         catalog=state.get("catalog_prompt"), results=results_str, tools_registry=tools_desc
     )
-    user_prompt = state.get("understanding").resolved_question or "Generate execution plan."
+
+    last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
+    user_prompt = (
+        state.get("understanding").resolved_question if state.get("understanding") else None
+    )
+    user_prompt = user_prompt or last_msg or "Generate execution plan."
 
     if client:
         response = client.generate_typed_response(sys_prompt, user_prompt, PlanResponse)
-        new_plan = response.data.plan if response.status == "success" and response.data else []
-    else:
-        new_plan = state.get("plan", [])
+        if response.status == "success" and response.data:
+            return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
+        return {
+            "plan": [],
+            "retries": state.get("retries", 0) + 1,
+            "answer_blocks": [Block(type="error", markdown=f"API Error: {response.message}")],
+        }
 
-    return {"plan": new_plan, "retries": state.get("retries", 0) + 1}
+    return {"plan": state.get("plan", []), "retries": state.get("retries", 0) + 1}
 
 
 def execute(state: AgentState, config: RunnableConfig) -> dict:
@@ -91,7 +102,10 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             if dispatcher:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
-                res = run_sql(**step.args)
+                # Prevents the injection of configuration parameters such as `max_rows`.
+                validated_args = RunSqlParams(**step.args).model_dump(exclude_unset=True)
+                res = run_sql(**validated_args)
+
             else:
                 res = ToolResult(
                     result_id=f"r_{uuid.uuid4().hex[:6]}",
@@ -127,22 +141,36 @@ def visualize(state: AgentState) -> dict:
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
 
-    facts = []
+    existing_blocks = state.get("answer_blocks", [])
+    if any(b.type == "error" for b in existing_blocks):
+        return {"answer_blocks": existing_blocks}
+
+    facts_and_data = []
     for r in state.get("results", []):
-        if r.status == "ok" and r.facts:
-            facts.extend(r.facts)
+        if r.status == "ok":
+            entry = {"tool": r.tool}
+            if r.facts:
+                entry["facts"] = r.facts
+            if r.data:
+                entry["data"] = r.data
+            facts_and_data.append(entry)
 
-    sys_prompt = load_prompt("compose").format(facts=str(facts))
+    sys_prompt = load_prompt("compose").format(facts=str(facts_and_data))
 
-    if client and facts:
-        response = client.generate_typed_response(
-            sys_prompt, "Explain the results.", ComposeResponse
-        )
-        blocks = (
-            response.data.answer_blocks if response.status == "success" and response.data else []
-        )
+    last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
+    user_prompt = (
+        state.get("understanding").resolved_question if state.get("understanding") else None
+    )
+    user_prompt = user_prompt or last_msg or "Explain the results."
+
+    if client:
+        response = client.generate_typed_response(sys_prompt, user_prompt, ComposeResponse)
+        if response.status == "success" and response.data:
+            blocks = response.data.answer_blocks
+        else:
+            blocks = [Block(type="error", markdown=f"API Error: {response.message}")]
     else:
-        blocks = [Block(type="text", markdown="Based on facts: " + str(facts))]
+        blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
     return {"answer_blocks": blocks}
 
@@ -153,6 +181,11 @@ def verify(state: AgentState) -> dict:
 
 
 def clarify(state: AgentState) -> dict:
+    existing = state.get("answer_blocks", [])
+    # Do not suppress API errors if they are already present in the response blocks
+    if any(b.type == "error" for b in existing):
+        return {"answer_blocks": existing}
+
     return {
         "plan": [],
         "answer_blocks": [Block(type="clarification", markdown="Please clarify your request.")],
@@ -168,9 +201,9 @@ def route_after_understand(state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
-    """Conditional edge: Route to plan if errors exist and retries <= 2, else visualize."""
-    results = state.get("results", [])
-    has_errors = bool(results) and results[-1].status == "error"
+    plan_len = len(state.get("plan", []))
+    recent_results = state.get("results", [])[-plan_len:] if plan_len > 0 else []
+    has_errors = any(r.status == "error" for r in recent_results)
 
     if has_errors and state.get("retries", 0) <= 2:
         return "plan"

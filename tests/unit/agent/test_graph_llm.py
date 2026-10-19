@@ -70,3 +70,26 @@ def test_missing_prompt_file():
     # Пытаемся загрузить несуществующий промпт
     content = load_prompt("non_existent_prompt_name")
     assert content == "Промпт не найден."
+
+
+def test_graph_api_error_fallback():
+    """Проверяет, что ошибка модели явно передается пользователю без подмены на успешный ответ."""
+    graph = build_agent_graph()
+    mock_client = MagicMock()
+
+    mock_client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type="SERVER_ERROR", message="401 Unauthorized"
+    )
+
+    config = {"configurable": {"thread_id": "test_error_fallback", "client": mock_client}}
+    initial_state = {
+        "chat_id": "c1",
+        "messages": [Message(role="user", content="Show revenue")],
+    }
+
+    result = graph.invoke(initial_state, config=config)
+
+    assert result["understanding"].intent == "ambiguous"
+    assert len(result["answer_blocks"]) == 1
+    assert result["answer_blocks"][0].type == "error"
+    assert "401 Unauthorized" in result["answer_blocks"][0].markdown

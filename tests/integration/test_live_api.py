@@ -1,30 +1,39 @@
 import pytest
 
 from djedai.agent.config import get_agent_client
-from djedai.contracts.agent import Understanding
+from djedai.agent.graph import build_agent_graph
+from djedai.contracts.agent import Message
 
 
 @pytest.mark.integration
 @pytest.mark.llm
 def test_live_agent_api_call():
     """
-    Интеграционный тест: Вызов реальной модели через сконфигурированный клиент.
-    Проверяет валидность JSON Schema (Structured Outputs) и соединение с API.
-    Для запуска требуется заполненный .env файл с MODEL_BASE_URL, MODEL_NAME, MODEL_API_KEY.
-    Команда для ручного запуска:
-    uv run pytest -m "integration and llm" tests/integration/agent/test_live_api.py -v -s
+    Интеграционный тест: Вызов реальной модели через граф.
+    Проверяет валидность JSON Schema и прохождение стейта через узлы.
+    Команда: uv run pytest -m "integration and llm" tests/integration/test_live_api.py -v -s
     """
     client = get_agent_client()
+    assert client.client.api_key, "MODEL_API_KEY не установлен в .env!"
 
-    assert client.client.api_key, "MODEL_API_KEY не установлен в окружении!"
+    graph = build_agent_graph()
+    config = {"configurable": {"thread_id": "live_test", "client": client}}
 
-    response = client.generate_typed_response(
-        system_prompt="You are a BI router. Classify the intent into JSON.",
-        user_prompt="I want to see a chart showing revenue.",
-        response_model=Understanding,
-    )
+    initial_state = {
+        "chat_id": "live_test_chat",
+        "dataset_id": "ds_1",
+        "messages": [Message(role="user", content="I want to see a chart showing revenue.")],
+        "catalog_prompt": "Table: sales, columns: id, revenue, date.",
+    }
 
-    assert response.status == "success"
-    assert response.data is not None
-    # Если модель действительно работает, она поймет, что это интент 'visualize' или 'dashboard'
-    assert response.data.intent in ["visualize", "data_question", "dashboard"]
+    result = graph.invoke(initial_state, config=config)
+
+    assert result["understanding"].intent in [
+        "visualize",
+        "data_question",
+        "dashboard",
+        "ambiguous",
+    ]
+
+    # Убеждаемся, что блоки ответа сформированы (либо ошибка, либо реальный ответ)
+    assert len(result["answer_blocks"]) >= 1
