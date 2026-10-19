@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # БД приложения (метаданные, пользователи, чаты, дашборды)
     app_database_url: str = Field(default="sqlite:///./var/app.db", alias="APP_DATABASE_URL")
+    results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
 
     # Параметры инференса модели (vLLM / локальный endpoint)
     model_base_url: str = Field(default="http://localhost:8000/v1", alias="MODEL_BASE_URL")
@@ -101,6 +102,7 @@ class Settings(BaseSettings):
         "app_env",
         "log_level",
         "app_database_url",
+        "results_data_dir",
         "model_base_url",
         "model_name",
         "model_revision",
