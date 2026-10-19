@@ -11,7 +11,7 @@
 
 Имена колонок приводятся к snake_case латиницей; соответствие оригиналам хранится в `_djedai_columns`.
 
-Журнал `_djedai_transformations` (читается через `read_journal`): поля `raw_table`, `table_name`, `column_name`, `action`, `detail` (JSON). Действия: `rename_column`, `parse_integer`, `parse_number`, `parse_money`, `parse_percent`, `parse_date`, `parse_datetime`, `parse_bool`, `keep_text` (с причиной), `unparsed_values` (число и до 5 примеров значений, не приведённых к типу). Повторный вызов заменяет записи журнала этой таблицы. Формат реестров может измениться вместе с `DatasetCatalog` (#59).
+Журнал `_djedai_transformations` (читается через `read_journal`): поля `raw_table`, `table_name`, `column_name`, `action`, `detail` (JSON). Действия: `rename_column`, `parse_integer`, `parse_number`, `parse_money`, `parse_percent`, `parse_date`, `parse_datetime`, `parse_bool`, `keep_text` (с причиной), `unparsed_values` (число и до 5 примеров значений, не приведённых к типу). Повторный вызов заменяет записи журнала этой таблицы. `read_currencies` отдаёт валюту денежных колонок как `(имя представления, имя колонки) → код ISO` (из `parse_money.detail["currency"]`, при `raw_table` — одной таблицы): сборщик каталога переносит её в `Column.currency`. Колонки со смешанными или неизвестными валютами остаются текстом и в результат не попадают, проценты и числа без валюты — тоже. Формат реестров может измениться вместе с `DatasetCatalog` (#59).
 
 Не поддерживается: Unix-время, файлы из одной колонки с запятыми в значениях.
 
