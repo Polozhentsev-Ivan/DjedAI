@@ -1,18 +1,86 @@
-# Пользовательский интерфейс
+# Frontend
 
-Frontend — отдельное браузерное приложение на React + TypeScript. Vite и npm, точные версии, lock-файл, команды разработки, тестов и сборки появятся в [B4-1 / #83](https://github.com/Polozhentsev-Ivan/DjedAI/issues/83). Сейчас здесь только структура каталогов; запускаемого UI и установленных зависимостей нет.
+Браузерное приложение DjedAI на React + TypeScript (Vite). Вычисления и данные остаются на Python-backend; интерфейс обращается к нему только через HTTP API и SSE по адресу `/api`.
 
-- `src/app/` — каркас приложения, маршрутизация и общие провайдеры.
-- `src/pages/` — страницы источников, каталога, чата, дашбордов и входа.
-- `src/components/` — общие компоненты и отображение графиков.
-- `src/api/` — HTTP-клиент и обработка SSE.
-- `src/types/` — TypeScript-типы согласованных контрактов API.
-- `public/` — статические ресурсы.
+Вёрстка повторяет макет из [docs/ui-design](../docs/ui-design/README.md): токены, компоненты, экраны и все их состояния.
 
-Файлы `.gitkeep` сохраняют пустые каталоги в Git и удаляются при добавлении реального содержимого. `.npmrc` задаёт точные версии будущих прямых npm-зависимостей; сам по себе он ничего не устанавливает.
+## Запуск
 
-Браузер обращается только к HTTP API/SSE backend. Общие модели находятся в [Python contracts](../src/djedai/contracts/); TS-типы согласуются с их OpenAPI/JSON Schema, без независимого переопределения контрактов. Импорт Python-модулей в frontend не используется. Для синхронизации типов используется экспорт схемы backend (`uv run python scripts/export_schema.py -o openapi.json`) и генерация `openapi-typescript` (`npx --yes openapi-typescript openapi.json -o src/types/api.ts` или напрямую из `http://localhost:8000/api/openapi.json`). Загрузка в DuckDB, аналитические вычисления, доступ к БД и локальной модели остаются на сервере. Графики получают данные по `result_id`; frontend переводит `ChartSpec` и полученные данные в ECharts option.
+Нужны Node и npm из [.nvmrc](../.nvmrc) и `engines` в [package.json](package.json) — те же версии, что в CI. С fnm или nvm версия подхватывается из `.nvmrc`:
 
-В [`.env.example`](../.env.example) `VITE_API_BASE_URL=/api` — публичное значение для будущей сборки. Vite-переменные попадают в браузерный код; секреты в них не храним. Чтение этого шаблона из корня и dev proxy на backend реализуются в #83. Production frontend будет статикой nginx с проксированием API/SSE на backend; настройки Compose появятся в инфраструктурных задачах. Прямые обращения с другого origin требуют явного backend allowlist и согласованных правил сессий.
+```sh
+fnm use            # или: nvm use
+cd frontend
+npm ci
+npm run dev        # http://localhost:5173
+```
 
-Текущий CI проверяет структуру репозитория, UTF-8 исходников и отсутствие сгенерированных файлов; frontend ещё не собирается и не тестируется. npm scripts, Vitest/React Testing Library, Playwright и frontend CI добавляются вместе с реальным каркасом в #83. Правила версий и покрытия — в [CONTRIBUTING.md](../CONTRIBUTING.md).
+Пока backend (#92) не готов, dev-сервер работает на mock-API (MSW): запросы к `/api` обрабатываются в браузере на данных из макета. Сценарий выбирается параметром адреса и сохраняется для вкладки:
+
+| Параметр | Что показывает |
+|---|---|
+| `?mock=normal` | обычные данные (по умолчанию) |
+| `?mock=empty` | нет датасетов и дашбордов — пустые состояния |
+| `?mock=slow` | запросы не завершаются — состояния ожидания |
+| `?mock=error` | ошибка профилирования, сбой одного виджета дашборда, ошибка разбора CSV при загрузке |
+
+Работа с настоящим backend: создать `frontend/.env.local` по образцу [.env.example](.env.example) с `VITE_API_MOCKS=false`. Vite проксирует `/api` на `http://localhost:8000`; другой адрес задаётся переменной окружения при запуске: `DJEDAI_API_PROXY=http://host:8000 npm run dev` (из `.env.local` она не читается — это настройка самого dev-сервера). В production-сборку моки не попадают.
+
+## Команды
+
+| Команда | Что делает |
+|---|---|
+| `npm run dev` | dev-сервер с mock-API |
+| `npm run typecheck` | строгая проверка типов (`tsc -b`) |
+| `npm run lint` | ESLint с проверками типов, без предупреждений |
+| `npm test` | тесты Vitest |
+| `npm run test:coverage` | тесты с покрытием; ниже 80% строк — ошибка |
+| `npm run build` | production-сборка в `dist/` |
+| `npm run preview` | раздача собранного `dist/` |
+| `npm run gen:types` | TS-типы из `schema/openapi.yaml` в `src/api/generated.ts` |
+
+CI выполняет то же самое после `npm ci` и дополнительно проверяет, что `src/api/generated.ts` совпадает с результатом `gen:types`.
+
+## Устройство
+
+```text
+schema/openapi.yaml   согласованный снимок API (источник TS-типов)
+src/
+  api/                клиент, SSE, хуки запросов (TanStack Query), преобразование ответов для экранов
+  app/                маршруты, каркас (TopBar + Sidebar), общее состояние
+  pages/              экраны: вход, источники, каталог, чат, дашборды, 404
+  components/         общие компоненты из макета
+  charts/             ECharts по ChartSpec и данным результата
+  mocks/              mock-API на MSW: данные и обработчики, общие для dev и тестов
+  lib/                форматирование (ru-RU), тема, медиазапросы
+  styles/             токены макета и подключение Tailwind
+  fixtures/           статичный ответ чата до B4-4 (#86)
+  test/               настройка тестов и тестовый сервер
+```
+
+### API и типы
+
+[schema/openapi.yaml](schema/openapi.yaml) собран из контрактов спецификации (§3.4, §4.3, §5.6, §6.2, §7.2, §7.3), включая SSE-события. Поля, которых в спецификации нет, но которые нужны экранам, помечены `x-proposal` — их подтверждают или меняют в #92. Когда FastAPI начнёт отдавать `/openapi.json`, снимок заменяется этой выгрузкой, а `npm run gen:types` и typecheck покажут расхождения с клиентом.
+
+- `src/api/client.ts` — базовый адрес из `VITE_API_BASE_URL` (по умолчанию `/api`), любые ошибки превращаются в `ApiError` с `message` и `suggestion`.
+- `src/api/sse.ts` — SSE через `fetch`, в том числе для POST. Разбитые на чанки события собираются, `done`/`error` закрывают поток, отмена через `AbortSignal`. Обрыв без `done` даёт ошибку `stream_interrupted`; запрос никогда не повторяется автоматически, чтобы не запустить агента второй раз.
+- `src/api/queries.ts` — хуки по разделам и ключи кэша; `src/api/view.ts` — форматирование ответов для компонентов.
+
+### Как подключить новый запрос к экрану
+
+1. Описать путь и схемы в `schema/openapi.yaml`, выполнить `npm run gen:types`.
+2. Добавить хук в `src/api/queries.ts`, при необходимости — преобразование в `src/api/view.ts`.
+3. Добавить обработчик в `src/mocks/handlers.ts` (и данные в `src/mocks/db.ts`), чтобы экран работал в dev и тестах.
+4. На экране показать `LoadingState` / `EmptyState` / `ErrorState` по статусу запроса — они одинаковы на всех экранах.
+5. Тест: страница через `renderRoute()` из `src/test/renderRoute.tsx`, сценарии — `useScenario()` или `server.use()`.
+
+## Зависимости
+
+npm, только точные версии без диапазонов (`.npmrc`: `save-exact=true`, `engine-strict=true`), `package-lock.json` в Git. Новую зависимость добавляем через `npm install <пакет>@<версия>`; проверка репозитория в CI отклоняет диапазоны и рассинхронизацию lock-файла.
+
+## Что делают другие задачи
+
+- Блоки ответа чата и стриминг по SSE — B4-4 (#86); транспорт и mock-поток уже есть.
+- Рендер всех типов `ChartSpec` — B4-5; сейчас поддержаны line, area, bar и pie.
+- Авторизация — своя задача; экран входа сверстан, но не отправляет запросов.
+- Раздача `dist/` и `/api` в Compose — #99: nginx должен отдавать `index.html` на любые пути приложения (`try_files $uri /index.html`), чтобы прямой URL и обновление вложенного маршрута работали.
