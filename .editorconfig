@@ -8,7 +8,7 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 4
 
-[*.{json,yml,yaml,toml}]
+[*.{json,yml,yaml,toml,js,mjs,cjs,jsx,ts,tsx}]
 indent_size = 2
 
 [*.md]
@@ -16,3 +16,6 @@ trim_trailing_whitespace = false
 
 [Makefile]
 indent_style = tab
+
+[frontend/**]
+indent_size = 2

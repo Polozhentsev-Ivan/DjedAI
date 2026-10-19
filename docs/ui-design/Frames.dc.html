@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="tokens.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</helmet>
+<div style="background:var(--muted); padding:var(--space-16); display:flex; flex-direction:column; gap:var(--space-16); font-family:var(--font-sans); color:var(--foreground); min-height:100vh; box-sizing:border-box">
+  <div style="display:flex; flex-direction:column; gap:var(--space-2)">
+    <div style="font-family:var(--font-display); font-size:var(--text-3xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">DjedAI — экраны и состояния</div>
+    <div style="font-size:var(--text-base); color:var(--muted-foreground)">Каждый фрейм — страница в конкретном состоянии. Имя фрейма = маршрут / состояние. Десктоп 1440×900, планшет 834×1112.</div>
+    <div style="display:flex; gap:var(--space-4); font-size:var(--text-sm)"><a href="DjedAI.dc.html">Интерактивный прототип →</a><a href="Components.dc.html">Компоненты и токены →</a></div>
+  </div>
+  <sc-for list="{{ sections }}" as="sec" hint-placeholder-count="5">
+    <section style="display:flex; flex-direction:column; gap:var(--space-6)">
+      <div style="display:flex; align-items:baseline; gap:var(--space-3)">
+        <span style="font-family:var(--font-display); font-size:var(--text-2xl); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-display)">{{ sec.title }}</span>
+        <span style="font-family:var(--font-mono); font-size:var(--text-sm); color:var(--muted-foreground)">{{ sec.route }}</span>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-12)">
+        <sc-for list="{{ sec.frames }}" as="f" hint-placeholder-count="4">
+          <div id="{{ f.id }}" data-screen-label="{{ f.label }}" style="display:flex; flex-direction:column; gap:var(--space-3)">
+            <div style="display:flex; align-items:center; gap:var(--space-2-5)">
+              <span style="font-family:var(--font-mono); font-size:var(--text-xs); font-weight:var(--font-weight-semibold); padding:var(--space-0-5) var(--space-2); border-radius:var(--radius-xs); background:var(--inverse); color:var(--inverse-foreground)">{{ f.id }}</span>
+              <span style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">{{ f.label }}</span>
+              <span style="font-size:var(--text-sm); color:var(--muted-foreground)">{{ f.note }}</span>
+            </div>
+            <div class="{{ f.cls }}" style="width:{{ f.w }}; height:{{ f.h }}; overflow:hidden; border-radius:var(--radius-md); border:var(--border-width) solid var(--border); background:var(--background); color:var(--foreground); display:flex; flex-direction:column">
+              <sc-if value="{{ f.isLogin }}"><div style="flex:1; min-height:0; position:relative"><dc-import name="LoginPage" state="{{ f.state }}" tab="{{ f.tab }}" hint-size="100%,100%"></dc-import></div></sc-if>
+              <sc-if value="{{ f.isApp }}"><div style="flex:1; min-height:0; position:relative"><dc-import name="AppLayout" page="{{ f.page }}" state="{{ f.state }}" theme="{{ f.theme }}" compact="{{ f.compact }}" hint-size="100%,100%"></dc-import></div></sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const ST = { default: 'Default', loading: 'Loading', empty: 'Empty', error: 'Error' };
+    const RU = { default: 'данные', loading: 'ожидание', empty: 'нет данных', error: 'ошибка' };
+    const frame = (n, page, state, o = {}) => {
+      const theme = o.theme || 'light', compact = !!o.compact;
+      return {
+        id: n, label: `${o.name} / ${o.stateName || ST[state]}${theme === 'dark' ? ' / Dark' : ''}${compact ? ' / Tablet' : ''}`,
+        note: o.note || RU[state], page, state, theme, compact, tab: o.tab || 'login', cls: theme === 'dark' ? 'dark' : '',
+        isLogin: page === 'login', isApp: page !== 'login',
+        w: compact ? 'var(--frame-tablet-w)' : 'var(--frame-desktop-w)', h: compact ? 'var(--frame-tablet-h)' : 'var(--frame-desktop-h)'
+      };
+    };
+    const four = (num, page, name, notes = {}) => ['default', 'loading', 'empty', 'error'].map((st, i) => frame(`${num}${'abcd'[i]}`, page, st, { name, note: notes[st] }));
+    const sections = [
+      { title: '01 Вход и регистрация', route: '/login', frames: [
+        frame('1a', 'login', 'default', { name: 'LoginPage' }),
+        frame('1b', 'login', 'loading', { name: 'LoginPage', note: 'спиннер на кнопке, повторное нажатие заблокировано' }),
+        frame('1c', 'login', 'empty', { name: 'LoginPage', stateName: 'Validation', note: 'подсказки под пустыми полями' }),
+        frame('1d', 'login', 'error', { name: 'LoginPage', note: 'неверный логин или пароль' }),
+        frame('1e', 'login', 'error', { name: 'LoginPage', stateName: 'Error · Register', tab: 'register', note: 'пользователь уже существует' })
+      ] },
+      { title: '02 Источники данных', route: '/sources', frames: four(2, 'sources', 'SourcesPage', { loading: 'прогресс по шагам загрузки', error: 'ошибка разбора CSV' }) },
+      { title: '03 Каталог данных', route: '/catalog/:datasetId', frames: four(3, 'catalog', 'CatalogPage', { loading: 'скелетоны таблиц и связей', empty: 'датасет не выбран', error: 'профиль не построен' }) },
+      { title: '04 Аналитический чат', route: '/chat/:chatId', frames: four(4, 'chat', 'ChatPage', { default: 'ответ: текст, график, «Как посчитано», подсказки', loading: 'стриминг + шаги агента + «Остановить»', empty: 'приветствие и типовые вопросы', error: 'уточнение + таймаут' }) },
+      { title: '05 Дашборды', route: '/dashboards/:dashboardId', frames: four(5, 'dashboards', 'DashboardsPage', { loading: 'спиннер на каждом виджете', error: 'упал один виджет' }) },
+      { title: '06 Тёмная тема', route: '.dark', frames: [
+        frame('6a', 'sources', 'default', { name: 'SourcesPage', theme: 'dark' }), frame('6b', 'catalog', 'default', { name: 'CatalogPage', theme: 'dark' }),
+        frame('6c', 'chat', 'default', { name: 'ChatPage', theme: 'dark' }), frame('6d', 'dashboards', 'default', { name: 'DashboardsPage', theme: 'dark' })
+      ] },
+      { title: '07 Планшет', route: '< 1024px · Sidebar compact', frames: [
+        frame('7a', 'sources', 'default', { name: 'SourcesPage', compact: true }), frame('7b', 'chat', 'default', { name: 'ChatPage', compact: true }),
+        frame('7c', 'dashboards', 'default', { name: 'DashboardsPage', compact: true })
+      ] }
+    ];
+    return { sections };
+  }
+}
+</script>
+</body>
+</html>

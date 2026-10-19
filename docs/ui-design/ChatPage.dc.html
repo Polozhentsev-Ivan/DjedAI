@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="ChatPage" data-screen-label="04 Чат" style="position:absolute; inset:0; display:flex; flex-direction:column; min-height:0; font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="flex:none; display:flex; align-items:baseline; gap:var(--space-2-5); padding:var(--space-3-5) var(--space-8); border-bottom:var(--border-width) solid var(--border)">
+    <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body)">{{ title }}</div>
+    <span style="font-size:var(--text-xs); color:var(--muted-foreground)">датасет <span style="font-family:var(--font-mono)">{{ dataset }}</span></span>
+  </div>
+  <div style="flex:1; min-height:0; overflow:auto">
+    <div style="max-width:var(--chat-max); margin:var(--space-0) auto; padding:var(--space-7) var(--space-8) var(--space-10); display:flex; flex-direction:column; gap:var(--space-7)">
+
+      <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex; flex-direction:column; align-items:center; text-align:center; gap:var(--space-2-5); padding:var(--space-8) var(--space-0) var(--space-2)">
+          <div style="width:var(--size-avatar-lg); height:var(--size-avatar-lg); border-radius:var(--radius-full); background:var(--inverse); color:var(--inverse-foreground); display:flex; align-items:center; justify-content:center; font-weight:var(--font-weight-semibold)">D</div>
+          <div style="font-family:var(--font-display); font-size:var(--text-xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">Здравствуйте, ivan</div>
+          <div style="color:var(--muted-foreground); font-size:var(--text-base); letter-spacing:var(--tracking-body); max-width:var(--text-max)">Задайте вопрос к датасету {{ dataset }} — ответ придёт с фактами, графиком и объяснением расчёта.</div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-card-min),1fr)); gap:var(--space-3)">
+          <sc-for list="{{ starters }}" as="q" hint-placeholder-count="4">
+            <button onClick="{{ onSend }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-1); text-align:left; padding:var(--space-4); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); background:var(--card); color:var(--foreground); font-family:inherit; cursor:pointer" style-hover="border-color:var(--link)" style-active="transform:scale(var(--press-scale))">
+              <span style="font-size:var(--text-sm); font-weight:var(--font-weight-semibold)">{{ q.q }}</span>
+              <span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ q.c }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ hasMain }}" hint-placeholder-val="{{ true }}"><dc-import name="ChatMessage" role="user" text="Покажи динамику выручки по месяцам за 2026 год" hint-size="100%,48px"></dc-import></sc-if>
+
+      <sc-if value="{{ isData }}" hint-placeholder-val="{{ true }}">
+        <dc-import name="ChatMessage" role="assistant" parts="{{ answerParts }}" facts="{{ facts }}" theme="{{ theme }}" hint-size="100%,700px">
+          <dc-import name="ChartCard" title="Выручка по месяцам, ₽" subtitle="orders · «Сумма с НДС, руб» · 01.01.2026–31.10.2026" chart="revenue" theme="{{ theme }}" on-primary="{{ onAddToDashboard }}" hint-size="100%,340px"></dc-import>
+          <dc-import name="HowCalculated" default-open="{{ true }}" summary="1 инструмент · 1 SQL-запрос · 0,8 сек" tool="time_aggregate(table='orders', freq='month')" columns="{{ howCols }}" stats="120 000 строк, исключено 12 строк с пустой датой" sql="{{ sql }}" hint-size="100%,280px"></dc-import>
+          <div style="font-size:var(--text-sm); letter-spacing:var(--tracking-sm); color:var(--secondary-foreground)">Этот график уже есть на дашборде <a onClick="{{ onOpenDashboard }}">«Квартальная статистика продаж» →</a></div>
+          <dc-import name="SuggestionChips" items="{{ chips }}" on-select="{{ onSend }}" hint-size="100%,36px"></dc-import>
+        </dc-import>
+      </sc-if>
+
+      <sc-if value="{{ isStreaming }}" hint-placeholder-val="{{ false }}">
+        <dc-import name="ChatMessage" role="assistant" parts="{{ partialParts }}" streaming="{{ true }}" theme="{{ theme }}" hint-size="100%,180px">
+          <dc-import name="AgentSteps" title="Ассистент работает" steps="{{ agentSteps }}" hint-size="100%,130px"></dc-import>
+        </dc-import>
+      </sc-if>
+
+      <sc-if value="{{ isError }}" hint-placeholder-val="{{ false }}">
+        <dc-import name="ChatMessage" role="user" text="Покажи сумму заказов по регионам" hint-size="100%,48px"></dc-import>
+        <dc-import name="ChatMessage" role="assistant" theme="{{ theme }}" hint-size="100%,180px">
+          <dc-import name="ClarifyBlock" question="Какую сумму показать?" hint="В таблице orders две колонки с суммой — от выбора зависит результат." options="{{ clarifyOptions }}" on-select="{{ onSend }}" hint-size="100%,160px"></dc-import>
+        </dc-import>
+        <dc-import name="ChatMessage" role="user" text="Покажи выручку по дням за 2019–2026" hint-size="100%,48px"></dc-import>
+        <dc-import name="ChatMessage" role="assistant" theme="{{ theme }}" hint-size="100%,110px">
+          <dc-import name="ErrorState" size="inline" title="Запрос превысил таймаут 30 сек." text="Попробуйте уточнить период — например, только 2026 год." action-label="Повторить" on-action="{{ onSend }}" hint-size="100%,110px"></dc-import>
+        </dc-import>
+      </sc-if>
+    </div>
+  </div>
+  <div style="flex:none; border-top:var(--border-width) solid var(--border); padding:var(--space-3-5) var(--space-8) var(--space-4); background:var(--background)">
+    <div style="max-width:var(--chat-max); margin:var(--space-0) auto; display:flex; gap:var(--space-2-5); align-items:center">
+      <input placeholder="{{ placeholder }}" disabled="{{ isStreaming }}" style="flex:1; min-width:0; height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-5); border-radius:var(--radius-full); border:var(--border-width) solid var(--input); background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; letter-spacing:var(--tracking-body); outline:none" style-focus="outline:var(--focus-ring); outline-offset:var(--focus-offset)">
+      <sc-if value="{{ idle }}" hint-placeholder-val="{{ true }}"><button onClick="{{ onSend }}" style="flex:none; height:var(--size-control); border:none; border-radius:var(--radius-full); padding:var(--space-0) var(--space-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-base); font-family:inherit; letter-spacing:var(--tracking-body); cursor:pointer; display:flex; align-items:center; gap:var(--space-1-5)" style-active="transform:scale(var(--press-scale))">Отправить</button></sc-if>
+      <sc-if value="{{ isStreaming }}"><button onClick="{{ onStop }}" style="flex:none; height:var(--size-control); border:none; border-radius:var(--radius-full); padding:var(--space-0) var(--space-5); background:var(--inverse); color:var(--inverse-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer; display:flex; align-items:center; gap:var(--space-2)" style-active="transform:scale(var(--press-scale))"><dc-import name="Icon" icon="square" size="var(--size-icon-xs)" hint-size="12px,12px"></dc-import>Остановить</button></sc-if>
+    </div>
+  </div>
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute; left:50%; bottom:calc(var(--size-control) + var(--space-12)); transform:translateX(-50%); z-index:50; display:flex; align-items:center; gap:var(--space-4); padding:var(--space-3) var(--space-4); border-radius:var(--radius-md); background:var(--toast); color:var(--toast-foreground); font-size:var(--text-sm); white-space:nowrap">
+      <span>График добавлен на дашборд «Квартальная статистика продаж»</span>
+      <a onClick="{{ onOpenDashboard }}" style="color:var(--toast-link)">Открыть →</a>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1000,&quot;height&quot;:900},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;title&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Продажи Q1&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;dataset&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;toast&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onSend&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(text?: string) =&gt; void&quot;},&quot;onStop&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onAddToDashboard&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onOpenDashboard&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+const SQL = `SELECT date_trunc('month', payment_date) AS month,
+       SUM(amount)                       AS revenue
+FROM   orders
+WHERE  payment_date >= '2026-01-01'
+  AND  payment_date <  '2026-11-01'
+GROUP  BY month
+ORDER  BY month;`;
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default';
+    return {
+      title: st === 'empty' ? 'Новый чат' : (p.title ?? 'Продажи Q1'), dataset: p.dataset || 'orders_2026', theme: p.theme ?? 'light',
+      isEmpty: st === 'empty', isData: st === 'default', isStreaming: st === 'loading', isError: st === 'error', idle: st !== 'loading',
+      hasMain: st === 'default' || st === 'loading', toast: !!p.toast,
+      onSend: p.onSend, onStop: p.onStop, onAddToDashboard: p.onAddToDashboard, onOpenDashboard: p.onOpenDashboard,
+      placeholder: st === 'loading' ? 'Ассистент отвечает…' : 'Введите вопрос к данным (например: «Где больше возвратов?»)',
+      answerParts: [{ t: 'Выручка стабильно растёт: пик в июле — ' }, { t: '3,4 млн ₽', strong: true }, { t: ', ' }, { t: '+34%', tone: 'success' },
+        { t: ' к среднему уровню. После июля — небольшое снижение (' }, { t: '−15%', tone: 'danger' }, { t: ' в августе).' }],
+      partialParts: [{ t: 'Выручка стабильно растёт: пик в ию' }],
+      facts: [{ label: 'Итого янв–окт', value: '25,4 млн ₽' }, { label: 'Среднее в месяц', value: '2 540 000 ₽' }, { label: 'Минимум — январь', value: '1,8 млн ₽' }],
+      howCols: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Дата оплаты', name: 'payment_date' }], sql: SQL,
+      chips: ['Сравнить с прошлым годом', 'Разбить по регионам', 'Топ-10 клиентов'],
+      agentSteps: [{ label: 'Определил колонки: «Сумма с НДС, руб», «Дата оплаты»', status: 'done' }, { label: 'Анализирую данные…', status: 'active' }, { label: 'Считаю агрегаты…', status: 'pending' }],
+      clarifyOptions: [{ label: 'Сумма заказа', name: 'order_amount', hint: 'все заказы' }, { label: 'Сумма доставленных', name: 'delivered_amount', hint: 'без отмен и возвратов' }],
+      starters: [{ q: 'Покажи динамику выручки по месяцам', c: 'Дата оплаты · Сумма с НДС, руб' }, { q: 'Где больше возвратов?', c: 'Статус · Регион' },
+        { q: 'Топ-10 клиентов по сумме заказов', c: 'Клиент · Сумма с НДС, руб' }, { q: 'Как скидка влияет на средний чек?', c: 'Скидка · Сумма с НДС, руб' }]
+    };
+  }
+}
+</script>
+</body>
+</html>

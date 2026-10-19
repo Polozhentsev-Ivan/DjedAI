@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="AppLayout" style="position:absolute; inset:0; display:flex; flex-direction:column; background:var(--background); color:var(--foreground); font-family:var(--font-sans); overflow:hidden">
+  <dc-import name="TopBar" dataset="{{ dataset }}" datasets="{{ dsOptions }}" compact="{{ compact }}" user="ivan" on-home="{{ goSources }}" on-dataset-change="{{ setDataset }}" on-add-source="{{ goSources }}" on-logout="{{ onLogout }}" hint-size="100%,48px"></dc-import>
+  <div style="flex:1; min-height:0; display:flex">
+    <div style="flex:none; display:flex; align-self:stretch; min-height:0"><dc-import name="Sidebar" active="{{ page }}" compact="{{ compact }}" chats="{{ chats }}" active-chat="{{ chat }}" on-navigate="{{ navigate }}" on-select-chat="{{ selectChat }}" on-new-chat="{{ newChat }}" style="display:flex; align-self:stretch" hint-size="232px,100%"></dc-import></div>
+    <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:var(--background); overflow:hidden">
+      <sc-if value="{{ notChat }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1; overflow:auto">
+          <div style="max-width:var(--content-max); margin:var(--space-0) auto; padding:{{ pad }}">
+            <sc-if value="{{ isSources }}" hint-placeholder-val="{{ true }}"><dc-import name="SourcesPage" state="{{ vSources }}" datasets="{{ datasets }}" active-dataset="{{ dataset }}" on-upload="{{ upload }}" on-cancel="{{ setDefault }}" on-select-dataset="{{ setDataset }}" on-open-catalog="{{ openCatalog }}" on-delete-dataset="{{ deleteDataset }}" hint-size="100%,800px"></dc-import></sc-if>
+            <sc-if value="{{ isCatalog }}" hint-placeholder-val="{{ false }}"><dc-import name="CatalogPage" state="{{ vCatalog }}" dataset="{{ dataset }}" compact="{{ narrow }}" on-ask="{{ goChat }}" on-go-sources="{{ goSources }}" on-retry="{{ setDefault }}" hint-size="100%,900px"></dc-import></sc-if>
+            <sc-if value="{{ isDash }}" hint-placeholder-val="{{ false }}"><dc-import name="DashboardsPage" state="{{ vDash }}" theme="{{ theme }}" dataset="{{ dataset }}" on-refresh="{{ refresh }}" on-retry="{{ setDefault }}" on-go-chat="{{ goChat }}" hint-size="100%,800px"></dc-import></sc-if>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ isChat }}" hint-placeholder-val="{{ false }}"><div style="flex:1; min-height:0; position:relative"><dc-import name="ChatPage" state="{{ vChat }}" title="{{ chatTitle }}" dataset="{{ dataset }}" theme="{{ theme }}" toast="{{ toast }}" on-send="{{ send }}" on-stop="{{ setDefault }}" on-add-to-dashboard="{{ addToDash }}" on-open-dashboard="{{ goDash }}" hint-size="100%,100%"></dc-import></div></sc-if>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;page&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;sources&quot;,&quot;catalog&quot;,&quot;chat&quot;,&quot;dashboards&quot;],&quot;default&quot;:&quot;sources&quot;,&quot;tsType&quot;:&quot;'sources'|'catalog'|'chat'|'dashboards'&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;compact&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;dataset&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string | null&quot;},&quot;onPageChange&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(page) =&gt; void&quot;},&quot;onStateChange&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(state) =&gt; void&quot;},&quot;onLogout&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+const CHATS = [{ id: 'q1', title: 'Продажи Q1', meta: 'Сегодня, 14:05' }, { id: 'reg', title: 'Регионы', meta: 'Вчера, 17:40' }, { id: 'seg', title: 'Сегменты', meta: '12.10.2026' }];
+const DATASETS = [
+  { id: 'orders_2026', source: 'CSV (2)', tables: '2', rows: '120 450', status: 'ready' },
+  { id: 'retail_crm_prod', source: 'Postgres', tables: '5', rows: '1 420 000', status: 'ready' },
+  { id: 'marketing_q3', source: 'CSV (1)', tables: '–', rows: '–', status: 'error' }
+];
+class Component extends DCLogic {
+  state = {
+    page: this.props.page ?? 'sources',
+    vs: { sources: 'default', catalog: 'default', chat: 'default', dashboards: 'default', [this.props.page ?? 'sources']: this.props.state ?? 'default' },
+    dataset: this.props.dataset === undefined ? 'orders_2026' : this.props.dataset, datasets: DATASETS, chat: 'q1', toast: false, w: window.innerWidth
+  };
+  componentDidMount() { this.onR = () => this.setState({ w: window.innerWidth }); window.addEventListener('resize', this.onR); }
+  componentWillUnmount() { window.removeEventListener('resize', this.onR); clearTimeout(this.t1); clearTimeout(this.t2); }
+  componentDidUpdate(prev) {
+    const p = this.props;
+    if (p.page !== prev.page && p.page && p.page !== this.state.page) this.setState({ page: p.page });
+    if ((p.state !== prev.state || p.page !== prev.page) && p.state) this.setState(s => ({ vs: { ...s.vs, [p.page ?? s.page]: p.state } }));
+  }
+  setVs(page, v) {
+    this.setState(s => ({ vs: { ...s.vs, [page]: v } }));
+    this.props.onStateChange && page === this.state.page && this.props.onStateChange(v);
+  }
+  later(fn, ms) { clearTimeout(this.t1); this.t1 = setTimeout(fn, ms); }
+  navigate = (page) => { this.setState({ page, toast: false }); this.props.onPageChange && this.props.onPageChange(page); };
+  renderVals() {
+    const s = this.state, p = this.props, compact = p.compact ?? s.w < 1024, page = s.page;
+    const chats = s.chat === 'new' ? [{ id: 'new', title: 'Новый чат', meta: 'Сейчас' }, ...CHATS] : CHATS;
+    return {
+      page, theme: p.theme ?? 'light', compact, narrow: compact || s.w < 1180,
+      pad: compact ? 'var(--space-6) var(--space-5) var(--space-10)' : 'var(--space-8) var(--space-10) var(--space-12)',
+      dataset: s.dataset, datasets: s.datasets,
+      dsOptions: s.datasets.map(d => ({ id: d.id, meta: d.status === 'ready' ? `${d.source} · ${d.rows} строк` : 'Ошибки загрузки', disabled: d.status !== 'ready' })),
+      chats, chat: s.chat, chatTitle: (CHATS.find(c => c.id === s.chat) || CHATS[0]).title, toast: s.toast,
+      isSources: page === 'sources', isCatalog: page === 'catalog', isChat: page === 'chat', isDash: page === 'dashboards', notChat: page !== 'chat',
+      vSources: s.vs.sources, vCatalog: s.vs.catalog, vChat: s.vs.chat, vDash: s.vs.dashboards,
+      navigate: this.navigate, goSources: () => this.navigate('sources'), goChat: () => this.navigate('chat'), goDash: () => this.navigate('dashboards'),
+      openCatalog: (id) => { this.setState({ dataset: id }); this.navigate('catalog'); },
+      setDataset: (id) => this.setState({ dataset: id }),
+      deleteDataset: (id) => this.setState(x => ({ datasets: x.datasets.filter(d => d.id !== id), dataset: x.dataset === id ? null : x.dataset })),
+      setDefault: () => this.setVs(this.state.page, 'default'),
+      upload: () => {
+        this.setVs('sources', 'loading');
+        this.later(() => { this.setVs('sources', 'default'); this.setState(x => ({ datasets: x.datasets.some(d => d.id === 'sales_2026') ? x.datasets : [...x.datasets, { id: 'sales_2026', source: 'CSV (1)', tables: '1', rows: '8 940', status: 'ready' }] })); }, 3200);
+      },
+      send: () => { this.setState(x => ({ toast: false, chat: x.chat === 'new' ? 'q1' : x.chat })); this.setVs('chat', 'loading'); this.later(() => this.setVs('chat', 'default'), 2600); },
+      selectChat: (id) => { this.setState({ chat: id }); this.setVs('chat', id === 'new' ? 'empty' : 'default'); },
+      newChat: () => { this.setState({ chat: 'new' }); this.setVs('chat', 'empty'); },
+      addToDash: () => { this.setState({ toast: true }); clearTimeout(this.t2); this.t2 = setTimeout(() => this.setState({ toast: false }), 4500); },
+      refresh: () => { this.setVs('dashboards', 'loading'); this.later(() => this.setVs('dashboards', 'default'), 2400); },
+      onLogout: p.onLogout
+    };
+  }
+}
+</script>
+</body>
+</html>

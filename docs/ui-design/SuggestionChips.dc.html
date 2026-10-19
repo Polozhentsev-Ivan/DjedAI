@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="SuggestionChips" style="display:flex; flex-wrap:wrap; gap:var(--space-2); font-family:var(--font-sans)">
+  <sc-for list="{{ chips }}" as="c" hint-placeholder-count="3">
+    <button onClick="{{ c.onClick }}" style="border:var(--border-width) solid var(--border); border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-3-5); background:var(--card); color:var(--foreground); font-size:var(--text-sm); letter-spacing:var(--tracking-sm); font-family:inherit; cursor:pointer" style-hover="border-color:var(--link); color:var(--link)" style-active="transform:scale(var(--press-scale))">{{ c.label }}</button>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:560,&quot;height&quot;:80},&quot;items&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[&quot;Сравнить с прошлым годом&quot;,&quot;Разбить по регионам&quot;,&quot;Топ-10 клиентов&quot;],&quot;tsType&quot;:&quot;string[]&quot;},&quot;onSelect&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(text: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props;
+    return { chips: (p.items || []).map(label => ({ label, onClick: () => p.onSelect && p.onSelect(label) })) };
+  }
+}
+</script>
+</body>
+</html>

@@ -230,6 +230,21 @@ def read_journal(
     return [JournalEntry(*row[:4], json.loads(row[4])) for row in cursor.fetchall()]
 
 
+def read_currencies(
+    connection: duckdb.DuckDBPyConnection, raw_table: str | None = None
+) -> dict[tuple[str, str], str]:
+    """Валюта денежных колонок из журнала: ``(имя представления, имя колонки) → код ISO``.
+
+    Валюта есть только у колонок, разобранных как ``money``. Колонка со смешанными или
+    неизвестными валютами остаётся текстом (``keep_text``) и в результат не попадает.
+    """
+    return {
+        (entry.table_name, entry.column_name): entry.detail["currency"]
+        for entry in read_journal(connection, raw_table)
+        if entry.action == "parse_money" and entry.column_name and entry.detail.get("currency")
+    }
+
+
 def _ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
