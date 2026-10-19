@@ -1,0 +1,134 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Tokens from docs/ui-design/tokens.css stay the single source of values.
+ * Names Tailwind already knows (--text-*, --radius-*, --leading-*, --font-sans)
+ * are overridden by the unlayered tokens; new names are mapped here.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-muted: var(--destructive-muted);
+  --color-destructive-border: var(--destructive-border);
+  --color-success: var(--success);
+  --color-success-muted: var(--success-muted);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-info-muted: var(--info-muted);
+  --color-link: var(--link);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-inverse: var(--inverse);
+  --color-inverse-foreground: var(--inverse-foreground);
+  --color-overlay: var(--overlay);
+  --color-code: var(--code);
+  --color-skeleton: var(--skeleton);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-topbar: var(--topbar);
+  --color-topbar-foreground: var(--topbar-foreground);
+  --color-topbar-muted: var(--topbar-muted);
+  --color-topbar-control: var(--topbar-control);
+  --color-topbar-control-border: var(--topbar-control-border);
+  --color-topbar-link: var(--topbar-link);
+  --color-toast: var(--toast);
+  --color-toast-foreground: var(--toast-foreground);
+  --color-toast-link: var(--toast-link);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --text-2xs: var(--text-2xs);
+  --leading-code: var(--leading-code);
+  --tracking-display: var(--tracking-display);
+  --tracking-body: var(--tracking-body);
+  --tracking-sm: var(--tracking-sm);
+  --tracking-xs: var(--tracking-xs);
+  --tracking-none: var(--tracking-none);
+
+  --animate-spin: spin var(--duration-spin) linear infinite;
+  --animate-pulse: pulse var(--duration-pulse) ease-in-out infinite;
+  --animate-blink: blink var(--duration-blink) steps(1) infinite;
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .45; }
+  }
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+}
+
+/*
+ * In the mockup font-size never changes line-height: text inherits the
+ * leading of its block. An invalid line-height variable makes text-* utilities
+ * fall back to inheritance instead of Tailwind's per-size defaults.
+ */
+:root {
+  --text-2xs--line-height: initial;
+  --text-xs--line-height: initial;
+  --text-sm--line-height: initial;
+  --text-base--line-height: initial;
+  --text-lg--line-height: initial;
+  --text-xl--line-height: initial;
+  --text-2xl--line-height: initial;
+  --text-3xl--line-height: initial;
+}
+
+@layer base {
+  *, ::before, ::after { border-color: var(--border); }
+  html, body, #root { height: 100%; }
+  html { line-height: normal; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "ss03";
+  }
+  a { color: var(--link); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  button:not(:disabled) { cursor: pointer; }
+  input::placeholder { color: var(--muted-foreground); }
+  :focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+}
+
+@utility press {
+  &:active:not(:disabled) { transform: scale(var(--press-scale)); }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

@@ -20,6 +20,11 @@ node_modules/
 .env_*
 !.env.example
 
+# Frontend build and test outputs (node_modules is ignored anywhere)
+node_modules/
+/frontend/dist/
+/frontend/coverage/
+
 # Test, coverage and tool outputs
 .pytest_cache/
 .ruff_cache/

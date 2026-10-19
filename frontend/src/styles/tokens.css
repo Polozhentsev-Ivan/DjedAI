@@ -1,0 +1,140 @@
+/* DjedAI design tokens — shadcn/ui naming. :root = светлая тема, .dark = тёмная. */
+:root {
+  /* Шрифты */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --text-2xs: 10px; --text-xs: 12px; --text-sm: 14px; --text-base: 17px; --text-lg: 21px; --text-xl: 28px; --text-2xl: 40px; --text-3xl: 56px;
+  --leading-none: 1; --leading-tight: 1.1; --leading-snug: 1.24; --leading-normal: 1.43; --leading-relaxed: 1.47; --leading-code: 1.6;
+  --tracking-display: -0.28px; --tracking-body: -0.374px; --tracking-sm: -0.224px; --tracking-xs: -0.12px; --tracking-none: 0;
+  --font-weight-regular: 400; --font-weight-semibold: 600; --font-weight-bold: 700;
+
+  /* Отступы (база 4px) */
+  --space-0: 0; --space-0-5: 2px; --space-1: 4px; --space-1-5: 6px; --space-2: 8px; --space-2-5: 10px; --space-3: 12px; --space-3-5: 14px;
+  --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-7: 28px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-14: 56px; --space-16: 64px;
+
+  /* Радиусы */
+  --radius-xs: 5px; --radius-sm: 8px; --radius-md: 11px; --radius-lg: 18px; --radius-full: 9999px;
+  --radius: var(--radius-md);
+
+  /* Границы, тени, фокус */
+  --border-width: 1px; --border-width-strong: 2px; --border-width-dashed: 1.5px;
+  --shadow-none: none;
+  --shadow-popover: none;            /* система без теней на интерфейсе: поповер отделяется границей */
+  --focus-ring: var(--border-width-strong) solid var(--ring);
+  --focus-offset: 1px;
+
+  /* Размеры */
+  --size-icon-xs: 12px; --size-icon-sm: 16px; --size-icon: 18px; --size-icon-lg: 20px; --size-icon-xl: 24px;
+  --size-dot: 6px; --size-progress: 4px; --size-progress-lg: 6px; --size-caret: 2px;
+  --size-control-xs: 30px; --size-control-sm: 32px; --size-control-md: 36px; --size-control: 44px;
+  --size-avatar: 28px; --size-avatar-lg: 44px;
+  --size-state-sm: 28px; --size-state-md: 32px; --size-state-lg: 48px; --size-log-icon: 22px;
+  --topbar-height: 48px; --sidebar-width: 232px; --sidebar-width-collapsed: 64px;
+  --content-max: 1200px; --chat-max: 880px; --login-max: 400px; --popover-width: 280px; --text-max: 480px; --label-col: 84px; --bubble-max: 75%;
+  --chart-height: 260px; --chart-height-md: 240px; --chart-height-sm: 220px; --widget-min-height: 330px;
+  --grid-widget-min: 360px; --grid-card-min: 260px; --grid-fact-min: 150px; --grid-option-min: 220px; --grid-state-min: 300px; --grid-swatch-min: 170px;
+
+  /* Артборды (доска фреймов) */
+  --frame-desktop-w: 1440px; --frame-desktop-h: 900px; --frame-tablet-w: 834px; --frame-tablet-h: 1112px;
+
+  /* Движение */
+  --duration-spin: .8s; --duration-pulse: 1.4s; --duration-blink: 1s; --press-scale: .95;
+
+  /* Цвета — светлая тема */
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --primary: #0066cc;
+  --primary-foreground: #ffffff;
+  --secondary: #fafafc;
+  --secondary-foreground: #333333;
+  --muted: #ececf0;
+  --muted-foreground: #6e6e73;
+  --accent: #e8f0fa;
+  --accent-foreground: #0066cc;
+  --destructive: #c4281c;
+  --destructive-foreground: #ffffff;
+  --destructive-muted: #fdeeec;
+  --destructive-border: #f3c7c2;
+  --success: #1b7f45;
+  --success-muted: #e7f5ec;
+  --warning: #9a5b00;
+  --warning-muted: #fff5e3;
+  --info-muted: #eaf2fb;
+  --link: #0066cc;
+  --border: #e0e0e0;
+  --border-subtle: #f0f0f0;
+  --input: #e0e0e0;
+  --ring: #0071e3;
+  --surface-subtle: #f5f5f7;
+  --inverse: #1d1d1f;
+  --inverse-foreground: #ffffff;
+  --overlay: rgba(255, 255, 255, .92);
+  --code: #f5f5f7;
+  --skeleton: #ececf0;
+  --sidebar: #f5f5f7;
+  --sidebar-foreground: #333333;
+  --sidebar-accent: #e8f0fa;
+  --sidebar-accent-foreground: #0066cc;
+  --sidebar-border: #e0e0e0;
+  --topbar: #000000;
+  --topbar-foreground: #ffffff;
+  --topbar-muted: #cccccc;
+  --topbar-control: #272729;
+  --topbar-control-border: #3a3a3c;
+  --topbar-link: #2997ff;
+  --toast: #1d1d1f;
+  --toast-foreground: #ffffff;
+  --toast-link: #2997ff;
+
+  /* Палитра графиков */
+  --chart-1: #0066cc; --chart-2: #34a37a; --chart-3: #e3a008; --chart-4: #8e5cd9; --chart-5: #d9577b; --chart-6: #7a7a7a;
+}
+
+.dark {
+  --background: #1d1d1f;
+  --foreground: #ffffff;
+  --card: #272729;
+  --card-foreground: #ffffff;
+  --popover: #272729;
+  --popover-foreground: #ffffff;
+  --primary: #0066cc;
+  --primary-foreground: #ffffff;
+  --secondary: #2a2a2c;
+  --secondary-foreground: #cccccc;
+  --muted: #333336;
+  --muted-foreground: #a1a1a6;
+  --accent: rgba(41, 151, 255, .16);
+  --accent-foreground: #2997ff;
+  --destructive: #ff6b5e;
+  --destructive-foreground: #ffffff;
+  --destructive-muted: rgba(255, 107, 94, .12);
+  --destructive-border: rgba(255, 107, 94, .35);
+  --success: #4cc38a;
+  --success-muted: rgba(76, 195, 138, .14);
+  --warning: #f0b450;
+  --warning-muted: rgba(240, 180, 80, .12);
+  --info-muted: rgba(41, 151, 255, .14);
+  --link: #2997ff;
+  --border: #3a3a3c;
+  --border-subtle: #2f2f31;
+  --input: #3a3a3c;
+  --ring: #2997ff;
+  --surface-subtle: #000000;
+  --inverse: #ffffff;
+  --inverse-foreground: #1d1d1f;
+  --overlay: rgba(39, 39, 41, .92);
+  --code: #161617;
+  --skeleton: #333336;
+  --sidebar: #000000;
+  --sidebar-foreground: #cccccc;
+  --sidebar-accent: rgba(41, 151, 255, .16);
+  --sidebar-accent-foreground: #2997ff;
+  --sidebar-border: #3a3a3c;
+  --chart-1: #2997ff; --chart-2: #4cc38a; --chart-3: #f0b450; --chart-4: #b48cf2; --chart-5: #f07a9a; --chart-6: #a1a1a6;
+}
+
