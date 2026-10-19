@@ -29,6 +29,14 @@ export function formatMoneyShort(value: number): string {
   return formatMoney(value);
 }
 
+const fixedDecimal = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+/** Chart scale: 2500000 → «2,5 млн», 0 → «0,0 млн», with an optional unit («0,9 млн ₽»). */
+export function formatMillions(value: number, unit?: string): string {
+  const text = `${withMinus(fixedDecimal.format(value / 1e6))}${NBSP}млн`;
+  return unit ? `${text}${NBSP}${unit}` : text;
+}
+
 /** 12.5 → «12,5%». The value is already in percent. */
 export function formatPercent(value: number): string {
   return `${withMinus(oneDecimal.format(value))}%`;

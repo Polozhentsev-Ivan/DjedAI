@@ -50,6 +50,7 @@ describe('demo options', () => {
   it('formats revenue labels in millions', () => {
     const option = revenueOption(theme) as { yAxis: { axisLabel: { formatter: (v: number) => string } }; tooltip: { formatter: (p: { name: string; value: number }[]) => string } };
     expect(option.yAxis.axisLabel.formatter(2500000).replace(/\s/g, ' ')).toBe('2,5 млн');
+    expect(option.yAxis.axisLabel.formatter(0).replace(/\s/g, ' ')).toBe('0,0 млн');
     expect(option.tooltip.formatter([{ name: 'Июл', value: 3400000 }])).toContain('Июл 2026');
   });
 

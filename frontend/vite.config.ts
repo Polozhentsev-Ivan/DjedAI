@@ -11,6 +11,15 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  build: {
+    // ECharts is one ~560 kB chunk loaded only by the chat and dashboard screens.
+    chunkSizeWarningLimit: 600,
+    rolldownOptions: {
+      output: {
+        codeSplitting: { groups: [{ name: 'echarts', test: /node_modules[\\/](echarts|zrender)[\\/]/ }] },
+      },
+    },
+  },
   server: {
     proxy: { '/api': { target: apiTarget, changeOrigin: true } },
   },

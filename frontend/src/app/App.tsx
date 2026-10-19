@@ -1,3 +1,8 @@
+import { createBrowserRouter, RouterProvider } from 'react-router';
+import { routes } from './routes';
+
+const router = createBrowserRouter(routes);
+
 export function App() {
-  return <div className="p-8 font-display text-xl font-semibold tracking-display">DjedAI</div>;
+  return <RouterProvider router={router} />;
 }

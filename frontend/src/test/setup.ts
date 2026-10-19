@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterEach } from 'vitest';
+import { afterEach, vi } from 'vitest';
 
 afterEach(() => {
   cleanup();
@@ -24,3 +24,9 @@ class ResizeObserverStub {
   disconnect() {}
 }
 if (!('ResizeObserver' in window)) Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub });
+
+// jsdom cannot lay out SVG charts; pages get a no-op ECharts instance. charts.test.tsx mocks it on its own.
+vi.mock('@/charts/echarts', () => {
+  const instance = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() };
+  return { echarts: { init: vi.fn(() => instance), getInstanceByDom: vi.fn(() => instance) } };
+});

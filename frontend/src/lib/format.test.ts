@@ -1,4 +1,4 @@
-import { deltaTone, formatCount, formatDate, formatDateTime, formatDelta, formatMoney, formatMoneyShort, formatPercent } from './format';
+import { deltaTone, formatCount, formatMillions, formatDate, formatDateTime, formatDelta, formatMoney, formatMoneyShort, formatPercent } from './format';
 
 // Intl uses no-break spaces between digit groups; compare with plain spaces for readability.
 const plain = (text: string) => text.replace(/[\u00a0\u202f]/g, ' ');
@@ -20,6 +20,12 @@ describe('format', () => {
     expect(plain(formatMoneyShort(2_500_000_000))).toBe('2,5 млрд ₽');
     expect(plain(formatMoneyShort(-1800000))).toBe('−1,8 млн ₽');
     expect(plain(formatMoneyShort(950000))).toBe('950 000 ₽');
+  });
+
+  it('keeps one decimal on chart scales', () => {
+    expect(plain(formatMillions(0))).toBe('0,0 млн');
+    expect(plain(formatMillions(3000000))).toBe('3,0 млн');
+    expect(plain(formatMillions(900000, '₽'))).toBe('0,9 млн ₽');
   });
 
   it('formats percents and deltas with a comma and true minus', () => {

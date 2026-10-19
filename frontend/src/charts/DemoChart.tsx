@@ -21,7 +21,7 @@ export function DemoChart({ name, height = 'lg' }: DemoChartProps) {
   if (name !== 'regions') return <Chart option={options[name]} label={labels[name]} height={height} />;
   return (
     <div className="flex items-center gap-4">
-      <Chart option={regionsOption} label={labels.regions} height={height} className="w-[45%] flex-none" />
+      <Chart option={regionsOption} label={labels.regions} height={height} className="w-1/2 flex-none" />
       <ul className="m-0 flex min-w-0 list-none flex-col gap-3 p-0 text-xs text-foreground">
         {REGIONS.map(([region, share], index) => (
           <li key={region} className="flex items-center gap-2">

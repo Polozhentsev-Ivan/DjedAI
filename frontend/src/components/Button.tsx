@@ -38,5 +38,5 @@ const linkTones = { link: 'text-link', danger: 'text-destructive', muted: 'text-
 
 /** Text action that looks like a link but is a button, so it is reachable from the keyboard. */
 export function LinkButton({ tone = 'link', className, type = 'button', ...rest }: LinkButtonProps) {
-  return <button type={type} className={cn('inline-flex items-center gap-1 hover:underline', linkTones[tone], className)} {...rest} />;
+  return <button type={type} className={cn('inline-flex items-center gap-1 leading-[inherit] hover:underline', linkTones[tone], className)} {...rest} />;
 }

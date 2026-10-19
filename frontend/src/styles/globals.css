@@ -120,6 +120,8 @@
   }
   a { color: var(--link); text-decoration: none; cursor: pointer; }
   a:hover { text-decoration: underline; }
+  /* Mockup controls keep the browser default leading instead of inheriting it. */
+  button, input, select, textarea { line-height: normal; }
   button:not(:disabled) { cursor: pointer; }
   input::placeholder { color: var(--muted-foreground); }
   :focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
