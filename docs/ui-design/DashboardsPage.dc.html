@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="DashboardsPage" data-screen-label="05 Дашборды" style="display:flex; flex-direction:column; gap:var(--space-5); font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+    <h1 style="margin:0; font-family:var(--font-display); font-size:var(--text-xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">Дашборды</h1>
+    <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="EmptyState" title="У вас ещё нет дашбордов" text="Создайте график в чате и нажмите «Добавить на дашборд»." action-label="Перейти в чат" on-action="{{ onGoChat }}" hint-size="100%,260px"></dc-import></div>
+  </sc-if>
+  <sc-if value="{{ hasWidgets }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1-5)">
+      <span style="font-size:var(--text-xs); color:var(--muted-foreground); margin-right:var(--space-1-5)">Дашборды {{ dataset }}</span>
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3"><button onClick="{{ t.onClick }}" style="border:var(--border-width) solid {{ t.bd }}; border-radius:var(--radius-full); padding:var(--space-1) var(--space-3-5); font-size:var(--text-sm); font-family:inherit; cursor:pointer; background:{{ t.bg }}; color:{{ t.ink }}; font-weight:{{ t.fw }}">{{ t.label }}</button></sc-for>
+      <a onClick="{{ onGoChat }}" style="display:flex; align-items:center; gap:var(--space-1); font-size:var(--text-sm); padding:var(--space-1) var(--space-2)"><dc-import name="Icon" icon="plus" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>Новый</a>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:var(--space-4)">
+      <div>
+        <h1 style="margin:0; font-family:var(--font-display); font-size:var(--text-xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">Дашборд: {{ dashTitle }}</h1>
+        <div style="margin-top:var(--space-1-5); color:var(--muted-foreground)">Сформирован по результатам диалога в чате · Последнее обновление: 18.10.2026 14:00</div>
+      </div>
+      <button onClick="{{ onRefresh }}" disabled="{{ isLoading }}" style="display:flex; align-items:center; gap:var(--space-1-5); border:var(--border-width) solid var(--link); border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-4); background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; cursor:pointer; opacity:{{ refreshOp }}" style-active="transform:scale(var(--press-scale))">{{ refreshLabel }}<dc-import name="Icon" icon="refresh-cw" spin="{{ isLoading }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></button>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5)">
+      <sc-for list="{{ widgets }}" as="w" hint-placeholder-count="4">
+        <dc-import name="WidgetCard" title="{{ w.title }}" subtitle="{{ w.subtitle }}" kind="{{ w.kind }}" chart="{{ w.chart }}" state="{{ w.state }}" theme="{{ theme }}" how="{{ w.how }}" kpi="{{ w.kpi }}" on-remove="{{ w.onRemove }}" on-retry="{{ onRetry }}" hint-size="100%,330px"></dc-import>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1100,&quot;height&quot;:900},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;dataset&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onRefresh&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onRetry&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onGoChat&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+const REV_SQL = `SELECT date_trunc('month', payment_date) AS month,
+       SUM(amount) AS revenue
+FROM   orders
+GROUP  BY month
+ORDER  BY month;`;
+const WIDGETS = [
+  { id: 'rev', title: 'Выручка по месяцам', subtitle: 'Пик продаж — июль', kind: 'chart', chart: 'revenue',
+    how: { tool: "time_aggregate(table='orders', freq='month')", columns: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Дата оплаты', name: 'payment_date' }], sql: REV_SQL } },
+  { id: 'reg', title: 'Доля по регионам', subtitle: 'Москва 45%, СПб 25%', kind: 'chart', chart: 'regions',
+    how: { tool: "group_share(table='orders', by='customers.region')", columns: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Регион', name: 'region' }], sql: `SELECT c.region, SUM(o.amount) AS revenue\nFROM   orders o\nJOIN   customers c ON c.id = o.customer_id\nGROUP  BY c.region\nORDER  BY revenue DESC;` } },
+  { id: 'cat', title: 'Топ категорий', subtitle: 'Электроника лидирует', kind: 'chart', chart: 'categories',
+    how: { tool: "top_n(table='orders', by='category', n=5)", columns: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Категория', name: 'category' }], sql: `SELECT category, SUM(amount) AS revenue\nFROM   orders\nGROUP  BY category\nORDER  BY revenue DESC\nLIMIT  5;` } },
+  { id: 'kpi', title: 'KPI квартала', subtitle: 'Выручка относительно цели', kind: 'kpi',
+    kpi: { caption: 'Сумма заказов с НДС за квартал', value: '12,4 млн ₽', delta: '+18% к цели', deltaTone: 'success', target: 'Цель квартала: 10 500 000 ₽',
+      stats: [{ label: 'Заказов', value: '2 573', delta: '+21%', tone: 'success' }, { label: 'Средний чек', value: '4 820 ₽', delta: '−5%', tone: 'danger' }] },
+    how: { tool: "kpi(table='orders', period='quarter', target=10500000)", columns: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Дата оплаты', name: 'payment_date' }], sql: `SELECT SUM(amount) AS revenue,\n       SUM(amount) / 10500000 - 1 AS vs_target\nFROM   orders\nWHERE  payment_date >= date_trunc('quarter', now());` } }
+];
+class Component extends DCLogic {
+  state = { removed: {}, dash: 'q' };
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default', s = this.state;
+    const widgets = WIDGETS.filter(w => !s.removed[w.id]).map(w => ({
+      ...w, chart: w.chart || '', kpi: w.kpi || null,
+      state: st === 'loading' ? 'loading' : st === 'error' && w.id === 'cat' ? 'error' : 'default',
+      onRemove: () => this.setState(x => ({ removed: { ...x.removed, [w.id]: true } }))
+    }));
+    const defs = [['q', 'Квартальная статистика продаж'], ['m', 'Маркетинг Q3'], ['r', 'Регионы']];
+    const empty = st === 'empty' || widgets.length === 0;
+    return {
+      isEmpty: empty, hasWidgets: !empty, widgets, theme: p.theme ?? 'light', dataset: p.dataset || 'orders_2026',
+      isLoading: st === 'loading', refreshLabel: st === 'loading' ? 'Обновляется…' : 'Обновить данные', refreshOp: st === 'loading' ? 0.6 : 1,
+      onRefresh: p.onRefresh, onRetry: p.onRetry, onGoChat: p.onGoChat,
+      tabs: defs.map(([k, l]) => { const on = s.dash === k; return { label: l, bg: on ? 'var(--inverse)' : 'transparent', ink: on ? 'var(--inverse-foreground)' : 'var(--secondary-foreground)', bd: on ? 'var(--inverse)' : 'var(--border)', fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)', onClick: () => this.setState({ dash: k }) }; }),
+      dashTitle: (defs.find(d => d[0] === s.dash) || defs[0])[1]
+    };
+  }
+}
+</script>
+</body>
+</html>

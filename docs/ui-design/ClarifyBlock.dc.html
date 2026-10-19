@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="ClarifyBlock" style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-4) var(--space-5); background:var(--card); display:flex; flex-direction:column; gap:var(--space-3); font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="display:flex; gap:var(--space-2-5); align-items:flex-start">
+    <span style="display:flex; color:var(--link); padding-top:var(--space-0-5)"><dc-import name="Icon" icon="circle-help" size="var(--size-icon)" hint-size="18px,18px"></dc-import></span>
+    <div>
+      <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body)">{{ question }}</div>
+      <sc-if value="{{ hasHint }}"><div style="color:var(--secondary-foreground)">{{ hint }}</div></sc-if>
+    </div>
+  </div>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-option-min),1fr)); gap:var(--space-2)">
+    <sc-for list="{{ items }}" as="o" hint-placeholder-count="2">
+      <button onClick="{{ o.onClick }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-0-5); padding:var(--space-2-5) var(--space-3-5); border:var(--border-width) solid var(--border); border-radius:var(--radius-md); background:var(--secondary); color:var(--foreground); font-family:inherit; text-align:left; cursor:pointer" style-hover="border-color:var(--link)" style-active="transform:scale(var(--press-scale))">
+        <span style="font-size:var(--text-sm); font-weight:var(--font-weight-semibold)">{{ o.label }}</span>
+        <span style="font-size:var(--text-xs); color:var(--muted-foreground)"><span style="font-family:var(--font-mono)">{{ o.name }}</span> · {{ o.hint }}</span>
+      </button>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:640,&quot;height&quot;:200},&quot;question&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Какую сумму показать?&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;hint&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;В таблице orders две колонки с суммой — от выбора зависит результат.&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;options&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[{&quot;label&quot;:&quot;Сумма заказа&quot;,&quot;name&quot;:&quot;order_amount&quot;,&quot;hint&quot;:&quot;все заказы&quot;},{&quot;label&quot;:&quot;Сумма доставленных&quot;,&quot;name&quot;:&quot;delivered_amount&quot;,&quot;hint&quot;:&quot;без отмен и возвратов&quot;}],&quot;tsType&quot;:&quot;{label:string; name:string; hint?:string}[]&quot;},&quot;onSelect&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(name: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props;
+    return {
+      question: p.question ?? 'Какую сумму показать?', hint: p.hint ?? '', hasHint: !!p.hint,
+      items: (p.options || []).map(o => ({ ...o, onClick: () => p.onSelect && p.onSelect(o.name) }))
+    };
+  }
+}
+</script>
+</body>
+</html>

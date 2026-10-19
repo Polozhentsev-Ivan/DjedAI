@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<aside data-component="Sidebar" style="flex:none; width:{{ width }}; box-sizing:border-box; align-self:stretch; min-height:100%; background:var(--sidebar); color:var(--sidebar-foreground); border-right:var(--border-width) solid var(--sidebar-border); padding:{{ pad }}; display:flex; flex-direction:column; align-items:{{ align }}; gap:var(--space-0-5); overflow:auto; font-family:var(--font-sans); font-size:var(--text-sm); letter-spacing:var(--tracking-sm)">
+  <sc-for list="{{ nav }}" as="item" hint-placeholder-count="4">
+    <button onClick="{{ item.onClick }}" title="{{ item.label }}" style="display:flex; align-items:center; justify-content:{{ item.justify }}; gap:var(--space-2-5); width:{{ item.w }}; height:{{ item.h }}; padding:{{ item.pad }}; border:none; border-radius:{{ item.rad }}; background:{{ item.bg }}; color:{{ item.ink }}; font-size:var(--text-sm); font-weight:{{ item.fw }}; font-family:inherit; cursor:pointer; text-align:left; box-sizing:border-box">
+      <dc-import name="Icon" icon="{{ item.icon }}" size="{{ iconSize }}" hint-size="18px,18px"></dc-import>
+      <sc-if value="{{ showLabels }}" hint-placeholder-val="{{ true }}"><span>{{ item.label }}</span></sc-if>
+    </button>
+  </sc-for>
+  <sc-if value="{{ showChats }}" hint-placeholder-val="{{ false }}">
+    <div style="height:var(--border-width); background:var(--sidebar-border); margin:var(--space-3) var(--space-0-5); align-self:stretch"></div>
+    <button onClick="{{ onNewChat }}" style="display:flex; align-items:center; justify-content:center; gap:var(--space-1-5); height:var(--size-control-md); border-radius:var(--radius-full); border:var(--border-width) solid var(--link); background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; cursor:pointer; margin-bottom:var(--space-2)" style-active="transform:scale(var(--press-scale))"><dc-import name="Icon" icon="plus" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>Новый чат</button>
+    <div style="font-size:var(--text-xs); color:var(--muted-foreground); padding:var(--space-1) var(--space-2-5)">История чатов</div>
+    <sc-for list="{{ chatItems }}" as="c" hint-placeholder-count="3">
+      <button onClick="{{ c.onClick }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-0-5); padding:var(--space-2) var(--space-2-5); border:none; border-radius:var(--radius-sm); background:{{ c.bg }}; color:{{ c.ink }}; font-family:inherit; text-align:left; cursor:pointer">
+        <span style="font-size:var(--text-sm); font-weight:{{ c.fw }}">{{ c.title }}</span>
+        <span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ c.meta }}</span>
+      </button>
+    </sc-for>
+  </sc-if>
+  <sc-if value="{{ showChatsCompact }}" hint-placeholder-val="{{ false }}">
+    <div style="width:var(--size-control-sm); height:var(--border-width); background:var(--sidebar-border); margin:var(--space-2) var(--space-0)"></div>
+    <button onClick="{{ onNewChat }}" title="Новый чат" style="width:var(--size-control); height:var(--size-control); display:flex; align-items:center; justify-content:center; border:var(--border-width) solid var(--link); border-radius:var(--radius-full); background:transparent; color:var(--link); cursor:pointer"><dc-import name="Icon" icon="plus" size="var(--size-icon-lg)" hint-size="20px,20px"></dc-import></button>
+  </sc-if>
+</aside>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:260,&quot;height&quot;:520},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;sources&quot;,&quot;catalog&quot;,&quot;chat&quot;,&quot;dashboards&quot;],&quot;default&quot;:&quot;sources&quot;,&quot;tsType&quot;:&quot;'sources'|'catalog'|'chat'|'dashboards'&quot;},&quot;compact&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;chats&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[{&quot;id&quot;:&quot;q1&quot;,&quot;title&quot;:&quot;Продажи Q1&quot;,&quot;meta&quot;:&quot;Сегодня, 14:05&quot;},{&quot;id&quot;:&quot;reg&quot;,&quot;title&quot;:&quot;Регионы&quot;,&quot;meta&quot;:&quot;Вчера, 17:40&quot;},{&quot;id&quot;:&quot;seg&quot;,&quot;title&quot;:&quot;Сегменты&quot;,&quot;meta&quot;:&quot;12.10.2026&quot;}],&quot;tsType&quot;:&quot;{id:string; title:string; meta:string}[]&quot;},&quot;activeChat&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;q1&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onNavigate&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(section) =&gt; void&quot;},&quot;onSelectChat&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(id: string) =&gt; void&quot;},&quot;onNewChat&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, compact = p.compact ?? false, active = p.active ?? 'sources';
+    const defs = [['sources', 'Источники', 'database'], ['catalog', 'Каталог', 'table-2'], ['chat', 'Чат', 'message-square'], ['dashboards', 'Дашборды', 'layout-dashboard']];
+    const nav = defs.map(([k, label, icon]) => {
+      const on = k === active;
+      return { label, icon, onClick: () => p.onNavigate && p.onNavigate(k),
+        bg: on ? 'var(--sidebar-accent)' : 'transparent', ink: on ? 'var(--sidebar-accent-foreground)' : 'var(--sidebar-foreground)',
+        fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)',
+        w: compact ? 'var(--size-control)' : '100%', h: compact ? 'var(--size-control)' : 'var(--size-control-md)',
+        pad: compact ? 'var(--space-0)' : 'var(--space-0) var(--space-2-5)', justify: compact ? 'center' : 'flex-start',
+        rad: compact ? 'var(--radius-md)' : 'var(--radius-sm)' };
+    });
+    const chatItems = (p.chats || []).map(c => {
+      const on = c.id === p.activeChat;
+      return { ...c, bg: on ? 'var(--sidebar-accent)' : 'transparent', ink: on ? 'var(--sidebar-accent-foreground)' : 'var(--foreground)',
+        fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)', onClick: () => p.onSelectChat && p.onSelectChat(c.id) };
+    });
+    return {
+      nav, chatItems, showLabels: !compact, iconSize: compact ? 'var(--size-icon-lg)' : 'var(--size-icon)',
+      width: compact ? 'var(--sidebar-width-collapsed)' : 'var(--sidebar-width)',
+      pad: compact ? 'var(--space-3) var(--space-2-5)' : 'var(--space-4) var(--space-3)', align: compact ? 'center' : 'stretch',
+      showChats: active === 'chat' && !compact, showChatsCompact: active === 'chat' && compact, onNewChat: p.onNewChat
+    };
+  }
+}
+</script>
+</body>
+</html>

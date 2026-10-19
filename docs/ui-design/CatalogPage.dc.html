@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="CatalogPage" data-screen-label="03 Каталог" style="display:flex; flex-direction:column; gap:var(--space-6); font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:var(--space-4)">
+    <div>
+      <h1 style="margin:0; font-family:var(--font-display); font-size:var(--text-xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">{{ title }}</h1>
+      <sc-if value="{{ hasDs }}"><div style="margin-top:var(--space-1-5); color:var(--muted-foreground)">2 таблицы · 120 450 строк · CSV · загружен 18.10.2026 13:52</div></sc-if>
+    </div>
+    <sc-if value="{{ hasDs }}"><button onClick="{{ onAsk }}" style="display:flex; align-items:center; gap:var(--space-1-5); border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))">Задать вопрос в чате<dc-import name="Icon" icon="arrow-right" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></button></sc-if>
+  </div>
+
+  <sc-if value="{{ isLoading }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex; align-items:center; gap:var(--space-2-5); color:var(--muted-foreground)"><span style="display:flex; color:var(--primary)"><dc-import name="Icon" icon="loader-circle" spin="{{ true }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></span>Строим профиль таблиц…</div>
+    <div style="display:flex; gap:var(--space-2); animation:dj-pulse var(--duration-pulse) ease-in-out infinite"><div style="width:var(--popover-width); max-width:40%; height:var(--size-control-md); border-radius:var(--radius-full); background:var(--skeleton)"></div><div style="width:var(--grid-card-min); max-width:35%; height:var(--size-control-md); border-radius:var(--radius-full); background:var(--skeleton)"></div></div>
+    <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-5); display:flex; flex-direction:column; gap:var(--space-4); animation:dj-pulse var(--duration-pulse) ease-in-out infinite">
+      <div style="width:30%; height:var(--space-4); border-radius:var(--radius-sm); background:var(--skeleton)"></div>
+      <sc-for list="{{ skel }}" as="r" hint-placeholder-count="6">
+        <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1.5fr; gap:var(--space-5)">
+          <div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton); width:{{ r.a }}"></div><div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton); width:{{ r.b }}"></div><div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton); width:60%"></div><div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton); width:40%"></div><div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton); width:{{ r.b }}"></div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:grid; grid-template-columns:{{ grid }}; gap:var(--space-5); animation:dj-pulse var(--duration-pulse) ease-in-out infinite">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-5); display:flex; flex-direction:column; gap:var(--space-3-5)"><div style="width:40%; height:var(--space-4); border-radius:var(--radius-sm); background:var(--skeleton)"></div><div style="height:var(--space-3); border-radius:var(--radius-sm); background:var(--skeleton)"></div><div style="height:var(--space-3); width:80%; border-radius:var(--radius-sm); background:var(--skeleton)"></div><div style="height:var(--space-3); width:90%; border-radius:var(--radius-sm); background:var(--skeleton)"></div></div>
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-5); display:flex; flex-direction:column; gap:var(--space-3-5)"><div style="width:60%; height:var(--space-4); border-radius:var(--radius-sm); background:var(--skeleton)"></div><div style="height:var(--space-12); border-radius:var(--radius-md); background:var(--skeleton)"></div><div style="height:var(--size-progress-lg); border-radius:var(--radius-full); background:var(--skeleton)"></div></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}"><div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="EmptyState" title="Датасет не выбран" text="Выберите датасет в верхнем меню или добавьте новый." action-label="Добавить источник" on-action="{{ onGoSources }}" hint-size="100%,260px"></dc-import></div></sc-if>
+  <sc-if value="{{ isError }}" hint-placeholder-val="{{ false }}"><div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="ErrorState" title="Не удалось построить профиль таблицы" text="Файл пуст или повреждён (orders.csv). Проверьте файл и загрузите его заново." action-label="Повторить" on-action="{{ onRetry }}" secondary-label="К источникам" on-secondary="{{ onGoSources }}" hint-size="100%,260px"></dc-import></div></sc-if>
+
+  <sc-if value="{{ isData }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex; flex-wrap:wrap; gap:var(--space-2)">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="2">
+        <button onClick="{{ t.onClick }}" style="display:flex; align-items:baseline; gap:var(--space-2); border:var(--border-width) solid {{ t.bd }}; border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-4); font-family:inherit; cursor:pointer; background:{{ t.bg }}; color:{{ t.ink }}">
+          <span style="font-family:var(--font-mono); font-size:var(--text-sm); font-weight:var(--font-weight-semibold)">{{ t.name }}</span><span style="font-size:var(--text-xs); color:{{ t.sub }}">{{ t.rows }}</span>
+        </button>
+      </sc-for>
+    </div>
+    <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+      <div style="display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-2); padding:var(--space-4) var(--space-5); border-bottom:var(--border-width) solid var(--border)">
+        <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body)">Структура таблицы</div>
+        <span style="color:var(--muted-foreground)">{{ meta }}</span>
+      </div>
+      <dc-import name="DataTable" columns="{{ columns }}" rows="{{ rows }}" min-width="820px" hint-size="100%,300px"></dc-import>
+    </div>
+    <div style="display:grid; grid-template-columns:{{ grid }}; gap:var(--space-5); align-items:start">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+        <div style="display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); padding:var(--space-4) var(--space-5); border-bottom:var(--border-width) solid var(--border)">
+          <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body); margin-right:auto">Журнал обработки данных</div>
+          <dc-import name="StatusBadge" variant="tag" tone="info" label="3 информации" hint-size="90px,20px"></dc-import>
+          <dc-import name="StatusBadge" variant="tag" tone="warning" label="1 предупреждение" hint-size="110px,20px"></dc-import>
+        </div>
+        <sc-for list="{{ journal }}" as="j" hint-placeholder-count="4"><dc-import name="TransformLogItem" level="{{ j.level }}" text="{{ j.text }}" hint-size="100%,64px"></dc-import></sc-for>
+      </div>
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+        <div style="padding:var(--space-4) var(--space-5); border-bottom:var(--border-width) solid var(--border); font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body)">Обнаруженные связи таблиц</div>
+        <div style="padding:var(--space-4) var(--space-5); display:flex; flex-direction:column; gap:var(--space-3-5)">
+          <div style="display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:var(--space-2-5); align-items:center">
+            <div style="padding:var(--space-2-5) var(--space-3); border-radius:var(--radius-md); background:var(--surface-subtle)"><div style="font-weight:var(--font-weight-semibold)">Клиент</div><div style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">orders.customer_id</div></div>
+            <span style="display:flex; color:var(--muted-foreground)"><dc-import name="Icon" icon="arrow-left-right" size="var(--size-icon)" hint-size="18px,18px"></dc-import></span>
+            <div style="padding:var(--space-2-5) var(--space-3); border-radius:var(--radius-md); background:var(--surface-subtle)"><div style="font-weight:var(--font-weight-semibold)">ID клиента</div><div style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">customers.id</div></div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+            <div style="display:flex; justify-content:space-between"><span style="color:var(--secondary-foreground)">Уверенность</span><span style="font-weight:var(--font-weight-semibold); color:var(--success); font-variant-numeric:tabular-nums">99,8%</span></div>
+            <div style="height:var(--size-progress-lg); border-radius:var(--radius-full); background:var(--muted); overflow:hidden"><div style="width:99.8%; height:100%; background:var(--success)"></div></div>
+            <span style="font-size:var(--text-xs); color:var(--muted-foreground)">Многие к одному · совпало 450 из 450 клиентов</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1100,&quot;height&quot;:900},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;dataset&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string | null&quot;},&quot;compact&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onAsk&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onGoSources&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onRetry&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+const COLS = {
+  orders: [
+    { src: 'Номер заказа', sys: 'order_id', type: 'text (id)', miss: '0%', note: 'Уникальный ключ' },
+    { src: 'Дата оплаты', sys: 'payment_date', type: 'date', miss: '0,1%', note: 'Формат d.m.y' },
+    { src: 'Сумма с НДС, руб', sys: 'amount', type: 'money (₽)', miss: '0%', note: '—' },
+    { src: 'Скидка', sys: 'discount', type: 'percent', miss: '5,2%', note: '—', high: true },
+    { src: 'Статус', sys: 'status', type: 'category', miss: '0%', note: '4 значения' },
+    { src: 'Клиент', sys: 'customer_id', type: 'text (id)', miss: '0%', note: 'Связь с customers.id' }
+  ],
+  customers: [
+    { src: 'ID клиента', sys: 'id', type: 'text (id)', miss: '0%', note: 'Уникальный ключ' },
+    { src: 'Название клиента', sys: 'name', type: 'text', miss: '0%', note: '—' },
+    { src: 'Регион', sys: 'region', type: 'category', miss: '0,4%', note: '8 значений' },
+    { src: 'Дата регистрации', sys: 'registered_at', type: 'date', miss: '0%', note: 'Формат ДД.ММ.ГГГГ' }
+  ]
+};
+class Component extends DCLogic {
+  state = { table: 'orders', w: window.innerWidth };
+  componentDidMount() { this.onR = () => this.setState({ w: window.innerWidth }); window.addEventListener('resize', this.onR); }
+  componentWillUnmount() { window.removeEventListener('resize', this.onR); }
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default', ds = p.dataset === undefined ? 'orders_2026' : p.dataset;
+    const hasDs = !!ds && st !== 'empty', cols = COLS[this.state.table];
+    const narrow = p.compact ?? this.state.w < 1180;
+    return {
+      hasDs, title: hasDs ? `Каталог датасета: ${ds}` : 'Каталог данных',
+      isLoading: hasDs && st === 'loading', isEmpty: !hasDs, isError: hasDs && st === 'error', isData: hasDs && st === 'default',
+      onAsk: p.onAsk, onGoSources: p.onGoSources, onRetry: p.onRetry,
+      grid: narrow ? 'minmax(0,1fr)' : 'minmax(0,2fr) minmax(300px,1fr)',
+      skel: [{ a: '70%', b: '55%' }, { a: '50%', b: '70%' }, { a: '80%', b: '40%' }, { a: '60%', b: '65%' }, { a: '45%', b: '50%' }, { a: '65%', b: '35%' }],
+      tabs: [['orders', '120 000 строк'], ['customers', '450 строк']].map(([k, r]) => {
+        const on = this.state.table === k;
+        return { name: k, rows: r, bg: on ? 'var(--inverse)' : 'var(--card)', ink: on ? 'var(--inverse-foreground)' : 'var(--foreground)', sub: on ? 'var(--inverse-foreground)' : 'var(--muted-foreground)', bd: on ? 'var(--inverse)' : 'var(--border)', onClick: () => this.setState({ table: k }) };
+      }),
+      meta: `${this.state.table} · ${cols.length} колонок · ${this.state.table === 'orders' ? '120 000' : '450'} строк`,
+      columns: [
+        { key: 'src', label: 'Исходное имя', type: 'strong', width: 'minmax(220px,2fr)' }, { key: 'sys', label: 'В системе', type: 'mono', width: 'minmax(140px,1fr)' },
+        { key: 'type', label: 'Тип данных', type: 'type', width: '150px' }, { key: 'miss', label: 'Пропуски', type: 'number', align: 'right', width: '90px' },
+        { key: 'note', label: 'Примечание', type: 'muted', width: 'minmax(180px,1.6fr)' }
+      ],
+      rows: cols.map(c => ({ src: c.src, sys: c.sys, type: { text: c.type, tone: 'neutral' }, miss: { text: c.miss, tone: c.high ? 'warning' : c.miss === '0%' ? 'muted' : undefined, strong: !!c.high }, note: c.note })),
+      journal: [
+        { level: 'info', text: 'В колонке «Сумма с НДС, руб» распознан формат валюты (₽)' },
+        { level: 'warning', text: 'В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL. Исходные значения сохранены в raw' },
+        { level: 'info', text: 'Колонка «Дата оплаты» приведена к формату ДД.ММ.ГГГГ (исходный d.m.y)' },
+        { level: 'info', text: 'В колонке «Статус» найдено 4 значения: оплачен, доставлен, отменён, возврат' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

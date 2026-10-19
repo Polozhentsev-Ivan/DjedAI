@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div style="display:flex; flex-direction:{{ dir }}; align-items:{{ align }}; text-align:{{ ta }}; gap:var(--space-3); padding:{{ pad }}; background:{{ bg }}; border:{{ bd }}; border-radius:{{ rad }}; box-sizing:border-box; width:100%; font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="flex:none; width:{{ isz }}; height:{{ isz }}; border-radius:var(--radius-full); background:{{ tintBg }}; color:{{ tint }}; display:flex; align-items:center; justify-content:center">
+    <dc-import name="Icon" icon="{{ icon }}" spin="{{ isLoading }}" size="{{ glyph }}" hint-size="20px,20px"></dc-import>
+  </div>
+  <div style="display:flex; flex-direction:column; gap:var(--space-1-5); align-items:{{ align }}; min-width:0; flex:1">
+    <div style="font-size:{{ tsz }}; font-weight:var(--font-weight-semibold); line-height:var(--leading-snug); color:{{ titleInk }}">{{ title }}</div>
+    <sc-if value="{{ hasText }}" hint-placeholder-val="{{ true }}"><div style="color:var(--secondary-foreground); max-width:var(--text-max); text-wrap:pretty">{{ text }}</div></sc-if>
+    <sc-if value="{{ hasSteps }}" hint-placeholder-val="{{ false }}"><div style="width:100%; max-width:var(--text-max); margin-top:var(--space-1)"><dc-import name="AgentSteps" framed="{{ false }}" steps="{{ steps }}" hint-size="100%,90px"></dc-import></div></sc-if>
+    <sc-if value="{{ hasActions }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); margin-top:var(--space-1-5); justify-content:{{ align }}">
+        <sc-if value="{{ hasAction }}"><button onClick="{{ onAction }}" style="background:{{ actBg }}; color:{{ actInk }}; border:{{ actBd }}; border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-4); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))">{{ actionLabel }}</button></sc-if>
+        <sc-if value="{{ hasSecondary }}"><button onClick="{{ onSecondary }}" style="background:transparent; color:var(--link); border:none; padding:var(--space-1-5) var(--space-2); font-size:var(--text-sm); font-family:inherit; cursor:pointer">{{ secondaryLabel }}</button></sc-if>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:520,&quot;height&quot;:280},&quot;kind&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;empty&quot;,&quot;tsType&quot;:&quot;'loading'|'empty'|'error'&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;page&quot;,&quot;inline&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;page&quot;,&quot;tsType&quot;:&quot;'page'|'inline'|'compact'&quot;},&quot;title&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Нет данных&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;text&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;actionLabel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;secondaryLabel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;steps&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;Step[]&quot;},&quot;onAction&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onSecondary&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, k = p.kind ?? 'empty', s = p.size ?? 'page';
+    const err = k === 'error', load = k === 'loading', inline = s === 'inline';
+    const L = {
+      page: { dir: 'column', align: 'center', ta: 'center', pad: 'var(--space-14) var(--space-6)', bg: 'transparent', bd: 'none', rad: 'var(--radius-lg)', isz: 'var(--size-state-lg)', glyph: 'var(--size-icon-xl)', tsz: 'var(--text-lg)' },
+      inline: { dir: 'row', align: 'flex-start', ta: 'left', pad: 'var(--space-3-5) var(--space-4)', bg: err ? 'var(--destructive-muted)' : 'var(--secondary)',
+        bd: 'var(--border-width) solid ' + (err ? 'var(--destructive-border)' : 'var(--border)'), rad: 'var(--radius-md)', isz: 'var(--size-state-sm)', glyph: 'var(--size-icon-sm)', tsz: 'var(--text-sm)' },
+      compact: { dir: 'column', align: 'center', ta: 'center', pad: 'var(--space-4)', bg: 'transparent', bd: 'none', rad: 'var(--radius-md)', isz: 'var(--size-state-md)', glyph: 'var(--size-icon)', tsz: 'var(--text-sm)' }
+    }[s] || {};
+    const primary = !(inline && err);
+    return {
+      ...L,
+      icon: load ? 'loader-circle' : err ? 'triangle-alert' : 'inbox', isLoading: load,
+      tint: err ? 'var(--destructive)' : load ? 'var(--primary)' : 'var(--muted-foreground)',
+      tintBg: err ? (inline ? 'var(--card)' : 'var(--destructive-muted)') : load ? 'var(--info-muted)' : 'var(--surface-subtle)',
+      titleInk: err && inline ? 'var(--destructive)' : 'var(--foreground)',
+      title: p.title ?? '', text: p.text ?? '', hasText: !!p.text,
+      steps: p.steps || [], hasSteps: !!(p.steps && p.steps.length),
+      actionLabel: p.actionLabel, onAction: p.onAction, hasAction: !!p.actionLabel,
+      secondaryLabel: p.secondaryLabel, onSecondary: p.onSecondary, hasSecondary: !!p.secondaryLabel,
+      hasActions: !!(p.actionLabel || p.secondaryLabel),
+      actBg: primary ? 'var(--primary)' : 'transparent', actInk: primary ? 'var(--primary-foreground)' : 'var(--destructive)',
+      actBd: primary ? 'none' : 'var(--border-width) solid var(--destructive)'
+    };
+  }
+}
+</script>
+</body>
+</html>

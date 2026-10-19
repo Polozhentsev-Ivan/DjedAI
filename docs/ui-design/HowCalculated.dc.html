@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="HowCalculated" style="border:{{ bd }}; border-radius:var(--radius-md); overflow:hidden; font-family:var(--font-sans); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm); color:var(--foreground)">
+  <sc-if value="{{ collapsible }}" hint-placeholder-val="{{ true }}">
+    <button onClick="{{ toggle }}" style="width:100%; display:flex; align-items:center; gap:var(--space-2); padding:var(--space-2-5) var(--space-3-5); border:none; background:var(--card); color:var(--foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer; text-align:left">
+      <span style="display:flex; color:var(--muted-foreground)"><dc-import name="Icon" icon="{{ chevron }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></span>
+      <span style="font-weight:var(--font-weight-semibold)">Как посчитано</span>
+      <span style="margin-left:auto; font-size:var(--text-xs); color:var(--muted-foreground)">{{ summary }}</span>
+    </button>
+  </sc-if>
+  <sc-if value="{{ showBody }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex; flex-direction:column; gap:var(--space-3); padding:{{ bodyPad }}; background:{{ bodyBg }}; border-top:{{ bodyBd }}">
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center"><span style="font-size:var(--text-xs); color:var(--muted-foreground); min-width:var(--label-col)">Инструмент</span><code style="font-family:var(--font-mono); font-size:var(--text-xs); padding:var(--space-0-5) var(--space-2); border-radius:var(--radius-xs); background:var(--muted)">{{ tool }}</code></div>
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:baseline"><span style="font-size:var(--text-xs); color:var(--muted-foreground); min-width:var(--label-col)">Колонки</span>
+        <span style="display:flex; flex-wrap:wrap; gap:var(--space-1) var(--space-3)"><sc-for list="{{ columns }}" as="c" hint-placeholder-count="2"><span>«{{ c.label }}» <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">{{ c.name }}</span></span></sc-for></span>
+      </div>
+      <sc-if value="{{ hasStats }}"><div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:baseline"><span style="font-size:var(--text-xs); color:var(--muted-foreground); min-width:var(--label-col)">Обработано</span><span style="font-variant-numeric:tabular-nums">{{ stats }}</span></div></sc-if>
+      <pre style="margin:0; padding:var(--space-3) var(--space-3-5); border-radius:var(--radius-sm); background:var(--code); font-family:var(--font-mono); font-size:var(--text-xs); line-height:var(--leading-code); white-space:pre; overflow:auto; color:var(--foreground)">{{ sql }}</pre>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:640,&quot;height&quot;:320},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;collapsible&quot;,&quot;panel&quot;],&quot;default&quot;:&quot;collapsible&quot;,&quot;tsType&quot;:&quot;'collapsible'|'panel'&quot;},&quot;defaultOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;summary&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;1 инструмент · 1 SQL-запрос · 0,8 сек&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tool&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;time_aggregate(table='orders', freq='month')&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;stats&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;120 000 строк&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;sql&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;SELECT date_trunc('month', payment_date) AS month, SUM(amount) FROM orders GROUP BY month;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;columns&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[{&quot;label&quot;:&quot;Сумма с НДС, руб&quot;,&quot;name&quot;:&quot;amount&quot;}],&quot;tsType&quot;:&quot;{label:string; name:string}[]&quot;}}">
+class Component extends DCLogic {
+  state = { open: this.props.defaultOpen ?? false };
+  renderVals() {
+    const collapsible = (this.props.variant ?? 'collapsible') === 'collapsible', open = !collapsible || this.state.open;
+    return {
+      collapsible, showBody: open, chevron: this.state.open ? 'chevron-down' : 'chevron-right',
+      toggle: () => this.setState(s => ({ open: !s.open })),
+      summary: this.props.summary ?? '', tool: this.props.tool ?? '', columns: this.props.columns || [],
+      stats: this.props.stats ?? '', hasStats: !!this.props.stats, sql: this.props.sql ?? '',
+      bd: collapsible ? 'var(--border-width) solid var(--border)' : 'none',
+      bodyPad: collapsible ? 'var(--space-3-5)' : 'var(--space-1) var(--space-2) var(--space-2)',
+      bodyBg: collapsible ? 'var(--secondary)' : 'transparent',
+      bodyBd: collapsible ? 'var(--border-width) solid var(--border)' : 'none'
+    };
+  }
+}
+</script>
+</body>
+</html>
