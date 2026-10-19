@@ -120,16 +120,26 @@ def test_clarification_block_validation() -> None:
     with pytest.raises(ValidationError):
         ClarificationBlock(question="Какую метрику выбрать?", options=["Только одна"])
 
-    # Cannot be created with empty strings
+    # Cannot be created with empty strings even among multiple options
     with pytest.raises(ValidationError):
         ClarificationBlock(question="Какую метрику выбрать?", options=["Вариант 1", "  "])
 
-    # Cannot be created with duplicate options
+    with pytest.raises(ValidationError):
+        ClarificationBlock(
+            question="Какую метрику выбрать?", options=["Вариант 1", "Вариант 2", "   "]
+        )
+
+    # Cannot be created with duplicate options (including after whitespace strip)
     with pytest.raises(ValidationError):
         ClarificationBlock(question="Какую метрику выбрать?", options=["Выручка", "Выручка"])
 
-    cb = ClarificationBlock(question="Какую метрику выбрать?", options=["Вариант 1", "Вариант 2"])
-    assert len(cb.options) == 2
+    with pytest.raises(ValidationError):
+        ClarificationBlock(question="Какую метрику выбрать?", options=["Выручка", "   Выручка   "])
+
+    cb = ClarificationBlock(
+        question="Какую метрику выбрать?", options=["  Вариант 1  ", "  Вариант 2  "]
+    )
+    assert cb.options == ["Вариант 1", "Вариант 2"]
 
 
 def test_tool_result_data_with_columns_and_row_count() -> None:

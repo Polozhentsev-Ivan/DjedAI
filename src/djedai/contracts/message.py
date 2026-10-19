@@ -52,12 +52,12 @@ class ClarificationBlock(BaseModel):
     @field_validator("options")
     @classmethod
     def validate_options(cls, v: list[str]) -> list[str]:
-        cleaned = [opt.strip() for opt in v if opt.strip()]
-        if len(cleaned) < 2:
-            raise ValueError("Должно быть минимум 2 непустых варианта ответа")
+        cleaned = [opt.strip() for opt in v]
+        if any(not opt for opt in cleaned):
+            raise ValueError("Варианты ответа не должны быть пустыми")
         if len(set(cleaned)) != len(cleaned):
             raise ValueError("Варианты ответа не должны повторяться")
-        return v
+        return cleaned
 
 
 class DashboardLinkBlock(BaseModel):
