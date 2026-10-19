@@ -10,22 +10,24 @@ export const requiredFiles = [
 
 export const requiredDirectories = [
   'src/djedai/contracts', 'src/djedai/data', 'src/djedai/analytics',
-  'src/djedai/agent', 'src/djedai/backend', 'src/djedai/ui',
+  'src/djedai/agent', 'src/djedai/backend', 'frontend',
   'prompts', 'tests/unit', 'tests/integration', 'tests/e2e',
   'tests/fixtures', 'eval', 'infra', 'scripts',
 ];
 
 const textExtensions = new Set([
-  '.md', '.mjs', '.js', '.cjs', '.py', '.toml', '.json',
+  '.md', '.mjs', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.py', '.toml', '.json',
   '.yml', '.yaml', '.html', '.css', '.sh', '.ps1', '.sql',
 ]);
-const textNames = new Set(['.editorconfig', '.gitattributes', '.gitignore', '.env.example', '.python-version']);
+const textNames = new Set(['.editorconfig', '.gitattributes', '.gitignore', '.npmrc', '.env.example', '.python-version']);
 
 export function forbiddenTrackedFile(file) {
   const name = path.posix.basename(file);
   if (/^\.env(?:[._].*)?$/i.test(name) && name !== '.env.example') return true;
   if (/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.pytest_cache|\.ruff_cache|\.mypy_cache)(\/|$)/i.test(file)) return true;
   if (/^(?:var|models|artifacts|htmlcov|build|dist)\//i.test(file)) return true;
+  if (/^frontend\/(?:dist|build|coverage)\//i.test(file)) return true;
+  if (/\.tsbuildinfo$/i.test(file)) return true;
   if (/(^|\/)(?:\.coverage(?:\..*)?|coverage\.xml)$/i.test(file)) return true;
   return /\.(?:gguf|safetensors|pt|pth|pyc|pyo)$/i.test(file);
 }
