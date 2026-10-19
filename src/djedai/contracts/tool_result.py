@@ -15,32 +15,26 @@ class ToolResult(BaseModel):
     """Универсальный контракт ответа любого аналитического инструмента."""
 
     result_id: str = Field(description="Уникальный ID результата, например 'r_17'")
-    # Жестко ограничиваем статус через Literal
     status: Literal["ok", "error", "empty"] = Field(description="Статус: 'ok', 'error' или 'empty'")
 
-    # Данные и факты
     data: dict[str, Any] | None = Field(default=None, description="Данные (колонки и строки)")
     facts: list[dict[str, Any]] = Field(
         default_factory=list, description="Факты для нейросети (текст + значения)"
     )
     chart_hint: dict[str, Any] | None = Field(default=None, description="Подсказка для графика")
 
-    # Ошибка
     error: ToolError | None = Field(default=None, description="Объект ошибки, если status='error'")
 
-    # Метаданные
     tool: str | None = Field(default=None, description="Имя инструмента")
     params: dict[str, Any] | None = Field(
         default=None, description="Параметры, с которыми вызвали инструмент"
     )
     sql: str | None = Field(default=None, description="SQL-запрос, если он выполнялся")
 
-    # Связь с предыдущими результатами
     source_result_id: str | None = Field(
         default=None, description="ID результата, на основе которого сделан этот"
     )
 
-    # Валидатор согласованности статуса и ошибки
     @model_validator(mode="after")
     def check_status_error_consistency(self) -> "ToolResult":
         if self.status == "error" and self.error is None:

@@ -10,6 +10,7 @@ dependencies = [
     "langgraph==1.2.16",
     "openai==3.31.0",
     "pydantic==2.14.1",
+    "sqlglot>=30.23.0",
 ]
 
 [dependency-groups]

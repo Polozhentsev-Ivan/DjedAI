@@ -29,7 +29,6 @@ class ToolDefinition(BaseModel):
 
     @property
     def parameters_schema(self) -> dict[str, Any]:
-        """Автоматически генерирует JSON-схему из модели."""
         return self.parameters_model.model_json_schema()
 
 
