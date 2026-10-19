@@ -57,6 +57,8 @@ jobs:
         run: uv run --locked ruff check .
       - name: Check Python formatting
         run: uv run --locked ruff format --check .
+      - name: Check frontend shared contracts
+        run: uv run --locked python scripts/export_frontend_contracts.py --check
       - name: Test Python application
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 

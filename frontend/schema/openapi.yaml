@@ -3,11 +3,12 @@ info:
   title: DjedAI API (snapshot)
   version: 0.1.0
   description: |
-    Agreed snapshot of the backend API for the frontend (#83), assembled from
+    Frontend API proposals (#83) plus canonical shared contracts, based on
     docs/specification.md: §3.4 DatasetCatalog, §4.3 ToolResult, §5.6 AssistantMessage,
     §6.2 ChartSpec, §7.2 Dashboard and §7.3 API. TypeScript types are generated from it
-    with `npm run gen:types`; once FastAPI (#92) publishes /openapi.json this file is
-    replaced by that export.
+    with `npm run gen:types`. Shared definitions are referenced from contracts.json,
+    exported from the current Python backend by scripts/export_frontend_contracts.py.
+    Endpoint proposals remain here until their implementation is agreed.
 
     Items marked «x-proposal» are not in the specification yet and are proposed for #92.
 
@@ -272,13 +273,8 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
     ErrorBody:
-      type: object
-      description: Same shape as ToolError (src/djedai/contracts/tool_result.py)
-      required: [code, message]
-      properties:
-        code: { type: string }
-        message: { type: string }
-        suggestion: { type: [string, 'null'] }
+      $ref: './contracts.json#/components/schemas/ToolError'
+
     ErrorResponse:
       type: object
       x-proposal: true
@@ -394,13 +390,8 @@ components:
         cardinality: { type: string, enum: ['1:1', 'N:1', '1:N', 'N:N'] }
         confidence: { type: string, enum: [high, medium, low] }
     Transformation:
-      type: object
-      required: [table, action, detail]
-      properties:
-        table: { type: string }
-        column: { type: [string, 'null'] }
-        action: { type: string }
-        detail: { type: string }
+      $ref: './contracts.json#/components/schemas/Transformation'
+
     DatasetCatalog:
       type: object
       required: [dataset_id, name, created_at, source, tables, relations, warnings, transformations]
@@ -425,26 +416,17 @@ components:
       type: string
       enum: [read, types, profile]
     ProfilingProgress:
-      type: object
-      description: 'SSE `event: progress`'
-      required: [step, status]
-      properties:
-        step: { $ref: '#/components/schemas/ProfilingStep' }
-        status: { type: string, enum: [active, done] }
-        pct: { type: integer, minimum: 0, maximum: 100 }
-        file: { type: string }
+      $ref: './contracts.json#/components/schemas/DatasetProgressData'
+
     ProfilingDone:
-      type: object
-      description: 'SSE `event: done`'
-      required: [dataset_id]
-      properties:
-        dataset_id: { type: string }
+      $ref: './contracts.json#/components/schemas/DatasetDoneData'
+
     ProfilingEvent:
-      description: 'Events of /datasets/{id}/events: progress → ProfilingProgress, done → ProfilingDone, error → ErrorBody'
+      description: 'Events of /datasets/{id}/events: progress → ProfilingProgress, done → ProfilingDone, error → StreamError'
       oneOf:
         - $ref: '#/components/schemas/ProfilingProgress'
         - $ref: '#/components/schemas/ProfilingDone'
-        - $ref: '#/components/schemas/ErrorBody'
+        - $ref: '#/components/schemas/StreamError'
 
     ChartAxis:
       type: object
@@ -495,58 +477,16 @@ components:
               text: { type: string }
 
     Fact:
-      type: object
-      required: [text]
-      properties:
-        text: { type: string }
-        kind: { type: string }
-        values: { type: object, additionalProperties: true }
+      $ref: './contracts.json#/components/schemas/Fact'
+
     ResultColumn:
-      type: object
-      required: [name, type]
-      properties:
-        name: { type: string }
-        type: { type: string }
-        label: { type: string }
+      $ref: './contracts.json#/components/schemas/ToolResultColumn'
+
     ResultData:
-      type: object
-      required: [columns, rows, row_count, truncated]
-      properties:
-        columns:
-          type: array
-          items: { $ref: '#/components/schemas/ResultColumn' }
-        rows:
-          type: array
-          items:
-            type: array
-            items: { type: [string, number, boolean, 'null'] }
-        row_count: { type: integer }
-        truncated: { type: boolean }
+      $ref: './contracts.json#/components/schemas/ToolResultData'
+
     ToolResultMeta:
-      type: object
-      required: [result_id, tool, params, status, facts]
-      properties:
-        result_id: { type: string }
-        chat_id: { type: [string, 'null'] }
-        tool: { type: string }
-        params: { type: object, additionalProperties: true }
-        sql: { type: [string, 'null'] }
-        status: { type: string, enum: [ok, error, empty] }
-        columns:
-          type: array
-          description: Columns of the data, without rows
-          items: { $ref: '#/components/schemas/ResultColumn' }
-        row_count: { type: integer }
-        facts:
-          type: array
-          items: { $ref: '#/components/schemas/Fact' }
-        chart_hint: { type: [object, 'null'], additionalProperties: true }
-        error:
-          oneOf:
-            - $ref: '#/components/schemas/ErrorBody'
-            - type: 'null'
-        created_at: { type: string, format: date-time }
-        duration_ms: { type: integer }
+      $ref: './contracts.json#/components/schemas/ToolResult'
 
     TextBlock:
       type: object
@@ -636,41 +576,26 @@ components:
               items: { $ref: '#/components/schemas/ChatMessage' }
 
     AgentStatus:
-      type: object
-      description: 'SSE `event: status` — agent step shown while streaming'
-      required: [node, text]
-      properties:
-        node: { type: string }
-        text: { type: string }
+      $ref: './contracts.json#/components/schemas/SSEStatusData'
+
     AgentToolCall:
-      type: object
-      description: 'SSE `event: tool_call`'
-      required: [tool, params]
-      properties:
-        tool: { type: string }
-        params: { type: object, additionalProperties: true }
+      $ref: './contracts.json#/components/schemas/SSEToolCallData'
+
     AgentToolResult:
-      type: object
-      description: 'SSE `event: tool_result`'
-      required: [result_id, status]
-      properties:
-        result_id: { type: string }
-        status: { type: string, enum: [ok, error, empty] }
+      $ref: './contracts.json#/components/schemas/SSEToolResultData'
+
     AgentDone:
-      type: object
-      description: 'SSE `event: done`'
-      required: [message_id]
-      properties:
-        message_id: { type: string }
+      $ref: './contracts.json#/components/schemas/SSEDoneData'
+
     AgentEvent:
-      description: 'Events of POST /chats/{id}/messages: status, tool_call, tool_result, block (Block), done, error (ErrorBody)'
+      description: 'Events of POST /chats/{id}/messages: status, tool_call, tool_result, block (Block), done, error (StreamError)'
       oneOf:
         - $ref: '#/components/schemas/AgentStatus'
         - $ref: '#/components/schemas/AgentToolCall'
         - $ref: '#/components/schemas/AgentToolResult'
         - $ref: '#/components/schemas/Block'
         - $ref: '#/components/schemas/AgentDone'
-        - $ref: '#/components/schemas/ErrorBody'
+        - $ref: '#/components/schemas/StreamError'
 
     ToolCall:
       type: object
@@ -748,3 +673,6 @@ components:
         layout:
           type: object
           additionalProperties: { $ref: '#/components/schemas/WidgetLayout' }
+
+    StreamError:
+      $ref: './contracts.json#/components/schemas/SSEErrorData'

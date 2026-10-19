@@ -44,9 +44,9 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   ],
   warnings: ['В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL. Исходные значения сохранены в raw'],
   transformations: [
-    { table: 'orders', column: 'amount', action: 'parse_money', detail: 'В колонке «Сумма с НДС, руб» распознан формат валюты (₽)' },
-    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: 'Колонка «Дата оплаты» приведена к формату ДД.ММ.ГГГГ (исходный d.m.y)' },
-    { table: 'orders', column: 'status', action: 'detect_category', detail: 'В колонке «Статус» найдено 4 значения: оплачен, доставлен, отменён, возврат' },
+    { table: 'orders', column: 'amount', action: 'parse_money', detail: { currency: '₽', decimal: ',' } },
+    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: { format: '%d.%m.%Y' } },
+    { table: 'orders', column: 'status', action: 'detect_category', detail: { count: 4, values: ['оплачен', 'доставлен', 'отменён', 'возврат'] } },
   ],
 };
 
@@ -57,52 +57,66 @@ function readyDataset(catalog: Schemas['DatasetCatalog'], rows: number): Dataset
   };
 }
 
+const resultData = {
+  r_rev: { columns: [{ name: 'month', type: 'date', label: 'Дата оплаты' }, { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' }], rows: MONTHS.map((month, i) => [month, REVENUE[i] ?? 0]), row_count: 10, truncated: false },
+  r_reg: {
+    columns: [{ name: 'region', type: 'category', label: 'Регион' }, { name: 'share', type: 'percent', label: 'Сумма с НДС, руб' }],
+    rows: [['Москва', 45], ['Санкт-Петербург', 25], ['Казань', 12], ['Екатеринбург', 10], ['Другие', 8]],
+    row_count: 5, truncated: false,
+  },
+  r_cat: {
+    columns: [{ name: 'category', type: 'category', label: 'Категория' }, { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' }],
+    rows: [['Электроника', 4100000], ['Бытовая техника', 2600000], ['Одежда', 1900000], ['Дом и сад', 1400000], ['Спорт', 900000]],
+    row_count: 5, truncated: false,
+  },
+  r_kpi: { columns: [
+    { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' },
+    { name: 'target', type: 'money', label: 'Цель квартала' },
+    { name: 'orders', type: 'int', label: 'Заказов' },
+    { name: 'avg_check', type: 'money', label: 'Средний чек' },
+  ], rows: [[12400000, 10500000, 2573, 4820]], row_count: 1, truncated: false },
+} satisfies Record<string, ResultData>;
+
 const revenueResult: ToolResultMeta = {
-  result_id: 'r_rev', chat_id: 'c_q1', tool: 'time_aggregate', params: { table: 'orders', freq: 'month' }, status: 'ok',
+  data: resultData.r_rev,
+  result_id: 'r_rev', tool: 'time_aggregate', params: { table: 'orders', freq: 'month' }, status: 'ok',
   sql: `SELECT date_trunc('month', payment_date) AS month,
        SUM(amount) AS revenue
 FROM   orders
 GROUP  BY month
 ORDER  BY month;`,
-  columns: [{ name: 'month', type: 'date', label: 'Дата оплаты' }, { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' }],
-  row_count: 10, facts: [{ text: 'Пик продаж — июль', kind: 'peak' }], duration_ms: 800,
+  facts: [{ text: 'Пик продаж — июль', kind: 'peak' }], duration_ms: 800,
 };
 
 const regionsResult: ToolResultMeta = {
+  data: resultData.r_reg,
   result_id: 'r_reg', tool: 'group_share', params: { table: 'orders', by: 'customers.region' }, status: 'ok',
   sql: `SELECT c.region, SUM(o.amount) AS revenue
 FROM   orders o
 JOIN   customers c ON c.id = o.customer_id
 GROUP  BY c.region
 ORDER  BY revenue DESC;`,
-  columns: [{ name: 'region', type: 'category', label: 'Регион' }, { name: 'share', type: 'percent', label: 'Сумма с НДС, руб' }],
-  row_count: 5, facts: [],
+  facts: [],
 };
 
 const categoriesResult: ToolResultMeta = {
+  data: resultData.r_cat,
   result_id: 'r_cat', tool: 'top_n', params: { table: 'orders', by: 'category', n: 5 }, status: 'ok',
   sql: `SELECT category, SUM(amount) AS revenue
 FROM   orders
 GROUP  BY category
 ORDER  BY revenue DESC
 LIMIT  5;`,
-  columns: [{ name: 'category', type: 'category', label: 'Категория' }, { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' }],
-  row_count: 5, facts: [],
+  facts: [],
 };
 
 const kpiResult: ToolResultMeta = {
+  data: resultData.r_kpi,
   result_id: 'r_kpi', tool: 'kpi', params: { table: 'orders', period: 'quarter', target: 10500000 }, status: 'ok',
   sql: `SELECT SUM(amount) AS revenue,
        SUM(amount) / 10500000 - 1 AS vs_target
 FROM   orders
 WHERE  payment_date >= date_trunc('quarter', now());`,
-  columns: [
-    { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' },
-    { name: 'target', type: 'money', label: 'Цель квартала' },
-    { name: 'orders', type: 'int', label: 'Заказов' },
-    { name: 'avg_check', type: 'money', label: 'Средний чек' },
-  ],
-  row_count: 1,
   facts: [
     { text: '+18% к цели', kind: 'delta', values: { field: 'revenue', delta: 18, base: 'target' } },
     { text: 'Заказов на 21% больше', kind: 'delta', values: { field: 'orders', delta: 21 } },
@@ -110,25 +124,10 @@ WHERE  payment_date >= date_trunc('quarter', now());`,
   ],
 };
 
-const resultData: Record<string, ResultData> = {
-  r_rev: { columns: revenueResult.columns ?? [], rows: MONTHS.map((month, i) => [month, REVENUE[i] ?? 0]), row_count: 10, truncated: false },
-  r_reg: {
-    columns: regionsResult.columns ?? [],
-    rows: [['Москва', 45], ['Санкт-Петербург', 25], ['Казань', 12], ['Екатеринбург', 10], ['Другие', 8]],
-    row_count: 5, truncated: false,
-  },
-  r_cat: {
-    columns: categoriesResult.columns ?? [],
-    rows: [['Электроника', 4100000], ['Бытовая техника', 2600000], ['Одежда', 1900000], ['Дом и сад', 1400000], ['Спорт', 900000]],
-    row_count: 5, truncated: false,
-  },
-  r_kpi: { columns: kpiResult.columns ?? [], rows: [[12400000, 10500000, 2573, 4820]], row_count: 1, truncated: false },
-};
-
 const amount = { field: 'revenue', label: 'Сумма с НДС, руб', format: 'money' } as const;
 
 function widget(id: string, result: ToolResultMeta, chart: Schemas['ChartSpec'], caption: string): Schemas['Widget'] {
-  return { widget_id: id, tool_call: { tool: result.tool, params: result.params }, chart, caption, result_id: result.result_id, status: 'ok', error: null };
+  return { widget_id: id, tool_call: { tool: result.tool ?? 'unknown_tool', params: result.params ?? {} }, chart, caption, result_id: result.result_id, status: 'ok', error: null };
 }
 
 function quarterly(id: string, title: string): Dashboard {

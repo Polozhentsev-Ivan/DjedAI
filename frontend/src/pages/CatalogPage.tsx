@@ -1,5 +1,5 @@
 import { ArrowLeftRight, ArrowRight, LoaderCircle } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useDataset } from '@/api/queries';
@@ -182,11 +182,14 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
 export function CatalogPage() {
   const navigate = useNavigate();
   const { datasetId } = useParams();
-  const { ready, activeDataset } = useWorkspace();
+  const { ready, activeDataset, setActiveDataset } = useWorkspace();
   const id = datasetId ?? activeDataset;
   const dataset = useDataset(id);
   const toSources = () => { void navigate('/sources'); };
   const detail = dataset.data;
+  useEffect(() => {
+    if (datasetId && detail?.status === 'ready') setActiveDataset(detail.dataset_id);
+  }, [datasetId, detail?.status, detail?.dataset_id, setActiveDataset]);
   const notFound = dataset.isError && dataset.error.status === 404;
   const waiting = (!ready && !datasetId) || (id !== null && dataset.isPending) || detail?.status === 'processing';
   const empty = ready && (id === null || notFound);

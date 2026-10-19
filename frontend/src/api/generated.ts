@@ -243,14 +243,9 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description Same shape as ToolError (src/djedai/contracts/tool_result.py) */
-        ErrorBody: {
-            code: string;
-            message: string;
-            suggestion?: string | null;
-        };
+        ErrorBody: components["schemas"]["ToolError"];
         ErrorResponse: {
-            error: components["schemas"]["ErrorBody"];
+            error: components["schemas"]["ToolError"];
         };
         /** @enum {string} */
         SourceKind: "csv_upload" | "postgres" | "clickhouse";
@@ -274,7 +269,7 @@ export interface components {
         };
         DatasetDetail: components["schemas"]["DatasetSummary"] & {
             catalog: components["schemas"]["DatasetCatalog"] | null;
-            error: components["schemas"]["ErrorBody"] | null;
+            error: components["schemas"]["ToolError"] | null;
         };
         DatasetAccepted: {
             dataset_id: string;
@@ -332,11 +327,21 @@ export interface components {
             /** @enum {string} */
             confidence: "high" | "medium" | "low";
         };
+        /** Transformation */
         Transformation: {
+            /** Table */
             table: string;
+            /**
+             * Column
+             * @default null
+             */
             column?: string | null;
+            /** Action */
             action: string;
-            detail: string;
+            /** Detail */
+            detail?: {
+                [key: string]: unknown;
+            };
         };
         DatasetCatalog: {
             dataset_id: string;
@@ -352,20 +357,10 @@ export interface components {
         };
         /** @enum {string} */
         ProfilingStep: "read" | "types" | "profile";
-        /** @description SSE `event: progress` */
-        ProfilingProgress: {
-            step: components["schemas"]["ProfilingStep"];
-            /** @enum {string} */
-            status: "active" | "done";
-            pct?: number;
-            file?: string;
-        };
-        /** @description SSE `event: done` */
-        ProfilingDone: {
-            dataset_id: string;
-        };
-        /** @description Events of /datasets/{id}/events: progress → ProfilingProgress, done → ProfilingDone, error → ErrorBody */
-        ProfilingEvent: components["schemas"]["ProfilingProgress"] | components["schemas"]["ProfilingDone"] | components["schemas"]["ErrorBody"];
+        ProfilingProgress: components["schemas"]["DatasetProgressData"];
+        ProfilingDone: components["schemas"]["DatasetDoneData"];
+        /** @description Events of /datasets/{id}/events: progress → ProfilingProgress, done → ProfilingDone, error → StreamError */
+        ProfilingEvent: components["schemas"]["DatasetProgressData"] | components["schemas"]["DatasetDoneData"] | components["schemas"]["SSEErrorData"];
         ChartAxis: {
             field: string;
             label?: string;
@@ -406,46 +401,33 @@ export interface components {
                 text?: string;
             }[];
         };
+        /**
+         * Fact
+         * @description Структурированный факт для передачи в LLM и верификации чисел.
+         */
         Fact: {
+            /**
+             * Text
+             * @description Текстовый факт для формирования ответа пользователю
+             */
             text: string;
-            kind?: string;
+            /**
+             * Kind
+             * @description Категория факта (например, 'metric', 'seasonal_peak')
+             * @default null
+             */
+            kind?: string | null;
+            /**
+             * Values
+             * @description Точные числовые значения для верификатора
+             */
             values?: {
                 [key: string]: unknown;
             };
         };
-        ResultColumn: {
-            name: string;
-            type: string;
-            label?: string;
-        };
-        ResultData: {
-            columns: components["schemas"]["ResultColumn"][];
-            rows: (string | number | boolean | null)[][];
-            row_count: number;
-            truncated: boolean;
-        };
-        ToolResultMeta: {
-            result_id: string;
-            chat_id?: string | null;
-            tool: string;
-            params: {
-                [key: string]: unknown;
-            };
-            sql?: string | null;
-            /** @enum {string} */
-            status: "ok" | "error" | "empty";
-            /** @description Columns of the data, without rows */
-            columns?: components["schemas"]["ResultColumn"][];
-            row_count?: number;
-            facts: components["schemas"]["Fact"][];
-            chart_hint?: {
-                [key: string]: unknown;
-            } | null;
-            error?: components["schemas"]["ErrorBody"] | null;
-            /** Format: date-time */
-            created_at?: string;
-            duration_ms?: number;
-        };
+        ResultColumn: components["schemas"]["ToolResultColumn"];
+        ResultData: components["schemas"]["ToolResultData"];
+        ToolResultMeta: components["schemas"]["ToolResult"];
         TextBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -520,30 +502,12 @@ export interface components {
         ChatDetail: components["schemas"]["ChatSummary"] & {
             messages: components["schemas"]["ChatMessage"][];
         };
-        /** @description SSE `event: status` — agent step shown while streaming */
-        AgentStatus: {
-            node: string;
-            text: string;
-        };
-        /** @description SSE `event: tool_call` */
-        AgentToolCall: {
-            tool: string;
-            params: {
-                [key: string]: unknown;
-            };
-        };
-        /** @description SSE `event: tool_result` */
-        AgentToolResult: {
-            result_id: string;
-            /** @enum {string} */
-            status: "ok" | "error" | "empty";
-        };
-        /** @description SSE `event: done` */
-        AgentDone: {
-            message_id: string;
-        };
-        /** @description Events of POST /chats/{id}/messages: status, tool_call, tool_result, block (Block), done, error (ErrorBody) */
-        AgentEvent: components["schemas"]["AgentStatus"] | components["schemas"]["AgentToolCall"] | components["schemas"]["AgentToolResult"] | components["schemas"]["Block"] | components["schemas"]["AgentDone"] | components["schemas"]["ErrorBody"];
+        AgentStatus: components["schemas"]["SSEStatusData"];
+        AgentToolCall: components["schemas"]["SSEToolCallData"];
+        AgentToolResult: components["schemas"]["SSEToolResultData"];
+        AgentDone: components["schemas"]["SSEDoneData"];
+        /** @description Events of POST /chats/{id}/messages: status, tool_call, tool_result, block (Block), done, error (StreamError) */
+        AgentEvent: components["schemas"]["SSEStatusData"] | components["schemas"]["SSEToolCallData"] | components["schemas"]["SSEToolResultData"] | components["schemas"]["Block"] | components["schemas"]["SSEDoneData"] | components["schemas"]["SSEErrorData"];
         ToolCall: {
             tool: string;
             params: {
@@ -569,7 +533,7 @@ export interface components {
              * @enum {string}
              */
             status: "ok" | "error" | "empty";
-            error?: components["schemas"]["ErrorBody"] | null;
+            error?: components["schemas"]["ToolError"] | null;
         };
         DashboardSummary: {
             dashboard_id: string;
@@ -604,6 +568,299 @@ export interface components {
             layout?: {
                 [key: string]: components["schemas"]["WidgetLayout"];
             };
+        };
+        StreamError: components["schemas"]["SSEErrorData"];
+        /**
+         * ToolError
+         * @description Информация об ошибке выполнения инструмента.
+         */
+        ToolError: {
+            /**
+             * Code
+             * @description Код ошибки, например 'invalid_column' или 'timeout'
+             */
+            code: string;
+            /**
+             * Message
+             * @description Понятное пользователю сообщение об ошибке
+             */
+            message: string;
+            /**
+             * Suggestion
+             * @description Подсказка, как исправить
+             * @default null
+             */
+            suggestion?: string | null;
+        };
+        /**
+         * DatasetProgressData
+         * @description Данные о прогрессе фонового профилирования датасета.
+         */
+        DatasetProgressData: {
+            /**
+             * Stage
+             * @description Текущая стадия обработки датасета
+             */
+            stage: string;
+            /**
+             * Progress
+             * @description Доля завершения от 0.0 до 1.0
+             */
+            progress: number;
+            /**
+             * Message
+             * @description Сообщение о выполняемом действии
+             * @default null
+             */
+            message?: string | null;
+        };
+        /**
+         * DatasetDoneData
+         * @description Данные об успешном завершении профилирования датасета.
+         */
+        DatasetDoneData: {
+            /**
+             * Dataset Id
+             * @description Идентификатор профилированного датасета
+             */
+            dataset_id: string;
+        };
+        /**
+         * SSEErrorData
+         * @description Данные события ошибки при обработке сообщения.
+         */
+        SSEErrorData: {
+            /**
+             * Message
+             * @description Понятное описание возникшей ошибки на русском языке
+             */
+            message: string;
+            /**
+             * Detail
+             * @description Технические детали ошибки
+             * @default null
+             */
+            detail?: string | null;
+        };
+        /**
+         * SSEStatusData
+         * @description Данные события изменения статуса узла графа агента.
+         */
+        SSEStatusData: {
+            /**
+             * Node
+             * @description Узел графа агента (understand, plan, execute, compose, verify)
+             */
+            node: string;
+            /**
+             * Text
+             * @description Человекочитаемый статус текущего действия на русском языке
+             */
+            text: string;
+        };
+        /**
+         * SSEToolCallData
+         * @description Данные события вызова инструмента агентом.
+         */
+        SSEToolCallData: {
+            /**
+             * Tool
+             * @description Название вызванного инструмента
+             */
+            tool: string;
+            /**
+             * Params
+             * @description Параметры вызова инструмента
+             */
+            params?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * SSEToolResultData
+         * @description Данные события завершения выполнения инструмента.
+         */
+        SSEToolResultData: {
+            /**
+             * Result Id
+             * @description Идентификатор сохраненного результата
+             */
+            result_id: string;
+            /**
+             * Ok
+             * @description Признак успешного завершения инструмента
+             */
+            ok: boolean;
+            /**
+             * Error
+             * @description Сообщение об ошибке, если вызов завершился сбоем
+             * @default null
+             */
+            error?: string | null;
+        };
+        /**
+         * SSEDoneData
+         * @description Данные события успешного завершения генерации ответа.
+         */
+        SSEDoneData: {
+            /**
+             * Message Id
+             * @description Идентификатор сформированного сообщения ассистента
+             */
+            message_id: string;
+        };
+        /**
+         * ToolResultColumn
+         * @description Описание колонки в результате аналитического инструмента (§4.3).
+         */
+        ToolResultColumn: {
+            /**
+             * Name
+             * @description Имя колонки
+             */
+            name: string;
+            /**
+             * Type
+             * @description Тип данных (например, 'date', 'money', 'number')
+             * @default null
+             */
+            type?: string | null;
+            /**
+             * Label
+             * @description Человекочитаемая подпись колонки
+             * @default null
+             */
+            label?: string | null;
+        };
+        /**
+         * ToolResultData
+         * @description Табличные данные результата для прямого рендера фронтендом (§4.3).
+         */
+        ToolResultData: {
+            /**
+             * Columns
+             * @description Имена или описания колонок ({name, type, label})
+             */
+            columns?: (string | components["schemas"]["ToolResultColumn"])[];
+            /**
+             * Rows
+             * @description Строки со значениями
+             */
+            rows?: unknown[][];
+            /**
+             * Row Count
+             * @description Полный объём результата (количество строк)
+             * @default null
+             */
+            row_count?: number | null;
+            /**
+             * Truncated
+             * @description Флаг усечения строк по лимиту
+             * @default false
+             */
+            truncated?: boolean;
+        };
+        /**
+         * ChartHint
+         * @description Подсказка аналитической функции о подходящем типе визуализации (§4.3).
+         */
+        ChartHint: {
+            /**
+             * Type
+             * @description Рекомендуемый тип графика, например 'line', 'bar'
+             */
+            type: string;
+            /**
+             * X
+             * @description Поле по оси X
+             * @default null
+             */
+            x?: string | null;
+            /**
+             * Y
+             * @description Поля по оси Y
+             */
+            y?: string[];
+            /**
+             * Color
+             * @description Поле разбивки
+             * @default null
+             */
+            color?: string | null;
+        };
+        /**
+         * ToolResult
+         * @description Единый результат выполнения любого инструмента (B2, §4.3).
+         */
+        ToolResult: {
+            /**
+             * Result Id
+             * @description Уникальный идентификатор вызова, например 'r_17'
+             */
+            result_id: string;
+            /**
+             * Status
+             * @description Статус: 'ok', 'error' или 'empty'
+             * @enum {string}
+             */
+            status: "ok" | "error" | "empty";
+            /**
+             * @description Табличные данные результата
+             * @default null
+             */
+            data?: components["schemas"]["ToolResultData"] | null;
+            /**
+             * Data Ref
+             * @description Ссылка на сохранение в DuckDB/Parquet при больших объёмах
+             * @default null
+             */
+            data_ref?: string | null;
+            /**
+             * Facts
+             * @description Извлеченные факты для ответа и верификатора
+             */
+            facts?: components["schemas"]["Fact"][];
+            /**
+             * @description Подсказка для графика
+             * @default null
+             */
+            chart_hint?: components["schemas"]["ChartHint"] | null;
+            /**
+             * @description Объект ошибки, если status='error'
+             * @default null
+             */
+            error?: components["schemas"]["ToolError"] | null;
+            /**
+             * Tool
+             * @description Имя вызванного инструмента
+             * @default null
+             */
+            tool?: string | null;
+            /**
+             * Params
+             * @description Параметры, с которыми вызвали инструмент
+             */
+            params?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Sql
+             * @description SQL-запрос, если он выполнялся
+             * @default null
+             */
+            sql?: string | null;
+            /**
+             * Source Result Id
+             * @description ID исходного результата при цепочке расчётов
+             * @default null
+             */
+            source_result_id?: string | null;
+            /**
+             * Duration Ms
+             * @description Время выполнения в миллисекундах
+             * @default null
+             */
+            duration_ms?: number | null;
         };
     };
     responses: {
@@ -884,7 +1141,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ToolResultMeta"];
+                    "application/json": components["schemas"]["ToolResult"];
                 };
             };
             default: components["responses"]["Error"];
@@ -907,7 +1164,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResultData"];
+                    "application/json": components["schemas"]["ToolResultData"];
                 };
             };
             default: components["responses"]["Error"];

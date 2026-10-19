@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useDatasets } from '@/api/queries';
 import { WorkspaceContext, type Workspace } from './workspaceContext';
 
@@ -18,6 +18,14 @@ function stored(): string | null {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const query = useDatasets();
   const [chosen, setChosen] = useState<string | null>(stored);
+  const setActiveDataset = useCallback((id: string) => {
+    setChosen(id);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, id);
+    } catch {
+      // Storage blocked: the choice still lasts for this page.
+    }
+  }, []);
   const value = useMemo<Workspace>(() => {
     const datasets = query.data ?? [];
     const usable = (id: string | null) => datasets.some((d) => d.dataset_id === id && d.status === 'ready');
@@ -27,15 +35,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       datasets,
       ready: query.isSuccess || query.isError,
       activeDataset: usable(chosen) ? chosen : fallback,
-      setActiveDataset: (id) => {
-        setChosen(id);
-        try {
-          window.localStorage.setItem(STORAGE_KEY, id);
-        } catch {
-          // Storage blocked: the choice still lasts for this page.
-        }
-      },
+      setActiveDataset,
     };
-  }, [query.data, query.isSuccess, query.isError, chosen]);
+  }, [query.data, query.isSuccess, query.isError, chosen, setActiveDataset]);
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

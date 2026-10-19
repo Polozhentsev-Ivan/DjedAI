@@ -85,7 +85,11 @@ export function columnNote(column: Column, table: Table, relations: readonly Sch
 
 export function journal(catalog: Catalog): { level: LogLevel; text: string }[] {
   return [
-    ...catalog.transformations.map((t) => ({ level: 'info' as const, text: t.detail })),
+    ...catalog.transformations.map((t) => {
+      const target = [t.table, t.column].filter(Boolean).join('.');
+      const detail = Object.entries(t.detail ?? {}).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join(', ');
+      return { level: 'info' as const, text: `${target}: ${t.action}${detail ? ` — ${detail}` : ''}` };
+    }),
     ...catalog.warnings.map((text) => ({ level: 'warning' as const, text })),
   ];
 }
@@ -129,17 +133,20 @@ export function toolCall(tool: string, params: Record<string, unknown>): string 
 
 export function calculation(result: Schemas['ToolResultMeta']): Calculation {
   return {
-    tool: toolCall(result.tool, result.params),
-    columns: (result.columns ?? []).map((c) => ({ label: c.label ?? c.name, name: c.name })),
+    tool: toolCall(result.tool ?? 'unknown_tool', result.params ?? {}),
+    columns: (result.data?.columns ?? []).map((c) => typeof c === 'string' ? { label: c, name: c } : { label: c.label ?? c.name, name: c.name }),
     sql: result.sql ?? '—',
-    stats: result.row_count === undefined ? undefined : `${rowsLabel(result.row_count)} в результате`,
+    stats: result.data?.row_count == null ? undefined : `${rowsLabel(result.data.row_count)} в результате`,
   };
 }
 
-type Cell = string | number | boolean | null;
-
-export function formatMeasure(value: Cell, format: Schemas['ChartMeasure']['format']): string {
-  if (typeof value !== 'number') return value === null ? '—' : String(value);
+export function formatMeasure(value: unknown, format: Schemas['ChartMeasure']['format']): string {
+  if (typeof value !== 'number') {
+    if (value == null) return '—';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+    return JSON.stringify(value);
+  }
   if (format === 'money') return Math.abs(value) >= 1e6 ? formatMoneyShort(value) : formatMoney(value);
   if (format === 'percent') return formatPercent(value);
   return formatCount(value);
@@ -147,14 +154,16 @@ export function formatMeasure(value: Cell, format: Schemas['ChartMeasure']['form
 
 /** KPI card from a one-row result: main measure, delta facts and the other measures. */
 export function kpiView(chart: Schemas['ChartSpec'], data: Schemas['ResultData'], result: Schemas['ToolResultMeta'] | undefined): Kpi | null {
-  const row = data.rows[0];
+  const row = data.rows?.[0];
   const [main, ...rest] = chart.y ?? [];
   if (!row || !main) return null;
-  const valueOf = (field: string): Cell => row[data.columns.findIndex((c) => c.name === field)] ?? null;
-  const deltaOf = (field: string) => result?.facts.find((f) => f.kind === 'delta' && f.values?.field === field);
+  const columns = data.columns ?? [];
+  const nameOf = (c: (typeof columns)[number]) => typeof c === 'string' ? c : c.name;
+  const valueOf = (field: string): unknown => row[columns.findIndex((c) => nameOf(c) === field)] ?? null;
+  const deltaOf = (field: string) => result?.facts?.find((f) => f.kind === 'delta' && f.values?.field === field);
   const mainDelta = deltaOf(main.field);
   const base = typeof mainDelta?.values?.base === 'string' ? mainDelta.values.base : null;
-  const baseColumn = base ? data.columns.find((c) => c.name === base) : undefined;
+  const baseColumn = base ? columns.find((c) => nameOf(c) === base) : undefined;
   const baseValue = base ? valueOf(base) : null;
   const deltaNumber = Number(mainDelta?.values?.delta ?? 0);
   return {
@@ -162,7 +171,7 @@ export function kpiView(chart: Schemas['ChartSpec'], data: Schemas['ResultData']
     value: formatMeasure(valueOf(main.field), main.format),
     delta: mainDelta?.text ?? '',
     deltaTone: deltaNumber < 0 ? 'danger' : 'success',
-    target: baseColumn && typeof baseValue === 'number' ? `${baseColumn.label ?? baseColumn.name}: ${formatMoney(baseValue)}` : '',
+    target: baseColumn && typeof baseValue === 'number' ? `${typeof baseColumn === 'string' ? baseColumn : baseColumn.label ?? baseColumn.name}: ${formatMoney(baseValue)}` : '',
     stats: rest.map((measure): KpiStat => {
       const delta = Number(deltaOf(measure.field)?.values?.delta ?? 0);
       return {

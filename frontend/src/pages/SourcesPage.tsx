@@ -50,7 +50,9 @@ interface Job {
 }
 
 function progressSteps(progress: ProfilingState): Step[] {
-  return STEP_LABELS.map(([key, label]) => {
+  const known = new Set<string>(STEP_LABELS.map(([key]) => key));
+  const labels = [...STEP_LABELS, ...Object.keys(progress.steps).filter((key) => !known.has(key)).map((key) => [key, key] as const)];
+  return labels.map(([key, label]) => {
     const step = progress.steps[key];
     return { label, status: step?.status ?? 'pending', pct: step?.status === 'active' ? step.pct : undefined };
   });
@@ -61,7 +63,7 @@ function JobProgress({ job, progress, onCancel }: { job: Job; progress: Profilin
     <LoadingState
       size="inline"
       title={job.title}
-      text="Можно продолжать работу — датасет появится в списке, когда будет готов."
+      text={progress.message ?? 'Можно продолжать работу — датасет появится в списке, когда будет готов.'}
       steps={progressSteps(progress)}
       actionLabel="Отменить"
       onAction={onCancel}

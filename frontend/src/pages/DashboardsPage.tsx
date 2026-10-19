@@ -1,4 +1,5 @@
 import { Plus, RefreshCw } from 'lucide-react';
+import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useDashboard, useDashboards, useRefreshDashboard, useRemoveWidget, useResult, useResultData } from '@/api/queries';
@@ -46,8 +47,13 @@ function DashboardWidget({ widget, refreshing, onRefresh, onRemove }: WidgetProp
 
 function DashboardView({ id }: { id: string }) {
   const dashboard = useDashboard(id);
+  const { setActiveDataset } = useWorkspace();
   const refresh = useRefreshDashboard(id);
   const remove = useRemoveWidget(id);
+  const datasetId = dashboard.data?.dataset_id;
+  useEffect(() => {
+    if (datasetId) setActiveDataset(datasetId);
+  }, [datasetId, setActiveDataset]);
 
   if (dashboard.isPending) return <LoadingState title="Загружаем дашборд…" />;
   if (dashboard.isError) {
@@ -99,9 +105,9 @@ export function DashboardsPage() {
   const list = useDashboards(activeDataset);
   const datasetName = datasets.find((d) => d.dataset_id === activeDataset)?.name ?? '';
   const dashboards = list.data ?? [];
-  const selected = dashboards.find((d) => d.dashboard_id === dashboardId)?.dashboard_id ?? dashboards[0]?.dashboard_id ?? null;
+  const selected = dashboardId ?? dashboards[0]?.dashboard_id ?? null;
   const toChat = () => { void navigate('/chat'); };
-  const empty = ready && (activeDataset === null || (list.isSuccess && dashboards.length === 0));
+  const empty = !dashboardId && ready && (activeDataset === null || (list.isSuccess && dashboards.length === 0));
 
   return (
     <PageContainer>
@@ -114,8 +120,8 @@ export function DashboardsPage() {
             </div>
           </>
         )}
-        {!empty && (list.isPending || !ready) && <LoadingState title="Загружаем дашборды…" />}
-        {list.isError && (
+        {!dashboardId && !empty && (list.isPending || !ready) && <LoadingState title="Загружаем дашборды…" />}
+        {!dashboardId && list.isError && (
           <div className="rounded-lg border border-border bg-card">
             <ErrorState title="Не удалось получить список дашбордов" text={list.error.message} onAction={() => { void list.refetch(); }} />
           </div>

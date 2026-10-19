@@ -59,7 +59,7 @@ describe('dataset queries', () => {
     act(() => { result.current.upload.mutate([csv('sales.csv'), csv('b.csv')]); });
     await waitFor(() => { expect(result.current.progress.phase).toBe('done'); });
     expect(result.current.progress.steps.profile?.status).toBe('done');
-    expect(result.current.progress.file).toBe('sales.csv');
+    expect(result.current.progress.message).toBe('Профилирование завершено');
     await waitFor(() => { expect(result.current.list.data?.find((d) => d.name === 'sales')?.status).toBe('ready'); });
   });
 

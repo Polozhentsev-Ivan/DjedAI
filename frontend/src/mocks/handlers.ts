@@ -65,19 +65,19 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     const dataset = pending.get(id);
     const file = dataset ? `${dataset.name}.csv` : 'data.csv';
     const failed: SseFrame[] = [
-      ['progress', { step: 'read', status: 'done', file }],
-      ['progress', { step: 'types', status: 'active', pct: 30, file }],
-      ['error', { code: 'csv_parse', message: `Файл «${file}»: не удалось разобрать строку 3 (разное число колонок)`, suggestion: 'Проверьте разделитель и загрузите файл заново.' }],
+      ['progress', { stage: 'read', progress: 1, message: `Прочитан ${file}` }],
+      ['progress', { stage: 'types', progress: 0.3, message: 'Определение типов' }],
+      ['error', { message: `Файл «${file}»: не удалось разобрать строку 3 (разное число колонок)`, detail: 'Проверьте разделитель и загрузите файл заново.' }],
     ];
     if (scenario() === 'error') return failed;
     return [
-      ['progress', { step: 'read', status: 'active', file }],
-      ['progress', { step: 'read', status: 'done', file }],
-      ['progress', { step: 'types', status: 'active', pct: 30, file }],
-      ['progress', { step: 'types', status: 'active', pct: 60, file }],
-      ['progress', { step: 'types', status: 'done', file }],
-      ['progress', { step: 'profile', status: 'active', file }],
-      ['progress', { step: 'profile', status: 'done', file }],
+      ['progress', { stage: 'read', progress: 0, message: `Чтение ${file}` }],
+      ['progress', { stage: 'read', progress: 1, message: `Прочитан ${file}` }],
+      ['progress', { stage: 'types', progress: 0.3, message: 'Определение типов' }],
+      ['progress', { stage: 'types', progress: 0.6, message: 'Определение типов' }],
+      ['progress', { stage: 'types', progress: 1, message: 'Типы определены' }],
+      ['progress', { stage: 'profile', progress: 0, message: 'Профилирование' }],
+      ['progress', { stage: 'profile', progress: 1, message: 'Профилирование завершено' }],
       ['done', { dataset_id: id }],
     ];
   };
@@ -125,7 +125,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
 
     http.post(api('/datasets/upload'), async ({ request }) => {
       const form = await request.formData();
-      const files = form.getAll('files').filter((f): f is File => f instanceof File);
+      const files = form.getAll('files').filter((f): f is File => typeof f !== 'string');
       if (files.length === 0) {
         return errorJson(422, { code: 'no_files', message: 'Выберите хотя бы один CSV-файл' });
       }
@@ -171,12 +171,12 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
         ['status', { node: 'understand', text: 'Определил колонки: «Сумма с НДС, руб», «Дата оплаты»' }],
         ['status', { node: 'execute', text: 'Анализирую данные…' }],
         ['tool_call', { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } }],
-        ['tool_result', { result_id: 'r_rev', status: 'ok' }],
+        ['tool_result', { result_id: 'r_rev', ok: true }],
         ['block', { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' }],
         ['block', { type: 'chart', chart: { result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
         ['done', { message_id: `m_${Date.now()}` }],
       ];
-      const timeout: SseFrame = ['error', { code: 'timeout', message: 'Запрос превысил таймаут 30 сек.', suggestion: 'Попробуйте уточнить период.' }];
+      const timeout: SseFrame = ['error', { message: 'Запрос превысил таймаут 30 сек.', detail: 'Попробуйте уточнить период.' }];
       return eventStream(scenario() === 'error' ? [...frames.slice(0, 1), timeout] : frames, tick, request.signal);
     }),
 

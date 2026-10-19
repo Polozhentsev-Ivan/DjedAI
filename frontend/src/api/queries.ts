@@ -84,12 +84,12 @@ export type ProfilingStep = Schemas['ProfilingStep'];
 
 export interface ProfilingState {
   phase: 'idle' | 'running' | 'done' | 'error';
-  file: string | null;
-  steps: Partial<Record<ProfilingStep, { status: 'active' | 'done'; pct?: number | undefined }>>;
+  message: string | null;
+  steps: Partial<Record<string, { status: 'active' | 'done'; pct?: number | undefined }>>;
   error: ApiError | null;
 }
 
-const IDLE: ProfilingState = { phase: 'idle', file: null, steps: {}, error: null };
+const IDLE: ProfilingState = { phase: 'idle', message: null, steps: {}, error: null };
 const RUNNING: ProfilingState = { ...IDLE, phase: 'running' };
 
 /**
@@ -105,6 +105,7 @@ export function useProfilingProgress(id: string | null): ProfilingState {
     const controller = new AbortController();
     // State of a previous id is dropped on the first event of the new stream.
     const update = (change: (s: ProfilingState) => Partial<ProfilingState>) => {
+      if (controller.signal.aborted) return;
       setState((s) => {
         const current = s.id === id ? s : { ...RUNNING, id };
         return { ...current, ...change(current) };
@@ -115,16 +116,27 @@ export function useProfilingProgress(id: string | null): ProfilingState {
       signal: controller.signal,
       onEvent: (message) => {
         if (message.event === 'progress') {
-          const { step, status, pct, file } = message.data;
-          update((s) => ({ file: file ?? s.file, steps: { ...s.steps, [step]: { status, pct } } }));
+          const { stage, progress, message: text } = message.data;
+          update((s) => ({
+            message: text ?? null,
+            steps: {
+              ...Object.fromEntries(Object.entries(s.steps).map(([key, step]) => [key, key === stage ? step : { status: 'done' as const, pct: 100 }])),
+              [stage]: { status: progress === 1 ? 'done' : 'active', pct: Math.round(progress * 100) },
+            },
+          }));
         } else if (message.event === 'done') {
-          update(() => ({ phase: 'done' }));
+          update((s) => ({ phase: 'done', steps: Object.fromEntries(Object.keys(s.steps).map((key) => [key, { status: 'done' as const, pct: 100 }])) }));
         } else {
-          fail(new ApiError(200, message.data));
+          fail(new ApiError(200, { code: 'profiling_failed', message: message.data.message, suggestion: message.data.detail ?? null }));
         }
       },
     })
-      .then(() => client.invalidateQueries({ queryKey: keys.datasets }))
+      .then(async (outcome) => {
+        if (outcome !== 'aborted') await Promise.all([
+          client.invalidateQueries({ queryKey: keys.datasets }),
+          client.invalidateQueries({ queryKey: keys.dataset(id) }),
+        ]);
+      })
       .catch((error: unknown) => { fail(error instanceof ApiError ? error : new ApiError(0, { code: 'unknown', message: String(error) })); });
     return () => { controller.abort(); };
   }, [id, client]);

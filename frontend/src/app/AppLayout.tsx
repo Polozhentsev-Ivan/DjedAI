@@ -28,7 +28,11 @@ function Shell() {
         datasets={options}
         user={user}
         compact={compact}
-        onDatasetChange={setActiveDataset}
+        onDatasetChange={(id) => {
+          setActiveDataset(id);
+          if (first === 'catalog') void navigate(`/catalog/${encodeURIComponent(id)}`);
+          else if (first === 'chat' || first === 'dashboards') void navigate(`/${first}`);
+        }}
         onAddSource={() => { void navigate('/sources'); }}
         onLogout={() => { void navigate('/login'); }}
       />

@@ -20,11 +20,16 @@ export function isSupported(type: Spec['type']): type is SupportedType {
 const MONTHS = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
 
 function column(data: Data, field: string | undefined): number {
-  return field === undefined ? -1 : data.columns.findIndex((c) => c.name === field);
+  return field === undefined ? -1 : (data.columns ?? []).findIndex((c) => (typeof c === 'string' ? c : c.name) === field);
 }
 
 function values(data: Data, index: number): Cell[] {
-  return data.rows.map((row) => row[index] ?? null);
+  return (data.rows ?? []).map((row) => {
+    const value: unknown = row[index];
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+    return JSON.stringify(value);
+  });
 }
 
 /** Time axis labels: month names when every point is the first of a month, dates otherwise. */
@@ -60,6 +65,11 @@ function tooltipBox(t: ChartTheme) {
   };
 }
 
+/** ECharts inserts formatter strings as HTML, while category names come from data. */
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function maxAbs(data: Data, indexes: number[]): number {
   return Math.max(0, ...indexes.flatMap((i) => values(data, i)).map((v) => (typeof v === 'number' ? Math.abs(v) : 0)));
 }
@@ -77,8 +87,8 @@ export function pieLegend(spec: Spec, data: Data): LegendItem[] {
   const raw = values(data, valueIndex).map((v) => (typeof v === 'number' ? v : 0));
   const total = raw.reduce((a, b) => a + b, 0) || 1;
   const percent = spec.y?.[0]?.format === 'percent';
-  return data.rows.map((row, i) => ({
-    label: String(row[labelIndex] ?? ''),
+  return values(data, labelIndex).map((label, i) => ({
+    label: String(label ?? ''),
     value: formatPercent(percent ? (raw[i] ?? 0) : Math.round(((raw[i] ?? 0) / total) * 1000) / 10),
     color: `var(--chart-${(i % 6) + 1})`,
   }));
@@ -97,7 +107,7 @@ export function specOption(spec: Spec, data: Data, t: ChartTheme): EChartsCoreOp
     return {
       textStyle: text,
       color: t.palette,
-      tooltip: { ...tooltipBox(t), trigger: 'item', formatter: (p: { name: string; value: number }) => `${p.name}: <b>${measureLabel(p.value, first, scale)}</b>` },
+      tooltip: { ...tooltipBox(t), trigger: 'item', formatter: (p: { name: string; value: number }) => `${escapeHtml(p.name)}: <b>${escapeHtml(measureLabel(p.value, first, scale))}</b>` },
       series: [{
         type: 'pie', radius: ['52%', '90%'], center: ['50%', '50%'], label: { show: false },
         itemStyle: { borderColor: t.surface, borderWidth: 2 },
@@ -115,7 +125,7 @@ export function specOption(spec: Spec, data: Data, t: ChartTheme): EChartsCoreOp
     trigger: 'axis',
     formatter: (points: { dataIndex: number; value: number; seriesIndex: number }[]) => {
       const head = tooltipNames[points[0]?.dataIndex ?? 0] ?? '';
-      return [head, ...points.map((p) => `<b>${measureLabel(p.value, measures[p.seriesIndex], scale)}</b>`)].join('<br/>');
+      return [escapeHtml(head), ...points.map((p) => `<b>${escapeHtml(measureLabel(p.value, measures[p.seriesIndex], scale))}</b>`)].join('<br/>');
     },
   };
 

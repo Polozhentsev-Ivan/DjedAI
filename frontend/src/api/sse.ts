@@ -63,14 +63,14 @@ export interface AgentEventMap {
   tool_result: Schemas['AgentToolResult'];
   block: Schemas['Block'];
   done: Schemas['AgentDone'];
-  error: Schemas['ErrorBody'];
+  error: Schemas['StreamError'];
 }
 
 /** GET /datasets/{id}/events. */
 export interface ProfilingEventMap {
   progress: Schemas['ProfilingProgress'];
   done: Schemas['ProfilingDone'];
-  error: Schemas['ErrorBody'];
+  error: Schemas['StreamError'];
 }
 
 export type StreamOutcome = 'done' | 'error' | 'aborted';

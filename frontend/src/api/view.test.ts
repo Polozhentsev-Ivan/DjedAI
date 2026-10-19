@@ -1,5 +1,4 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
-import type { Schemas } from './client';
 import {
   calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
   journal, kpiView, missingCell, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
@@ -73,7 +72,7 @@ describe('result views', () => {
     const how = calculation(db.results.r_rev!);
     expect(how.tool).toBe("time_aggregate(table='orders', freq='month')");
     expect(how.columns).toEqual([{ label: 'Дата оплаты', name: 'month' }, { label: 'Сумма с НДС, руб', name: 'revenue' }]);
-    expect(calculation({ ...db.results.r_rev!, sql: null, row_count: undefined } as unknown as Schemas['ToolResultMeta']).sql).toBe('—');
+    expect(calculation({ ...db.results.r_rev!, sql: null, data: null }).sql).toBe('—');
   });
 
   it('formats measures', () => {

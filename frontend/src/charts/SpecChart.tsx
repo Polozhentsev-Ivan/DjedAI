@@ -19,7 +19,7 @@ export function SpecChart({ spec, data, height = 'lg' }: SpecChartProps) {
   if (!isSupported(spec.type)) {
     return <EmptyState size="compact" title="Этот тип графика пока не отображается" text={`Тип «${spec.type}» добавит задача рендерера графиков.`} />;
   }
-  if (data.rows.length === 0) return <EmptyState size="compact" title="Нет данных для графика" />;
+  if ((data.rows ?? []).length === 0) return <EmptyState size="compact" title="Нет данных для графика" />;
   if (spec.type !== 'pie') return <Chart option={option} label={label} height={height} />;
   return (
     <div className="flex items-center gap-4">

@@ -2,7 +2,7 @@
 
 - [repository-guide.md](repository-guide.md) — назначение всех каталогов и служебных файлов, необходимость каждого из них и место для будущих настроек.
 - [specification.md](specification.md) — техническая спецификация проекта; актуализирована под утверждённый React + TypeScript frontend.
-- [ui-design/README.md](ui-design/README.md) — hi-fi макет интерфейса из Claude Design: токены, компоненты, все экраны и состояния; эталон для вёрстки `frontend/`.
+- [ui-design/README.md](ui-design/README.md) — hi-fi макет интерфейса: токены, компоненты, все экраны и состояния; эталон для вёрстки `frontend/`.
 - [issues-plan.md](issues-plan.md) — план опубликованных issues с актуализированными критериями React + TypeScript UI.
 - [source/ai-native-bi-plan.html](source/ai-native-bi-plan.html) — исходная визуальная схема плана.
 - [source/case-2-ai-native-bi.docx](source/case-2-ai-native-bi.docx) — исходное описание кейса организаторов.
