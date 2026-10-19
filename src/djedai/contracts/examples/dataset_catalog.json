@@ -33,7 +33,7 @@
           ],
           "stats": {},
           "parse": null,
-          "description": "Номер заказа"
+          "description": "Уникальный номер заказа"
         },
         {
           "name": "client_id",
@@ -80,6 +80,7 @@
           "top_values": [{ "value": 990.0, "count": 1311 }],
           "stats": { "min": 0.0, "max": 250000.0, "mean": 3120.47, "median": 1490.0, "std": 5208.13 },
           "parse": { "format": "decimal_comma, RUB", "success_ratio": 0.988, "failed_examples": ["н/д", "?"] },
+          "currency": "RUB",
           "description": "Сумма заказа в рублях"
         },
         {

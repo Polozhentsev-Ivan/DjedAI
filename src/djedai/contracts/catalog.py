@@ -30,6 +30,7 @@ NUMERIC: tuple[SemanticType, ...] = ("integer", "float", "money", "percent")
 TEMPORAL: tuple[SemanticType, ...] = ("date", "datetime")
 
 Ratio = Annotated[float, Field(ge=0.0, le=1.0)]
+CurrencyCode = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]  # ISO 4217, например RUB
 Count = Annotated[int, Field(ge=0)]
 
 
@@ -88,10 +89,13 @@ class Column(_Model):
     top_values: list[TopValue] = Field(default_factory=list, max_length=MAX_TOP_VALUES)
     stats: ColumnStats = Field(default_factory=ColumnStats)
     parse: ParseInfo | None = None
+    currency: CurrencyCode | None = None  # только у money; без него валюта неизвестна
     description: str | None = None  # LLM (B1-6)
 
     @model_validator(mode="after")
     def _stats_match_type(self) -> Column:
+        if self.currency is not None and self.semantic_type != "money":
+            raise ValueError(f"{self.name}: currency есть только у денежных колонок")
         numeric = (self.stats.mean, self.stats.median, self.stats.std)
         if self.semantic_type not in NUMERIC and any(v is not None for v in numeric):
             raise ValueError(f"{self.name}: mean/median/std есть только у числовых колонок")
@@ -211,7 +215,11 @@ class DatasetCatalog(_Model):
         return "\n".join(lines)
 
 
-_COLUMN_FORMAT = "имя: тип, роль, «исходное имя», доля пропусков, период дат — описание"
+_COLUMN_FORMAT = (
+    "имя: тип, роль, валюта, «исходное имя», доля пропусков, число уникальных, "
+    "диапазон в данных — описание"
+)
+_DISTINCT_TYPES: tuple[SemanticType, ...] = ("category", "bool", "text")
 
 
 def _table_line(table: Table) -> str:
@@ -232,14 +240,33 @@ def _table_line(table: Table) -> str:
 
 def _column_line(column: Column) -> str:
     line = f"- {column.name}: {column.semantic_type}, {column.role}"
-    if column.original_name != column.name:
+    if column.currency:
+        line += f", валюта {column.currency}"
+    if _shows_original_name(column):
         line += f", «{column.original_name}»"
     if column.null_ratio:
         line += f", пропусков {column.null_ratio:.1%}"
-    if column.semantic_type in TEMPORAL and column.stats.min is not None:
-        line += f", {column.stats.min} … {column.stats.max}"
+    if column.semantic_type in _DISTINCT_TYPES:
+        line += f", уникальных {column.distinct_count}"
+    if column.semantic_type in NUMERIC + TEMPORAL and column.stats.min is not None:
+        line += f", {_value(column.stats.min)} … {_value(column.stats.max)}"
         if column.stats.granularity:
             line += f" ({column.stats.granularity})"
     if column.description:
         line += f" — {column.description}"
     return line
+
+
+def _shows_original_name(column: Column) -> bool:
+    """Исходный заголовок нужен агенту, если описание его не передаёт."""
+    if column.original_name == column.name:
+        return False
+    if not column.description:
+        return True
+    return column.original_name.casefold() not in column.description.casefold()
+
+
+def _value(value: Value | None) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)

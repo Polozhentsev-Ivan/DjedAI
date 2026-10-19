@@ -135,3 +135,55 @@ def test_prompt_has_no_heavy_lists():
     assert [value for value in heavy if value in prompt] == []
     assert "rename_column" not in prompt  # журнал преобразований в промпт не идёт
     assert len(prompt) < len(catalog.model_dump_json()) / 3
+
+
+def prompt_line(data: dict, name: str) -> str:
+    prompt = DatasetCatalog.model_validate(data).to_prompt()
+    return next(line for line in prompt.splitlines() if line.startswith(f"- {name}:"))
+
+
+def test_currency_only_for_money():
+    with pytest.raises(ValidationError):
+        DatasetCatalog.model_validate(mutated(lambda d: column(d, "status").update(currency="RUB")))
+    with pytest.raises(ValidationError):
+        DatasetCatalog.model_validate(
+            mutated(lambda d: column(d, "amount").update(currency="рубль"))
+        )
+
+
+def test_prompt_shows_currency_range_and_distinct():
+    assert "валюта RUB" in prompt_line(FULL, "amount")
+    assert ", 0 … 250000" in prompt_line(FULL, "amount")  # диапазон без «.0»
+    assert "уникальных 3" in prompt_line(FULL, "status")
+    assert "уникальных" not in prompt_line(FULL, "order_id")  # у id число бесполезно
+    assert "уникальных" not in prompt_line(FULL, "amount")
+
+
+def test_prompt_without_currency_or_stats_has_no_gaps():
+    def change(data):
+        col = column(data, "amount")
+        col.pop("currency")
+        col["stats"] = {}
+
+    line = prompt_line(mutated(change), "amount")
+    assert "валюта" not in line
+    assert "…" not in line
+
+
+@pytest.mark.parametrize(
+    ("original", "description", "shown"),
+    [
+        ("Статус", "Состояние заказа", True),  # описание не передаёт заголовок
+        ("Статус", "Статус заказа в системе", False),  # заголовок уже в описании
+        ("статус", "СТАТУС заказа", False),  # без учёта регистра
+        ("Статус", None, True),  # описания нет: заголовок единственная подсказка
+        ("status", "Состояние заказа", False),  # совпадает с name
+    ],
+)
+def test_original_name_is_shown_only_when_it_adds_meaning(original, description, shown):
+    def change(data):
+        col = column(data, "status")
+        col["original_name"] = original
+        col["description"] = description
+
+    assert (f"«{original}»" in prompt_line(mutated(change), "status")) is shown
