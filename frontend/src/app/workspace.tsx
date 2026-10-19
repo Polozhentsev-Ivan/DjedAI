@@ -1,20 +1,41 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { DATASETS, USER, type DatasetSummary } from '@/fixtures/workspace';
+import { useDatasets } from '@/api/queries';
 import { WorkspaceContext, type Workspace } from './workspaceContext';
 
-/** Session-wide choices shared by the top bar and pages. Backed by fixtures until the API lands. */
+const STORAGE_KEY = 'djedai.activeDataset';
+/** Shown until authentication (its own task) provides the session user. */
+const USER = 'ivan';
+
+function stored(): string | null {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Dataset list from the API and the dataset the user works with, remembered per browser. */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const [datasets, setDatasets] = useState<readonly DatasetSummary[]>(DATASETS);
-  const [activeDataset, setActiveDataset] = useState<string | null>(DATASETS[0]?.id ?? null);
-  const value = useMemo<Workspace>(() => ({
-    user: USER,
-    datasets,
-    activeDataset,
-    setActiveDataset,
-    removeDataset: (id) => {
-      setDatasets((list) => list.filter((d) => d.id !== id));
-      setActiveDataset((current) => (current === id ? null : current));
-    },
-  }), [datasets, activeDataset]);
+  const query = useDatasets();
+  const [chosen, setChosen] = useState<string | null>(stored);
+  const value = useMemo<Workspace>(() => {
+    const datasets = query.data ?? [];
+    const usable = (id: string | null) => datasets.some((d) => d.dataset_id === id && d.status === 'ready');
+    const fallback = datasets.find((d) => d.status === 'ready')?.dataset_id ?? null;
+    return {
+      user: USER,
+      datasets,
+      ready: query.isSuccess || query.isError,
+      activeDataset: usable(chosen) ? chosen : fallback,
+      setActiveDataset: (id) => {
+        setChosen(id);
+        try {
+          window.localStorage.setItem(STORAGE_KEY, id);
+        } catch {
+          // Storage blocked: the choice still lasts for this page.
+        }
+      },
+    };
+  }, [query.data, query.isSuccess, query.isError, chosen]);
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

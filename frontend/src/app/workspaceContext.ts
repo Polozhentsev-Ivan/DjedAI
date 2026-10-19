@@ -1,12 +1,13 @@
 import { createContext, useContext } from 'react';
-import type { DatasetSummary } from '@/fixtures/workspace';
+import type { Schemas } from '@/api/client';
 
 export interface Workspace {
   user: string;
-  datasets: readonly DatasetSummary[];
+  datasets: readonly Schemas['DatasetSummary'][];
+  /** False until the dataset list has loaded once; pages wait instead of showing «не выбран». */
+  ready: boolean;
   activeDataset: string | null;
   setActiveDataset: (id: string) => void;
-  removeDataset: (id: string) => void;
 }
 
 export const WorkspaceContext = createContext<Workspace | null>(null);

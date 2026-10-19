@@ -5,6 +5,8 @@ import { Icon } from './Icon';
 
 export interface DatasetOption {
   id: string;
+  /** Shown name; the id is used for selection. */
+  label: string;
   meta: string;
   disabled?: boolean | undefined;
 }
@@ -28,7 +30,7 @@ export function DatasetSelect({ value, options, onChange, onAdd, label = 'Акт
           aria-label={label}
           className="flex h-(--size-control-xs) items-center gap-2.5 rounded-sm border border-topbar-control-border bg-topbar-control pl-3 pr-2.5 font-mono text-sm text-topbar-foreground"
         >
-          {value ?? 'не выбран'}
+          {options.find((o) => o.id === value)?.label ?? 'не выбран'}
           <Icon icon={ChevronDown} size="sm" className="text-topbar-muted" />
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
@@ -50,7 +52,7 @@ export function DatasetSelect({ value, options, onChange, onAdd, label = 'Акт
                   )}
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="font-mono text-sm">{option.id}</span>
+                    <span className="font-mono text-sm">{option.label}</span>
                     <span className="text-xs text-muted-foreground">{option.meta}</span>
                   </span>
                   {selected && <Icon icon={Check} size="sm" className="text-link" />}

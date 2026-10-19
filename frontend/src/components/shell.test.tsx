@@ -6,9 +6,9 @@ import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 
 const options = [
-  { id: 'orders_2026', meta: 'CSV (2) · 120 450 строк' },
-  { id: 'retail_crm_prod', meta: 'Postgres · 1 420 000 строк' },
-  { id: 'marketing_q3', meta: 'Ошибки загрузки', disabled: true },
+  { id: 'orders_2026', label: 'orders_2026', meta: 'CSV (2) · 120 450 строк' },
+  { id: 'retail_crm_prod', label: 'retail_crm_prod', meta: 'Postgres · 1 420 000 строк' },
+  { id: 'marketing_q3', label: 'marketing_q3', meta: 'Ошибки загрузки', disabled: true },
 ];
 const chats = [{ id: 'q1', title: 'Продажи Q1', meta: 'Сегодня, 14:05' }, { id: 'reg', title: 'Регионы', meta: 'Вчера' }];
 

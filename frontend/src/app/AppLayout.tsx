@@ -1,7 +1,9 @@
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import { Sidebar, type Section } from '@/components/Sidebar';
 import { TopBar } from '@/components/TopBar';
-import { CHATS } from '@/fixtures/workspace';
+import { useChats } from '@/api/queries';
+import { datasetMeta } from '@/api/view';
+import { formatRelativeDay } from '@/lib/format';
 import { useCompactLayout } from '@/lib/useMediaQuery';
 import { WorkspaceProvider } from './workspace';
 import { useWorkspace } from './workspaceContext';
@@ -16,11 +18,9 @@ function Shell() {
   const { pathname } = useLocation();
   const [, first, chatId] = pathname.split('/');
   const { user, datasets, activeDataset, setActiveDataset } = useWorkspace();
-  const options = datasets.map((d) => ({
-    id: d.id,
-    meta: d.status === 'ready' ? `${d.source} · ${d.rows} строк` : 'Ошибки загрузки',
-    disabled: d.status !== 'ready',
-  }));
+  const chats = useChats(activeDataset);
+  const options = datasets.map((d) => ({ id: d.dataset_id, label: d.name, meta: datasetMeta(d), disabled: d.status !== 'ready' }));
+  const chatItems = (chats.data ?? []).map((c) => ({ id: c.chat_id, title: c.title, meta: formatRelativeDay(c.created_at) }));
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background font-sans text-foreground">
       <TopBar
@@ -34,7 +34,7 @@ function Shell() {
       />
       <div className="flex min-h-0 flex-1">
         <div className="flex flex-none self-stretch">
-          <Sidebar active={sectionOf(first)} chats={CHATS} activeChat={chatId} compact={compact} />
+          <Sidebar active={sectionOf(first)} chats={chatItems} activeChat={chatId} compact={compact} />
         </div>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
           <Outlet />

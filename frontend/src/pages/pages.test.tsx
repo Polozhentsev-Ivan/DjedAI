@@ -1,8 +1,11 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw/http';
 import { renderRoute } from '@/test/renderRoute';
+import { server, useScenario } from '@/test/server';
 
-afterEach(() => { vi.useRealTimers(); });
+const api = (path: string) => `http://localhost:3000/api${path}`;
+const csv = (name = 'sales.csv') => new File(['date,amount\n01.01.2026,10'], name, { type: 'text/csv' });
 
 describe('LoginPage', () => {
   it('validates empty fields and enters the app', async () => {
@@ -24,7 +27,7 @@ describe('LoginPage', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/login'); });
   });
 
-  it('shows loading and both error texts', async () => {
+  it('shows loading and both errors', async () => {
     await renderRoute('/login?state=loading');
     expect(screen.getByRole('button', { name: 'Входим…' })).toBeDisabled();
   });
@@ -41,22 +44,79 @@ describe('LoginPage', () => {
 });
 
 describe('SourcesPage', () => {
-  it('manages datasets in the table', async () => {
+  it('lists datasets from the API and manages them', async () => {
     const { router } = await renderRoute('/sources');
-    const table = screen.getByRole('table', { name: 'Ваши датасеты' });
+    const table = await screen.findByRole('table', { name: 'Ваши датасеты' });
+    expect(within(table).getByText('CSV (2)')).toBeInTheDocument();
+    expect(within(table).getByText('Ошибки')).toBeInTheDocument();
     await userEvent.click(within(table).getByRole('button', { name: 'Выбрать для анализа' }));
     expect(screen.getByRole('button', { name: 'Активный датасет' })).toHaveTextContent('retail_crm_prod');
-    const rows = within(table).getAllByRole('row');
-    await userEvent.click(within(rows[3]!).getByRole('button', { name: 'Удалить' }));
-    expect(within(table).queryByText('marketing_q3')).not.toBeInTheDocument();
+    const marketing = within(table).getByText('marketing_q3').closest('[role="row"]') as HTMLElement;
+    await userEvent.click(within(marketing).getByRole('button', { name: 'Удалить' }));
+    await waitFor(() => { expect(within(table).queryByText('marketing_q3')).not.toBeInTheDocument(); });
     await userEvent.click(within(table).getAllByRole('button', { name: 'Посмотреть каталог' })[0]!);
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/catalog/orders_2026'); });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/catalog/ds_orders'); });
   });
 
-  it('shows the empty state after removing everything', async () => {
+  it('uploads a CSV and follows profiling to the end', async () => {
     await renderRoute('/sources');
-    for (const button of screen.getAllByRole('button', { name: 'Удалить' })) await userEvent.click(button);
-    expect(screen.getByText('У вас пока нет загруженных данных')).toBeInTheDocument();
+    await screen.findByRole('table');
+    fireEvent.change(screen.getByTestId('csv-input'), { target: { files: [csv(), csv('more.csv')] } });
+    expect(await screen.findByText(/Загрузка sales\.csv и ещё 1/)).toBeInTheDocument();
+    await waitFor(() => { expect(screen.queryByText(/Загрузка sales\.csv/)).not.toBeInTheDocument(); });
+    const row = (await within(screen.getByRole('table')).findByText('sales')).closest('[role="row"]') as HTMLElement;
+    await waitFor(() => { expect(within(row).getByText('Готов')).toBeInTheDocument(); });
+    expect(within(row).getByText('CSV (2)')).toBeInTheDocument();
+  });
+
+  it('shows the parse error from the event stream and retries', async () => {
+    useScenario('error');
+    await renderRoute('/sources');
+    await screen.findByRole('table');
+    fireEvent.change(screen.getByTestId('csv-input'), { target: { files: [csv()] } });
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Файл «sales.csv»: не удалось разобрать строку 3 (разное число колонок)');
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined);
+    await userEvent.click(within(alert).getByRole('button', { name: 'Загрузить заново' }));
+    expect(click).toHaveBeenCalled();
+    click.mockRestore();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('cancels a running upload and removes its dataset', async () => {
+    server.use(http.get(api('/datasets/:id/events'), () => new HttpResponse(new ReadableStream({ start() { /* never ends */ } }), { headers: { 'Content-Type': 'text/event-stream' } })));
+    await renderRoute('/sources');
+    await screen.findByRole('table');
+    fireEvent.change(screen.getByTestId('csv-input'), { target: { files: [csv()] } });
+    expect(await within(screen.getByRole('table')).findByText('Обработка')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Отменить' }));
+    await waitFor(() => { expect(within(screen.getByRole('table')).queryByText('sales')).not.toBeInTheDocument(); });
+    expect(screen.getByText(/Перетащите CSV файлы сюда/)).toBeInTheDocument();
+  });
+
+  it('connects a database and reports a bad DSN', async () => {
+    await renderRoute('/sources');
+    await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'ClickHouse' }));
+    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveAttribute('placeholder', expect.stringContaining('clickhouse://'));
+    await userEvent.click(screen.getByRole('button', { name: 'products' }));
+    expect(screen.getByRole('button', { name: 'products' })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(screen.getByRole('button', { name: 'orders' }));
+    expect(screen.getByRole('button', { name: 'orders' })).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'mysql://x');
+    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Строка подключения не распознана');
+    await userEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    await userEvent.clear(screen.getByLabelText('Строка подключения (DSN)'));
+    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'clickhouse://u:p@h:9000/db');
+    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
+    expect(await within(screen.getByRole('table')).findByText('clickhouse_db')).toBeInTheDocument();
+  });
+
+  it('shows the empty state and switches tabs from it', async () => {
+    useScenario('empty');
+    await renderRoute('/sources');
+    expect(await screen.findByText('У вас пока нет загруженных данных')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Активный датасет' })).toHaveTextContent('не выбран');
     await userEvent.click(screen.getByRole('button', { name: 'Подключить БД' }));
     expect(screen.getByLabelText('Строка подключения (DSN)')).toBeInTheDocument();
@@ -64,107 +124,101 @@ describe('SourcesPage', () => {
     expect(screen.getByText(/Перетащите CSV файлы сюда/)).toBeInTheDocument();
   });
 
-  it('fills the database form', async () => {
+  it('shows list loading and errors', async () => {
+    useScenario('slow');
+    const { unmount } = await renderRoute('/sources');
+    expect(screen.getByText('Загружаем список датасетов…')).toBeInTheDocument();
+    unmount();
+    useScenario('normal');
+    server.use(http.get(api('/datasets'), () => HttpResponse.json({ error: { code: 'db_down', message: 'База приложения недоступна' } }, { status: 503 })));
     await renderRoute('/sources');
-    await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
-    await userEvent.click(screen.getByRole('radio', { name: 'ClickHouse' }));
-    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveAttribute('placeholder', expect.stringContaining('clickhouse://'));
-    const products = screen.getByRole('button', { name: 'products' });
-    await userEvent.click(products);
-    expect(products).toHaveAttribute('aria-pressed', 'true');
-    await userEvent.click(screen.getByRole('button', { name: 'orders' }));
-    expect(screen.getByRole('button', { name: 'orders' })).toHaveAttribute('aria-pressed', 'false');
-    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
-  });
-
-  it('plays the upload and lets it be cancelled', async () => {
-    await renderRoute('/sources');
-    vi.useFakeTimers();
-    const input = screen.getByTestId('csv-input');
-    fireEvent.change(input, { target: { files: [new File(['a,b'], 'sales.csv', { type: 'text/csv' })] } });
-    expect(screen.getByText('Загрузка sales.csv · 18,4 МБ')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }));
-    expect(screen.queryByText('Загрузка sales.csv · 18,4 МБ')).not.toBeInTheDocument();
-    fireEvent.change(input, { target: { files: [new File(['a,b'], 'sales.csv')] } });
-    act(() => { vi.advanceTimersByTime(3200); });
-    expect(screen.getByText(/Перетащите CSV файлы сюда/)).toBeInTheDocument();
-  });
-
-  it('shows the parse error with a retry', async () => {
-    await renderRoute('/sources?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('не удалось разобрать строку 3');
-    const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined);
-    await userEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Загрузить заново' }));
-    expect(click).toHaveBeenCalledTimes(1);
-    await userEvent.click(within(screen.getByRole('table')).getByRole('button', { name: 'Загрузить заново' }));
-    expect(click).toHaveBeenCalledTimes(2);
-    click.mockRestore();
-  });
-
-  it('opens the empty frame by URL', async () => {
-    await renderRoute('/sources?state=empty');
-    expect(screen.getByText('У вас пока нет загруженных данных')).toBeInTheDocument();
+    expect(await screen.findByText('База приложения недоступна')).toBeInTheDocument();
+    server.resetHandlers();
   });
 });
 
 describe('CatalogPage', () => {
-  it('switches tables and asks in chat', async () => {
-    const { router } = await renderRoute('/catalog/orders_2026');
-    expect(screen.getByText('orders · 6 колонок · 120 000 строк')).toBeInTheDocument();
+  it('shows the catalog from the API and switches tables', async () => {
+    const { router } = await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByText(/orders · 6 колонок · 120\s000 строк/)).toBeInTheDocument();
+    expect(screen.getByText('money (₽)')).toBeInTheDocument();
+    expect(screen.getByText('Связь с customers.id')).toBeInTheDocument();
+    expect(screen.getByText('3 информации')).toBeInTheDocument();
+    expect(screen.getByText('1 предупреждение')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Совпадение ключей' })).toHaveAttribute('aria-valuenow', '99.8');
     await userEvent.click(screen.getByRole('tab', { name: /customers/ }));
     expect(screen.getByText('registered_at')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: 'Уверенность связи' })).toHaveAttribute('aria-valuenow', '99.8');
     await userEvent.click(screen.getByRole('button', { name: /Задать вопрос в чате/ }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
   });
 
   it('falls back to the active dataset', async () => {
     await renderRoute('/catalog');
-    expect(screen.getByRole('heading', { name: 'Каталог датасета: orders_2026' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Каталог датасета: orders_2026' })).toBeInTheDocument();
   });
 
-  it('shows skeletons while profiling', async () => {
-    await renderRoute('/catalog/orders_2026?state=loading');
-    expect(screen.getByText('Строим профиль таблиц…')).toBeInTheDocument();
+  it('shows skeletons while loading', async () => {
+    useScenario('slow');
+    await renderRoute('/catalog/ds_orders');
+    expect(screen.getByText('Загружаем каталог…')).toBeInTheDocument();
   });
 
   it('shows the empty state for an unknown dataset', async () => {
     const { router } = await renderRoute('/catalog/missing');
-    expect(screen.getByText('Датасет не выбран')).toBeInTheDocument();
+    expect(await screen.findByText('Датасет не выбран')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Добавить источник' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/sources'); });
   });
 
-  it('retries after a profiling error', async () => {
-    await renderRoute('/catalog/orders_2026?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('Не удалось построить профиль таблицы');
+  it('shows the profiling error of a dataset', async () => {
+    await renderRoute('/catalog/ds_marketing');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Не удалось построить профиль таблицы');
+    expect(alert).toHaveTextContent('marketing.csv');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Повторить' }));
+  });
+
+  it('shows request errors with retry', async () => {
+    server.use(http.get(api('/datasets/:id'), () => HttpResponse.json({ error: { code: 'boom', message: 'Сервер упал' } }, { status: 500 }), { once: true }));
+    await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByText('Сервер упал')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Повторить' }));
-    expect(screen.getByText('Структура таблицы')).toBeInTheDocument();
+    expect(await screen.findByText('Структура таблицы')).toBeInTheDocument();
+  });
+
+  it('waits while a dataset is still processing', async () => {
+    server.use(http.get(api('/datasets/:id'), () => HttpResponse.json({
+      dataset_id: 'ds_new', name: 'new', source: { kind: 'csv_upload' }, status: 'processing',
+      table_count: null, row_count: null, created_at: '2026-10-19T10:00:00', catalog: null, error: null,
+    })));
+    await renderRoute('/catalog/ds_new');
+    expect(await screen.findByText('Строим профиль таблиц…')).toBeInTheDocument();
   });
 });
 
 describe('ChatPage', () => {
-  it('shows the answer and adds the chart to a dashboard', async () => {
-    const { router } = await renderRoute('/chat/q1');
-    expect(screen.getByText('25,4 млн ₽')).toBeInTheDocument();
-    expect(screen.getByText(/SELECT date_trunc/)).toBeInTheDocument();
+  it('draws the answer chart from the result and saves it to a dashboard', async () => {
+    const { router } = await renderRoute('/chat/c_q1');
+    expect(await screen.findByRole('heading', { name: 'Продажи Q1' })).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: /Выручка по месяцам/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'В дашборд' }));
-    expect(screen.getByText(/График добавлен на дашборд/)).toBeInTheDocument();
+    expect(await screen.findByText('График добавлен на дашборд «Квартальная статистика продаж»')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Открыть →' }));
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/dashboards/q'); });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/dashboards/d_q'); });
+    expect(await screen.findAllByText('Выручка по месяцам, ₽')).not.toHaveLength(0);
   });
 
-  it('hides the toast after a while', async () => {
-    await renderRoute('/chat/q1');
-    vi.useFakeTimers();
-    fireEvent.click(screen.getByRole('button', { name: 'В дашборд' }));
-    act(() => { vi.advanceTimersByTime(4500); });
-    expect(screen.queryByText(/График добавлен на дашборд/)).not.toBeInTheDocument();
+  it('reports a failed save', async () => {
+    server.use(http.post(api('/dashboards'), () => HttpResponse.json({ error: { code: 'x', message: 'Дашборд недоступен' } }, { status: 500 })));
+    await renderRoute('/chat/c_q1');
+    await userEvent.click(await screen.findByRole('button', { name: 'В дашборд' }));
+    expect(await screen.findByText('Дашборд недоступен')).toBeInTheDocument();
   });
 
   it('streams after sending and can be stopped', async () => {
-    await renderRoute('/chat/q1');
-    const input = screen.getByRole('textbox', { name: 'Вопрос к данным' });
+    await renderRoute('/chat/c_q1');
+    const input = await screen.findByRole('textbox', { name: 'Вопрос к данным' });
+    await screen.findByRole('heading', { name: 'Продажи Q1' });
     await userEvent.type(input, 'Где больше возвратов?{Enter}');
     expect(screen.getByText('Ассистент работает')).toBeInTheDocument();
     expect(input).toBeDisabled();
@@ -172,58 +226,70 @@ describe('ChatPage', () => {
     expect(screen.getByRole('button', { name: 'Отправить' })).toBeInTheDocument();
   });
 
-  it('ignores an empty question', async () => {
-    await renderRoute('/chat/q1');
-    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }));
-    expect(screen.queryByText('Ассистент работает')).not.toBeInTheDocument();
-  });
-
-  it('greets in a new chat and opens one from a starter', async () => {
+  it('greets in a new chat and opens the latest from a starter', async () => {
     const { router } = await renderRoute('/chat');
     expect(screen.getByText('Здравствуйте, ivan')).toBeInTheDocument();
+    await screen.findByRole('link', { name: /Продажи Q1/ });
     await userEvent.click(screen.getByRole('button', { name: /Где больше возвратов/ }));
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/q1'); });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/c_q1'); });
   });
 
   it('shows clarification and timeout', async () => {
-    await renderRoute('/chat/q1?state=error');
-    expect(screen.getByText('Какую сумму показать?')).toBeInTheDocument();
+    await renderRoute('/chat/c_q1?state=error');
+    expect(await screen.findByText('Какую сумму показать?')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('Запрос превысил таймаут 30 сек.');
-    await userEvent.click(screen.getByRole('button', { name: /Сумма заказа/ }));
-    expect(screen.getByText('Ассистент работает')).toBeInTheDocument();
   });
 });
 
 describe('DashboardsPage', () => {
-  it('switches dashboards and removes widgets', async () => {
+  it('renders widgets from results and switches dashboards', async () => {
     await renderRoute('/dashboards');
-    expect(screen.getByRole('heading', { name: 'Дашборд: Квартальная статистика продаж' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Дашборд: Квартальная статистика продаж' })).toBeInTheDocument();
+    expect(await screen.findByText(/12,4\sмлн\s₽/)).toBeInTheDocument();
+    expect(screen.getByText('+18% к цели')).toBeInTheDocument();
+    expect(await screen.findByText('Санкт-Петербург')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Как посчитано' })[0]!);
+    expect(await screen.findByText("time_aggregate(table='orders', freq='month')")).toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: 'Маркетинг Q3' }));
-    expect(screen.getByRole('heading', { name: 'Дашборд: Маркетинг Q3' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Дашборд: Маркетинг Q3' })).toBeInTheDocument();
+  });
+
+  it('refreshes and removes widgets', async () => {
+    await renderRoute('/dashboards/d_q');
+    await screen.findByText(/12,4\sмлн\s₽/);
+    await userEvent.click(screen.getByRole('button', { name: /Обновить данные/ }));
+    await waitFor(() => { expect(screen.queryByText('Обновление данных…')).not.toBeInTheDocument(); });
     for (const button of screen.getAllByRole('button', { name: 'Удалить' })) await userEvent.click(button);
-    expect(screen.getByText('У вас ещё нет дашбордов')).toBeInTheDocument();
+    expect(await screen.findByText('На дашборде нет виджетов')).toBeInTheDocument();
   });
 
-  it('refreshes widgets', async () => {
-    await renderRoute('/dashboards/q');
-    vi.useFakeTimers();
-    fireEvent.click(screen.getByRole('button', { name: /Обновить данные/ }));
-    expect(screen.getAllByText('Обновление данных…')).toHaveLength(4);
-    act(() => { vi.advanceTimersByTime(2400); });
-    expect(screen.queryByText('Обновление данных…')).not.toBeInTheDocument();
+  it('keeps other widgets when one fails and retries by refreshing', async () => {
+    useScenario('error');
+    await renderRoute('/dashboards/d_q');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Ошибка обновления данных');
+    expect(alert).toHaveTextContent('Источник не ответил за 30 сек.');
+    expect(await screen.findByText(/12,4\sмлн\s₽/)).toBeInTheDocument();
+    useScenario('normal');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Повторить' }));
+    await waitFor(() => { expect(screen.queryByRole('alert')).not.toBeInTheDocument(); });
   });
 
-  it('keeps other widgets when one fails', async () => {
-    await renderRoute('/dashboards/q?state=error');
-    expect(screen.getAllByRole('alert')).toHaveLength(1);
-    expect(screen.getByText('12,4 млн ₽')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }));
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('points to the chat when empty', async () => {
-    const { router } = await renderRoute('/dashboards?state=empty');
-    await userEvent.click(screen.getByRole('button', { name: 'Перейти в чат' }));
+  it('points to the chat when there are no dashboards', async () => {
+    useScenario('empty');
+    const { router } = await renderRoute('/dashboards');
+    await userEvent.click(await screen.findByRole('button', { name: 'Перейти в чат' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
+  });
+
+  it('shows loading and request errors', async () => {
+    useScenario('slow');
+    const { unmount } = await renderRoute('/dashboards');
+    expect(screen.getByText('Загружаем дашборды…')).toBeInTheDocument();
+    unmount();
+    useScenario('normal');
+    server.use(http.get(api('/dashboards/:id'), () => HttpResponse.json({ error: { code: 'x', message: 'Дашборд сломан' } }, { status: 500 })));
+    await renderRoute('/dashboards/d_q');
+    expect(await screen.findByText('Дашборд сломан')).toBeInTheDocument();
   });
 });

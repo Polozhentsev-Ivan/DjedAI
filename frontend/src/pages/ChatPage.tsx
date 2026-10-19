@@ -2,8 +2,9 @@ import { Square } from 'lucide-react';
 import { useEffect, useRef, useState, type SubmitEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useFixtureState } from '@/app/useFixtureState';
+import { useChats, useSaveToDashboard } from '@/api/queries';
 import { useWorkspace } from '@/app/workspaceContext';
-import { DemoChart } from '@/charts/DemoChart';
+import { ResultChart } from '@/charts/ResultChart';
 import { AgentSteps } from '@/components/AgentSteps';
 import { Button } from '@/components/Button';
 import { ChartCard } from '@/components/ChartCard';
@@ -14,11 +15,11 @@ import { Icon } from '@/components/Icon';
 import { ErrorState } from '@/components/StateBlock';
 import { SuggestionChips } from '@/components/SuggestionChips';
 import { Toast } from '@/components/Toast';
-import { AGENT_STEPS, ANSWER, CALCULATION, CLARIFY_OPTIONS, FACTS, PARTIAL_ANSWER, QUESTION, STARTERS, SUGGESTIONS } from '@/fixtures/chat';
-import { CHATS } from '@/fixtures/workspace';
+import { AGENT_STEPS, ANSWER, ANSWER_CHART, ANSWER_RESULT_ID, CALCULATION, CLARIFY_OPTIONS, FACTS, PARTIAL_ANSWER, QUESTION, STARTERS, SUGGESTIONS } from '@/fixtures/chat';
 import { cn } from '@/lib/cn';
 
-const DASHBOARD = { id: 'q', title: 'Квартальная статистика продаж' };
+/** Dashboard the demo answer is already on (mock data); #86 takes it from a dashboard_link block. */
+const DASHBOARD = { id: 'd_q', title: 'Квартальная статистика продаж' };
 const TOAST_MS = 4500;
 
 /**
@@ -29,21 +30,25 @@ export function ChatPage() {
   const navigate = useNavigate();
   const { chatId } = useParams();
   const fixture = useFixtureState();
-  const { user, activeDataset } = useWorkspace();
+  const { user, activeDataset, datasets } = useWorkspace();
+  const chats = useChats(activeDataset);
+  const save = useSaveToDashboard();
   const [text, setText] = useState('');
-  const [toast, setToast] = useState(false);
+  const [toast, setToast] = useState<{ id: string; title: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => { clearTimeout(toastTimer.current); }, []);
 
-  const chat = CHATS.find((c) => c.id === chatId);
+  const chat = chats.data?.find((c) => c.chat_id === chatId);
   const state = chat ? fixture.state : 'empty';
   const streaming = state === 'loading';
-  const dataset = activeDataset ?? 'orders_2026';
+  const dataset = datasets.find((d) => d.dataset_id === activeDataset)?.name ?? '—';
 
   const send = () => {
     setText('');
     if (!chat) {
-      void navigate(`/chat/${CHATS[0]?.id ?? ''}`);
+      // Creating a chat and streaming the answer is #86; the fixture opens the latest chat.
+      const first = chats.data?.[0];
+      if (first) void navigate(`/chat/${first.chat_id}`);
       return;
     }
     fixture.simulate('loading', 2600);
@@ -53,11 +58,16 @@ export function ChatPage() {
     if (!streaming && text.trim()) send();
   };
   const addToDashboard = () => {
-    setToast(true);
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => { setToast(false); }, TOAST_MS);
+    if (!activeDataset) return;
+    save.mutate({ dataset_id: activeDataset, dashboard_id: DASHBOARD.id, result_id: ANSWER_RESULT_ID, chart: ANSWER_CHART }, {
+      onSuccess: (dashboard) => {
+        setToast({ id: dashboard.dashboard_id, title: dashboard.title });
+        clearTimeout(toastTimer.current);
+        toastTimer.current = setTimeout(() => { setToast(null); }, TOAST_MS);
+      },
+    });
   };
-  const openDashboard = () => { void navigate(`/dashboards/${DASHBOARD.id}`); };
+  const openDashboard = () => { if (toast) void navigate(`/dashboards/${toast.id}`); };
   const gutter = 'px-8';
 
   return (
@@ -101,14 +111,15 @@ export function ChatPage() {
           {state === 'default' && (
             <ChatMessage role="assistant" parts={ANSWER} facts={FACTS}>
               <ChartCard
-                title="Выручка по месяцам, ₽"
-                subtitle="orders · «Сумма с НДС, руб» · 01.01.2026–31.10.2026"
-                primaryLabel="В дашборд"
+                title={ANSWER_CHART.title}
+                subtitle={ANSWER_CHART.subtitle ?? undefined}
+                primaryLabel={save.isPending ? 'Сохраняем…' : 'В дашборд'}
                 onPrimary={addToDashboard}
                 secondaryLabel="Экспорт"
               >
-                <DemoChart name="revenue" />
+                <ResultChart resultId={ANSWER_RESULT_ID} spec={ANSWER_CHART} />
               </ChartCard>
+              {save.isError && <ErrorState size="inline" title="Не удалось добавить график на дашборд" text={save.error.message} onAction={addToDashboard} />}
               <HowCalculated defaultOpen summary="1 инструмент · 1 SQL-запрос · 0,8 сек" {...CALCULATION} />
               <div className="text-sm tracking-sm text-secondary-foreground">
                 Этот график уже есть на дашборде <Link to={`/dashboards/${DASHBOARD.id}`}>«{DASHBOARD.title}» →</Link>
@@ -166,7 +177,7 @@ export function ChatPage() {
         </div>
       </form>
 
-      {toast && <Toast message={`График добавлен на дашборд «${DASHBOARD.title}»`} actionLabel="Открыть →" onAction={openDashboard} />}
+      {toast && <Toast message={`График добавлен на дашборд «${toast.title}»`} actionLabel="Открыть →" onAction={openDashboard} />}
     </div>
   );
 }

@@ -1,8 +1,10 @@
 import { ArrowLeftRight, ArrowRight, LoaderCircle } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import type { Schemas } from '@/api/client';
+import { useDataset } from '@/api/queries';
+import { catalogSummary, columnNote, journal, missingCell, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
-import { useFixtureState } from '@/app/useFixtureState';
 import { useWorkspace } from '@/app/workspaceContext';
 import { Button } from '@/components/Button';
 import { DataTable, type Column, type Row } from '@/components/DataTable';
@@ -10,9 +12,8 @@ import { Icon } from '@/components/Icon';
 import { EmptyState, ErrorState } from '@/components/StateBlock';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TransformLogItem } from '@/components/TransformLogItem';
-import { CATALOG_SUMMARY, JOURNAL, RELATION, TABLES, type CatalogTable } from '@/fixtures/catalog';
 import { cn } from '@/lib/cn';
-import { formatPercent } from '@/lib/format';
+import { formatPercent, plural } from '@/lib/format';
 
 const COLUMNS: readonly Column[] = [
   { key: 'source', label: 'Исходное имя', type: 'strong', width: 'minmax(220px,2fr)' },
@@ -29,15 +30,15 @@ const cardTitle = 'text-base font-semibold tracking-body';
 const twoColumns = 'grid grid-cols-1 gap-5 min-[1180px]:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]';
 const SKELETON_ROWS = [['70%', '55%'], ['50%', '70%'], ['80%', '40%'], ['60%', '65%'], ['45%', '50%'], ['65%', '35%']] as const;
 
-function rowsOf(table: CatalogTable): Row[] {
+function rowsOf(table: Schemas['CatalogTable'], relations: readonly Schemas['Relation'][]): Row[] {
   return table.columns.map((c) => ({
-    id: c.system,
+    id: c.name,
     cells: {
-      source: c.source,
-      system: c.system,
-      type: { text: c.type, tone: 'neutral' },
-      missing: { text: c.missing, tone: c.high ? 'warning' : c.missing === '0%' ? 'muted' : undefined, strong: c.high },
-      note: c.note,
+      source: c.original_name,
+      system: c.name,
+      type: { text: typeLabel(c), tone: 'neutral' },
+      missing: missingCell(c),
+      note: columnNote(c, table, relations),
     },
   }));
 }
@@ -46,12 +47,12 @@ function Bar({ className }: { className: string }) {
   return <div className={cn('rounded-sm bg-skeleton', className)} />;
 }
 
-function CatalogSkeleton() {
+function CatalogSkeleton({ label }: { label: string }) {
   return (
     <>
       <div role="status" className="flex items-center gap-2.5 text-muted-foreground">
         <Icon icon={LoaderCircle} size="sm" spin className="text-primary" />
-        Строим профиль таблиц…
+        {label}
       </div>
       <div aria-hidden="true" className="flex animate-pulse gap-2">
         <div className="h-(--size-control-md) w-(--popover-width) max-w-[40%] rounded-full bg-skeleton" />
@@ -86,28 +87,119 @@ function CatalogSkeleton() {
   );
 }
 
+function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
+  const [tableId, setTableId] = useState(catalog.tables[0]?.table_id ?? '');
+  const table = catalog.tables.find((t) => t.table_id === tableId) ?? catalog.tables[0];
+  const entries = journal(catalog);
+  const warnings = entries.filter((j) => j.level === 'warning').length;
+  const infos = entries.length - warnings;
+  const relations = relationViews(catalog);
+  if (!table) return <EmptyState title="В датасете нет таблиц" />;
+  return (
+    <>
+      <div role="tablist" aria-label="Таблицы датасета" className="flex flex-wrap gap-2">
+        {catalog.tables.map((t) => {
+          const on = t.table_id === table.table_id;
+          return (
+            <button
+              key={t.table_id}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              onClick={() => { setTableId(t.table_id); }}
+              className={cn(
+                'flex items-baseline gap-2 rounded-full border px-4 py-1.5',
+                on ? 'border-inverse bg-inverse text-inverse-foreground' : 'border-border bg-card text-foreground',
+              )}
+            >
+              <span className="font-mono text-sm font-semibold">{t.table_id}</span>
+              <span className={cn('text-xs', on ? 'text-inverse-foreground' : 'text-muted-foreground')}>{rowsLabel(t.row_count)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <section className={card}>
+        <div className={cardHeader}>
+          <h2 className={cardTitle}>Структура таблицы</h2>
+          <span className="text-muted-foreground">{tableMeta(table)}</span>
+        </div>
+        <DataTable label={`Структура таблицы ${table.table_id}`} columns={COLUMNS} rows={rowsOf(table, catalog.relations)} minWidth="820px" />
+      </section>
+
+      <div className={cn(twoColumns, 'items-start')}>
+        <section className={card}>
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-4">
+            <h2 className={cn(cardTitle, 'mr-auto')}>Журнал обработки данных</h2>
+            {infos > 0 && <StatusBadge variant="tag" tone="info" label={`${infos} ${plural(infos, ['информация', 'информации', 'информаций'])}`} />}
+            {warnings > 0 && <StatusBadge variant="tag" tone="warning" label={`${warnings} ${plural(warnings, ['предупреждение', 'предупреждения', 'предупреждений'])}`} />}
+          </div>
+          {entries.length === 0 && <div className="px-5 py-4 text-muted-foreground">Данные загружены без преобразований</div>}
+          {entries.map((entry) => <TransformLogItem key={entry.text} level={entry.level} text={entry.text} />)}
+        </section>
+        <section className={card}>
+          <h2 className={cn(cardTitle, 'border-b border-border px-5 py-4')}>Обнаруженные связи таблиц</h2>
+          {relations.length === 0 && <div className="px-5 py-4 text-muted-foreground">Связи между таблицами не найдены</div>}
+          {relations.map((relation) => (
+            <div key={relation.key} className="flex flex-col gap-3.5 px-5 py-4">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5">
+                {[relation.from, null, relation.to].map((end) =>
+                  end ? (
+                    <div key={end.column} className="rounded-md bg-surface-subtle px-3 py-2.5">
+                      <div className="font-semibold">{end.label}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{end.column}</div>
+                    </div>
+                  ) : (
+                    <span key="arrow" className="flex text-muted-foreground"><Icon icon={ArrowLeftRight} size="md" /></span>
+                  ),
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between">
+                  <span className="text-secondary-foreground">Совпадение ключей</span>
+                  <span className="tabular font-semibold text-success">{formatPercent(relation.overlap)}</span>
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label="Совпадение ключей"
+                  aria-valuenow={relation.overlap}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className="h-(--size-progress-lg) overflow-hidden rounded-full bg-muted"
+                >
+                  <div className="h-full bg-success" style={{ width: `${relation.overlap}%` }} />
+                </div>
+                <span className="text-xs text-muted-foreground">{relation.note}</span>
+              </div>
+            </div>
+          ))}
+        </section>
+      </div>
+    </>
+  );
+}
+
 export function CatalogPage() {
   const navigate = useNavigate();
   const { datasetId } = useParams();
-  const { state, set } = useFixtureState();
-  const { datasets, activeDataset } = useWorkspace();
-  const [tableName, setTableName] = useState(TABLES[0]?.name ?? '');
+  const { ready, activeDataset } = useWorkspace();
   const id = datasetId ?? activeDataset;
-  const known = datasets.some((d) => d.id === id && d.status === 'ready');
-  const hasDataset = known && state !== 'empty';
-  const table = TABLES.find((t) => t.name === tableName) ?? TABLES[0];
+  const dataset = useDataset(id);
   const toSources = () => { void navigate('/sources'); };
-  const warnings = JOURNAL.filter((j) => j.level === 'warning').length;
+  const detail = dataset.data;
+  const notFound = dataset.isError && dataset.error.status === 404;
+  const waiting = (!ready && !datasetId) || (id !== null && dataset.isPending) || detail?.status === 'processing';
+  const empty = ready && (id === null || notFound);
 
   return (
     <PageContainer>
       <div className="flex flex-col gap-6 text-sm leading-normal tracking-sm">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <PageTitle>{hasDataset ? `Каталог датасета: ${id ?? ''}` : 'Каталог данных'}</PageTitle>
-            {hasDataset && <div className="mt-1.5 text-muted-foreground">{CATALOG_SUMMARY}</div>}
+            <PageTitle>{detail ? `Каталог датасета: ${detail.name}` : 'Каталог данных'}</PageTitle>
+            {detail?.status === 'ready' && <div className="mt-1.5 text-muted-foreground">{catalogSummary(detail)}</div>}
           </div>
-          {hasDataset && (
+          {detail?.status === 'ready' && (
             <Button className="px-5 py-2" onClick={() => { void navigate('/chat'); }}>
               Задать вопрос в чате
               <Icon icon={ArrowRight} size="sm" />
@@ -115,103 +207,29 @@ export function CatalogPage() {
           )}
         </div>
 
-        {!hasDataset && (
+        {empty && (
           <div className="rounded-lg border border-border bg-card">
             <EmptyState title="Датасет не выбран" text="Выберите датасет в верхнем меню или добавьте новый." actionLabel="Добавить источник" onAction={toSources} />
           </div>
         )}
-        {hasDataset && state === 'loading' && <CatalogSkeleton />}
-        {hasDataset && state === 'error' && (
+        {!empty && waiting && <CatalogSkeleton label={detail?.status === 'processing' ? 'Строим профиль таблиц…' : 'Загружаем каталог…'} />}
+        {!empty && dataset.isError && !notFound && (
+          <div className="rounded-lg border border-border bg-card">
+            <ErrorState title="Не удалось загрузить каталог" text={dataset.error.message} onAction={() => { void dataset.refetch(); }} secondaryLabel="К источникам" onSecondary={toSources} />
+          </div>
+        )}
+        {detail?.status === 'error' && (
           <div className="rounded-lg border border-border bg-card">
             <ErrorState
-              title="Не удалось построить профиль таблицы"
-              text="Файл пуст или повреждён (orders.csv). Проверьте файл и загрузите его заново."
-              onAction={() => { set('default'); }}
+              title={detail.error?.message ?? 'Не удалось построить профиль таблицы'}
+              text={detail.error?.suggestion ?? undefined}
+              onAction={() => { void dataset.refetch(); }}
               secondaryLabel="К источникам"
               onSecondary={toSources}
             />
           </div>
         )}
-        {hasDataset && state === 'default' && table && (
-          <>
-            <div role="tablist" aria-label="Таблицы датасета" className="flex flex-wrap gap-2">
-              {TABLES.map((t) => {
-                const on = t.name === table.name;
-                return (
-                  <button
-                    key={t.name}
-                    type="button"
-                    role="tab"
-                    aria-selected={on}
-                    onClick={() => { setTableName(t.name); }}
-                    className={cn(
-                      'flex items-baseline gap-2 rounded-full border px-4 py-1.5',
-                      on ? 'border-inverse bg-inverse text-inverse-foreground' : 'border-border bg-card text-foreground',
-                    )}
-                  >
-                    <span className="font-mono text-sm font-semibold">{t.name}</span>
-                    <span className={cn('text-xs', on ? 'text-inverse-foreground' : 'text-muted-foreground')}>{t.rows} строк</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <section className={card}>
-              <div className={cardHeader}>
-                <h2 className={cardTitle}>Структура таблицы</h2>
-                <span className="text-muted-foreground">
-                  {table.name} · {table.columns.length} колонок · {table.rows} строк
-                </span>
-              </div>
-              <DataTable label={`Структура таблицы ${table.name}`} columns={COLUMNS} rows={rowsOf(table)} minWidth="820px" />
-            </section>
-
-            <div className={cn(twoColumns, 'items-start')}>
-              <section className={card}>
-                <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-4">
-                  <h2 className={cn(cardTitle, 'mr-auto')}>Журнал обработки данных</h2>
-                  <StatusBadge variant="tag" tone="info" label={`${JOURNAL.length - warnings} информации`} />
-                  <StatusBadge variant="tag" tone="warning" label={`${warnings} предупреждение`} />
-                </div>
-                {JOURNAL.map((entry) => <TransformLogItem key={entry.text} level={entry.level} text={entry.text} />)}
-              </section>
-              <section className={card}>
-                <h2 className={cn(cardTitle, 'border-b border-border px-5 py-4')}>Обнаруженные связи таблиц</h2>
-                <div className="flex flex-col gap-3.5 px-5 py-4">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5">
-                    {[RELATION.from, null, RELATION.to].map((end) =>
-                      end ? (
-                        <div key={end.column} className="rounded-md bg-surface-subtle px-3 py-2.5">
-                          <div className="font-semibold">{end.label}</div>
-                          <div className="font-mono text-xs text-muted-foreground">{end.column}</div>
-                        </div>
-                      ) : (
-                        <span key="arrow" className="flex text-muted-foreground"><Icon icon={ArrowLeftRight} size="md" /></span>
-                      ),
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <div className="flex justify-between">
-                      <span className="text-secondary-foreground">Уверенность</span>
-                      <span className="tabular font-semibold text-success">{formatPercent(RELATION.confidence)}</span>
-                    </div>
-                    <div
-                      role="progressbar"
-                      aria-label="Уверенность связи"
-                      aria-valuenow={RELATION.confidence}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      className="h-(--size-progress-lg) overflow-hidden rounded-full bg-muted"
-                    >
-                      <div className="h-full bg-success" style={{ width: `${RELATION.confidence}%` }} />
-                    </div>
-                    <span className="text-xs text-muted-foreground">{RELATION.note}</span>
-                  </div>
-                </div>
-              </section>
-            </div>
-          </>
-        )}
+        {detail?.status === 'ready' && detail.catalog && <Catalog key={detail.dataset_id} catalog={detail.catalog} />}
       </div>
     </PageContainer>
   );

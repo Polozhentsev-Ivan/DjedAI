@@ -6,11 +6,11 @@ describe('routing', () => {
   it('redirects the root to sources', async () => {
     const { router } = await renderRoute('/');
     expect(await screen.findByRole('heading', { name: 'Источники данных' })).toBeInTheDocument();
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/sources'); });
+    expect(router.state.location.pathname).toBe('/sources');
   });
 
   it('opens a nested route directly, as after a reload', async () => {
-    await renderRoute('/catalog/orders_2026');
+    await renderRoute('/catalog/ds_orders');
     expect(await screen.findByRole('heading', { name: 'Каталог датасета: orders_2026' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Каталог' })).toHaveAttribute('aria-current', 'page');
   });
@@ -18,13 +18,12 @@ describe('routing', () => {
   it('moves between sections from the sidebar', async () => {
     const { router } = await renderRoute('/sources');
     await userEvent.click(screen.getByRole('link', { name: 'Дашборды' }));
-    expect(await screen.findByRole('heading', { name: /Дашборд: Квартальная статистика продаж/ })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Дашборд: Квартальная статистика продаж' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: 'Чат' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
-    expect(await screen.findByText('История чатов')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('link', { name: /Регионы/ }));
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/reg'); });
-    expect(screen.getByRole('heading', { name: 'Регионы' })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('link', { name: /Регионы/ }));
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/c_reg'); });
+    expect(await screen.findByRole('heading', { name: 'Регионы' })).toBeInTheDocument();
   });
 
   it('shows not found for unknown pages', async () => {
@@ -40,12 +39,17 @@ describe('routing', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/login'); });
   });
 
-  it('changes the active dataset from the top bar', async () => {
-    const { router } = await renderRoute('/sources');
-    await userEvent.click(screen.getByRole('button', { name: 'Активный датасет' }));
+  it('changes and remembers the active dataset', async () => {
+    const { router } = await renderRoute('/catalog');
+    const picker = screen.getByRole('button', { name: 'Активный датасет' });
+    await waitFor(() => { expect(picker).toHaveTextContent('orders_2026'); });
+    await userEvent.click(picker);
+    expect(screen.getByRole('menuitem', { name: /marketing_q3/ })).toHaveAttribute('data-disabled');
     await userEvent.click(screen.getByRole('menuitem', { name: /retail_crm_prod/ }));
-    expect(screen.getByRole('button', { name: 'Активный датасет' })).toHaveTextContent('retail_crm_prod');
-    await userEvent.click(screen.getByRole('button', { name: 'Активный датасет' }));
+    expect(picker).toHaveTextContent('retail_crm_prod');
+    expect(await screen.findByRole('heading', { name: 'Каталог датасета: retail_crm_prod' })).toBeInTheDocument();
+    expect(window.localStorage.getItem('djedai.activeDataset')).toBe('ds_retail');
+    await userEvent.click(picker);
     await userEvent.click(screen.getByRole('menuitem', { name: /Добавить источник/ }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/sources'); });
   });

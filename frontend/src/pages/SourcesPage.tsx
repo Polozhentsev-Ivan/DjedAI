@@ -1,18 +1,22 @@
 import { Check, Database, Upload } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type SubmitEvent } from 'react';
 import { useNavigate } from 'react-router';
+import type { ApiError, Schemas } from '@/api/client';
+import { useConnectDatabase, useDatasets, useDeleteDataset, useProfilingProgress, useUploadCsv, type ProfilingState } from '@/api/queries';
+import { countOrDash, sourceLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
-import { useFixtureState } from '@/app/useFixtureState';
 import { useWorkspace } from '@/app/workspaceContext';
+import type { Step } from '@/components/AgentSteps';
 import { Button, LinkButton } from '@/components/Button';
 import { DataTable, type CellAction, type Column, type Row } from '@/components/DataTable';
 import { Icon } from '@/components/Icon';
 import { Segmented } from '@/components/Segmented';
 import { EmptyState, ErrorState, LoadingState } from '@/components/StateBlock';
 import { cn } from '@/lib/cn';
+import { formatBytes } from '@/lib/format';
 
 type Tab = 'csv' | 'db';
-type DbKind = 'postgres' | 'clickhouse';
+type DbKind = Schemas['ConnectRequest']['kind'];
 
 const COLUMNS: readonly Column[] = [
   { key: 'name', label: 'Название', type: 'name', width: 'minmax(200px,2fr)' },
@@ -30,43 +34,99 @@ const DSN_PLACEHOLDER: Record<DbKind, string> = {
 };
 const DB_TABLES = ['orders', 'customers', 'products', 'returns'];
 
-const UPLOAD_STEPS = [
-  { label: 'Чтение файла', status: 'done' },
-  { label: 'Определение типов', status: 'active', pct: 60 },
-  { label: 'Профилирование', status: 'pending' },
-] as const;
+const STEP_LABELS = [['read', 'Чтение файла'], ['types', 'Определение типов'], ['profile', 'Профилирование']] as const;
+const STATUS: Record<Schemas['DatasetStatus'], { text: string; tone: 'success' | 'danger' | 'info' }> = {
+  ready: { text: 'Готов', tone: 'success' },
+  error: { text: 'Ошибки', tone: 'danger' },
+  processing: { text: 'Обработка', tone: 'info' },
+};
 
 const card = 'overflow-hidden rounded-lg border border-border bg-card';
 
+/** A running upload or connection: what to call it and which dataset's events to follow. */
+interface Job {
+  title: string;
+  datasetId: string | null;
+}
+
+function progressSteps(progress: ProfilingState): Step[] {
+  return STEP_LABELS.map(([key, label]) => {
+    const step = progress.steps[key];
+    return { label, status: step?.status ?? 'pending', pct: step?.status === 'active' ? step.pct : undefined };
+  });
+}
+
+function JobProgress({ job, progress, onCancel }: { job: Job; progress: ProfilingState; onCancel: () => void }) {
+  return (
+    <LoadingState
+      size="inline"
+      title={job.title}
+      text="Можно продолжать работу — датасет появится в списке, когда будет готов."
+      steps={progressSteps(progress)}
+      actionLabel="Отменить"
+      onAction={onCancel}
+    />
+  );
+}
+
 export function SourcesPage() {
   const navigate = useNavigate();
-  const { state, set, simulate } = useFixtureState();
-  const { datasets, activeDataset, setActiveDataset, removeDataset } = useWorkspace();
+  const datasets = useDatasets();
+  const { activeDataset, setActiveDataset } = useWorkspace();
+  const upload = useUploadCsv();
+  const connect = useConnectDatabase();
+  const remove = useDeleteDataset();
   const [tab, setTab] = useState<Tab>('csv');
   const [dbKind, setDbKind] = useState<DbKind>('postgres');
+  const [dsn, setDsn] = useState('');
   const [tables, setTables] = useState<ReadonlySet<string>>(new Set(['orders', 'customers']));
+  const [job, setJob] = useState<Job | null>(null);
   const [fileInput, setFileInput] = useState<HTMLInputElement | null>(null);
+  const progress = useProfilingProgress(job?.datasetId ?? null);
 
   const browse = () => { fileInput?.click(); };
-  const empty = state === 'empty' || datasets.length === 0;
+  const startUpload = (files: File[]) => {
+    const first = files[0];
+    if (!first) return;
+    const extra = files.length > 1 ? ` и ещё ${files.length - 1}` : '';
+    setTab('csv');
+    setJob({ title: `Загрузка ${first.name}${extra} · ${formatBytes(files.reduce((sum, f) => sum + f.size, 0))}`, datasetId: null });
+    upload.mutate(files, { onSuccess: ({ dataset_id }) => { setJob((j) => j && { ...j, datasetId: dataset_id }); } });
+  };
+  const submitDb = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const kindLabel = DB_KINDS.find((k) => k.value === dbKind)?.label ?? dbKind;
+    setJob({ title: `Подключение ${kindLabel}`, datasetId: null });
+    connect.mutate({ kind: dbKind, dsn, tables: [...tables] }, { onSuccess: ({ dataset_id }) => { setJob((j) => j && { ...j, datasetId: dataset_id }); } });
+  };
+  // Cancel stops watching and removes the half-made dataset; nothing is retried.
+  const cancel = () => {
+    if (job?.datasetId) remove.mutate(job.datasetId);
+    setJob(null);
+    upload.reset();
+    connect.reset();
+  };
 
-  const rows: Row[] = datasets.map((d) => {
+  const jobError: ApiError | null = progress.error ?? (job ? (upload.error ?? connect.error) : null);
+  const running = job !== null && !jobError && progress.phase !== 'done';
+
+  const rows: Row[] = (datasets.data ?? []).map((d) => {
     const ready = d.status === 'ready';
-    const active = d.id === activeDataset;
+    const active = d.dataset_id === activeDataset;
     const actions: CellAction[] = [];
-    if (ready && !active) actions.push({ label: 'Выбрать для анализа', onClick: () => { setActiveDataset(d.id); } });
-    if (ready) actions.push({ label: 'Посмотреть каталог', onClick: () => { setActiveDataset(d.id); void navigate(`/catalog/${d.id}`); } });
-    if (!ready) actions.push({ label: 'Загрузить заново', onClick: browse });
-    actions.push({ label: 'Удалить', tone: 'danger', onClick: () => { removeDataset(d.id); } });
+    if (ready && !active) actions.push({ label: 'Выбрать для анализа', onClick: () => { setActiveDataset(d.dataset_id); } });
+    if (ready) actions.push({ label: 'Посмотреть каталог', onClick: () => { setActiveDataset(d.dataset_id); void navigate(`/catalog/${d.dataset_id}`); } });
+    if (d.status === 'error') actions.push({ label: 'Загрузить заново', onClick: browse });
+    actions.push({ label: 'Удалить', tone: 'danger', onClick: () => { remove.mutate(d.dataset_id); } });
     return {
-      id: d.id,
+      id: d.dataset_id,
       highlight: active,
       cells: {
-        name: { text: d.id, tag: active ? 'активный' : undefined },
-        source: { text: d.source, tone: 'secondary' },
-        tables: d.tables,
-        rows: d.rows,
-        status: { text: ready ? 'Готов' : 'Ошибки', tone: ready ? 'success' : 'danger' },
+        name: { text: d.name, tag: active ? 'активный' : undefined },
+        source: { text: sourceLabel(d.source), tone: 'secondary' },
+        tables: countOrDash(d.table_count),
+        rows: countOrDash(d.row_count),
+        status: STATUS[d.status],
         actions,
       },
     };
@@ -80,6 +140,18 @@ export function SourcesPage() {
       return next;
     });
   };
+
+  const jobBlock = job && (running
+    ? <JobProgress job={job} progress={progress} onCancel={cancel} />
+    : jobError && (
+      <ErrorState
+        size="inline"
+        title={tab === 'csv' ? 'Не удалось загрузить данные' : 'Не удалось подключить базу данных'}
+        text={jobError.suggestion ? `${jobError.message}. ${jobError.suggestion}` : jobError.message}
+        actionLabel={tab === 'csv' ? 'Загрузить заново' : 'Закрыть'}
+        onAction={tab === 'csv' ? () => { cancel(); browse(); } : cancel}
+      />
+    ));
 
   return (
     <PageContainer>
@@ -119,10 +191,15 @@ export function SourcesPage() {
               multiple
               hidden
               data-testid="csv-input"
-              onChange={(e) => { if (e.target.files?.length) simulate('loading', 3200); e.target.value = ''; }}
+              onChange={(e) => { startUpload([...(e.target.files ?? [])]); e.target.value = ''; }}
             />
-            {tab === 'csv' && (state === 'default' || state === 'empty') && (
-              <div className="flex flex-col items-center gap-2 rounded-lg border-(length:--border-width-dashed) border-dashed border-border bg-surface-subtle px-6 py-8 text-center">
+            {jobBlock}
+            {!jobBlock && tab === 'csv' && (
+              <div
+                onDragOver={(e) => { e.preventDefault(); }}
+                onDrop={(e) => { e.preventDefault(); startUpload([...e.dataTransfer.files].filter((f) => /\.csv$/i.test(f.name))); }}
+                className="flex flex-col items-center gap-2 rounded-lg border-(length:--border-width-dashed) border-dashed border-border bg-surface-subtle px-6 py-8 text-center"
+              >
                 <div className="mb-1 flex size-(--size-control) items-center justify-center rounded-full bg-card text-primary">
                   <Icon icon={Upload} size="lg" />
                 </div>
@@ -134,40 +211,25 @@ export function SourcesPage() {
                 </div>
               </div>
             )}
-            {tab === 'csv' && state === 'loading' && (
-              <LoadingState
-                size="inline"
-                title="Загрузка sales.csv · 18,4 МБ"
-                text="Можно продолжать работу — датасет появится в списке, когда будет готов."
-                steps={UPLOAD_STEPS}
-                actionLabel="Отменить"
-                onAction={() => { set('default'); }}
-              />
-            )}
-            {tab === 'csv' && state === 'error' && (
-              <ErrorState
-                size="inline"
-                title="Не удалось загрузить данные"
-                text="Файл «sales.csv»: не удалось разобрать строку 3 (разное число колонок)"
-                actionLabel="Загрузить заново"
-                onAction={browse}
-              />
-            )}
-            {tab === 'db' && (
-              <form className="flex max-w-(--chat-max) flex-col gap-4" onSubmit={(e) => { e.preventDefault(); }}>
+            {!jobBlock && tab === 'db' && (
+              <form className="flex max-w-(--chat-max) flex-col gap-4" onSubmit={submitDb}>
                 <div className="flex flex-col gap-1.5">
                   <span className="text-xs font-semibold text-secondary-foreground">Тип базы данных</span>
                   <Segmented label="Тип базы данных" options={DB_KINDS} value={dbKind} onChange={setDbKind} itemClassName="px-4 py-1.5" />
                 </div>
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-semibold text-secondary-foreground">Строка подключения (DSN)</span>
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="dsn" className="text-xs font-semibold text-secondary-foreground">Строка подключения (DSN)</label>
                   <input
+                    id="dsn"
                     name="dsn"
+                    required
                     autoComplete="off"
+                    value={dsn}
+                    onChange={(e) => { setDsn(e.target.value); }}
                     placeholder={DSN_PLACEHOLDER[dbKind]}
                     className="box-border h-(--size-control) rounded-md border border-input bg-card px-3.5 font-mono text-sm text-foreground outline-none focus-visible:outline-(--focus-ring)"
                   />
-                </label>
+                </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-xs font-semibold text-secondary-foreground">
                     Таблицы <span className="font-normal text-muted-foreground">· необязательно, по умолчанию — все доступные</span>
@@ -195,7 +257,9 @@ export function SourcesPage() {
                 </div>
                 <div className="flex flex-wrap gap-2.5">
                   <Button type="submit" className="px-5 py-2">Подключить</Button>
-                  <Button variant="outline" className="px-5 py-2">Проверить соединение</Button>
+                  <Button variant="outline" className="px-5 py-2" disabled title="Появится вместе с проверкой соединения в API">
+                    Проверить соединение
+                  </Button>
                 </div>
               </form>
             )}
@@ -205,9 +269,13 @@ export function SourcesPage() {
         <section className={card}>
           <div className="flex items-baseline gap-2 border-b border-border px-5 py-4">
             <h2 className="text-base font-semibold tracking-body">Ваши датасеты</h2>
-            <span className="text-muted-foreground">{empty ? 0 : datasets.length}</span>
+            {datasets.isSuccess && <span className="text-muted-foreground">{datasets.data.length}</span>}
           </div>
-          {empty ? (
+          {datasets.isPending && <LoadingState size="compact" title="Загружаем список датасетов…" />}
+          {datasets.isError && (
+            <ErrorState size="compact" title="Не удалось получить список датасетов" text={datasets.error.message} onAction={() => { void datasets.refetch(); }} />
+          )}
+          {datasets.isSuccess && datasets.data.length === 0 && (
             <EmptyState
               title="У вас пока нет загруженных данных"
               text="Загрузите CSV или подключите БД, чтобы начать анализ."
@@ -216,9 +284,8 @@ export function SourcesPage() {
               secondaryLabel="Подключить БД"
               onSecondary={() => { setTab('db'); }}
             />
-          ) : (
-            <DataTable label="Ваши датасеты" columns={COLUMNS} rows={rows} minWidth="900px" />
           )}
+          {datasets.isSuccess && datasets.data.length > 0 && <DataTable label="Ваши датасеты" columns={COLUMNS} rows={rows} minWidth="900px" />}
         </section>
       </div>
     </PageContainer>

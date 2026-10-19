@@ -1,3 +1,6 @@
+// Static conversation until chat blocks and streaming land in B4-4 (#86); its chart is a real
+// result (r_rev) fetched through the API.
+import type { Schemas } from '@/api/client';
 import type { Step } from '@/components/AgentSteps';
 import type { Fact, TextPart } from '@/components/ChatMessage';
 import type { ClarifyOption } from '@/components/ClarifyBlock';
@@ -50,3 +53,14 @@ export const STARTERS: readonly { question: string; columns: string }[] = [
   { question: 'Топ-10 клиентов по сумме заказов', columns: 'Клиент · Сумма с НДС, руб' },
   { question: 'Как скидка влияет на средний чек?', columns: 'Скидка · Сумма с НДС, руб' },
 ];
+
+export const ANSWER_RESULT_ID = 'r_rev';
+
+export const ANSWER_CHART: Schemas['ChartSpec'] = {
+  result_id: ANSWER_RESULT_ID,
+  type: 'line',
+  title: 'Выручка по месяцам, ₽',
+  subtitle: 'orders · «Сумма с НДС, руб» · 01.01.2026–31.10.2026',
+  x: { field: 'month', label: 'Месяц', kind: 'time' },
+  y: [{ field: 'revenue', label: 'Сумма с НДС, руб', format: 'money' }],
+};
