@@ -20,6 +20,17 @@ class DescribeDatasetParams(BaseModel):
     pass
 
 
+class DescribeColumnParams(BaseModel):
+    table: str = Field(description="Имя таблицы")
+    column: str = Field(description="Имя колонки")
+
+
+class ValueCountsParams(BaseModel):
+    table: str = Field(description="Имя таблицы")
+    column: str = Field(description="Имя колонки")
+    top_n: int = Field(default=10, description="Количество топ-значений")
+
+
 class ToolDefinition(BaseModel):
     """Описание инструмента для нейросети (MLE)."""
 
@@ -42,6 +53,16 @@ TOOLS_REGISTRY = [
         name="describe_dataset",
         description="Показывает общую информацию о загруженных данных (список таблиц, колонок).",
         parameters_model=DescribeDatasetParams,
+    ),
+    ToolDefinition(
+        name="describe_column",
+        description="Показывает статистику по конкретной колонке (пропуски, уникальные значения).",
+        parameters_model=DescribeColumnParams,
+    ),
+    ToolDefinition(
+        name="value_counts",
+        description="Показывает самые частые значения в колонке.",
+        parameters_model=ValueCountsParams,
     ),
 ]
 

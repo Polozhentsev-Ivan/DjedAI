@@ -117,3 +117,141 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 suggestion=suggestion,
             ),
         )
+
+
+# --- НОВЫЕ ФУНКЦИИ ДЛЯ B2-3 ---
+
+
+def _get_mock_connection():
+    """Вспомогательная функция для создания тестовой БД (пока нет реального датасета от DE)."""
+    con = duckdb.connect(database=":memory:")
+    con.execute("SET enable_external_access = false;")
+    # Создаем тестовую таблицу с пропусками для проверки
+    con.execute("CREATE TABLE test (id INT, city VARCHAR, age INT)")
+    con.execute(
+        "INSERT INTO test VALUES (1, 'Москва', 25), (2, 'СПб', 30), "
+        "(3, 'Москва', 25), (4, 'Казань', NULL)"
+    )
+    return con
+
+
+def describe_dataset() -> ToolResult:
+    """Возвращает обзор всех таблиц в базе данных."""
+    con = _get_mock_connection()
+    try:
+        # Получаем список таблиц (в будущем заменим на чтение из DatasetCatalog #59)
+        tables = con.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+        table_names = [t[0] for t in tables]
+
+        facts = [{"text": f"В датасете доступны таблицы: {', '.join(table_names)}"}]
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            status="ok",
+            tool="describe_dataset",
+            data={"tables": table_names},
+            facts=facts,
+        )
+    except Exception as e:
+        return ToolResult(
+            result_id=str(uuid.uuid4()),
+            status="error",
+            error=ToolError(code="db_error", message=str(e)),
+        )
+
+
+def describe_column(table: str, column: str) -> ToolResult:
+    """Возвращает статистику по конкретной колонке."""
+    con = _get_mock_connection()
+    try:
+        # Проверяем, существует ли такая колонка
+        cols = con.execute(f"PRAGMA table_info('{table}')").fetchall()
+        col_names = [c[1] for c in cols]
+
+        if column not in col_names:
+            return ToolResult(
+                result_id=str(uuid.uuid4()),
+                status="error",
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка '{column}' не найдена в таблице '{table}'.",
+                    suggestion=f"Доступные колонки: {', '.join(col_names)}",
+                ),
+            )
+
+        # Считаем статистику: всего строк, заполненных, уникальных
+        stats = con.execute(
+            f"SELECT COUNT(*), COUNT({column}), COUNT(DISTINCT {column}) FROM {table}"
+        ).fetchone()
+        total_rows, non_null, distinct = stats
+
+        facts = [
+            {"text": f"Всего строк в таблице: {total_rows}"},
+            {"text": f"Заполненных значений в колонке '{column}': {non_null}"},
+            {"text": f"Уникальных значений: {distinct}"},
+        ]
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            status="ok",
+            tool="describe_column",
+            data={"total": total_rows, "non_null": non_null, "distinct": distinct},
+            facts=facts,
+        )
+    except Exception as e:
+        return ToolResult(
+            result_id=str(uuid.uuid4()),
+            status="error",
+            error=ToolError(code="db_error", message=str(e)),
+        )
+
+
+def value_counts(table: str, column: str, top_n: int = 10) -> ToolResult:
+    """Возвращает топ-N самых частых значений в колонке."""
+    con = _get_mock_connection()
+    try:
+        # Проверяем колонку
+        cols = con.execute(f"PRAGMA table_info('{table}')").fetchall()
+        if column not in [c[1] for c in cols]:
+            return ToolResult(
+                result_id=str(uuid.uuid4()),
+                status="error",
+                error=ToolError(code="invalid_column", message="Колонка не найдена"),
+            )
+
+        # Получаем частоты
+        result = con.execute(
+            f"SELECT {column}, COUNT(*) as cnt FROM {
+                table} GROUP BY {column} ORDER BY cnt DESC LIMIT {top_n}"
+        ).fetchall()
+
+        if not result:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                status="empty",
+                tool="value_counts",
+                facts=[{"text": "Данные не найдены."}],
+            )
+
+        # Формируем факты для нейросети
+        facts = []
+        for row in result:
+            val = row[0] if row[0] is not None else "ПУСТО"
+            cnt = row[1]
+            facts.append({"text": f"Значение '{val}' встречается {cnt} раз."})
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            status="ok",
+            tool="value_counts",
+            data={"rows": result, "columns": [column, "count"]},
+            facts=facts,
+        )
+    except Exception as e:
+        return ToolResult(
+            result_id=str(uuid.uuid4()),
+            status="error",
+            error=ToolError(code="db_error", message=str(e)),
+        )
