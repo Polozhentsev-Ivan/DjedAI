@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="SourcesPage" data-screen-label="02 Источники" style="display:flex; flex-direction:column; gap:var(--space-6); font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div>
+    <h1 style="margin:0; font-family:var(--font-display); font-size:var(--text-xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">Источники данных</h1>
+    <div style="margin-top:var(--space-1-5); color:var(--muted-foreground)">Загрузите CSV или подключите базу данных — система распознает типы колонок и связи таблиц</div>
+  </div>
+  <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+    <div style="display:flex; gap:var(--space-6); padding:var(--space-0) var(--space-5); border-bottom:var(--border-width) solid var(--border)">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.onClick }}" style="display:flex; align-items:center; gap:var(--space-1-5); background:none; border:none; border-bottom:var(--border-width-strong) solid {{ t.line }}; padding:var(--space-3-5) var(--space-0) var(--space-3); font-size:var(--text-sm); font-family:inherit; color:{{ t.ink }}; font-weight:{{ t.fw }}; cursor:pointer"><dc-import name="Icon" icon="{{ t.icon }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>{{ t.label }}</button></sc-for>
+    </div>
+    <div style="padding:var(--space-5)">
+      <sc-if value="{{ isCsv }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ idle }}" hint-placeholder-val="{{ true }}">
+          <div style="border:var(--border-width-dashed) dashed var(--border); background:var(--surface-subtle); border-radius:var(--radius-lg); padding:var(--space-8) var(--space-6); display:flex; flex-direction:column; align-items:center; gap:var(--space-2); text-align:center">
+            <div style="width:var(--size-control); height:var(--size-control); border-radius:var(--radius-full); background:var(--card); color:var(--primary); display:flex; align-items:center; justify-content:center; margin-bottom:var(--space-1)"><dc-import name="Icon" icon="upload" size="var(--size-icon-lg)" hint-size="20px,20px"></dc-import></div>
+            <div style="font-size:var(--text-base); letter-spacing:var(--tracking-body)">Перетащите CSV файлы сюда или <a onClick="{{ onUpload }}">Обзор</a></div>
+            <div style="font-size:var(--text-xs); color:var(--muted-foreground)">Поддерживаются: UTF-8, CP1251, разделители: запятая / ; / tab · можно выбрать несколько файлов</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isLoading }}"><dc-import name="LoadingState" size="inline" title="Загрузка sales.csv · 18,4 МБ" text="Можно продолжать работу — датасет появится в списке, когда будет готов." steps="{{ uploadSteps }}" action-label="Отменить" on-action="{{ onCancel }}" hint-size="100%,200px"></dc-import></sc-if>
+        <sc-if value="{{ isError }}"><dc-import name="ErrorState" size="inline" title="Не удалось загрузить данные" text="Файл «sales.csv»: не удалось разобрать строку 3 (разное число колонок)" action-label="Загрузить заново" on-action="{{ onUpload }}" hint-size="100%,110px"></dc-import></sc-if>
+      </sc-if>
+      <sc-if value="{{ isDb }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex; flex-direction:column; gap:var(--space-4); max-width:var(--chat-max)">
+          <div style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+            <span style="font-size:var(--text-xs); font-weight:var(--font-weight-semibold); color:var(--secondary-foreground)">Тип базы данных</span>
+            <div style="display:inline-flex; align-self:flex-start; padding:var(--space-0-5); background:var(--muted); border-radius:var(--radius-full)">
+              <sc-for list="{{ dbTypes }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.onClick }}" style="border:none; border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-4); font-size:var(--text-sm); font-family:inherit; cursor:pointer; background:{{ t.bg }}; color:{{ t.ink }}; font-weight:{{ t.fw }}">{{ t.label }}</button></sc-for>
+            </div>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+            <span style="font-size:var(--text-xs); font-weight:var(--font-weight-semibold); color:var(--secondary-foreground)">Строка подключения (DSN)</span>
+            <input placeholder="{{ dsnPlaceholder }}" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid var(--input); background:var(--card); color:var(--foreground); font-size:var(--text-sm); font-family:var(--font-mono); outline:none" style-focus="outline:var(--focus-ring); outline-offset:var(--focus-offset)">
+          </label>
+          <div style="display:flex; flex-direction:column; gap:var(--space-2)">
+            <span style="font-size:var(--text-xs); font-weight:var(--font-weight-semibold); color:var(--secondary-foreground)">Таблицы <span style="font-weight:var(--font-weight-regular); color:var(--muted-foreground)">· необязательно, по умолчанию — все доступные</span></span>
+            <div style="display:flex; flex-wrap:wrap; gap:var(--space-2)">
+              <sc-for list="{{ dbTables }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.onClick }}" style="display:flex; align-items:center; gap:var(--space-1); border:var(--border-width) solid {{ t.bd }}; border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-3-5); font-size:var(--text-sm); font-family:var(--font-mono); cursor:pointer; background:{{ t.bg }}; color:{{ t.ink }}"><sc-if value="{{ t.on }}"><dc-import name="Icon" icon="check" size="var(--size-icon-xs)" hint-size="12px,12px"></dc-import></sc-if>{{ t.label }}</button></sc-for>
+            </div>
+          </div>
+          <div style="display:flex; gap:var(--space-2-5); flex-wrap:wrap">
+            <button style="border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))">Подключить</button>
+            <button style="border:var(--border-width) solid var(--link); border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))">Проверить соединение</button>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+  <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+    <div style="display:flex; align-items:baseline; gap:var(--space-2); padding:var(--space-4) var(--space-5); border-bottom:var(--border-width) solid var(--border)">
+      <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body)">Ваши датасеты</div>
+      <span style="color:var(--muted-foreground)">{{ count }}</span>
+    </div>
+    <sc-if value="{{ showTable }}" hint-placeholder-val="{{ true }}"><dc-import name="DataTable" columns="{{ columns }}" rows="{{ rows }}" min-width="900px" hint-size="100%,170px"></dc-import></sc-if>
+    <sc-if value="{{ showEmpty }}" hint-placeholder-val="{{ false }}"><dc-import name="EmptyState" title="У вас пока нет загруженных данных" text="Загрузите CSV или подключите БД, чтобы начать анализ." action-label="Загрузить CSV" on-action="{{ toCsv }}" secondary-label="Подключить БД" on-secondary="{{ toDb }}" hint-size="100%,260px"></dc-import></sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1100,&quot;height&quot;:800},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;csv&quot;,&quot;db&quot;],&quot;default&quot;:&quot;csv&quot;,&quot;tsType&quot;:&quot;'csv'|'db'&quot;},&quot;activeDataset&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string | null&quot;},&quot;datasets&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;Dataset[]&quot;},&quot;onUpload&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onCancel&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onSelectDataset&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(id) =&gt; void&quot;},&quot;onOpenCatalog&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(id) =&gt; void&quot;},&quot;onDeleteDataset&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(id) =&gt; void&quot;}}">
+const DEFAULT_DATASETS = [
+  { id: 'orders_2026', source: 'CSV (2)', tables: '2', rows: '120 450', status: 'ready' },
+  { id: 'retail_crm_prod', source: 'Postgres', tables: '5', rows: '1 420 000', status: 'ready' },
+  { id: 'marketing_q3', source: 'CSV (1)', tables: '–', rows: '–', status: 'error' }
+];
+class Component extends DCLogic {
+  state = { tab: this.props.tab ?? 'csv', dbType: 'PostgreSQL', sel: { orders: true, customers: true } };
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default', s = this.state;
+    const datasets = p.datasets || DEFAULT_DATASETS, active = p.activeDataset === undefined ? 'orders_2026' : p.activeDataset;
+    const pill = on => ({ bg: on ? 'var(--card)' : 'transparent', ink: on ? 'var(--foreground)' : 'var(--muted-foreground)', fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)' });
+    const rows = datasets.map(d => {
+      const ok = d.status === 'ready', isActive = d.id === active;
+      const actions = [];
+      if (ok && !isActive) actions.push({ label: 'Выбрать для анализа', onClick: () => p.onSelectDataset && p.onSelectDataset(d.id) });
+      if (ok) actions.push({ label: 'Посмотреть каталог', onClick: () => p.onOpenCatalog && p.onOpenCatalog(d.id) });
+      if (!ok) actions.push({ label: 'Загрузить заново', onClick: () => p.onUpload && p.onUpload() });
+      actions.push({ label: 'Удалить', tone: 'danger', onClick: () => p.onDeleteDataset && p.onDeleteDataset(d.id) });
+      return { highlight: isActive, name: { text: d.id, tag: isActive ? 'активный' : '' }, source: { text: d.source, tone: 'secondary' },
+        tables: d.tables, rows: d.rows, status: { text: ok ? 'Готов' : 'Ошибки', tone: ok ? 'success' : 'danger' }, actions };
+    });
+    const empty = st === 'empty' || datasets.length === 0;
+    return {
+      tabs: [['csv', 'Загрузить CSV', 'upload'], ['db', 'Подключить БД', 'database']].map(([k, l, icon]) => {
+        const on = s.tab === k;
+        return { label: l, icon, line: on ? 'var(--primary)' : 'transparent', ink: on ? 'var(--foreground)' : 'var(--muted-foreground)', fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)', onClick: () => this.setState({ tab: k }) };
+      }),
+      isCsv: s.tab === 'csv', isDb: s.tab === 'db', idle: st === 'default' || st === 'empty', isLoading: st === 'loading', isError: st === 'error',
+      onUpload: p.onUpload, onCancel: p.onCancel,
+      uploadSteps: [{ label: 'Чтение файла', status: 'done' }, { label: 'Определение типов', status: 'active', pct: 60 }, { label: 'Профилирование', status: 'pending' }],
+      dbTypes: ['PostgreSQL', 'ClickHouse'].map(k => ({ label: k, ...pill(s.dbType === k), onClick: () => this.setState({ dbType: k }) })),
+      dsnPlaceholder: s.dbType === 'PostgreSQL' ? 'postgresql://user:password@host:5432/retail' : 'clickhouse://user:password@host:9000/analytics',
+      dbTables: ['orders', 'customers', 'products', 'returns'].map(k => { const on = !!s.sel[k]; return { label: k, on, bg: on ? 'var(--accent)' : 'var(--card)', ink: on ? 'var(--accent-foreground)' : 'var(--secondary-foreground)', bd: on ? 'var(--accent-foreground)' : 'var(--border)', onClick: () => this.setState(x => ({ sel: { ...x.sel, [k]: !x.sel[k] } })) }; }),
+      columns: [
+        { key: 'name', label: 'Название', type: 'name', width: 'minmax(200px,2fr)' }, { key: 'source', label: 'Источник', type: 'muted', width: '110px' },
+        { key: 'tables', label: 'Таблиц', type: 'number', align: 'right', width: '80px' }, { key: 'rows', label: 'Строк', type: 'number', align: 'right', width: '120px' },
+        { key: 'status', label: 'Статус', type: 'badge', width: '110px' }, { key: 'actions', label: 'Действия', type: 'actions', width: 'minmax(320px,2.4fr)' }
+      ],
+      rows, count: empty ? '0' : String(datasets.length), showTable: !empty, showEmpty: empty,
+      toCsv: () => this.setState({ tab: 'csv' }), toDb: () => this.setState({ tab: 'db' })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="charts.js"></script>
+</helmet>
+<div data-component="ChartCard" style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-4) var(--space-4) var(--space-2); background:var(--card); color:var(--card-foreground); font-family:var(--font-sans); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="display:flex; flex-wrap:wrap; align-items:flex-start; gap:var(--space-2-5); padding:var(--space-0) var(--space-1)">
+    <div style="flex:1; min-width:0">
+      <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body); line-height:var(--leading-snug)">{{ title }}</div>
+      <sc-if value="{{ hasSubtitle }}"><div style="font-size:var(--text-xs); color:var(--muted-foreground); letter-spacing:var(--tracking-xs); margin-top:var(--space-0-5)">{{ subtitle }}</div></sc-if>
+    </div>
+    <sc-if value="{{ hasPrimary }}"><button onClick="{{ onPrimary }}" style="display:flex; align-items:center; gap:var(--space-1); border:none; border-radius:var(--radius-full); padding:var(--space-1-5) var(--space-3-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))"><dc-import name="Icon" icon="plus" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>{{ primaryLabel }}</button></sc-if>
+    <sc-if value="{{ hasSecondary }}"><button onClick="{{ onSecondary }}" style="display:flex; align-items:center; gap:var(--space-1); border:var(--border-width) solid var(--link); border-radius:var(--radius-full); padding:var(--space-1) var(--space-3); background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))"><dc-import name="Icon" icon="download" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>{{ secondaryLabel }}</button></sc-if>
+  </div>
+  <div ref="{{ chartRef }}" style="height:{{ h }}; width:100%"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:720,&quot;height&quot;:360},&quot;title&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Выручка по месяцам, ₽&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;subtitle&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders · «Сумма с НДС, руб» · 01.01.2026–31.10.2026&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;chart&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;revenue&quot;,&quot;regions&quot;,&quot;categories&quot;],&quot;default&quot;:&quot;revenue&quot;,&quot;tsType&quot;:&quot;'revenue'|'regions'|'categories'&quot;},&quot;height&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;lg&quot;,&quot;md&quot;,&quot;sm&quot;],&quot;default&quot;:&quot;lg&quot;,&quot;tsType&quot;:&quot;'lg'|'md'|'sm'&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;primaryLabel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;В дашборд&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;secondaryLabel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Экспорт&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onPrimary&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onSecondary&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  chartRef = React.createRef();
+  componentDidMount() { this.draw(); }
+  componentDidUpdate() { this.draw(); }
+  draw() {
+    const go = () => window.DjedCharts ? window.DjedCharts.render(this.chartRef.current, this.props.chart ?? 'revenue', this.props.theme ?? 'light') : setTimeout(go, 200);
+    go();
+  }
+  renderVals() {
+    const p = this.props;
+    return {
+      chartRef: this.chartRef, title: p.title ?? 'Выручка по месяцам, ₽', subtitle: p.subtitle ?? '', hasSubtitle: !!p.subtitle,
+      primaryLabel: p.primaryLabel ?? 'В дашборд', onPrimary: p.onPrimary, hasPrimary: p.primaryLabel !== '',
+      secondaryLabel: p.secondaryLabel ?? 'Экспорт', onSecondary: p.onSecondary, hasSecondary: p.secondaryLabel !== '',
+      h: { lg: 'var(--chart-height)', md: 'var(--chart-height-md)', sm: 'var(--chart-height-sm)' }[p.height ?? 'lg']
+    };
+  }
+}
+</script>
+</body>
+</html>

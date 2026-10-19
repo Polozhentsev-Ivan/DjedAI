@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<sc-if value="{{ isUser }}" hint-placeholder-val="{{ false }}">
+  <div data-component="ChatMessage" data-role="user" style="display:flex; justify-content:flex-end; font-family:var(--font-sans)">
+    <div style="max-width:var(--bubble-max); background:var(--surface-subtle); color:var(--foreground); border-radius:var(--radius-lg); padding:var(--space-2-5) var(--space-4); font-size:var(--text-base); line-height:var(--leading-relaxed); letter-spacing:var(--tracking-body)">{{ text }}</div>
+  </div>
+</sc-if>
+<sc-if value="{{ isAssistant }}" hint-placeholder-val="{{ true }}">
+  <div data-component="ChatMessage" data-role="assistant" style="display:flex; gap:var(--space-3-5); align-items:flex-start; font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-base); line-height:var(--leading-relaxed); letter-spacing:var(--tracking-body)">
+    <div style="flex:none; width:var(--size-avatar); height:var(--size-avatar); border-radius:var(--radius-full); background:var(--inverse); color:var(--inverse-foreground); display:flex; align-items:center; justify-content:center; font-size:var(--text-xs); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-none)">D</div>
+    <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:var(--space-3-5)">
+      <sc-if value="{{ hasParts }}">
+        <div style="text-wrap:pretty"><sc-for list="{{ parts }}" as="p"><span style="font-weight:{{ p.fw }}; color:{{ p.ink }}">{{ p.t }}</span></sc-for><sc-if value="{{ streaming }}"><span style="display:inline-block; width:var(--size-caret); height:1.1em; vertical-align:text-bottom; margin-left:var(--space-0-5); background:var(--foreground); animation:dj-blink var(--duration-blink) steps(1) infinite"></span></sc-if></div>
+      </sc-if>
+      <sc-if value="{{ hasFacts }}">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-fact-min),1fr)); gap:var(--space-2-5)">
+          <sc-for list="{{ facts }}" as="f" hint-placeholder-count="3"><div style="padding:var(--space-2-5) var(--space-3-5); border-radius:var(--radius-md); background:var(--surface-subtle)"><div style="font-size:var(--text-xs); color:var(--muted-foreground); letter-spacing:var(--tracking-xs)">{{ f.label }}</div><div style="font-weight:var(--font-weight-semibold); font-variant-numeric:tabular-nums">{{ f.value }}</div></div></sc-for>
+        </div>
+      </sc-if>
+      {{ children }}
+    </div>
+  </div>
+</sc-if>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:720,&quot;height&quot;:200},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;user&quot;,&quot;assistant&quot;],&quot;default&quot;:&quot;assistant&quot;,&quot;tsType&quot;:&quot;'user'|'assistant'&quot;},&quot;text&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Покажи динамику выручки по месяцам за 2026 год&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;parts&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;{t:string; strong?:boolean; tone?:'success'|'danger'}[]&quot;},&quot;facts&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;{label:string; value:string}[]&quot;},&quot;streaming&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;children&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;ReactNode&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, user = (p.role ?? 'assistant') === 'user';
+    const toneInk = { success: 'var(--success)', danger: 'var(--destructive)' };
+    const parts = (p.parts || (p.text && !user ? [{ t: p.text }] : [])).map(x => ({
+      t: x.t, fw: x.strong || x.tone ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)', ink: toneInk[x.tone] || 'inherit'
+    }));
+    return {
+      isUser: user, isAssistant: !user, text: p.text ?? '', parts, hasParts: parts.length > 0,
+      facts: p.facts || [], hasFacts: !!(p.facts && p.facts.length), streaming: !!p.streaming, children: p.children
+    };
+  }
+}
+</script>
+</body>
+</html>
