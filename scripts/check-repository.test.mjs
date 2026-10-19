@@ -58,6 +58,33 @@ test('empty or untracked component directories are detected', t => {
   assert.ok(f.report().errors.some(e => e.includes('src/djedai/data/')));
 });
 
+test('the separate frontend is required and the former Python UI is not required', t => {
+  const f = fixture(t);
+  assert.equal(f.report().ok, true);
+  f.tracked.delete('frontend/README.md');
+  f.add('src/djedai/ui/README.md');
+  assert.ok(f.report().errors.some(e => e.includes('frontend/')));
+});
+
+test('frontend build and coverage outputs cannot be tracked', async t => {
+  for (const file of ['frontend/dist/assets/app.js', 'frontend/build/index.html', 'frontend/coverage/lcov.info', 'frontend/tsconfig.app.tsbuildinfo', 'frontend/node_modules/react/index.js']) {
+    await t.test(file, child => {
+      const f = fixture(child);
+      f.add(file, 'generated output\n');
+      assert.ok(f.report().errors.some(e => e.includes(file)));
+    });
+  }
+});
+
+test('frontend TSX is checked as UTF-8 source without claiming Python tests', t => {
+  const f = fixture(t);
+  f.add('frontend/src/app/App.tsx', 'export const title = "Данные";\n');
+  assert.equal(f.report().ok, true);
+  assert.equal(f.report().pythonEnabled, false);
+  f.add('frontend/src/app/App.tsx', Buffer.from([0xff, 0xfe, 0x80]));
+  assert.ok(f.report().errors.some(e => e.includes('UTF-8 файл frontend/src/app/App.tsx')));
+});
+
 test('tracked local files are rejected even with a gitignore', async t => {
   for (const file of ['.env', '.env.local', '.env_example', '.venv/lib/example.py', 'var/private.csv', 'models/weights.bin', 'artifacts/report.json', 'model.gguf', '.coverage']) {
     await t.test(file, child => {
