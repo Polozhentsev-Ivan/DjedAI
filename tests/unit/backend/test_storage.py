@@ -32,6 +32,7 @@ from djedai.backend.db.repositories import (
     save_assistant_message,
     save_message,
     save_tool_result,
+    write_parquet,
 )
 from djedai.backend.db.session import create_db_engine, init_db
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
@@ -839,14 +840,41 @@ def test_save_tool_result_owner_mismatch(tmp_path: Path) -> None:
 
 
 def test_data_ref_path_traversal_protection(tmp_path: Path) -> None:
-    """[Security] Проверяет защиту от Path Traversal при разрешении data_ref."""
+    """[Security] Проверяет защиту от Path Traversal и подмены файлов при разрешении data_ref."""
     safe_storage = tmp_path / "safe_results"
     safe_storage.mkdir(parents=True, exist_ok=True)
 
-    with pytest.raises(ValueError, match="outside storage directory"):
+    # 1. Попытка выйти за пределы каталога через ../..
+    with pytest.raises(ValueError, match="directory traversal or path separators not allowed"):
         _resolve_data_ref_path("parquet://../../etc/passwd", base_dir=safe_storage)
 
-    outside_file = tmp_path / "outside.parquet"
-    outside_file.touch()
-    with pytest.raises(ValueError, match="outside authorized storage"):
-        _resolve_data_ref_path(f"parquet://{outside_file.as_posix()}", base_dir=safe_storage)
+    # 2. Попытка замаскировать переход под имя файла ../../secret.parquet
+    with pytest.raises(ValueError, match="directory traversal or path separators not allowed"):
+        _resolve_data_ref_path("parquet://../../secret.parquet", base_dir=safe_storage)
+
+    # 3. Попытка передать посторонний путь со слэшами
+    with pytest.raises(ValueError, match="directory traversal or path separators not allowed"):
+        _resolve_data_ref_path("parquet://sub/other.parquet", base_dir=safe_storage)
+
+    # 4. Некорректное расширение
+    with pytest.raises(ValueError, match="invalid data_ref filename"):
+        _resolve_data_ref_path("parquet://malicious.exe", base_dir=safe_storage)
+
+    # 5. Подмена файла: result_id не совпадает с data_ref
+    with pytest.raises(ValueError, match="does not match expected result_id"):
+        _resolve_data_ref_path(
+            "parquet://r_victim.parquet",
+            base_dir=safe_storage,
+            expected_result_id="r_attacker",
+        )
+
+
+def test_atomic_parquet_write(tmp_path: Path) -> None:
+    """[P1] Проверяет атомарную запись Parquet и очистку временных файлов."""
+    out_file = tmp_path / "atomic_test.parquet"
+    res = write_parquet(out_file, ["col"], [[1], [2]])
+    assert res.exists()
+    assert res.stat().st_size > 0
+    # Проверяем отсутствие оставшихся временных файлов .tmp_*
+    tmp_files = list(tmp_path.glob("*.tmp*"))
+    assert len(tmp_files) == 0

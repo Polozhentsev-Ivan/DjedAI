@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import math
+import re
+import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -64,17 +66,27 @@ def _sanitize_for_json(obj: Any) -> Any:
             return None
         return obj
     if isinstance(obj, Decimal):
-        return float(obj)
+        try:
+            f = float(obj)
+            if not math.isinf(f):
+                return f
+        except (OverflowError, ValueError):
+            pass
+        return str(obj)
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, (bytes, bytearray)):
         return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, (Path, uuid.UUID)):
+        return str(obj)
     if isinstance(obj, dict):
         return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
         return [_sanitize_for_json(v) for v in obj]
     if hasattr(obj, "model_dump"):
         return _sanitize_for_json(obj.model_dump())
+    if hasattr(obj, "value"):
+        return _sanitize_for_json(obj.value)
     return str(obj)
 
 
@@ -163,10 +175,15 @@ def write_parquet(
     rows: list[list[Any]],
     columns_meta: list[Any] | None = None,
 ) -> Path:
-    """Записывает колонки и строки в Parquet-файл через встроенный движок DuckDB."""
+    """Записывает колонки и строки в Parquet-файл через встроенный движок DuckDB.
+
+    Использует атомарную запись через временный файл (.tmp), предотвращая
+    появление поврежденных файлов при сбоях.
+    """
     path = Path(file_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    duck_path = path.as_posix()
+    tmp_path = path.with_name(f".{path.name}.tmp_{uuid.uuid4().hex[:8]}")
+    duck_path = tmp_path.as_posix()
 
     con = duckdb.connect()
     try:
@@ -177,6 +194,7 @@ def write_parquet(
             col_defs = ", ".join(f"{_escape_sql_ident(col)} VARCHAR" for col in columns)
             con.execute(f"CREATE TEMPORARY TABLE _res_empty ({col_defs})")
             con.execute(f"COPY _res_empty TO {escaped_path} (FORMAT PARQUET)")
+            tmp_path.replace(path)
             return path
 
         col_types = []
@@ -215,7 +233,12 @@ def write_parquet(
 
         con.executemany(f"INSERT INTO _res_data VALUES ({placeholders})", formatted_rows)
         con.execute(f"COPY _res_data TO {escaped_path} (FORMAT PARQUET)")
+        tmp_path.replace(path)
         return path
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
     finally:
         con.close()
 
@@ -238,43 +261,55 @@ def read_parquet(file_path: Path | str) -> tuple[list[str], list[list[Any]]]:
         con.close()
 
 
-def _resolve_data_ref_path(data_ref: str, base_dir: Path | str | None = None) -> Path:
+SAFE_DATA_REF_RE = re.compile(r"^[a-zA-Z0-9_\-]+\.parquet$")
+
+
+def _resolve_data_ref_path(
+    data_ref: str,
+    base_dir: Path | str | None = None,
+    expected_result_id: str | None = None,
+) -> Path:
     """Разрешает безопасный путь к файлу данных из data_ref ссылки внутри хранилища."""
+    if not (data_ref.startswith("parquet://") or data_ref.startswith("file://")):
+        raise ValueError(f"Security error: unsupported data_ref scheme in '{data_ref}'")
+
     ref = data_ref
     for prefix in ("parquet://", "file://"):
         if ref.startswith(prefix):
             ref = ref[len(prefix) :]
             break
 
+    # Строгая защита от Path Traversal: запрет разделителей каталогов и '..'
+    if ".." in ref or "/" in ref or "\\" in ref:
+        raise ValueError(
+            "Security error: directory traversal or path separators not allowed in data_ref: "
+            f"'{data_ref}'"
+        )
+
+    # Имя файла должно соответствовать строгому шаблону
+    if not SAFE_DATA_REF_RE.match(ref):
+        raise ValueError(
+            f"Security error: invalid data_ref filename '{ref}', expected [a-zA-Z0-9_-]+.parquet"
+        )
+
+    # Защита от подмены файла: имя обязано совпадать с ожидаемым result_id
+    if expected_result_id is not None:
+        expected_name = f"{expected_result_id}.parquet"
+        if ref != expected_name:
+            raise ValueError(
+                f"Security error: data_ref '{ref}' does not match "
+                f"expected result_id '{expected_result_id}'"
+            )
+
     base = Path(base_dir or get_settings().results_data_dir).resolve()
-    p = Path(ref)
+    candidate = (base / ref).resolve()
 
-    # Защита от Path Traversal: если абсолютный путь
-    if p.is_absolute():
-        resolved_p = p.resolve()
-        cwd = Path.cwd().resolve()
-        if resolved_p.is_relative_to(base) or resolved_p.is_relative_to(cwd):
-            return resolved_p
-        raise ValueError(f"Security error: data_ref '{data_ref}' points outside authorized storage")
-
-    # Относительный путь: проверяем, что candidate не выходит за пределы base
-    candidate = (base / p).resolve()
     if not candidate.is_relative_to(base):
         raise ValueError(
             f"Security error: data_ref '{data_ref}' points outside storage directory {base}"
         )
 
-    if candidate.exists():
-        return candidate
-
-    # Fallback: поиск по имени файла внутри base (на случай перемещения каталогов)
-    name_candidate = (base / p.name).resolve()
-    if not name_candidate.is_relative_to(base):
-        raise ValueError(
-            f"Security error: data_ref '{data_ref}' points outside storage directory {base}"
-        )
-
-    return name_candidate
+    return candidate
 
 
 # ============================================================================
@@ -434,7 +469,9 @@ def load_tool_result(
             truncated = record.data_preview.get("truncated", False)
 
         if record.data_ref:
-            parquet_path = _resolve_data_ref_path(record.data_ref, storage_dir)
+            parquet_path = _resolve_data_ref_path(
+                record.data_ref, storage_dir, expected_result_id=result_id
+            )
             if parquet_path.exists():
                 cols, rows = read_parquet(parquet_path)
                 if not columns:
