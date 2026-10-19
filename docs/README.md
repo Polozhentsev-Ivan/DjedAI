@@ -1,6 +1,7 @@
 # Документация
 
 - [repository-guide.md](repository-guide.md) — назначение всех каталогов и служебных файлов, необходимость каждого из них и место для будущих настроек.
+- [ui-wireframes.md](ui-wireframes.md) — схемы экранов, карта навигации, маршруты React и состояния интерфейса.
 - [specification.md](specification.md) — техническая спецификация проекта; актуализирована под утверждённый React + TypeScript frontend.
 - [issues-plan.md](issues-plan.md) — план опубликованных issues с актуализированными критериями React + TypeScript UI.
 - [source/ai-native-bi-plan.html](source/ai-native-bi-plan.html) — исходная визуальная схема плана.
