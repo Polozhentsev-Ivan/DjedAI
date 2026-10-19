@@ -187,3 +187,47 @@ def test_original_name_is_shown_only_when_it_adds_meaning(original, description,
         col["description"] = description
 
     assert (f"«{original}»" in prompt_line(mutated(change), "status")) is shown
+
+
+def test_prompt_marks_primary_and_foreign_keys():
+    assert prompt_line(FULL, "order_id").startswith("- order_id: id, id, PK")
+    assert "FK → clients.id" in prompt_line(FULL, "client_id")
+    assert "PK" not in prompt_line(FULL, "client_id")
+    assert "FK" not in prompt_line(FULL, "order_id")
+    assert "PK" not in prompt_line(FULL, "amount")
+
+
+def test_prompt_marks_column_that_is_both_primary_and_foreign_key():
+    def change(data):
+        data["tables"][1]["primary_key_candidates"] = ["id"]
+        data["relations"].append(
+            {
+                "from": {"table": "clients", "column": "id"},
+                "to": {"table": "orders", "column": "client_id"},
+                "overlap": 0.5,
+                "jaccard": 0.5,
+                "cardinality": "1:1",
+                "confidence": "low",
+            }
+        )
+
+    prompt = DatasetCatalog.model_validate(mutated(change)).to_prompt()
+    assert "- id: id, id, PK, FK → orders.client_id" in prompt
+
+
+def test_prompt_flags_key_that_is_not_unique():
+    def change(data):
+        orders(data)["duplicate_rows"] = 12
+        column(data, "order_id")["is_unique"] = False
+        column(data, "order_id")["distinct_count"] = 125418
+
+    prompt = DatasetCatalog.model_validate(mutated(change)).to_prompt()
+    assert "ключ order_id (не уникален)" in prompt
+    assert "полных дублей 12" in prompt
+    assert "(не уникален)" not in DatasetCatalog.model_validate(FULL).to_prompt()
+
+
+def test_reference_example_is_consistent_about_duplicates():
+    table = DatasetCatalog.model_validate(FULL).tables[0]
+    key = table.column(table.primary_key_candidates[0])
+    assert key.is_unique and table.duplicate_rows == 0

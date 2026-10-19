@@ -15,7 +15,7 @@
       "source": { "file": "Заказы_2024.csv", "encoding": "cp1251", "delimiter": ";", "header": true },
       "primary_key_candidates": ["order_id"],
       "time_columns": ["created_at"],
-      "duplicate_rows": 12,
+      "duplicate_rows": 0,
       "columns": [
         {
           "name": "order_id",

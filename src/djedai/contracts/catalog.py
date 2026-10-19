@@ -200,9 +200,12 @@ class DatasetCatalog(_Model):
         if self.summary:
             lines.append(self.summary)
         lines.append(f"Колонки: {_COLUMN_FORMAT}.")
+        foreign = {(r.from_.table, r.from_.column): r.to for r in self.relations}
         for table in self.tables:
             lines += ["", _table_line(table)]
-            lines += [_column_line(column) for column in table.columns]
+            lines += [
+                _column_line(column, _key_marks(table, column, foreign)) for column in table.columns
+            ]
         if self.relations:
             lines += ["", "Связи:"]
             lines += [
@@ -216,7 +219,8 @@ class DatasetCatalog(_Model):
 
 
 _COLUMN_FORMAT = (
-    "имя: тип, роль, валюта, «исходное имя», доля пропусков, число уникальных, "
+    "имя: тип, роль, ключ (PK, FK → таблица.колонка), валюта, «исходное имя», "
+    "доля пропусков, число уникальных, "
     "диапазон в данных — описание"
 )
 _DISTINCT_TYPES: tuple[SemanticType, ...] = ("category", "bool", "text")
@@ -225,7 +229,9 @@ _DISTINCT_TYPES: tuple[SemanticType, ...] = ("category", "bool", "text")
 def _table_line(table: Table) -> str:
     parts = [f"строк {table.row_count}"]
     if table.primary_key_candidates:
-        parts.append("ключ " + ", ".join(table.primary_key_candidates))
+        parts.append(
+            "ключ " + ", ".join(_key_name(table, key) for key in table.primary_key_candidates)
+        )
     if table.time_columns:
         parts.append("время " + ", ".join(table.time_columns))
     if table.duplicate_rows:
@@ -238,8 +244,26 @@ def _table_line(table: Table) -> str:
     return f"{head}; {'; '.join(parts)}:"
 
 
-def _column_line(column: Column) -> str:
+def _key_name(table: Table, key: str) -> str:
+    column = table.column(key)
+    return key if column is None or column.is_unique else f"{key} (не уникален)"
+
+
+def _key_marks(table: Table, column: Column, foreign: dict[tuple[str, str], ColumnRef]) -> str:
+    """``PK`` для ключа таблицы и ``FK → таблица.колонка`` для ссылки на другую таблицу."""
+    marks = []
+    if column.name in table.primary_key_candidates:
+        marks.append("PK")
+    target = foreign.get((table.table_id, column.name))
+    if target is not None:
+        marks.append(f"FK → {target.table}.{target.column}")
+    return ", ".join(marks)
+
+
+def _column_line(column: Column, key_marks: str = "") -> str:
     line = f"- {column.name}: {column.semantic_type}, {column.role}"
+    if key_marks:
+        line += f", {key_marks}"
     if column.currency:
         line += f", валюта {column.currency}"
     if _shows_original_name(column):
