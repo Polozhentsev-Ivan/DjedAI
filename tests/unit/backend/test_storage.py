@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.orm import sessionmaker
 
 from djedai.backend.db.models import (
     MessageModel,
+    ToolResultModel,
     UserModel,
 )
 from djedai.backend.db.repositories import (
+    _resolve_data_ref_path,
     create_chat,
     create_dashboard,
     create_dataset,
@@ -182,7 +188,10 @@ def test_save_and_load_tool_result_ok(tmp_path: Path) -> None:
         assert loaded.tool == "run_sql"
         assert loaded.sql == res.sql
         assert loaded.data is not None
-        assert loaded.data.columns == ["region", "revenue"]
+        assert loaded.data.columns == [
+            ToolResultColumn(name="region", type="string", label="Регион"),
+            ToolResultColumn(name="revenue", type="money", label="Выручка"),
+        ]
         assert len(loaded.data.rows) == 2
         assert loaded.data.rows[0][0] == "Москва"
         assert loaded.data.rows[0][1] == 150000.5
@@ -271,6 +280,11 @@ def test_large_data_ref_recovery_after_restart(tmp_path: Path) -> None:
 
     row_count = 5000
     rows = [[f"order_{i}", i * 10.5, i % 3 == 0] for i in range(row_count)]
+    expected_columns = [
+        ToolResultColumn(name="order_id", type="string", label="Номер заказа"),
+        ToolResultColumn(name="amount", type="money", label="Сумма заказа"),
+        ToolResultColumn(name="is_paid", type="boolean", label="Оплачен"),
+    ]
     large_result = ToolResult(
         result_id="r_large_5k",
         status="ok",
@@ -278,7 +292,7 @@ def test_large_data_ref_recovery_after_restart(tmp_path: Path) -> None:
         params={"limit": 5000},
         sql="SELECT order_id, amount, is_paid FROM orders",
         data=ToolResultData(
-            columns=["order_id", "amount", "is_paid"],
+            columns=expected_columns,
             rows=rows,
             row_count=row_count,
             truncated=False,
@@ -313,7 +327,9 @@ def test_large_data_ref_recovery_after_restart(tmp_path: Path) -> None:
         assert loaded.status == "ok"
         assert loaded.data_ref is not None
         assert loaded.data is not None
-        assert loaded.data.columns == ["order_id", "amount", "is_paid"]
+        assert loaded.data.columns == expected_columns
+        assert loaded.data.row_count == 5000
+        assert loaded.data.truncated is False
         assert len(loaded.data.rows) == 5000
         assert loaded.data.rows[0] == ["order_0", 0.0, True]
         assert loaded.data.rows[4999] == ["order_4999", 4999 * 10.5, False]
@@ -442,8 +458,6 @@ def test_assistant_message_blocks_persistence() -> None:
     init_db(engine)
     session_factory = sessionmaker(bind=engine)
 
-    from datetime import UTC, datetime
-
     with session_factory() as db:
         user = get_or_create_user(db, "u_test", "tester")
         ds = create_dataset(db, "ds_1", user.id, "DS 1")
@@ -529,3 +543,310 @@ def test_alembic_migrations_lifecycle(tmp_path: Path) -> None:
 
     # 3. Повторно накатываем миграции
     command.upgrade(alembic_cfg, "head")
+
+
+def test_data_ref_relative_directory() -> None:
+    """[P1] Проверяет сохранение и загрузку при относительном каталоге RESULTS_DATA_DIR."""
+    rel_dir = Path("./var/test_relative_results")
+    if rel_dir.exists():
+        shutil.rmtree(rel_dir, ignore_errors=True)
+
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    row_count = 100
+    rows = [[f"item_{i}", i * 1.5] for i in range(row_count)]
+    result = ToolResult(
+        result_id="r_rel_100",
+        status="ok",
+        tool="run_sql",
+        sql="SELECT item, price FROM items",
+        data=ToolResultData(
+            columns=["item", "price"],
+            rows=rows,
+            row_count=row_count,
+            truncated=False,
+        ),
+    )
+
+    try:
+        with session_factory() as db:
+            saved = save_tool_result(db, result, storage_dir=rel_dir)
+            assert saved.data_ref == "parquet://r_rel_100.parquet"
+
+            loaded = load_tool_result(db, "r_rel_100", storage_dir=rel_dir)
+            assert loaded is not None
+            assert loaded.data is not None
+            # Проверяем, что загружены все 100 строк из Parquet, а не 50 из preview
+            assert len(loaded.data.rows) == 100
+            assert loaded.data.row_count == 100
+            assert loaded.data.rows[99] == ["item_99", 99 * 1.5]
+    finally:
+        if rel_dir.exists():
+            shutil.rmtree(rel_dir, ignore_errors=True)
+
+
+def test_save_tool_result_with_decimals_and_dates(tmp_path: Path) -> None:
+    """[P1] Проверяет сохранение ToolResult с Decimal, date и datetime объектами в JSON."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    res = ToolResult(
+        result_id="r_decimal_date",
+        status="ok",
+        tool="run_sql",
+        params={
+            "amount": Decimal("1234.56"),
+            "target_date": date(2026, 10, 20),
+            "nested": {"val": Decimal("42.0")},
+        },
+        sql="SELECT total, dt FROM ledger",
+        data=ToolResultData(
+            columns=["total", "dt"],
+            rows=[
+                [Decimal("100.50"), date(2026, 5, 1)],
+                [Decimal("200.75"), datetime(2026, 5, 2, 10, 0, tzinfo=UTC)],
+            ],
+            row_count=2,
+            truncated=False,
+        ),
+        facts=[
+            Fact(
+                text="Сумма за дату",
+                values={"total": Decimal("301.25"), "created": date(2026, 5, 1)},
+            )
+        ],
+    )
+
+    with session_factory() as db:
+        saved = save_tool_result(db, res, storage_dir=tmp_path)
+        assert saved.result_id == "r_decimal_date"
+
+        loaded = load_tool_result(db, "r_decimal_date", storage_dir=tmp_path)
+        assert loaded is not None
+        assert loaded.params["amount"] == 1234.56
+        assert loaded.params["target_date"] == "2026-10-20"
+        assert loaded.data is not None
+        assert len(loaded.data.rows) == 2
+        assert loaded.facts[0].values["total"] == 301.25
+
+
+def test_duckdb_type_inference_mixed_ints_and_floats(tmp_path: Path) -> None:
+    """[P2] Проверяет вывод типов по всей колонке (целые и дробные числа не округляются)."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    # Первая строка — int (1), вторая строка — float (2.75). DuckDB не должен округлить 2.75 в 3!
+    res = ToolResult(
+        result_id="r_mixed_types",
+        status="ok",
+        tool="run_sql",
+        sql="SELECT val FROM stats",
+        data=ToolResultData(
+            columns=["val"],
+            rows=[[1], [2.75], [3]],
+            row_count=3,
+            truncated=False,
+        ),
+    )
+
+    with session_factory() as db:
+        save_tool_result(db, res, storage_dir=tmp_path)
+        loaded = load_tool_result(db, "r_mixed_types", storage_dir=tmp_path)
+
+        assert loaded is not None
+        assert loaded.data is not None
+        assert len(loaded.data.rows) == 3
+        assert loaded.data.rows[0] == [1.0]
+        assert loaded.data.rows[1] == [2.75]
+        assert loaded.data.rows[2] == [3.0]
+
+
+def test_sql_identifier_and_literal_escaping(tmp_path: Path) -> None:
+    """[P2] Проверяет экранирование кавычек в именах колонок и путях каталогов в DuckDB."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    weird_dir = tmp_path / "O'Neil_Storage"
+    weird_dir.mkdir(parents=True, exist_ok=True)
+
+    res = ToolResult(
+        result_id="r_weird_sql",
+        status="ok",
+        tool="run_sql",
+        sql='SELECT col"name, select FROM data',
+        data=ToolResultData(
+            columns=['col"name', "select"],
+            rows=[["alpha", 10], ["beta", 20]],
+            row_count=2,
+            truncated=False,
+        ),
+    )
+
+    with session_factory() as db:
+        save_tool_result(db, res, storage_dir=weird_dir)
+        loaded = load_tool_result(db, "r_weird_sql", storage_dir=weird_dir)
+
+        assert loaded is not None
+        assert loaded.data is not None
+        assert loaded.data.columns == ['col"name', "select"]
+        assert len(loaded.data.rows) == 2
+        assert loaded.data.rows[0] == ["alpha", 10]
+
+
+def test_metadata_restoration(tmp_path: Path) -> None:
+    """[P2] Проверяет восстановление полных ToolResultColumn, row_count и truncated."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    res = ToolResult(
+        result_id="r_meta_restore",
+        status="ok",
+        tool="run_sql",
+        sql="SELECT amount, category FROM transactions",
+        data=ToolResultData(
+            columns=[
+                ToolResultColumn(name="amount", type="money", label="Сумма операции"),
+                ToolResultColumn(name="category", type="string", label="Категория"),
+            ],
+            rows=[[150.0, "Еда"], [300.0, "Транспорт"]],
+            row_count=5000,
+            truncated=True,
+        ),
+    )
+
+    with session_factory() as db:
+        save_tool_result(db, res, storage_dir=tmp_path)
+        loaded = load_tool_result(db, "r_meta_restore", storage_dir=tmp_path)
+
+        assert loaded is not None
+        assert loaded.data is not None
+        assert len(loaded.data.columns) == 2
+        col0 = loaded.data.columns[0]
+        assert isinstance(col0, ToolResultColumn)
+        assert col0.name == "amount"
+        assert col0.type == "money"
+        assert col0.label == "Сумма операции"
+        assert loaded.data.row_count == 5000
+        assert loaded.data.truncated is True
+
+
+def test_tool_result_owner_cascade_delete(tmp_path: Path) -> None:
+    """[P2] Проверяет связь ToolResultModel с пользователем и каскадное удаление."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        user = get_or_create_user(db, "u_owner_test", "owner_tester")
+        ds = create_dataset(db, "ds_owner", user.id, "Owner DS")
+        chat = create_chat(db, "c_owner", user.id, ds.dataset_id)
+
+        res = ToolResult(
+            result_id="r_cascade_owner",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT 1",
+            data=ToolResultData(columns=["col"], rows=[[1]], row_count=1, truncated=False),
+        )
+
+        saved = save_tool_result(db, res, chat_id=chat.chat_id, storage_dir=tmp_path)
+        assert saved.owner_id == user.id
+
+        db.refresh(user)
+        assert len(user.results) == 1
+        assert user.results[0].result_id == "r_cascade_owner"
+
+        db.delete(user)
+        db.commit()
+
+        rem = db.query(ToolResultModel).filter_by(result_id="r_cascade_owner").first()
+        assert rem is None
+
+
+def test_assistant_message_preserves_created_at() -> None:
+    """[P3] Проверяет сохранение и неизменность метки created_at в save_assistant_message."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    custom_ts = datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC)
+
+    with session_factory() as db:
+        user = get_or_create_user(db, "u_ts", "ts_tester")
+        ds = create_dataset(db, "ds_ts", user.id, "TS DS")
+        chat = create_chat(db, "c_ts", user.id, ds.dataset_id)
+
+        msg = AssistantMessage(
+            message_id="m_ts_1",
+            chat_id=chat.chat_id,
+            role="assistant",
+            created_at=custom_ts,
+            blocks=[TextBlock(markdown="Проверка метки времени")],
+        )
+
+        saved = save_assistant_message(db, msg)
+        saved_ts = (
+            saved.created_at.replace(tzinfo=UTC)
+            if saved.created_at.tzinfo is None
+            else saved.created_at
+        )
+        assert saved_ts == custom_ts
+
+        history = get_chat_messages(db, chat.chat_id)
+        assert len(history) == 1
+        loaded_ts = (
+            history[0].created_at.replace(tzinfo=UTC)
+            if history[0].created_at.tzinfo is None
+            else history[0].created_at
+        )
+        assert loaded_ts == custom_ts
+
+
+def test_save_tool_result_owner_mismatch(tmp_path: Path) -> None:
+    """[Security] Проверяет запрет сохранения результата с несовпадающим владельцем чата."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        user_alice = get_or_create_user(db, "u_alice", "alice")
+        user_bob = get_or_create_user(db, "u_bob", "bob")
+        ds = create_dataset(db, "ds_alice", user_alice.id, "Alice DS")
+        chat = create_chat(db, "c_alice", user_alice.id, ds.dataset_id)
+
+        res = ToolResult(
+            result_id="r_mismatch",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT 1",
+            data=ToolResultData(columns=["val"], rows=[[1]]),
+        )
+
+        with pytest.raises(ValueError, match="Конфликт владельцев"):
+            save_tool_result(
+                db,
+                res,
+                chat_id=chat.chat_id,
+                owner_id=user_bob.id,
+                storage_dir=tmp_path,
+            )
+
+
+def test_data_ref_path_traversal_protection(tmp_path: Path) -> None:
+    """[Security] Проверяет защиту от Path Traversal при разрешении data_ref."""
+    safe_storage = tmp_path / "safe_results"
+    safe_storage.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ValueError, match="outside storage directory"):
+        _resolve_data_ref_path("parquet://../../etc/passwd", base_dir=safe_storage)
+
+    outside_file = tmp_path / "outside.parquet"
+    outside_file.touch()
+    with pytest.raises(ValueError, match="outside authorized storage"):
+        _resolve_data_ref_path(f"parquet://{outside_file.as_posix()}", base_dir=safe_storage)

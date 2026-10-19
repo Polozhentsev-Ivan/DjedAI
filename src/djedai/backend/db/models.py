@@ -53,6 +53,7 @@ class UserModel(Base):
     dashboards = relationship(
         "DashboardModel", back_populates="owner", cascade="all, delete-orphan"
     )
+    results = relationship("ToolResultModel", back_populates="owner", cascade="all, delete-orphan")
 
     @property
     def user_id(self) -> str:
@@ -150,6 +151,9 @@ class ToolResultModel(Base):
     __tablename__ = "results"
 
     result_id = Column(String(64), primary_key=True, index=True)
+    owner_id = Column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     chat_id = Column(
         String(64), ForeignKey("chats.chat_id", ondelete="SET NULL"), index=True, nullable=True
     )
@@ -167,6 +171,7 @@ class ToolResultModel(Base):
     created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     # Связи
+    owner = relationship("UserModel", back_populates="results")
     chat = relationship("ChatModel", back_populates="results")
 
 

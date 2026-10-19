@@ -9,6 +9,9 @@
 
 from __future__ import annotations
 
+import math
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +34,48 @@ from djedai.contracts.tool_result import (
     Fact,
     ToolError,
     ToolResult,
+    ToolResultColumn,
     ToolResultData,
 )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _escape_sql_ident(ident: str) -> str:
+    """Экранирует SQL-идентификатор для DuckDB, удваивая двойные кавычки."""
+    return '"' + str(ident).replace('"', '""') + '"'
+
+
+def _escape_sql_literal(literal: str) -> str:
+    """Экранирует строковый литерал (путь к файлу) для DuckDB, удваивая апострофы."""
+    return "'" + str(literal).replace("'", "''") + "'"
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Рекурсивно приводит объекты (Decimal, date, datetime и др.) к типам JSON."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, bool)):
+        return obj
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_sanitize_for_json(v) for v in obj]
+    if hasattr(obj, "model_dump"):
+        return _sanitize_for_json(obj.model_dump())
+    return str(obj)
 
 
 def _normalize_columns(raw_columns: list[Any]) -> list[str]:
@@ -50,7 +93,76 @@ def _normalize_columns(raw_columns: list[Any]) -> list[str]:
     return names
 
 
-def write_parquet(file_path: Path | str, columns: list[str], rows: list[list[Any]]) -> Path:
+def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
+    """Определяет точный DuckDB-тип для всей колонки без потери точности."""
+    if isinstance(col_meta, ToolResultColumn) or (
+        isinstance(col_meta, dict) and "type" in col_meta
+    ):
+        meta_type = (
+            col_meta.type if isinstance(col_meta, ToolResultColumn) else col_meta.get("type")
+        )
+        if meta_type:
+            m = str(meta_type).lower()
+            if m in ("money", "number", "float", "double", "decimal", "real"):
+                return "DOUBLE"
+            if m in ("int", "integer", "bigint", "smallint"):
+                return "BIGINT"
+            if m in ("date",):
+                return "DATE"
+            if m in ("datetime", "timestamp"):
+                return "TIMESTAMP"
+            if m in ("bool", "boolean"):
+                return "BOOLEAN"
+
+    non_nulls = [v for v in values if v is not None]
+    if not non_nulls:
+        return "VARCHAR"
+
+    has_str = False
+    has_float = False
+    has_int = False
+    has_bool = False
+    has_datetime = False
+    has_date = False
+
+    for v in non_nulls:
+        if isinstance(v, bool):
+            has_bool = True
+        elif isinstance(v, int):
+            has_int = True
+        elif isinstance(v, (float, Decimal)):
+            has_float = True
+        elif isinstance(v, datetime):
+            has_datetime = True
+        elif isinstance(v, date):
+            has_date = True
+        else:
+            has_str = True
+
+    if has_str:
+        return "VARCHAR"
+    if has_datetime:
+        return "TIMESTAMP"
+    if has_date and not (has_int or has_float or has_bool):
+        return "DATE"
+    if has_float:
+        return "DOUBLE"
+    if has_int and not has_bool:
+        return "BIGINT"
+    if has_bool and not has_int:
+        return "BOOLEAN"
+    if has_int and has_bool:
+        return "BIGINT"
+
+    return "VARCHAR"
+
+
+def write_parquet(
+    file_path: Path | str,
+    columns: list[str],
+    rows: list[list[Any]],
+    columns_meta: list[Any] | None = None,
+) -> Path:
     """Записывает колонки и строки в Parquet-файл через встроенный движок DuckDB."""
     path = Path(file_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,43 +170,51 @@ def write_parquet(file_path: Path | str, columns: list[str], rows: list[list[Any
 
     con = duckdb.connect()
     try:
+        escaped_path = _escape_sql_literal(duck_path)
+        meta_list = columns_meta or [None] * len(columns)
+
         if not rows:
-            col_defs = ", ".join(f'"{col}" VARCHAR' for col in columns)
+            col_defs = ", ".join(f"{_escape_sql_ident(col)} VARCHAR" for col in columns)
             con.execute(f"CREATE TEMPORARY TABLE _res_empty ({col_defs})")
-            con.execute(f"COPY _res_empty TO '{duck_path}' (FORMAT PARQUET)")
+            con.execute(f"COPY _res_empty TO {escaped_path} (FORMAT PARQUET)")
             return path
 
-        col_defs = []
-        for i, col in enumerate(columns):
-            sample_val = None
-            for r in rows:
-                if i < len(r) and r[i] is not None:
-                    sample_val = r[i]
-                    break
-            if isinstance(sample_val, bool):
-                t = "BOOLEAN"
-            elif isinstance(sample_val, int):
-                t = "BIGINT"
-            elif isinstance(sample_val, float):
-                t = "DOUBLE"
-            else:
-                t = "VARCHAR"
-            col_defs.append(f'"{col}" {t}')
+        col_types = []
+        for i, _col in enumerate(columns):
+            col_values = [r[i] for r in rows if i < len(r)]
+            t = _infer_duckdb_type(meta_list[i] if i < len(meta_list) else None, col_values)
+            col_types.append(t)
 
+        col_defs = ", ".join(
+            f"{_escape_sql_ident(col)} {t}" for col, t in zip(columns, col_types, strict=False)
+        )
         placeholders = ", ".join(["?"] * len(columns))
-        con.execute(f"CREATE TEMPORARY TABLE _res_data ({', '.join(col_defs)})")
+        con.execute(f"CREATE TEMPORARY TABLE _res_data ({col_defs})")
 
-        formatted_rows = [
-            [
-                r[i]
-                if i < len(r) and not isinstance(r[i], (dict, list))
-                else (str(r[i]) if i < len(r) and r[i] is not None else None)
-                for i in range(len(columns))
-            ]
-            for r in rows
-        ]
+        formatted_rows = []
+        for r in rows:
+            row_data = []
+            for i in range(len(columns)):
+                v = r[i] if i < len(r) else None
+                t = col_types[i]
+                if v is None:
+                    row_data.append(None)
+                elif t == "DOUBLE":
+                    row_data.append(float(v))
+                elif t == "BIGINT":
+                    row_data.append(int(v))
+                elif t == "BOOLEAN":
+                    row_data.append(bool(v))
+                elif t in ("DATE", "TIMESTAMP"):
+                    row_data.append(v.isoformat() if hasattr(v, "isoformat") else str(v))
+                elif isinstance(v, (dict, list)):
+                    row_data.append(str(v))
+                else:
+                    row_data.append(v)
+            formatted_rows.append(row_data)
+
         con.executemany(f"INSERT INTO _res_data VALUES ({placeholders})", formatted_rows)
-        con.execute(f"COPY _res_data TO '{duck_path}' (FORMAT PARQUET)")
+        con.execute(f"COPY _res_data TO {escaped_path} (FORMAT PARQUET)")
         return path
     finally:
         con.close()
@@ -107,9 +227,10 @@ def read_parquet(file_path: Path | str) -> tuple[list[str], list[list[Any]]]:
         raise FileNotFoundError(f"Parquet-файл не найден: {path}")
 
     duck_path = path.as_posix()
+    escaped_path = _escape_sql_literal(duck_path)
     con = duckdb.connect()
     try:
-        res = con.execute(f"SELECT * FROM '{duck_path}'").fetchall()
+        res = con.execute(f"SELECT * FROM {escaped_path}").fetchall()
         cols = [desc[0] for desc in con.description]
         rows = [list(r) for r in res]
         return cols, rows
@@ -118,19 +239,42 @@ def read_parquet(file_path: Path | str) -> tuple[list[str], list[list[Any]]]:
 
 
 def _resolve_data_ref_path(data_ref: str, base_dir: Path | str | None = None) -> Path:
-    """Разрешает путь к файлу данных из data_ref ссылки."""
+    """Разрешает безопасный путь к файлу данных из data_ref ссылки внутри хранилища."""
     ref = data_ref
     for prefix in ("parquet://", "file://"):
         if ref.startswith(prefix):
             ref = ref[len(prefix) :]
             break
 
+    base = Path(base_dir or get_settings().results_data_dir).resolve()
     p = Path(ref)
-    if p.is_absolute():
-        return p
 
-    base = Path(base_dir or get_settings().results_data_dir)
-    return (base / p).resolve()
+    # Защита от Path Traversal: если абсолютный путь
+    if p.is_absolute():
+        resolved_p = p.resolve()
+        cwd = Path.cwd().resolve()
+        if resolved_p.is_relative_to(base) or resolved_p.is_relative_to(cwd):
+            return resolved_p
+        raise ValueError(f"Security error: data_ref '{data_ref}' points outside authorized storage")
+
+    # Относительный путь: проверяем, что candidate не выходит за пределы base
+    candidate = (base / p).resolve()
+    if not candidate.is_relative_to(base):
+        raise ValueError(
+            f"Security error: data_ref '{data_ref}' points outside storage directory {base}"
+        )
+
+    if candidate.exists():
+        return candidate
+
+    # Fallback: поиск по имени файла внутри base (на случай перемещения каталогов)
+    name_candidate = (base / p.name).resolve()
+    if not name_candidate.is_relative_to(base):
+        raise ValueError(
+            f"Security error: data_ref '{data_ref}' points outside storage directory {base}"
+        )
+
+    return name_candidate
 
 
 # ============================================================================
@@ -142,17 +286,31 @@ def save_tool_result(
     db: Session,
     tool_result: ToolResult,
     chat_id: str | None = None,
+    owner_id: str | None = None,
     persist_data: bool = True,
     storage_dir: Path | str | None = None,
 ) -> ToolResultModel:
     """Сохраняет вызов аналитического инструмента и его результат в БД (§4.3, B5-2).
 
     Сохраняет любые статусы: 'ok', 'error', 'empty'.
-    Если присутствуют табличные данные и persist_data=True, сохраняет их в Parquet
-    и формирует ссылку data_ref.
+    Поддерживает сохранение Decimal, date, datetime в preview без ошибок сериализации.
+    Табличные данные сохраняются в Parquet, формируя переносимую ссылку data_ref.
     """
     settings = get_settings()
-    target_storage = Path(storage_dir or settings.results_data_dir)
+    target_storage = Path(storage_dir or settings.results_data_dir).resolve()
+
+    # Разрешаем owner_id из чата, если не передан явно, и проверяем согласованность
+    effective_owner_id = owner_id
+    if chat_id is not None:
+        chat = db.query(ChatModel).filter_by(chat_id=chat_id).first()
+        if chat is not None:
+            if owner_id is not None and chat.owner_id is not None and owner_id != chat.owner_id:
+                raise ValueError(
+                    f"Конфликт владельцев: переданный owner_id='{owner_id}' "
+                    f"не совпадает с владельцем чата chat.owner_id='{chat.owner_id}'"
+                )
+            if effective_owner_id is None:
+                effective_owner_id = chat.owner_id
 
     data_ref = tool_result.data_ref
     data_preview: dict[str, Any] | None = None
@@ -162,38 +320,57 @@ def save_tool_result(
         rows = tool_result.data.rows
 
         if persist_data and rows is not None:
-            # Сохраняем Parquet на диск
             file_name = f"{tool_result.result_id}.parquet"
-            parquet_path = target_storage / file_name
-            write_parquet(parquet_path, columns, rows)
-            data_ref = f"parquet://{parquet_path.as_posix()}"
+            parquet_path = (target_storage / file_name).resolve()
+            write_parquet(
+                parquet_path,
+                columns,
+                rows,
+                columns_meta=tool_result.data.columns,
+            )
+            data_ref = f"parquet://{file_name}"
 
-        # Сохраняем компактное превью (до 50 строк) для быстрого рендера без чтения с диска
         preview_rows = rows[:50] if rows is not None else []
-        data_preview = {
+        columns_meta_dump = [
+            c.model_dump() if hasattr(c, "model_dump") else c for c in tool_result.data.columns
+        ]
+        raw_preview = {
             "columns": columns,
+            "columns_meta": columns_meta_dump,
             "rows": preview_rows,
             "row_count": tool_result.data.row_count
             if tool_result.data.row_count is not None
             else len(rows or []),
-            "truncated": tool_result.data.truncated or (len(rows or []) > 50),
+            "truncated": bool(tool_result.data.truncated),
         }
+        # Санитизируем для JSON (Decimal -> float, date/datetime -> isoformat)
+        data_preview = _sanitize_for_json(raw_preview)
 
-    # Сериализация сопутствующих структур
-    facts_data = [f.model_dump() for f in tool_result.facts] if tool_result.facts else None
-    chart_hint_data = (
-        tool_result.chart_hint.model_dump() if tool_result.chart_hint is not None else None
+    facts_data = (
+        _sanitize_for_json([f.model_dump() for f in tool_result.facts])
+        if tool_result.facts
+        else None
     )
-    error_data = tool_result.error.model_dump() if tool_result.error is not None else None
+    chart_hint_data = (
+        _sanitize_for_json(tool_result.chart_hint.model_dump())
+        if tool_result.chart_hint is not None
+        else None
+    )
+    error_data = (
+        _sanitize_for_json(tool_result.error.model_dump())
+        if tool_result.error is not None
+        else None
+    )
+    params_data = _sanitize_for_json(tool_result.params) if tool_result.params else {}
 
-    # Поиск существующей записи для обновления или создание новой
     record = db.query(ToolResultModel).filter_by(result_id=tool_result.result_id).first()
     if record is None:
         record = ToolResultModel(
             result_id=tool_result.result_id,
+            owner_id=effective_owner_id,
             chat_id=chat_id,
             tool=tool_result.tool,
-            params=tool_result.params,
+            params=params_data,
             sql=tool_result.sql,
             status=tool_result.status,
             facts=facts_data,
@@ -206,10 +383,12 @@ def save_tool_result(
         )
         db.add(record)
     else:
+        if effective_owner_id is not None:
+            record.owner_id = effective_owner_id
         if chat_id is not None:
             record.chat_id = chat_id
         record.tool = tool_result.tool
-        record.params = tool_result.params
+        record.params = params_data
         record.sql = tool_result.sql
         record.status = tool_result.status
         record.facts = facts_data
@@ -239,22 +418,53 @@ def load_tool_result(
     data: ToolResultData | None = None
 
     if load_data:
+        columns: list[str | ToolResultColumn] = []
+        row_count: int | None = None
+        truncated: bool = False
+
+        if record.data_preview:
+            if "columns_meta" in record.data_preview:
+                columns = [
+                    ToolResultColumn(**c) if isinstance(c, dict) and "name" in c else c
+                    for c in record.data_preview["columns_meta"]
+                ]
+            elif "columns" in record.data_preview:
+                columns = list(record.data_preview["columns"])
+            row_count = record.data_preview.get("row_count")
+            truncated = record.data_preview.get("truncated", False)
+
         if record.data_ref:
-            try:
-                parquet_path = _resolve_data_ref_path(record.data_ref, storage_dir)
+            parquet_path = _resolve_data_ref_path(record.data_ref, storage_dir)
+            if parquet_path.exists():
                 cols, rows = read_parquet(parquet_path)
+                if not columns:
+                    columns = cols
+                if row_count is None:
+                    row_count = len(rows)
                 data = ToolResultData(
-                    columns=cols,
+                    columns=columns,
                     rows=rows,
-                    row_count=len(rows),
-                    truncated=False,
+                    row_count=row_count,
+                    truncated=truncated,
                 )
-            except Exception:
-                # Если файл Parquet временно недоступен, берем из preview
-                if record.data_preview:
-                    data = ToolResultData(**record.data_preview)
-        elif record.data_preview:
-            data = ToolResultData(**record.data_preview)
+            elif record.data_preview and "rows" in record.data_preview:
+                p_rows = record.data_preview["rows"]
+                eff_rc = row_count or len(p_rows)
+                data = ToolResultData(
+                    columns=columns,
+                    rows=p_rows,
+                    row_count=eff_rc,
+                    truncated=truncated or (eff_rc > len(p_rows)),
+                )
+        elif record.data_preview and "rows" in record.data_preview:
+            p_rows = record.data_preview["rows"]
+            eff_rc = row_count or len(p_rows)
+            data = ToolResultData(
+                columns=columns,
+                rows=p_rows,
+                row_count=eff_rc,
+                truncated=truncated or (eff_rc > len(p_rows)),
+            )
 
     facts = [Fact(**f) for f in (record.facts or [])]
     chart_hint = ChartHint(**record.chart_hint) if record.chart_hint else None
@@ -391,6 +601,7 @@ def save_message(
     blocks: list[dict[str, Any]] | None = None,
     result_ids: list[str] | None = None,
     trace: list[dict[str, Any]] | None = None,
+    created_at: datetime | None = None,
 ) -> MessageModel:
     """Сохраняет сообщение в чате со структурированными блоками и аудитом."""
     msg = MessageModel(
@@ -401,6 +612,7 @@ def save_message(
         blocks=blocks,
         result_ids=result_ids,
         trace=trace,
+        created_at=created_at or _utc_now(),
     )
     db.add(msg)
     db.commit()
@@ -409,7 +621,7 @@ def save_message(
 
 
 def save_assistant_message(db: Session, message: AssistantMessage) -> MessageModel:
-    """Сохраняет контракт AssistantMessage в базу данных."""
+    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at."""
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
     return save_message(
@@ -421,6 +633,7 @@ def save_assistant_message(db: Session, message: AssistantMessage) -> MessageMod
         blocks=blocks_data,
         result_ids=message.result_ids,
         trace=trace_data,
+        created_at=message.created_at,
     )
 
 
