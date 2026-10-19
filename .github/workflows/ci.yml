@@ -21,13 +21,14 @@ jobs:
     timeout-minutes: 5
     outputs:
       python-enabled: ${{ steps.check.outputs.python-enabled }}
+      frontend-enabled: ${{ steps.check.outputs.frontend-enabled }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.22.0'
+          node-version-file: .nvmrc
       - name: Test CI checks
         run: node --test scripts/check-repository.test.mjs
       - name: Check repository
@@ -59,9 +60,46 @@ jobs:
       - name: Test Python application
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
+  frontend:
+    name: frontend
+    needs: repository
+    if: needs.repository.outputs.frontend-enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Check pinned npm
+        run: |
+          expected="$(node -p "require('./package.json').engines.npm")"
+          actual="$(npm --version)"
+          echo "npm $actual, expected $expected"
+          test "$actual" = "$expected"
+      - name: Restore locked dependencies
+        run: npm ci
+      - name: Check generated API types
+        run: |
+          npm run gen:types
+          git diff --exit-code -- src/api/generated.ts
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test with coverage
+        run: npm run test:coverage
+      - name: Build
+        run: npm run build
+
   required:
     name: required
-    needs: [repository, python]
+    needs: [repository, python, frontend]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -71,10 +109,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.22.0'
+          node-version-file: .nvmrc
       - name: Require all applicable checks
         env:
           REPOSITORY_RESULT: ${{ needs.repository.result }}
           PYTHON_EXPECTED: ${{ needs.repository.outputs.python-enabled }}
           PYTHON_RESULT: ${{ needs.python.result }}
+          FRONTEND_EXPECTED: ${{ needs.repository.outputs.frontend-enabled }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
         run: node scripts/check-repository.mjs --required

@@ -275,14 +275,95 @@ test('metadata alone is not reported as tested application code', t => {
 });
 
 test('the final gate accepts only the expected completed checks', () => {
-  assert.equal(requiredResult('success', 'false', 'skipped'), true);
-  assert.equal(requiredResult('success', 'true', 'success'), true);
+  assert.equal(requiredResult('success', 'false', 'skipped', 'false', 'skipped'), true);
+  assert.equal(requiredResult('success', 'true', 'success', 'false', 'skipped'), true);
+  assert.equal(requiredResult('success', 'true', 'success', 'true', 'success'), true);
   for (const [repository, expected, python] of [
     ['failure', 'false', 'skipped'], ['cancelled', 'false', 'skipped'],
     ['success', 'true', 'failure'], ['success', 'true', 'skipped'],
     ['success', 'true', 'cancelled'], ['success', 'true', ''],
     ['success', '', 'skipped'], ['success', 'false', 'success'],
-  ]) assert.equal(requiredResult(repository, expected, python), false);
+  ]) assert.equal(requiredResult(repository, expected, python, 'false', 'skipped'), false);
+});
+
+test('a failed, skipped or missing frontend job blocks the final gate', () => {
+  for (const [expected, frontend] of [
+    ['true', 'failure'], ['true', 'skipped'], ['true', 'cancelled'], ['true', ''],
+    ['false', 'success'], ['', 'skipped'], [undefined, undefined],
+  ]) assert.equal(requiredResult('success', 'true', 'success', expected, frontend), false, `${expected}/${frontend}`);
+});
+
+function enableFrontend(f, overrides = {}) {
+  const manifest = {
+    name: 'frontend', private: true, packageManager: 'npm@11.19.1',
+    engines: { node: '24.22.0', npm: '11.19.1' },
+    dependencies: { react: '19.3.0' }, devDependencies: { vitest: '5.0.3' },
+    ...overrides,
+  };
+  f.add('.nvmrc', '24.22.0\n');
+  f.add('frontend/.npmrc', 'save-exact=true\nengine-strict=true\n');
+  f.add('frontend/package.json', JSON.stringify(manifest));
+  f.add('frontend/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: manifest.dependencies, devDependencies: manifest.devDependencies } } }));
+  f.add('frontend/src/app.test.ts', 'test("x", () => {});\n');
+}
+
+test('a complete frontend requests the separate frontend job', t => {
+  const f = fixture(t);
+  enableFrontend(f);
+  const report = f.report();
+  assert.deepEqual(report.errors, []);
+  assert.equal(report.frontendEnabled, true);
+  assert.equal(report.frontendTestFiles, 1);
+});
+
+test('frontend dependencies must use exact versions', t => {
+  const f = fixture(t);
+  enableFrontend(f, { dependencies: { react: '^19.3.0' }, devDependencies: { vitest: 'latest' } });
+  const report = f.report();
+  assert.equal(report.frontendEnabled, false);
+  assert.ok(report.errors.some(e => e.includes('react (dependencies): ^19.3.0')));
+  assert.ok(report.errors.some(e => e.includes('vitest (devDependencies): latest')));
+});
+
+test('Node and npm are pinned like CI', t => {
+  const f = fixture(t);
+  enableFrontend(f, { engines: { node: '24', npm: '11' }, packageManager: 'npm@11' });
+  f.add('.nvmrc', '24\n');
+  const errors = f.report().errors;
+  assert.ok(errors.some(e => e.includes('точная версия Node')));
+  assert.ok(errors.some(e => e.includes('engines.npm')));
+});
+
+test('engines.node must match .nvmrc and packageManager must match engines.npm', t => {
+  const f = fixture(t);
+  enableFrontend(f, { engines: { node: '22.0.0', npm: '11.19.1' }, packageManager: 'npm@10.0.0' });
+  const errors = f.report().errors;
+  assert.ok(errors.some(e => e.includes('должен совпадать с .nvmrc')));
+  assert.ok(errors.some(e => e.includes('npm@11.19.1')));
+});
+
+test('frontend needs its lock, save-exact, tests and a lock in sync', t => {
+  const f = fixture(t);
+  enableFrontend(f);
+  f.add('frontend/.npmrc', 'engine-strict=true\n');
+  f.add('frontend/package-lock.json', JSON.stringify({ packages: { '': { dependencies: { react: '19.2.0' } } } }));
+  f.tracked.delete('frontend/src/app.test.ts');
+  const errors = f.report().errors;
+  assert.ok(errors.some(e => e.includes('save-exact=true')));
+  assert.ok(errors.some(e => e.includes('не согласован с package.json (dependencies)')));
+  assert.ok(errors.some(e => e.includes('настоящие тесты в frontend/src')));
+  f.tracked.delete('frontend/package-lock.json');
+  f.tracked.delete('.nvmrc');
+  const missing = f.report().errors;
+  assert.ok(missing.some(e => e.includes('frontend/package-lock.json')));
+  assert.ok(missing.some(e => e.includes('.nvmrc')));
+});
+
+test('an unreadable package.json is reported', t => {
+  const f = fixture(t);
+  enableFrontend(f);
+  f.add('frontend/package.json', '{ broken');
+  assert.ok(f.report().errors.some(e => e.includes('Не удалось прочитать frontend/package.json')));
 });
 
 test('CLI uses Git inventory and emits explicit GitHub outputs and summary', t => {
@@ -295,15 +376,36 @@ test('CLI uses Git inventory and emits explicit GitHub outputs and summary', t =
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout).pythonEnabled, false);
   assert.match(fs.readFileSync(output, 'utf8'), /python-enabled=false/);
+  assert.match(fs.readFileSync(output, 'utf8'), /frontend-enabled=false/);
   assert.match(fs.readFileSync(summary, 'utf8'), /tests\/coverage not claimed/);
+  assert.match(fs.readFileSync(summary, 'utf8'), /Frontend: not present/);
 });
 
 test('CLI final gate fails on a required Python job being skipped', t => {
   const f = fixture(t);
   const run = spawnSync(process.execPath, [script, '--required'], {
     cwd: f.root, encoding: 'utf8',
-    env: { ...process.env, REPOSITORY_RESULT: 'success', PYTHON_EXPECTED: 'true', PYTHON_RESULT: 'skipped' },
+    env: { ...process.env, REPOSITORY_RESULT: 'success', PYTHON_EXPECTED: 'true', PYTHON_RESULT: 'skipped', FRONTEND_EXPECTED: 'false', FRONTEND_RESULT: 'skipped' },
   });
   assert.equal(run.status, 1);
   assert.match(run.stdout, /Required CI: failed/);
+});
+
+test('CLI final gate fails when the expected frontend job fails', t => {
+  const f = fixture(t);
+  const run = spawnSync(process.execPath, [script, '--required'], {
+    cwd: f.root, encoding: 'utf8',
+    env: { ...process.env, REPOSITORY_RESULT: 'success', PYTHON_EXPECTED: 'true', PYTHON_RESULT: 'success', FRONTEND_EXPECTED: 'true', FRONTEND_RESULT: 'failure' },
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stdout, /Required CI: failed/);
+});
+
+test('CLI final gate passes when every expected job passed', t => {
+  const f = fixture(t);
+  const run = spawnSync(process.execPath, [script, '--required'], {
+    cwd: f.root, encoding: 'utf8',
+    env: { ...process.env, REPOSITORY_RESULT: 'success', PYTHON_EXPECTED: 'true', PYTHON_RESULT: 'success', FRONTEND_EXPECTED: 'true', FRONTEND_RESULT: 'success' },
+  });
+  assert.equal(run.status, 0, run.stdout);
 });
