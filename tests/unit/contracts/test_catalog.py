@@ -135,3 +135,137 @@ def test_prompt_has_no_heavy_lists():
     assert [value for value in heavy if value in prompt] == []
     assert "rename_column" not in prompt  # журнал преобразований в промпт не идёт
     assert len(prompt) < len(catalog.model_dump_json()) / 3
+
+
+def prompt_line(data: dict, name: str) -> str:
+    prompt = DatasetCatalog.model_validate(data).to_prompt()
+    return next(line for line in prompt.splitlines() if line.startswith(f"- {name}:"))
+
+
+def test_currency_only_for_money():
+    with pytest.raises(ValidationError):
+        DatasetCatalog.model_validate(mutated(lambda d: column(d, "status").update(currency="RUB")))
+    with pytest.raises(ValidationError):
+        DatasetCatalog.model_validate(
+            mutated(lambda d: column(d, "amount").update(currency="рубль"))
+        )
+
+
+def test_prompt_shows_currency_range_and_distinct():
+    assert "валюта RUB" in prompt_line(FULL, "amount")
+    assert ", 0 … 250000" in prompt_line(FULL, "amount")  # диапазон без «.0»
+    assert "уникальных 3" in prompt_line(FULL, "status")
+    assert "уникальных" not in prompt_line(FULL, "order_id")  # у id число бесполезно
+    assert "уникальных" not in prompt_line(FULL, "amount")
+
+
+def test_prompt_without_currency_or_stats_has_no_gaps():
+    def change(data):
+        col = column(data, "amount")
+        col.pop("currency")
+        col["stats"] = {}
+
+    line = prompt_line(mutated(change), "amount")
+    assert "валюта" not in line
+    assert "…" not in line
+
+
+@pytest.mark.parametrize(
+    ("original", "description", "shown"),
+    [
+        ("Статус", "Состояние заказа", True),  # описание не передаёт заголовок
+        ("Статус", "Статус заказа в системе", False),  # заголовок уже в описании
+        ("статус", "СТАТУС заказа", False),  # без учёта регистра
+        ("Статус", None, True),  # описания нет: заголовок единственная подсказка
+        ("status", "Состояние заказа", False),  # совпадает с name
+    ],
+)
+def test_original_name_is_shown_only_when_it_adds_meaning(original, description, shown):
+    def change(data):
+        col = column(data, "status")
+        col["original_name"] = original
+        col["description"] = description
+
+    assert (f"«{original}»" in prompt_line(mutated(change), "status")) is shown
+
+
+def test_prompt_marks_primary_and_foreign_keys():
+    assert prompt_line(FULL, "order_id").startswith("- order_id: id, id, PK")
+    assert "FK → clients.id" in prompt_line(FULL, "client_id")
+    assert "PK" not in prompt_line(FULL, "client_id")
+    assert "FK" not in prompt_line(FULL, "order_id")
+    assert "PK" not in prompt_line(FULL, "amount")
+
+
+def test_prompt_marks_column_that_is_both_primary_and_foreign_key():
+    def change(data):
+        data["tables"][1]["primary_key_candidates"] = ["id"]
+        data["relations"].append(
+            {
+                "from": {"table": "clients", "column": "id"},
+                "to": {"table": "orders", "column": "client_id"},
+                "overlap": 0.5,
+                "jaccard": 0.5,
+                "cardinality": "1:1",
+                "confidence": "low",
+            }
+        )
+
+    prompt = DatasetCatalog.model_validate(mutated(change)).to_prompt()
+    assert "- id: id, id, PK, FK → orders.client_id" in prompt
+
+
+def test_prompt_flags_key_that_is_not_unique():
+    def change(data):
+        orders(data)["duplicate_rows"] = 12
+        column(data, "order_id")["is_unique"] = False
+        column(data, "order_id")["distinct_count"] = 125418
+
+    prompt = DatasetCatalog.model_validate(mutated(change)).to_prompt()
+    assert "ключ order_id (не уникален)" in prompt
+    assert "полных дублей 12" in prompt
+    assert "(не уникален)" not in DatasetCatalog.model_validate(FULL).to_prompt()
+
+
+def test_reference_example_is_consistent_about_duplicates():
+    table = DatasetCatalog.model_validate(FULL).tables[0]
+    key = table.column(table.primary_key_candidates[0])
+    assert key.is_unique and table.duplicate_rows == 0
+
+
+def test_prompt_separates_empty_and_unparsed_values():
+    line = prompt_line(FULL, "amount")
+    assert "пропусков 0.4%" in line
+    assert "не распознано 1.2%" in line  # 1.2% от непустых, т.е. 1.195% всех строк
+
+
+def test_unparsed_share_is_taken_from_non_empty_values():
+    def change(data):
+        col = column(data, "amount")
+        col["null_ratio"] = 0.5
+        col["parse"]["success_ratio"] = 0.8
+
+    assert "не распознано 10.0%" in prompt_line(mutated(change), "amount")  # 0.2 * 0.5
+
+
+@pytest.mark.parametrize("name", ["order_id", "status"])
+def test_prompt_has_no_unparsed_share_without_parse_info(name):
+    assert "не распознано" not in prompt_line(FULL, name)
+
+
+def test_prompt_skips_negligible_unparsed_share():
+    def change(data):
+        column(data, "amount")["parse"]["success_ratio"] = 0.99999
+
+    assert "не распознано" not in prompt_line(mutated(change), "amount")
+
+
+def test_fully_empty_column_has_no_unparsed_share():
+    def change(data):
+        col = column(data, "amount")
+        col["null_ratio"] = 1.0
+        col["parse"]["success_ratio"] = 0.0
+
+    line = prompt_line(mutated(change), "amount")
+    assert "пропусков 100.0%" in line
+    assert "не распознано" not in line

@@ -9,17 +9,23 @@ dependencies = [
     "charset-normalizer==3.5.2",
     "duckdb==1.5.6",
     "fastapi==0.115.11",
-    "pydantic==2.11.1",
+    "langgraph==1.2.16",
+    "openai==3.31.0",
+    "pydantic==2.14.1",
     "pydantic-settings==2.8.1",
     "sqlalchemy==2.0.38",
+    "sqlglot>=30.23.0",
     "uvicorn==0.34.0",
 ]
 
 [dependency-groups]
 dev = [
     "httpx==0.28.1",
+    "numpy>=2.5.4",
+    "pandas>=3.0.6",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
+    "pytest-mock==3.17.0",
     "ruff==0.17.0",
 ]
 

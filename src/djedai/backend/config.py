@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,28 @@ class Settings(BaseSettings):
 
     # Разрешенные CORS origins
     cors_origins: list[str] = ["*"]
+
+    @field_validator(
+        "app_env",
+        "log_level",
+        "app_database_url",
+        "model_base_url",
+        "model_name",
+        "model_revision",
+        "sql_max_rows",
+        "tool_timeout_seconds",
+        "allowed_outbound_hosts",
+        "session_secret",
+        mode="before",
+    )
+    @classmethod
+    def empty_str_to_default(cls, v: Any, info: ValidationInfo) -> Any:
+        """Подставляет значение по умолчанию, если параметр передан пустой строкой."""
+        if isinstance(v, str) and v.strip() == "":
+            field = cls.model_fields.get(info.field_name)
+            if field is not None:
+                return field.get_default(call_default_factory=True)
+        return v
 
     @property
     def is_production(self) -> bool:

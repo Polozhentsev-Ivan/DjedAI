@@ -33,3 +33,10 @@ def test_get_db_generator() -> None:
         next(gen)
     except StopIteration:
         pass
+
+
+def test_create_engine_creates_parent_dir(tmp_path) -> None:
+    db_file = tmp_path / "subdir" / "nested" / "test.db"
+    assert not db_file.parent.exists()
+    create_db_engine(f"sqlite:///{db_file}")
+    assert db_file.parent.exists()

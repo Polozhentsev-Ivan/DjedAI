@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from djedai.contracts.chart import ChartSpec
 
@@ -46,8 +46,18 @@ class ClarificationBlock(BaseModel):
     type: Literal["clarification"] = "clarification"
     question: str = Field(description="Уточняющий вопрос пользователю")
     options: list[str] = Field(
-        default_factory=list, min_length=2, description="Варианты ответа в виде кнопок"
+        min_length=2, description="Варианты ответа в виде кнопок (минимум 2)"
     )
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, v: list[str]) -> list[str]:
+        cleaned = [opt.strip() for opt in v if opt.strip()]
+        if len(cleaned) < 2:
+            raise ValueError("Должно быть минимум 2 непустых варианта ответа")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("Варианты ответа не должны повторяться")
+        return v
 
 
 class DashboardLinkBlock(BaseModel):

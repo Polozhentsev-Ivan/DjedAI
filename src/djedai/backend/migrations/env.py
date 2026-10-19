@@ -6,10 +6,10 @@ import logging
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 from djedai.backend.config import get_settings
 from djedai.backend.db.base import Base
+from djedai.backend.db.session import create_db_engine
 
 config = context.config
 
@@ -47,14 +47,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Запуск миграций в онлайн-режиме с реальным подключением."""
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_url()
-
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_db_engine(get_url())
 
     with connectable.connect() as connection:
         context.configure(

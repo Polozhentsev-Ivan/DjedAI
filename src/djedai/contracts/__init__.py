@@ -51,6 +51,7 @@ from djedai.contracts.tool_result import (
     Fact,
     ToolError,
     ToolResult,
+    ToolResultColumn,
     ToolResultData,
 )
 
@@ -71,6 +72,7 @@ __all__ = [
     "Fact",
     "ToolError",
     "ToolResult",
+    "ToolResultColumn",
     "ToolResultData",
     # Визуализация
     "Annotation",

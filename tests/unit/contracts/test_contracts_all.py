@@ -109,3 +109,82 @@ def test_auth_models() -> None:
     read = UserRead(user_id="u_1", username=create.username, created_at=now)
     assert read.user_id == "u_1"
     assert read.is_active is True
+
+
+def test_clarification_block_validation() -> None:
+    # Cannot be created without options
+    with pytest.raises(ValidationError):
+        ClarificationBlock(question="Какую метрику выбрать?")  # type: ignore[call-arg]
+
+    # Cannot be created with less than 2 options
+    with pytest.raises(ValidationError):
+        ClarificationBlock(question="Какую метрику выбрать?", options=["Только одна"])
+
+    # Cannot be created with empty strings
+    with pytest.raises(ValidationError):
+        ClarificationBlock(question="Какую метрику выбрать?", options=["Вариант 1", "  "])
+
+    # Cannot be created with duplicate options
+    with pytest.raises(ValidationError):
+        ClarificationBlock(question="Какую метрику выбрать?", options=["Выручка", "Выручка"])
+
+    cb = ClarificationBlock(question="Какую метрику выбрать?", options=["Вариант 1", "Вариант 2"])
+    assert len(cb.options) == 2
+
+
+def test_tool_result_data_with_columns_and_row_count() -> None:
+    from djedai.contracts import ToolResultColumn, ToolResultData
+
+    data = ToolResultData(
+        columns=[
+            ToolResultColumn(name="month", type="date", label="Месяц"),
+            "amount",
+        ],
+        rows=[["2023-01-01", 120400.5]],
+        row_count=48,
+        truncated=False,
+    )
+    assert data.row_count == 48
+    assert data["row_count"] == 48
+    assert len(data.columns) == 2
+    assert isinstance(data.columns[0], ToolResultColumn)
+    assert data.columns[0].name == "month"
+    assert data.columns[0]["name"] == "month"
+    assert data.columns[1] == "amount"
+    assert data.get("non_existent", "default") == "default"
+
+    # From dict payload (§4.3 specification format)
+    res = ToolResult.model_validate(
+        {
+            "result_id": "r_17",
+            "status": "ok",
+            "data": {
+                "columns": [
+                    {"name": "month", "type": "date", "label": "Месяц"},
+                    {"name": "amount", "type": "money", "label": "Выручка"},
+                ],
+                "rows": [["2023-01-01", 120400.5]],
+                "row_count": 48,
+                "truncated": False,
+            },
+        }
+    )
+    assert res.data is not None
+    assert res.data.row_count == 48
+    assert res.data["row_count"] == 48
+    assert isinstance(res.data.columns[0], ToolResultColumn)
+    assert res.data.columns[0].label == "Месяц"
+
+
+def test_tool_result_status_consistency() -> None:
+    # status=error requires error
+    with pytest.raises(ValueError):
+        ToolResult(result_id="r_err", status="error")
+
+    # status=ok forbids error
+    with pytest.raises(ValueError):
+        ToolResult(
+            result_id="r_ok",
+            status="ok",
+            error=ToolError(code="err", message="msg"),
+        )

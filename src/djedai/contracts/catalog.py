@@ -30,6 +30,7 @@ NUMERIC: tuple[SemanticType, ...] = ("integer", "float", "money", "percent")
 TEMPORAL: tuple[SemanticType, ...] = ("date", "datetime")
 
 Ratio = Annotated[float, Field(ge=0.0, le=1.0)]
+CurrencyCode = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]  # ISO 4217, например RUB
 Count = Annotated[int, Field(ge=0)]
 
 
@@ -71,7 +72,7 @@ class ColumnStats(_Model):  # числа: min/max/mean/median/std; даты: min
 
 class ParseInfo(_Model):  # как значения приведены к типу (журнал B1-2)
     format: str | None = None
-    success_ratio: Ratio
+    success_ratio: Ratio  # доля распознанных среди непустых значений
     failed_examples: list[str] = Field(default_factory=list, max_length=MAX_SAMPLE_VALUES)
 
 
@@ -81,17 +82,20 @@ class Column(_Model):
     physical_type: str
     semantic_type: SemanticType
     role: Role
-    null_ratio: Ratio
+    null_ratio: Ratio  # доля пустых значений в исходных данных, без нераспознанных
     distinct_count: Count
     is_unique: bool
     sample_values: list[Value] = Field(default_factory=list, max_length=MAX_SAMPLE_VALUES)
     top_values: list[TopValue] = Field(default_factory=list, max_length=MAX_TOP_VALUES)
     stats: ColumnStats = Field(default_factory=ColumnStats)
     parse: ParseInfo | None = None
+    currency: CurrencyCode | None = None  # только у money; без него валюта неизвестна
     description: str | None = None  # LLM (B1-6)
 
     @model_validator(mode="after")
     def _stats_match_type(self) -> Column:
+        if self.currency is not None and self.semantic_type != "money":
+            raise ValueError(f"{self.name}: currency есть только у денежных колонок")
         numeric = (self.stats.mean, self.stats.median, self.stats.std)
         if self.semantic_type not in NUMERIC and any(v is not None for v in numeric):
             raise ValueError(f"{self.name}: mean/median/std есть только у числовых колонок")
@@ -196,9 +200,12 @@ class DatasetCatalog(_Model):
         if self.summary:
             lines.append(self.summary)
         lines.append(f"Колонки: {_COLUMN_FORMAT}.")
+        foreign = {(r.from_.table, r.from_.column): r.to for r in self.relations}
         for table in self.tables:
             lines += ["", _table_line(table)]
-            lines += [_column_line(column) for column in table.columns]
+            lines += [
+                _column_line(column, _key_marks(table, column, foreign)) for column in table.columns
+            ]
         if self.relations:
             lines += ["", "Связи:"]
             lines += [
@@ -211,13 +218,20 @@ class DatasetCatalog(_Model):
         return "\n".join(lines)
 
 
-_COLUMN_FORMAT = "имя: тип, роль, «исходное имя», доля пропусков, период дат — описание"
+_COLUMN_FORMAT = (
+    "имя: тип, роль, ключ (PK, FK → таблица.колонка), валюта, «исходное имя», "
+    "доля пропусков, доля нераспознанных, число уникальных, "
+    "диапазон в данных — описание"
+)
+_DISTINCT_TYPES: tuple[SemanticType, ...] = ("category", "bool", "text")
 
 
 def _table_line(table: Table) -> str:
     parts = [f"строк {table.row_count}"]
     if table.primary_key_candidates:
-        parts.append("ключ " + ", ".join(table.primary_key_candidates))
+        parts.append(
+            "ключ " + ", ".join(_key_name(table, key) for key in table.primary_key_candidates)
+        )
     if table.time_columns:
         parts.append("время " + ", ".join(table.time_columns))
     if table.duplicate_rows:
@@ -230,16 +244,62 @@ def _table_line(table: Table) -> str:
     return f"{head}; {'; '.join(parts)}:"
 
 
-def _column_line(column: Column) -> str:
+def _key_name(table: Table, key: str) -> str:
+    column = table.column(key)
+    return key if column is None or column.is_unique else f"{key} (не уникален)"
+
+
+def _key_marks(table: Table, column: Column, foreign: dict[tuple[str, str], ColumnRef]) -> str:
+    """``PK`` для ключа таблицы и ``FK → таблица.колонка`` для ссылки на другую таблицу."""
+    marks = []
+    if column.name in table.primary_key_candidates:
+        marks.append("PK")
+    target = foreign.get((table.table_id, column.name))
+    if target is not None:
+        marks.append(f"FK → {target.table}.{target.column}")
+    return ", ".join(marks)
+
+
+def _column_line(column: Column, key_marks: str = "") -> str:
     line = f"- {column.name}: {column.semantic_type}, {column.role}"
-    if column.original_name != column.name:
+    if key_marks:
+        line += f", {key_marks}"
+    if column.currency:
+        line += f", валюта {column.currency}"
+    if _shows_original_name(column):
         line += f", «{column.original_name}»"
     if column.null_ratio:
         line += f", пропусков {column.null_ratio:.1%}"
-    if column.semantic_type in TEMPORAL and column.stats.min is not None:
-        line += f", {column.stats.min} … {column.stats.max}"
+    if (failed := _parse_failed_ratio(column)) and f"{failed:.1%}" != "0.0%":
+        line += f", не распознано {failed:.1%}"
+    if column.semantic_type in _DISTINCT_TYPES:
+        line += f", уникальных {column.distinct_count}"
+    if column.semantic_type in NUMERIC + TEMPORAL and column.stats.min is not None:
+        line += f", {_value(column.stats.min)} … {_value(column.stats.max)}"
         if column.stats.granularity:
             line += f" ({column.stats.granularity})"
     if column.description:
         line += f" — {column.description}"
     return line
+
+
+def _parse_failed_ratio(column: Column) -> float:
+    """Доля нераспознанных значений от всех строк; ``success_ratio`` считается по непустым."""
+    if column.parse is None:
+        return 0.0
+    return (1 - column.parse.success_ratio) * (1 - column.null_ratio)
+
+
+def _shows_original_name(column: Column) -> bool:
+    """Исходный заголовок нужен агенту, если описание его не передаёт."""
+    if column.original_name == column.name:
+        return False
+    if not column.description:
+        return True
+    return column.original_name.casefold() not in column.description.casefold()
+
+
+def _value(value: Value | None) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
