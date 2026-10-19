@@ -69,3 +69,12 @@ class AgentState(TypedDict, total=False):
     charts: list[ChartSpec]
     answer_blocks: list[Block]
     retries: int
+
+
+class PlanResponse(BaseModel):
+    # Enforces the max 5 steps requirement
+    plan: list[PlannedCall] = Field(max_length=5)
+
+
+class ComposeResponse(BaseModel):
+    answer_blocks: list[Block]

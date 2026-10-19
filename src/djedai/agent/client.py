@@ -15,7 +15,7 @@ class ModelResponse[T: BaseModel](BaseModel):
 
 class BIModelClient:
     def __init__(self, api_key: str, base_url: str, model_name: str, timeout: float = 15.0):
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=2)
         self.model = model_name
 
     def generate_typed_response[T: BaseModel](
