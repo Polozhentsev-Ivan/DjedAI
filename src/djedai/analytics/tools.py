@@ -223,8 +223,9 @@ def value_counts(table: str, column: str, top_n: int = 10) -> ToolResult:
 
         # Получаем частоты
         result = con.execute(
-            f"SELECT {column}, COUNT(*) as cnt FROM {
-                table} GROUP BY {column} ORDER BY cnt DESC LIMIT {top_n}"
+            f"SELECT {column}, COUNT(*) as cnt FROM {table} GROUP BY {
+                column
+            } ORDER BY cnt DESC LIMIT {top_n}"
         ).fetchall()
 
         if not result:
