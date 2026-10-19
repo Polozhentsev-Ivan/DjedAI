@@ -270,14 +270,12 @@ def _resolve_data_ref_path(
     expected_result_id: str | None = None,
 ) -> Path:
     """Разрешает безопасный путь к файлу данных из data_ref ссылки внутри хранилища."""
-    if not (data_ref.startswith("parquet://") or data_ref.startswith("file://")):
-        raise ValueError(f"Security error: unsupported data_ref scheme in '{data_ref}'")
+    if not data_ref.startswith("parquet://"):
+        raise ValueError(
+            f"Security error: unsupported data_ref scheme in '{data_ref}', expected 'parquet://'"
+        )
 
-    ref = data_ref
-    for prefix in ("parquet://", "file://"):
-        if ref.startswith(prefix):
-            ref = ref[len(prefix) :]
-            break
+    ref = data_ref.removeprefix("parquet://")
 
     # Строгая защита от Path Traversal: запрет разделителей каталогов и '..'
     if ".." in ref or "/" in ref or "\\" in ref:
@@ -286,8 +284,8 @@ def _resolve_data_ref_path(
             f"'{data_ref}'"
         )
 
-    # Имя файла должно соответствовать строгому шаблону
-    if not SAFE_DATA_REF_RE.match(ref):
+    # Имя файла должно соответствовать строгому шаблону (полное совпадение)
+    if not SAFE_DATA_REF_RE.fullmatch(ref):
         raise ValueError(
             f"Security error: invalid data_ref filename '{ref}', expected [a-zA-Z0-9_-]+.parquet"
         )

@@ -329,6 +329,9 @@ def test_large_data_ref_recovery_after_restart(tmp_path: Path) -> None:
         assert loaded.data_ref is not None
         assert loaded.data is not None
         assert loaded.data.columns == expected_columns
+        assert isinstance(loaded.data.columns[0], ToolResultColumn)
+        assert loaded.data.columns[0].label == "Номер заказа"
+        assert loaded.data.columns[1].type == "money"
         assert loaded.data.row_count == 5000
         assert loaded.data.truncated is False
         assert len(loaded.data.rows) == 5000
@@ -867,6 +870,10 @@ def test_data_ref_path_traversal_protection(tmp_path: Path) -> None:
             base_dir=safe_storage,
             expected_result_id="r_attacker",
         )
+
+    # 6. Отклонение любой схемы, кроме parquet:// (например, file://)
+    with pytest.raises(ValueError, match="unsupported data_ref scheme"):
+        _resolve_data_ref_path("file://r_test.parquet", base_dir=safe_storage)
 
 
 def test_atomic_parquet_write(tmp_path: Path) -> None:
