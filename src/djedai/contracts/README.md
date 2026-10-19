@@ -10,7 +10,8 @@
 - `message.py` — `AssistantMessage`, `TextBlock`, `ChartBlock`, `TableBlock`, `ClarificationBlock`, `DashboardLinkBlock` (§5.6);
 - `dashboard.py` — `Dashboard`, `DashboardWidget`, `WidgetToolCall`, `WidgetLayout` (§7.2);
 - `auth.py` — `UserCreate`, `UserLogin`, `UserRead`, `TokenResponse`;
-- `common.py` — `HealthCheck`, `ErrorResponse`, `DatasetSummary`.
+- `common.py` — `HealthCheck`, `ErrorResponse`, `DatasetSummary`;
+- `sse.py` — `AgentStreamEvent`, `DatasetStreamEvent` и события стриминга (`status`, `tool_call`, `tool_result`, `block`, `done`, `error`) (§7.3).
 
 Все модели экспортируются напрямую из пакета `djedai.contracts`.
 

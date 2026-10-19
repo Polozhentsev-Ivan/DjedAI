@@ -49,8 +49,53 @@ class Settings(BaseSettings):
         default="dev-session-secret-change-in-production", alias="SESSION_SECRET"
     )
 
-    # Разрешенные CORS origins
-    cors_origins: list[str] = ["*"]
+    # Разрешенные CORS origins (явный allowlist для dev-сервера frontend)
+    cors_origins: list[str] | str = Field(
+        default=["http://localhost:5173", "http://127.0.0.1:5173"],
+        alias="BACKEND_CORS_ORIGINS",
+    )
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def validate_cors_origins(cls, v: Any) -> list[str]:
+        """Парсит и валидирует список разрешенных dev CORS origins.
+
+        - None: использует дефолтный dev allowlist (http://localhost:5173, http://127.0.0.1:5173).
+        - Пустая строка / пробелы: пустой список [] (blank enables nothing).
+        - Строка через запятую или JSON-массив: парсится в список адресов.
+        - Wildcard '*' запрещен согласно соглашению безопасности.
+        """
+        if v is None:
+            return ["http://localhost:5173", "http://127.0.0.1:5173"]
+        if isinstance(v, str):
+            val = v.strip()
+            if not val:
+                return []
+            if val.startswith("["):
+                try:
+                    import json
+
+                    parsed = json.loads(val)
+                except Exception as e:
+                    raise ValueError(f"Некорректный JSON в BACKEND_CORS_ORIGINS: {e}") from e
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        "BACKEND_CORS_ORIGINS в формате JSON должен быть массивом строк"
+                    )
+                origins = [str(item).strip() for item in parsed if str(item).strip()]
+            else:
+                origins = [part.strip() for part in val.split(",") if part.strip()]
+        elif isinstance(v, (list, tuple, set)):
+            origins = [str(item).strip() for item in v if str(item).strip()]
+        else:
+            origins = [str(v).strip()]
+
+        if "*" in origins:
+            raise ValueError(
+                "Использование wildcard '*' для CORS запрещено. "
+                "Задайте явный список разрешенных dev origins (например, http://localhost:5173)."
+            )
+        return origins
 
     @field_validator(
         "app_env",

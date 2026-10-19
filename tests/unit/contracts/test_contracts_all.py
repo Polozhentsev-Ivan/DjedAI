@@ -198,3 +198,45 @@ def test_tool_result_status_consistency() -> None:
             status="ok",
             error=ToolError(code="err", message="msg"),
         )
+
+
+def test_sse_agent_stream_events() -> None:
+    from pydantic import TypeAdapter
+
+    from djedai.contracts.sse import (
+        AgentStreamEvent,
+        DatasetStreamEvent,
+        SSEBlockEvent,
+        SSEDoneEvent,
+        SSEStatusEvent,
+    )
+
+    ta_agent = TypeAdapter(AgentStreamEvent)
+
+    # 1. Status event
+    ev_status = ta_agent.validate_python(
+        {"event": "status", "data": {"node": "execute", "text": "Считаю сезонность..."}}
+    )
+    assert isinstance(ev_status, SSEStatusEvent)
+    assert ev_status.event == "status"
+    assert ev_status.data.node == "execute"
+
+    # 2. Block event with TextBlock
+    ev_block = ta_agent.validate_python(
+        {"event": "block", "data": {"type": "text", "markdown": "Привет!"}}
+    )
+    assert isinstance(ev_block, SSEBlockEvent)
+    assert ev_block.data.type == "text"
+
+    # 3. Done event
+    ev_done = ta_agent.validate_python({"event": "done", "data": {"message_id": "m_101"}})
+    assert isinstance(ev_done, SSEDoneEvent)
+    assert ev_done.data.message_id == "m_101"
+
+    # 4. Dataset stream events
+    ta_ds = TypeAdapter(DatasetStreamEvent)
+    ev_ds = ta_ds.validate_python(
+        {"event": "progress", "data": {"stage": "profiling", "progress": 0.5, "message": "Анализ"}}
+    )
+    assert ev_ds.event == "progress"
+    assert ev_ds.data.progress == 0.5

@@ -59,3 +59,45 @@ def test_settings_explicit_zero_preserved(monkeypatch) -> None:
     monkeypatch.setenv("SQL_MAX_ROWS", "0")
     settings = Settings(_env_file=None)
     assert settings.sql_max_rows == 0
+
+
+def test_settings_cors_origins_defaults() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.cors_origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def test_settings_cors_origins_env_override(monkeypatch) -> None:
+    # Запятая как разделитель
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:3000")
+    settings = Settings(_env_file=None)
+    assert settings.cors_origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    # JSON-массив
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", '["http://localhost:5173"]')
+    settings = Settings(_env_file=None)
+    assert settings.cors_origins == ["http://localhost:5173"]
+
+    # Пустая строка (blank enables nothing)
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "")
+    settings = Settings(_env_file=None)
+    assert settings.cors_origins == []
+
+
+def test_settings_cors_origins_disallow_wildcard(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "*")
+    with pytest.raises(ValueError, match="wildcard.*запрещен"):
+        Settings(_env_file=None)
+
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "http://localhost:5173, *")
+    with pytest.raises(ValueError, match="wildcard.*запрещен"):
+        Settings(_env_file=None)
+
+
+def test_settings_cors_origins_invalid_json(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setenv("BACKEND_CORS_ORIGINS", "[not a valid json")
+    with pytest.raises(ValueError, match="Некорректный JSON"):
+        Settings(_env_file=None)
