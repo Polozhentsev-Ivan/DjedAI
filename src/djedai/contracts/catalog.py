@@ -72,7 +72,7 @@ class ColumnStats(_Model):  # числа: min/max/mean/median/std; даты: min
 
 class ParseInfo(_Model):  # как значения приведены к типу (журнал B1-2)
     format: str | None = None
-    success_ratio: Ratio
+    success_ratio: Ratio  # доля распознанных среди непустых значений
     failed_examples: list[str] = Field(default_factory=list, max_length=MAX_SAMPLE_VALUES)
 
 
@@ -82,7 +82,7 @@ class Column(_Model):
     physical_type: str
     semantic_type: SemanticType
     role: Role
-    null_ratio: Ratio
+    null_ratio: Ratio  # доля пустых значений в исходных данных, без нераспознанных
     distinct_count: Count
     is_unique: bool
     sample_values: list[Value] = Field(default_factory=list, max_length=MAX_SAMPLE_VALUES)
@@ -220,7 +220,7 @@ class DatasetCatalog(_Model):
 
 _COLUMN_FORMAT = (
     "имя: тип, роль, ключ (PK, FK → таблица.колонка), валюта, «исходное имя», "
-    "доля пропусков, число уникальных, "
+    "доля пропусков, доля нераспознанных, число уникальных, "
     "диапазон в данных — описание"
 )
 _DISTINCT_TYPES: tuple[SemanticType, ...] = ("category", "bool", "text")
@@ -270,6 +270,8 @@ def _column_line(column: Column, key_marks: str = "") -> str:
         line += f", «{column.original_name}»"
     if column.null_ratio:
         line += f", пропусков {column.null_ratio:.1%}"
+    if (failed := _parse_failed_ratio(column)) and f"{failed:.1%}" != "0.0%":
+        line += f", не распознано {failed:.1%}"
     if column.semantic_type in _DISTINCT_TYPES:
         line += f", уникальных {column.distinct_count}"
     if column.semantic_type in NUMERIC + TEMPORAL and column.stats.min is not None:
@@ -279,6 +281,13 @@ def _column_line(column: Column, key_marks: str = "") -> str:
     if column.description:
         line += f" — {column.description}"
     return line
+
+
+def _parse_failed_ratio(column: Column) -> float:
+    """Доля нераспознанных значений от всех строк; ``success_ratio`` считается по непустым."""
+    if column.parse is None:
+        return 0.0
+    return (1 - column.parse.success_ratio) * (1 - column.null_ratio)
 
 
 def _shows_original_name(column: Column) -> bool:

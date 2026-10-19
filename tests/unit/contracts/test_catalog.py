@@ -231,3 +231,41 @@ def test_reference_example_is_consistent_about_duplicates():
     table = DatasetCatalog.model_validate(FULL).tables[0]
     key = table.column(table.primary_key_candidates[0])
     assert key.is_unique and table.duplicate_rows == 0
+
+
+def test_prompt_separates_empty_and_unparsed_values():
+    line = prompt_line(FULL, "amount")
+    assert "пропусков 0.4%" in line
+    assert "не распознано 1.2%" in line  # 1.2% от непустых, т.е. 1.195% всех строк
+
+
+def test_unparsed_share_is_taken_from_non_empty_values():
+    def change(data):
+        col = column(data, "amount")
+        col["null_ratio"] = 0.5
+        col["parse"]["success_ratio"] = 0.8
+
+    assert "не распознано 10.0%" in prompt_line(mutated(change), "amount")  # 0.2 * 0.5
+
+
+@pytest.mark.parametrize("name", ["order_id", "status"])
+def test_prompt_has_no_unparsed_share_without_parse_info(name):
+    assert "не распознано" not in prompt_line(FULL, name)
+
+
+def test_prompt_skips_negligible_unparsed_share():
+    def change(data):
+        column(data, "amount")["parse"]["success_ratio"] = 0.99999
+
+    assert "не распознано" not in prompt_line(mutated(change), "amount")
+
+
+def test_fully_empty_column_has_no_unparsed_share():
+    def change(data):
+        col = column(data, "amount")
+        col["null_ratio"] = 1.0
+        col["parse"]["success_ratio"] = 0.0
+
+    line = prompt_line(mutated(change), "amount")
+    assert "пропусков 100.0%" in line
+    assert "не распознано" not in line

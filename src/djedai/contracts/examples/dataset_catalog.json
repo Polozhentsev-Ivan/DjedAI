@@ -58,7 +58,7 @@
           "physical_type": "TIMESTAMP",
           "semantic_type": "datetime",
           "role": "time",
-          "null_ratio": 0.002,
+          "null_ratio": 0.001,
           "distinct_count": 98211,
           "is_unique": false,
           "sample_values": ["2023-03-12T14:05:00", "2023-03-12T14:07:00", "2023-03-12T15:30:00"],
@@ -73,7 +73,7 @@
           "physical_type": "DECIMAL(18,2)",
           "semantic_type": "money",
           "role": "measure",
-          "null_ratio": 0.012,
+          "null_ratio": 0.004,
           "distinct_count": 40517,
           "is_unique": false,
           "sample_values": [1234.56, 99.9, 0.0, 15000.0, 780.4],
@@ -159,6 +159,6 @@
   "transformations": [
     { "table": "orders", "column": "order_id", "action": "rename_column", "detail": { "from": "Номер заказа", "to": "order_id" } },
     { "table": "orders", "column": "amount", "action": "parse_money", "detail": { "decimal_separator": ",", "currency": "RUB", "success_ratio": 0.988 } },
-    { "table": "orders", "column": "amount", "action": "unparsed_values", "detail": { "count": 1505, "examples": ["н/д", "?"], "target": "money" } }
+    { "table": "orders", "column": "amount", "action": "unparsed_values", "detail": { "count": 1499, "examples": ["н/д", "?"], "target": "money" } }
   ]
 }
