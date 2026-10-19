@@ -8,6 +8,11 @@ from sqlglot import exp
 from djedai.contracts.tool_result import ToolError, ToolResult
 
 
+def _quote_id(identifier: str) -> str:
+    """Безопасно оборачивает идентификатор в кавычки (защита от инъекций)."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
     """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
     try:
@@ -144,14 +149,33 @@ def describe_dataset() -> ToolResult:
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
         ).fetchall()
         table_names = [t[0] for t in tables]
+        tables_info = []
+        facts = []
 
-        facts = [{"text": f"В датасете доступны таблицы: {', '.join(table_names)}"}]
+        for t_name in table_names:
+            # Считаем строки
+            row_count = con.execute(f"SELECT COUNT(*) FROM {_quote_id(t_name)}").fetchone()[0]
+            # Получаем колонки
+            cols = con.execute(
+                f"""SELECT column_name, data_type FROM information_schema.columns
+                 WHERE table_name = '{t_name}'"""
+            ).fetchall()
+            col_info = [{"name": c[0], "type": c[1]} for c in cols]
+
+            tables_info.append({"table_name": t_name, "row_count": row_count, "columns": col_info})
+            facts.append(
+                {
+                    "text": f"Таблица '{t_name}': {row_count} строк, колонки: {
+                        ', '.join([c['name'] for c in col_info])
+                    }"
+                }
+            )
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="describe_dataset",
-            data={"tables": table_names},
+            data={"tables": tables_info},
             facts=facts,
         )
     except Exception as e:
@@ -163,41 +187,94 @@ def describe_dataset() -> ToolResult:
 
 
 def describe_column(table: str, column: str) -> ToolResult:
-    """Возвращает статистику по конкретной колонке."""
     con = _get_mock_connection()
     try:
-        # Проверяем, существует ли такая колонка
-        cols = con.execute(f"PRAGMA table_info('{table}')").fetchall()
-        col_names = [c[1] for c in cols]
+        # [P1] Безопасно проверяем существование
+        col_check = con.execute(
+            """SELECT data_type FROM information_schema.columns WHERE table_name = \
+                ? AND column_name = ?""",
+            [table, column],
+        ).fetchone()
 
-        if column not in col_names:
+        if not col_check:
+            available = con.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                [table],
+            ).fetchall()
+            avail_str = ", ".join([c[0] for c in available]) if available else "Таблица не найдена"
             return ToolResult(
                 result_id=str(uuid.uuid4()),
                 status="error",
                 error=ToolError(
                     code="invalid_column",
-                    message=f"Колонка '{column}' не найдена в таблице '{table}'.",
-                    suggestion=f"Доступные колонки: {', '.join(col_names)}",
+                    message=f"Колонка '{column}' не найдена.",
+                    suggestion=f"Доступные колонки: {avail_str}",
                 ),
             )
 
-        # Считаем статистику: всего строк, заполненных, уникальных
-        stats = con.execute(
-            f"SELECT COUNT(*), COUNT({column}), COUNT(DISTINCT {column}) FROM {table}"
-        ).fetchone()
-        total_rows, non_null, distinct = stats
+        safe_table = _quote_id(table)
+        safe_col = _quote_id(column)
 
-        facts = [
-            {"text": f"Всего строк в таблице: {total_rows}"},
-            {"text": f"Заполненных значений в колонке '{column}': {non_null}"},
-            {"text": f"Уникальных значений: {distinct}"},
-        ]
+        # [P2] Считаем базовый профиль
+        stats = con.execute(
+            f"SELECT COUNT(*), COUNT({safe_col}), COUNT(DISTINCT {safe_col}) FROM {safe_table}"
+        ).fetchone()
+        total, non_null, distinct = stats
+        null_count = total - non_null
+
+        data = {
+            "total": total,
+            "non_null": non_null,
+            "distinct": distinct,
+            "null_count": null_count,
+        }
+        facts = [{"text": f"Всего строк: {total}, пропусков: {null_count}, уникальных: {distinct}"}]
+
+        # [P2] Добавляем частоты и примеры для ЛЮБОЙ колонки
+        freqs = con.execute(
+            f"SELECT {safe_col}, COUNT(*) FROM {safe_table} GROUP BY {
+                safe_col
+            } ORDER BY COUNT(*) DESC LIMIT 10"
+        ).fetchall()
+        data["frequencies"] = freqs
+
+        examples = con.execute(
+            f"SELECT DISTINCT {safe_col} FROM {safe_table} WHERE {safe_col} IS NOT NULL LIMIT 5"
+        ).fetchall()
+        data["examples"] = [e[0] for e in examples]
+
+        # [P2] Добавляем числовую статистику
+        dtype = col_check[0].upper()
+        if "INT" in dtype or "DECIMAL" in dtype or "DOUBLE" in dtype or "FLOAT" in dtype:
+            num_stats = con.execute(
+                f"SELECT MIN({safe_col}), MAX({safe_col}), AVG({safe_col}), MEDIAN({
+                    safe_col
+                }), STDDEV_POP({safe_col}) FROM {safe_table}"
+            ).fetchone()
+            if num_stats[0] is not None:
+                data.update(
+                    {
+                        "min": num_stats[0],
+                        "max": num_stats[1],
+                        "mean": round(num_stats[2], 2),
+                        "median": num_stats[3],
+                        "std": round(num_stats[4], 2),
+                    }
+                )
+                # ДОБАВЛЯЕМ МЕДИАНУ В FACTS (как просил тест)
+                facts.append(
+                    {
+                        "text": f"Мин: {num_stats[0]}, Макс: {num_stats[1]}, Среднее: {
+                            round(num_stats[2], 2)
+                        }, Медиана: {num_stats[3]}"
+                    }
+                )
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="describe_column",
-            data={"total": total_rows, "non_null": non_null, "distinct": distinct},
+            data=data,
             facts=facts,
         )
     except Exception as e:
@@ -208,40 +285,54 @@ def describe_column(table: str, column: str) -> ToolResult:
         )
 
 
-def value_counts(table: str, column: str, top_n: int = 10) -> ToolResult:
-    """Возвращает топ-N самых частых значений в колонке."""
+def value_counts(table: str, column: str, top_n: int = 10, filter: str | None = None) -> ToolResult:
     con = _get_mock_connection()
     try:
-        # Проверяем колонку
-        cols = con.execute(f"PRAGMA table_info('{table}')").fetchall()
-        if column not in [c[1] for c in cols]:
+        col_check = con.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+            [table, column],
+        ).fetchone()
+        if not col_check:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
                 status="error",
                 error=ToolError(code="invalid_column", message="Колонка не найдена"),
             )
 
-        # Получаем частоты
-        result = con.execute(
-            f"SELECT {column}, COUNT(*) as cnt FROM {table} GROUP BY {
-                column
-            } ORDER BY cnt DESC LIMIT {top_n}"
-        ).fetchall()
+        safe_table = _quote_id(table)
+        safe_col = _quote_id(column)
+
+        query = f"SELECT {safe_col}, COUNT(*) as cnt FROM {safe_table}"
+
+        if filter:
+            try:
+                parsed_filter = sqlglot.parse_one(f"SELECT * FROM t WHERE {filter}", read="duckdb")
+                where_clause = parsed_filter.args.get("where")
+                if where_clause:
+                    query += f" WHERE {where_clause.this.sql(dialect='duckdb')}"
+            except Exception:
+                return ToolResult(
+                    result_id=str(uuid.uuid4()),
+                    status="error",
+                    error=ToolError(code="invalid_filter", message="Некорректный фильтр"),
+                )
+
+        query += f" GROUP BY {safe_col} ORDER BY cnt DESC LIMIT {top_n}"
+
+        result = con.execute(query).fetchall()
 
         if not result:
             return ToolResult(
                 result_id=f"r_{uuid.uuid4().hex[:8]}",
                 status="empty",
                 tool="value_counts",
-                facts=[{"text": "Данные не найдены."}],
+                facts=[{"text": "По заданному фильтру данные не найдены."}],
             )
 
-        # Формируем факты для нейросети
         facts = []
         for row in result:
             val = row[0] if row[0] is not None else "ПУСТО"
-            cnt = row[1]
-            facts.append({"text": f"Значение '{val}' встречается {cnt} раз."})
+            facts.append({"text": f"Значение '{val}' встречается {row[1]} раз."})
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",

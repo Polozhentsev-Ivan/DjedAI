@@ -29,6 +29,9 @@ class ValueCountsParams(BaseModel):
     table: str = Field(description="Имя таблицы")
     column: str = Field(description="Имя колонки")
     top_n: int = Field(default=10, description="Количество топ-значений")
+    filter: str | None = Field(
+        default=None, description="Опциональный фильтр (SQL WHERE). Например: 'age > 25'"
+    )
 
 
 class ToolDefinition(BaseModel):
