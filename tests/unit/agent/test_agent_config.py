@@ -1,3 +1,5 @@
+"""Проверки конфигурации API-клиента агента."""
+
 import pytest
 
 from djedai.agent.config import get_agent_client
