@@ -1,12 +1,10 @@
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ToolError(BaseModel):
-    """
-    Error class for tool results.
-    """
+    """Модель ошибки, если инструмент не смог выполниться."""
 
     code: str = Field(description="Код ошибки (например, 'invalid_column')")
     message: str = Field(description="Текст ошибки для пользователя")
@@ -14,12 +12,11 @@ class ToolError(BaseModel):
 
 
 class ToolResult(BaseModel):
-    """
-    Universal contract for the response of any analytical tool.
-    """
+    """Универсальный контракт ответа любого аналитического инструмента."""
 
     result_id: str = Field(description="Уникальный ID результата, например 'r_17'")
-    status: str = Field(description="Статус: 'ok', 'error' или 'empty'")
+    # Жестко ограничиваем статус через Literal
+    status: Literal["ok", "error", "empty"] = Field(description="Статус: 'ok', 'error' или 'empty'")
 
     # Данные и факты
     data: dict[str, Any] | None = Field(default=None, description="Данные (колонки и строки)")
@@ -38,7 +35,16 @@ class ToolResult(BaseModel):
     )
     sql: str | None = Field(default=None, description="SQL-запрос, если он выполнялся")
 
-    # Связь с предыдущими результатами (для задачи B2-3 и далее)
+    # Связь с предыдущими результатами
     source_result_id: str | None = Field(
         default=None, description="ID результата, на основе которого сделан этот"
     )
+
+    # Валидатор согласованности статуса и ошибки
+    @model_validator(mode="after")
+    def check_status_error_consistency(self) -> "ToolResult":
+        if self.status == "error" and self.error is None:
+            raise ValueError("Если status='error', поле error обязательно должно быть заполнено.")
+        if self.status != "error" and self.error is not None:
+            raise ValueError("Поле error допускается только при status='error'.")
+        return self
