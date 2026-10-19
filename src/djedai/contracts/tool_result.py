@@ -15,9 +15,7 @@ class ToolResult(BaseModel):
     """Универсальный контракт ответа любого аналитического инструмента."""
 
     result_id: str = Field(description="Уникальный ID результата, например 'r_17'")
-    status: Literal["ok", "error", "empty"] = Field(
-        description="Статус: 'ok', 'error' или 'empty'"
-    )
+    status: Literal["ok", "error", "empty"] = Field(description="Статус: 'ok', 'error' или 'empty'")
 
     data: dict[str, Any] | None = Field(default=None, description="Данные (колонки и строки)")
     facts: list[dict[str, Any]] = Field(
@@ -28,7 +26,9 @@ class ToolResult(BaseModel):
     error: ToolError | None = Field(default=None, description="Объект ошибки, если status='error'")
 
     tool: str | None = Field(default=None, description="Имя инструмента")
-    params: dict[str, Any] | None = Field(default=None, description="Параметры, с которыми вызвали инструмент")
+    params: dict[str, Any] | None = Field(
+        default=None, description="Параметры, с которыми вызвали инструмент"
+    )
     sql: str | None = Field(default=None, description="SQL-запрос, если он выполнялся")
 
     source_result_id: str | None = Field(
