@@ -61,6 +61,8 @@ jobs:
         run: uv run --locked python scripts/export_frontend_contracts.py --check
       - name: Test Python application
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      - name: Test auth migrations and persistence
+        run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py
 
   frontend:
     name: frontend

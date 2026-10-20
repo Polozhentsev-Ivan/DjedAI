@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -82,11 +83,37 @@ class UserModel(Base):
         "DashboardModel", back_populates="owner", cascade="all, delete-orphan"
     )
     results = relationship("ToolResultModel", back_populates="owner", cascade="all, delete-orphan")
+    sessions = relationship("SessionModel", back_populates="user", cascade="all, delete-orphan")
 
     @property
     def user_id(self) -> str:
         """Псевдоним для совместимости с UserRead/UserBase контрактами."""
         return self.id
+
+
+class SessionModel(Base):
+    """Постоянная auth-сессия; исходный bearer-токен в БД не записывается.
+
+    В отличие от SQLAlchemy Session это сессия пользователя. Первичный ключ —
+    SHA-256 случайного токена, даты хранятся в UTC. Истечение проверяется при
+    каждом чтении, поэтому очистка старых строк не влияет на отзыв доступа.
+    """
+
+    __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint("length(token_hash) = 64", name="ck_sessions_token_hash_length"),
+        CheckConstraint("expires_at > created_at", name="ck_sessions_positive_lifetime"),
+    )
+
+    token_hash = Column(String(64), primary_key=True)
+    user_id = Column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+    expires_at = Column(UTCDateTime, nullable=False, index=True)
+    revoked_at = Column(UTCDateTime, nullable=True)
+
+    user = relationship("UserModel", back_populates="sessions")
 
 
 class DatasetModel(Base):
