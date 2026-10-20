@@ -6,7 +6,8 @@
   "populations": {
     "raw_sales": "Все строки sales.csv: полные дубли, пропуски quantity ('', '-', 'n/a') и аномалии quantity=1000 включены. total_amount — записанная валовая сумма до скидки, без повторного расчёта по quantity. Аномалии влияют на суммы. Даты dd.mm.yyyy; деньги RUB; календарные месяцы 2023 года.",
     "full_row_duplicates": "Ключ дубля — все колонки sales.csv, включая sale_id. Число дублей = число строк минус число уникальных полных строк; первая строка группы не считается дублем. Копии сохраняют исходный sale_id. Пропуски и аномалии не исключаются.",
-    "campaign_response": "Сигнал — campaigns.csv: одна запись на календарный день, activity=1 для импульса, 0 иначе. Отклик — дневной COUNT(*) сырых строк sales.csv: дубли, пропуски quantity и аномалии включены. Лаг — единственный положительный максимум корреляции Пирсона activity[d] с COUNT(sales[d+lag]) на общих датах; поиск включительно в lag_search_days. Дата отклика = дата экспортированного импульса плюс рассчитанный лаг."
+    "campaign_response": "Сигнал — campaigns.csv: одна запись на календарный день, activity=1 для импульса, 0 иначе. Отклик — дневной COUNT(*) сырых строк sales.csv: дубли, пропуски quantity и аномалии включены. Лаг — единственный положительный максимум корреляции Пирсона activity[d] с COUNT(sales[d+lag]) на общих датах; поиск включительно в lag_search_days. Дата отклика = дата экспортированного импульса плюс рассчитанный лаг.",
+    "relation_join": "Связь — пара ID-колонок разных таблиц; значения сравниваются строками, на различных значениях. overlap = |from ∩ to| / |from|, jaccard = |from ∩ to| / |from ∪ to|, оба округлены до 4 знаков. Кратность — по уникальности значений с каждой стороны (N:1 — ключ уникален только в to). JOIN — sales LEFT JOIN to по ключу: каждая строка sales весит число строк to с её ключом (1 без пары). Суммы — parsed total_amount всех строк sales, дубли и аномалии включены."
   },
   "metrics": {
     "total_rows_in_sales": {
@@ -97,5 +98,37 @@
       "population": "raw_sales",
       "description": "Самая большая покупка в сырой выгрузке, контроль намеренной денежной аномалии."
     }
+  },
+  "relations": {
+    "population": "relation_join",
+    "expected": [
+      {
+        "from": {"table": "sales", "column": "product_id"},
+        "to": {"table": "products", "column": "product_id"},
+        "overlap": 1.0,
+        "jaccard": 1.0,
+        "cardinality": "N:1",
+        "join": {"rows_before": 4376, "rows_after": 4376, "unmatched_rows": 0, "total_amount_before": "1268254502.40", "total_amount_after": "1268254502.40"},
+        "description": "Каждая продажа ссылается на один товар; JOIN не меняет число строк и выручку."
+      },
+      {
+        "from": {"table": "sales", "column": "store_id"},
+        "to": {"table": "stores", "column": "store_id"},
+        "overlap": 1.0,
+        "jaccard": 1.0,
+        "cardinality": "N:1",
+        "join": {"rows_before": 4376, "rows_after": 4376, "unmatched_rows": 0, "total_amount_before": "1268254502.40", "total_amount_after": "1268254502.40"},
+        "description": "Каждая продажа ссылается на один магазин; ID с ведущими нулями совпадают как строки."
+      }
+    ],
+    "not_expected": [
+      {
+        "from": {"table": "sales", "column": "sale_id"},
+        "to": {"table": "products", "column": "product_id"},
+        "overlap": 0.012,
+        "jaccard": 0.012,
+        "description": "Похожие ID без связи: product_id 1..50 целиком входит в sale_id 1..4168, но покрывает лишь 1.2% продаж."
+      }
+    ]
   }
 }

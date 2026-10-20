@@ -19,6 +19,17 @@ SALES_COLUMNS = (
     "discount_pct",
     "total_amount",
 )
+TABLE_COLUMNS = {
+    "sales": SALES_COLUMNS,
+    "stores": ("store_id", "city", "region"),
+    "products": ("product_id", "product_name", "category", "price"),
+}
+CARDINALITY = {
+    (True, True): "1:1",
+    (False, True): "N:1",
+    (True, False): "1:N",
+    (False, False): "N:M",
+}
 METRIC_NAMES = {
     "total_rows_in_sales",
     "duplicate_rows",
@@ -75,10 +86,8 @@ def calculate_metrics(
 ) -> dict[str, int | str]:
     sales = read_csv(data_dir / "sales.csv", SALES_COLUMNS)
     campaigns = read_csv(data_dir / "campaigns.csv", ("date", "activity"))
-    stores = read_csv(data_dir / "stores.csv", ("store_id", "city", "region"))
-    products = read_csv(
-        data_dir / "products.csv", ("product_id", "product_name", "category", "price")
-    )
+    stores = read_csv(data_dir / "stores.csv", TABLE_COLUMNS["stores"])
+    products = read_csv(data_dir / "products.csv", TABLE_COLUMNS["products"])
     if not {row["store_id"] for row in sales} <= {row["store_id"] for row in stores}:
         raise ValueError("Unknown store in sales")
     if not {row["product_id"] for row in sales} <= {row["product_id"] for row in products}:
@@ -152,7 +161,70 @@ def calculate_metrics(
     }
 
 
-def verify(data_dir: Path, expectations_path: Path) -> dict[str, int | str]:
+def keys(rows: list[dict[str, str]], column: str) -> list[str]:
+    return [row[column].strip() for row in rows if row[column].strip()]
+
+
+def relation_link(reference: dict) -> str:
+    source, target = reference["from"], reference["to"]
+    return f"{source['table']}.{source['column']} → {target['table']}.{target['column']}"
+
+
+def calculate_relation(tables: dict[str, list[dict[str, str]]], reference: dict) -> dict:
+    """Меры пересечения, кратность и JOIN ``from LEFT JOIN to`` по строкам CSV."""
+    source_rows = tables[reference["from"]["table"]]
+    source_column = reference["from"]["column"]
+    source = keys(source_rows, source_column)
+    target = keys(tables[reference["to"]["table"]], reference["to"]["column"])
+    common = set(source) & set(target)
+    per_key = Counter(target)
+    weights = [per_key.get(row[source_column].strip(), 1) for row in source_rows]
+    amounts = [parse_money(row["total_amount"]) for row in source_rows]
+    return {
+        "overlap": round(len(common) / len(set(source)), 4),
+        "jaccard": round(len(common) / len(set(source) | set(target)), 4),
+        "cardinality": CARDINALITY[(len(set(source)) == len(source), len(per_key) == len(target))],
+        "join": {
+            "rows_before": len(source_rows),
+            "rows_after": sum(weights),
+            "unmatched_rows": sum(key not in per_key for key in source),
+            "total_amount_before": str(sum(amounts).quantize(Decimal("0.01"))),
+            "total_amount_after": str(
+                sum(a * w for a, w in zip(amounts, weights, strict=True)).quantize(Decimal("0.01"))
+            ),
+        },
+    }
+
+
+def verify_relations(data_dir: Path, expectations: dict) -> tuple[list[dict], list[str]]:
+    """Сверяет эталоны связей; для ``not_expected`` — только меры пересечения."""
+    section = expectations["relations"]
+    if section.get("population") not in expectations["populations"]:
+        raise ValueError("relations: unknown population policy")
+    if not section.get("expected") or not section.get("not_expected"):
+        raise ValueError("relations: expected and not_expected references are required")
+    tables = {
+        name: read_csv(data_dir / f"{name}.csv", cols) for name, cols in TABLE_COLUMNS.items()
+    }
+    checks = [(r, ("overlap", "jaccard", "cardinality", "join")) for r in section["expected"]]
+    checks += [(r, ("overlap", "jaccard")) for r in section["not_expected"]]
+    actual, mismatches = [], []
+    for reference, fields in checks:
+        for field in ("from", "to", "description", *fields):
+            if field not in reference:
+                raise ValueError(f"{relation_link(reference)}: missing {field}")
+        measured = calculate_relation(tables, reference)
+        actual.append({"relation": relation_link(reference), **{f: measured[f] for f in fields}})
+        mismatches += [
+            f"{relation_link(reference)}: {field} expected {reference[field]!r}, "
+            f"got {measured[field]!r}"
+            for field in fields
+            if measured[field] != reference[field]
+        ]
+    return actual, mismatches
+
+
+def verify(data_dir: Path, expectations_path: Path) -> dict[str, dict | list]:
     expectations = json.loads(expectations_path.read_text(encoding="utf-8"))
     references = expectations["metrics"]
     if set(references) != METRIC_NAMES:
@@ -169,9 +241,11 @@ def verify(data_dir: Path, expectations_path: Path) -> dict[str, int | str]:
         for name, reference in references.items()
         if actual[name] != reference["expected_value"]
     ]
+    relations, relation_mismatches = verify_relations(data_dir, expectations)
+    mismatches += relation_mismatches
     if mismatches:
         raise ValueError("\n".join(mismatches))
-    return actual
+    return {"metrics": actual, "relations": relations}
 
 
 def main() -> int:
@@ -186,7 +260,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, ArithmeticError) as error:
         print(str(error), file=sys.stderr)
         return 1
-    print(json.dumps({"status": "ok", "metrics": actual}, ensure_ascii=False, indent=2))
+    print(json.dumps({"status": "ok", **actual}, ensure_ascii=False, indent=2))
     return 0
 
 

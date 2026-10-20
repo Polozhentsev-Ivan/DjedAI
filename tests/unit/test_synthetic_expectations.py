@@ -72,7 +72,16 @@ def test_references_match_newly_generated_data(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change", ["campaign", "activity_scale", "calendar", "duplicate_id", "money", "missing_signal"]
+    "change",
+    [
+        "campaign",
+        "activity_scale",
+        "calendar",
+        "duplicate_id",
+        "money",
+        "duplicate_store",
+        "missing_signal",
+    ],
 )
 def test_independent_check_detects_corrupted_patterns(tmp_path, change):
     output = tmp_path / "data"
@@ -111,6 +120,9 @@ def test_independent_check_detects_corrupted_patterns(tmp_path, change):
             output / "sales.csv", lambda rows: rows[0].update(total_amount="999 999 999,00 руб.")
         )
         expected_error = "anomalies_max_amount:"
+    elif change == "duplicate_store":  # дубль в справочнике: JOIN размножает продажи
+        rewrite_csv(output / "stores.csv", lambda rows: rows.append(dict(rows[0])))
+        expected_error = "sales.store_id → stores.store_id: cardinality expected 'N:1', got 'N:M'"
     else:
         (output / "campaigns.csv").unlink()
         expected_error = "campaigns.csv"
