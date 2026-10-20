@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 
+from fastapi import Request
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -52,17 +53,19 @@ def get_engine() -> Engine:
     return _engine
 
 
-def get_session_factory() -> sessionmaker[Session]:
+def get_session_factory(request: Request = None) -> sessionmaker[Session]:
     """Возвращает фабрику сессий."""
+    if request is not None:
+        return request.app.state.session_factory
     global _session_factory
     if _session_factory is None:
         _session_factory = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
     return _session_factory
 
 
-def get_db() -> Generator[Session]:
+def get_db(request: Request = None) -> Generator[Session]:
     """Dependency для FastAPI роутеров: отдает сессию и закрывает ее после запроса."""
-    session_factory = get_session_factory()
+    session_factory = get_session_factory(request)
     db = session_factory()
     try:
         yield db

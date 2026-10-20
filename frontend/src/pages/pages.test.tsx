@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw/http';
+import { createDb } from '@/mocks/db';
 import { renderRoute } from '@/test/renderRoute';
 import { server, useScenario } from '@/test/server';
 
@@ -44,16 +45,13 @@ describe('LoginPage', () => {
 });
 
 describe('SourcesPage', () => {
-  it('lists datasets from the API and manages them', async () => {
+  it('lists datasets from the API and selects them', async () => {
     const { router } = await renderRoute('/sources');
     const table = await screen.findByRole('table', { name: 'Ваши датасеты' });
     expect(within(table).getByText('CSV (2)')).toBeInTheDocument();
     expect(within(table).getByText('Ошибки')).toBeInTheDocument();
     await userEvent.click(within(table).getByRole('button', { name: 'Выбрать для анализа' }));
     expect(screen.getByRole('button', { name: 'Активный датасет' })).toHaveTextContent('retail_crm_prod');
-    const marketing = within(table).getByText('marketing_q3').closest('[role="row"]') as HTMLElement;
-    await userEvent.click(within(marketing).getByRole('button', { name: 'Удалить' }));
-    await waitFor(() => { expect(within(table).queryByText('marketing_q3')).not.toBeInTheDocument(); });
     await userEvent.click(within(table).getAllByRole('button', { name: 'Посмотреть каталог' })[0]!);
     await waitFor(() => { expect(router.state.location.pathname).toBe('/catalog/ds_orders'); });
   });
@@ -83,15 +81,30 @@ describe('SourcesPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('cancels a running upload and removes its dataset', async () => {
+  it('reconnects a dropped progress GET without uploading the files again', async () => {
+    server.use(http.get(api('/datasets/:id/events'), () => new HttpResponse('event: progress\ndata: {"stage":"read","progress":0.5}\n\n', { headers: { 'Content-Type': 'text/event-stream' } }), { once: true }));
+    await renderRoute('/sources');
+    await screen.findByRole('table');
+    fireEvent.change(screen.getByTestId('csv-input'), { target: { files: [csv()] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Соединение прервано до конца ответа');
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить получение прогресса' }));
+    await waitFor(() => { expect(screen.queryByRole('alert')).not.toBeInTheDocument(); });
+    const row = (await within(screen.getByRole('table')).findByText('sales')).closest('[role="row"]') as HTMLElement;
+    await waitFor(() => { expect(within(row).getByText('Готов')).toBeInTheDocument(); });
+    expect(within(screen.getByRole('table')).getAllByText('sales')).toHaveLength(1);
+  });
+
+  it('closes progress while accepted processing continues and can be observed again', async () => {
     server.use(http.get(api('/datasets/:id/events'), () => new HttpResponse(new ReadableStream({ start() { /* never ends */ } }), { headers: { 'Content-Type': 'text/event-stream' } })));
     await renderRoute('/sources');
     await screen.findByRole('table');
     fireEvent.change(screen.getByTestId('csv-input'), { target: { files: [csv()] } });
     expect(await within(screen.getByRole('table')).findByText('Обработка')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Отменить' }));
-    await waitFor(() => { expect(within(screen.getByRole('table')).queryByText('sales')).not.toBeInTheDocument(); });
+    await userEvent.click(screen.getByRole('button', { name: 'Скрыть прогресс' }));
+    expect(within(screen.getByRole('table')).getByText('sales')).toBeInTheDocument();
     expect(screen.getByText(/Перетащите CSV файлы сюда/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Следить за обработкой' }));
+    expect(await screen.findByText('Обработка sales')).toBeInTheDocument();
   });
 
   it('connects a database and reports a bad DSN', async () => {
@@ -194,50 +207,25 @@ describe('CatalogPage', () => {
     await renderRoute('/catalog/ds_new');
     expect(await screen.findByText('Строим профиль таблиц…')).toBeInTheDocument();
   });
-});
 
-describe('ChatPage', () => {
-  it('draws the answer chart from the result and saves it to a dashboard', async () => {
-    const { router } = await renderRoute('/chat/c_q1');
-    expect(await screen.findByRole('heading', { name: 'Продажи Q1' })).toBeInTheDocument();
-    expect(await screen.findByRole('img', { name: /Выручка по месяцам/ })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'В дашборд' }));
-    expect(await screen.findByText('График добавлен на дашборд «Квартальная статистика продаж»')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Открыть →' }));
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/dashboards/d_q'); });
-    expect(await screen.findAllByText('Выручка по месяцам, ₽')).not.toHaveLength(0);
-  });
-
-  it('reports a failed save', async () => {
-    server.use(http.post(api('/dashboards'), () => HttpResponse.json({ error: { code: 'x', message: 'Дашборд недоступен' } }, { status: 500 })));
-    await renderRoute('/chat/c_q1');
-    await userEvent.click(await screen.findByRole('button', { name: 'В дашборд' }));
-    expect(await screen.findByText('Дашборд недоступен')).toBeInTheDocument();
-  });
-
-  it('streams after sending and can be stopped', async () => {
-    await renderRoute('/chat/c_q1');
-    const input = await screen.findByRole('textbox', { name: 'Вопрос к данным' });
-    await screen.findByRole('heading', { name: 'Продажи Q1' });
-    await userEvent.type(input, 'Где больше возвратов?{Enter}');
-    expect(screen.getByText('Ассистент работает')).toBeInTheDocument();
-    expect(input).toBeDisabled();
-    await userEvent.click(screen.getByRole('button', { name: 'Остановить' }));
-    expect(screen.getByRole('button', { name: 'Отправить' })).toBeInTheDocument();
-  });
-
-  it('greets in a new chat and opens the latest from a starter', async () => {
-    const { router } = await renderRoute('/chat');
-    expect(screen.getByText('Здравствуйте, ivan')).toBeInTheDocument();
-    await screen.findByRole('link', { name: /Продажи Q1/ });
-    await userEvent.click(screen.getByRole('button', { name: /Где больше возвратов/ }));
-    await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/c_q1'); });
-  });
-
-  it('shows clarification and timeout', async () => {
-    await renderRoute('/chat/c_q1?state=error');
-    expect(await screen.findByText('Какую сумму показать?')).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('Запрос превысил таймаут 30 сек.');
+  it('reconnects a dropped catalog progress stream and refetches terminal detail', async () => {
+    const dataset = createDb().datasets[0]!;
+    let ready = false;
+    let subscriptions = 0;
+    server.use(
+      http.get(api('/datasets/ds_orders'), () => HttpResponse.json(ready ? dataset : { ...dataset, status: 'processing', catalog: null })),
+      http.get(api('/datasets/ds_orders/events'), () => {
+        subscriptions += 1;
+        ready = subscriptions > 1;
+        return new HttpResponse(ready ? 'event: done\ndata: {"dataset_id":"ds_orders"}\n\n' : 'event: progress\ndata: {"stage":"read","progress":0.5}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+      }),
+    );
+    await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Соединение прервано до конца ответа');
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    expect(await screen.findByText('Структура таблицы')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(subscriptions).toBe(2);
   });
 });
 

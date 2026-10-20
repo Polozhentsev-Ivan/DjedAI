@@ -24,6 +24,7 @@ from djedai.backend.db.repositories import (
     get_or_create_user,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
+from djedai.backend.local_user import local_owner_id
 from djedai.contracts.agent import Block
 
 
@@ -62,6 +63,7 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
             yield session
 
     app = FastAPI()
+    app.dependency_overrides[local_owner_id] = lambda: "u_lock"
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_db] = database_session
     app.dependency_overrides[get_session_factory] = lambda: factory

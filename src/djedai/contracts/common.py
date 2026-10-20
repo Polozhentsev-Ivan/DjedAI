@@ -51,3 +51,12 @@ class DatasetSummary(BaseModel):
 class DatasetDetail(DatasetSummary):
     catalog: DatasetCatalog | None
     error: ToolError | None
+
+
+class DatasetUploadAccepted(BaseModel):
+    """Acknowledgement of a persisted upload queued for profiling."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dataset_id: str
+    status: Literal["processing"] = "processing"

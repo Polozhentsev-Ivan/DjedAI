@@ -119,21 +119,13 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [dataset_id]
-              properties:
-                dataset_id: { type: string }
+            schema: { $ref: '#/components/schemas/ChatCreate' }
       responses:
         '201':
           description: Created
           content:
             application/json:
-              schema:
-                type: object
-                required: [chat_id]
-                properties:
-                  chat_id: { type: string }
+              schema: { $ref: '#/components/schemas/ChatCreated' }
         default: { $ref: '#/components/responses/Error' }
   /chats/{chat_id}:
     parameters:
@@ -157,11 +149,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [text]
-              properties:
-                text: { type: string, minLength: 1 }
+            schema: { $ref: '#/components/schemas/SendMessageRequest' }
       responses:
         '200':
           description: Event stream; see AgentEvent
@@ -302,11 +290,7 @@ components:
       $ref: './contracts.json#/components/schemas/DatasetDetail'
 
     DatasetAccepted:
-      type: object
-      required: [dataset_id, status]
-      properties:
-        dataset_id: { type: string }
-        status: { $ref: '#/components/schemas/DatasetStatus' }
+      $ref: './contracts.json#/components/schemas/DatasetUploadAccepted'
     ConnectRequest:
       type: object
       required: [kind, dsn]
@@ -401,6 +385,15 @@ components:
 
     ChatSummary:
       $ref: './contracts.json#/components/schemas/ChatSummary'
+
+    ChatCreate:
+      $ref: './contracts.json#/components/schemas/ChatCreate'
+
+    ChatCreated:
+      $ref: './contracts.json#/components/schemas/ChatCreated'
+
+    SendMessageRequest:
+      $ref: './contracts.json#/components/schemas/SendMessageRequest'
 
     ChatMessage:
       $ref: './contracts.json#/components/schemas/ChatMessage'

@@ -34,6 +34,13 @@ class Settings(LimitSettings):
     # БД приложения (метаданные, пользователи, чаты, дашборды)
     app_database_url: str = Field(default="sqlite:///./var/app.db", alias="APP_DATABASE_URL")
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
+    datasets_data_dir: str = Field(default="./var/data/datasets", alias="DATASETS_DATA_DIR")
+
+    # Explicit single-user CP1 mode; the normal authentication API is a later stage.
+    cp1_local_mode: bool = Field(default=False, alias="CP1_LOCAL_MODE")
+    cp1_local_user_id: str = Field(
+        default="cp1-local-user", min_length=1, alias="CP1_LOCAL_USER_ID"
+    )
 
     # Согласованный управляемый профиль PL-1; совместимый endpoint можно переопределить.
     model_base_url: str = Field(
@@ -103,6 +110,9 @@ class Settings(LimitSettings):
         "log_level",
         "app_database_url",
         "results_data_dir",
+        "datasets_data_dir",
+        "cp1_local_mode",
+        "cp1_local_user_id",
         "model_base_url",
         "model_name",
         "model_revision",

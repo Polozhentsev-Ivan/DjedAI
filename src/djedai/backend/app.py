@@ -13,10 +13,12 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
+from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
 from djedai.backend.api.router import api_router
 from djedai.backend.config import Settings, get_settings
+from djedai.backend.db.session import create_db_engine
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -81,7 +83,17 @@ CONTRACT_UNION_SCHEMAS: dict[str, Any] = {
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Управление жизненным циклом приложения (запуск и завершение)."""
-    yield
+    from djedai.backend.dataset_service import DatasetService
+
+    cfg = app.state.settings
+    app.state.dataset_service = DatasetService(app.state.session_factory, cfg.datasets_data_dir)
+    try:
+        if cfg.cp1_local_mode:
+            await app.state.dataset_service.recover_interrupted()
+        yield
+    finally:
+        await app.state.dataset_service.close()
+        app.state.engine.dispose()
 
 
 def get_custom_openapi(app: FastAPI) -> dict[str, Any]:
@@ -146,6 +158,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+    app.state.engine = create_db_engine(cfg.app_database_url)
+    app.state.session_factory = sessionmaker(
+        bind=app.state.engine, autocommit=False, autoflush=False
+    )
 
     # Настройка CORS с явным dev allowlist
     app.add_middleware(

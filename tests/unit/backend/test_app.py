@@ -163,18 +163,16 @@ def test_api_subroutes_stubs() -> None:
     app = create_app()
     client = TestClient(app)
 
-    # Datasets
+    # CP1 routes require an explicitly enabled local-user adapter.
     res_ds = client.get("/api/datasets")
-    assert res_ds.status_code == 200
-    assert res_ds.json() == []
+    assert res_ds.status_code == 503
 
     res_chats = client.get("/api/chats")
-    assert res_chats.status_code == 422
+    assert res_chats.status_code == 503
 
     # Results
     res_res = client.get("/api/results/r_test")
-    assert res_res.status_code == 200
-    assert res_res.json()["result_id"] == "r_test"
+    assert res_res.status_code == 503
 
     # Dashboards
     assert client.get("/api/dashboards").status_code == 422

@@ -1,0 +1,46 @@
+name: djedai
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: infra/backend.Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DATABASE_URL: sqlite:////app/var/app.db
+      DATASETS_DATA_DIR: /app/var/data/datasets
+      RESULTS_DATA_DIR: /app/var/data/results
+      CP1_LOCAL_MODE: "true"
+      CP1_LOCAL_USER_ID: cp1-local-user
+      BACKEND_CORS_ORIGINS: ""
+    volumes:
+      - app-data:/app/var
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+    ports:
+      - "127.0.0.1:${DJEDAI_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/api/health"]
+      interval: 10s
+      timeout: 6s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  app-data:

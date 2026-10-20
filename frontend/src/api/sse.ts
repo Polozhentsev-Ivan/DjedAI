@@ -130,6 +130,7 @@ export async function streamEvents<M extends EventMap>(path: string, { onEvent, 
       }
       if (chunk.done) break;
       for (const message of parser.push(chunk.value)) {
+        if (signal?.aborted) return 'aborted';
         let data: unknown;
         try {
           data = JSON.parse(message.data);

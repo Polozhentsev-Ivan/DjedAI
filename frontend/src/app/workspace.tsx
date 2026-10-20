@@ -3,8 +3,8 @@ import { useDatasets } from '@/api/queries';
 import { WorkspaceContext, type Workspace } from './workspaceContext';
 
 const STORAGE_KEY = 'djedai.activeDataset';
-/** Shown until authentication (its own task) provides the session user. */
-const USER = 'ivan';
+/** CP1 has one explicitly configured backend owner; authentication is a later task. */
+const USER = 'Локальный режим CP1';
 
 function stored(): string | null {
   try {

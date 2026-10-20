@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from functools import lru_cache
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+import duckdb
+from fastapi import HTTPException, Request
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
 from djedai.agent.config import get_agent_client
 from djedai.agent.graph import build_agent_graph
 from djedai.analytics.registry import execute_tool
+from djedai.backend.dataset_service import DatasetContext
 from djedai.backend.db.models import ChatModel, MessageModel
 from djedai.backend.db.repositories import (
     get_chat as get_chat_record,
@@ -58,6 +62,7 @@ from djedai.contracts.sse import (
 from djedai.contracts.tool_result import ToolResult
 
 _BLOCK_ADAPTER: TypeAdapter[MessageBlock] = TypeAdapter(MessageBlock)
+logger = logging.getLogger(__name__)
 
 _STATUS_TEXT = {
     "load_ctx": "Загружаю контекст чата…",
@@ -88,25 +93,31 @@ class AgentRuntime:
     client: Any | None = None
     tool_dispatcher: Callable[[str, dict[str, Any]], ToolResult] | None = None
     catalog_loader: Callable[[str], DatasetCatalog] | None = None
+    dataset_context: Callable[[str, str], DatasetContext] | None = None
+    results_storage_dir: Path | str | None = None
 
 
 def build_agent_runtime() -> AgentRuntime:
-    """Создаёт граф агента и клиент модели (без ключей работает детерминированный путь)."""
+    """Создаёт реальный runtime; отсутствие конфигурации не имитирует ответ модели."""
     try:
         client = get_agent_client()
-    except ValueError:
-        client = None
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503, detail="Настройте MODEL_BASE_URL, MODEL_NAME и MODEL_API_KEY"
+        ) from exc
     return AgentRuntime(
         graph=build_agent_graph(),
         client=client,
-        tool_dispatcher=execute_tool,
     )
 
 
-@lru_cache(maxsize=1)
-def get_agent_runtime() -> AgentRuntime:
-    """Возвращает общий runtime агента для обработчиков чата."""
-    return build_agent_runtime()
+def get_agent_runtime(request: Request) -> AgentRuntime:
+    """Привязывает каждый HTTP-ход к постоянному хранилищу приложения."""
+    return replace(
+        build_agent_runtime(),
+        dataset_context=request.app.state.dataset_service.get_context,
+        results_storage_dir=request.app.state.settings.results_data_dir,
+    )
 
 
 def chat_summary(chat: ChatModel) -> ChatSummary:
@@ -208,6 +219,7 @@ def stream_chat_turn(
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[AgentStreamEvent]:
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
+    connection: duckdb.DuckDBPyConnection | None = None
     try:
         chat_model = (
             get_chat_record(db, chat)
@@ -223,6 +235,25 @@ def stream_chat_turn(
             )
             return
 
+        if runtime.dataset_context is not None:
+            context = runtime.dataset_context(chat_model.owner_id, chat_model.dataset_id)
+            connection = duckdb.connect(str(context.duckdb_path), read_only=True)
+            connection.execute("SET enable_external_access = false")
+
+            def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
+                if params.get("source_result_id") is not None:
+                    raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
+                return execute_tool(tool, params, connection=connection)
+
+            def catalog(dataset_id: str) -> DatasetCatalog:
+                if dataset_id != context.catalog.dataset_id:
+                    raise ValueError("Каталог не относится к датасету чата")
+                return context.catalog
+
+            runtime = replace(runtime, tool_dispatcher=dispatch, catalog_loader=catalog)
+
+        if is_cancelled and is_cancelled():
+            return
         user_message_id = _new_id("m")
         save_message(
             db,
@@ -287,6 +318,7 @@ def stream_chat_turn(
                             result,
                             chat_id=chat_model.chat_id,
                             owner_id=chat_model.owner_id,
+                            storage_dir=runtime.results_storage_dir,
                         )
                         yield SSEToolCallEvent(
                             data=SSEToolCallData(
@@ -338,7 +370,8 @@ def stream_chat_turn(
         for block in message_blocks:
             yield SSEBlockEvent(data=block)
         yield SSEDoneEvent(data=SSEDoneData(message_id=assistant.message_id))
-    except Exception as exc:  # The stream must end with an event, not a broken connection.
+    except Exception:  # The stream must end with an event, not a broken connection.
+        logger.exception("Chat turn failed")
         try:
             db.rollback()
         except Exception:
@@ -346,6 +379,9 @@ def stream_chat_turn(
         yield SSEErrorEvent(
             data=SSEErrorData(
                 message="Не удалось получить ответ агента",
-                detail=str(exc),
+                detail="Не удалось завершить запрос. Проверьте конфигурацию и повторите явно.",
             )
         )
+    finally:
+        if connection is not None:
+            connection.close()

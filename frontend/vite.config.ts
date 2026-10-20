@@ -29,6 +29,7 @@ export default defineConfig({
     proxy: { '/api': { target: apiTarget, changeOrigin: true } },
   },
   test: {
+    include: ['src/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
