@@ -167,7 +167,8 @@ def keys(rows: list[dict[str, str]], column: str) -> list[str]:
 
 def relation_link(reference: dict) -> str:
     source, target = reference["from"], reference["to"]
-    return f"{source['table']}.{source['column']} → {target['table']}.{target['column']}"
+    # ASCII: вывод CLI не должен зависеть от кодировки консоли (cp1251 на Windows)
+    return f"{source['table']}.{source['column']} -> {target['table']}.{target['column']}"
 
 
 def calculate_relation(tables: dict[str, list[dict[str, str]]], reference: dict) -> dict:
@@ -260,7 +261,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, ArithmeticError) as error:
         print(str(error), file=sys.stderr)
         return 1
-    print(json.dumps({"status": "ok", **actual}, ensure_ascii=False, indent=2))
+    print(json.dumps({"status": "ok", **actual}, ensure_ascii=True, indent=2))
     return 0
 
 
