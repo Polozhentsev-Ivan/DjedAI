@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Annotated
+from collections.abc import AsyncIterator
+from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.types import Receive, Scope, Send
 
 from djedai.backend.chat_service import (
     AgentRuntime,
@@ -79,6 +80,20 @@ def get_chat(chat_id: str, db: DbSession) -> ChatDetail:
     return ChatDetail(**summary.model_dump(), messages=messages)
 
 
+class ClosableStreamingResponse(StreamingResponse):
+    """StreamingResponse с гарантированным освобождением сессии БД даже при обрыве соединения."""
+
+    def __init__(self, content: Any, *, session: Session, **kwargs: Any) -> None:
+        self._db_session = session
+        super().__init__(content, **kwargs)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._db_session.close()
+
+
 @router.post(
     "/{chat_id}/messages",
     responses={
@@ -94,9 +109,10 @@ def get_chat(chat_id: str, db: DbSession) -> ChatDetail:
         }
     },
 )
-def send_chat_message(
+async def send_chat_message(
     chat_id: str,
     payload: SendMessageRequest,
+    request: Request,
     db: DbSession,
     session_factory: DbSessionFactory,
     runtime: AgentRuntimeDep,
@@ -106,16 +122,29 @@ def send_chat_message(
     if chat is None:
         raise HTTPException(status_code=404, detail="Чат не найден")
 
-    def frames() -> Iterator[str]:
-        session = session_factory()
+    session = session_factory()
+    is_disconnected = False
+
+    def check_disconnected() -> bool:
+        nonlocal is_disconnected
+        return is_disconnected
+
+    async def frames() -> AsyncIterator[str]:
+        nonlocal is_disconnected
         try:
-            for event in stream_chat_turn(session, chat_id, payload.text, runtime):
+            for event in stream_chat_turn(
+                session, chat_id, payload.text, runtime, is_cancelled=check_disconnected
+            ):
+                if await request.is_disconnected():
+                    is_disconnected = True
+                    break
                 yield encode_sse_event(event)
         finally:
             session.close()
 
-    return StreamingResponse(
+    return ClosableStreamingResponse(
         frames(),
+        session=session,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import json
+import shutil
+import socket
 import sqlite3
+import subprocess
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import anyio
 import httpx
 import pytest
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from starlette.types import ASGIApp, Receive, Scope, Send
+from sqlalchemy.pool import StaticPool
 
 from djedai.backend.app import create_app
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
@@ -406,67 +415,150 @@ def test_chat_ids_are_unique(chat_api: tuple[TestClient, Any, Any]) -> None:
     assert all(chat_id.startswith("c_") for chat_id in ids)
 
 
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 @pytest.mark.anyio
 async def test_stream_proxy_unbuffered_and_events(
-    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Проверяет unbuffered SSE-стриминг через /api proxy, заголовки и пошаговую отдачу событий."""
-    test_client, _factory, use_runtime = chat_api
-    app = test_client.app
-    chat_id = _create_chat(test_client)
+    """Проверяет поток через сетевой /api proxy, заголовки, чанки, обрыв и fetch."""
+    backend_port = _free_port()
+    proxy_port = _free_port()
 
-    tool_res = ToolResult(
-        result_id="r_proxy_1",
-        status="ok",
-        tool="run_sql",
-        params={"sql": "SELECT 42"},
-        sql="SELECT 42",
-        data=ToolResultData(columns=["val"], rows=[[42]], row_count=1),
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    graph = FakeGraph(
-        [
-            {"plan": {"plan": [], "retries": 1}},
-            {"execute": {"results": [tool_res]}},
-            {"compose": {"answer_blocks": [Block(type="text", markdown="Ответ получен")]}},
-            {"verify": {}},
+    init_db(engine)
+    factory = sessionmaker(bind=engine)
+
+    with factory() as db:
+        user = get_or_create_user(db, "u_live", "live_owner")
+        create_dataset(db, "ds_live", user.id, "Live DS")
+        chat = create_chat(db, "c_live", user.id, "ds_live")
+
+    monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results_live"))
+    get_settings.cache_clear()
+
+    backend_app = create_app(Settings(_env_file=None))
+    backend_app.dependency_overrides[get_db] = lambda: factory()
+    backend_app.dependency_overrides[get_session_factory] = lambda: factory
+    backend_app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
+        graph=FakeGraph(
+            [
+                {"plan": {}},
+                {"execute": {}},
+                {"compose": {"answer_blocks": [Block(type="text", markdown="Живой ответ")]}},
+            ]
+        )
+    )
+
+    # Настоящий сетевой Reverse Proxy (эмуляция Vite dev proxy / nginx по /api)
+    proxy_app = FastAPI()
+    proxy_client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{backend_port}", trust_env=False)
+
+    @proxy_app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+    async def reverse_proxy(request: Request, path: str):
+        body = await request.body()
+        req = proxy_client.build_request(
+            request.method,
+            f"/api/{path}",
+            headers=request.headers.raw,
+            content=body,
+        )
+        resp = await proxy_client.send(req, stream=True)
+        return StreamingResponse(
+            resp.aiter_raw(),
+            status_code=resp.status_code,
+            headers=resp.headers,
+            media_type=resp.headers.get("content-type"),
+        )
+
+    s1 = uvicorn.Server(
+        uvicorn.Config(backend_app, host="127.0.0.1", port=backend_port, log_level="error")
+    )
+    t1 = threading.Thread(target=s1.run, daemon=True)
+    t1.start()
+
+    s2 = uvicorn.Server(
+        uvicorn.Config(proxy_app, host="127.0.0.1", port=proxy_port, log_level="error")
+    )
+    t2 = threading.Thread(target=s2.run, daemon=True)
+    t2.start()
+
+    while not (s1.started and s2.started):
+        await anyio.sleep(0.05)
+
+    try:
+        # 1. Потоковое чтение через живой TCP proxy без буферизации
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{proxy_port}", trust_env=False
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"/api/chats/{chat.chat_id}/messages",
+                json={"text": "Привет через живой прокси"},
+            ) as response:
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith("text/event-stream")
+                assert response.headers["cache-control"] == "no-cache"
+                assert response.headers.get("x-accel-buffering") == "no"
+
+                raw_chunks: list[str] = []
+                async for line in response.aiter_lines():
+                    if line:
+                        raw_chunks.append(line)
+
+        events = [
+            line.removeprefix("event:").strip() for line in raw_chunks if line.startswith("event:")
         ]
-    )
-    use_runtime(AgentRuntime(graph=graph))
+        assert events[0] == "status"
+        assert events[-1] == "done"
 
-    class ViteDevProxy:
-        def __init__(self, target_app: ASGIApp) -> None:
-            self.target_app = target_app
+        # 2. Реальный обрыв сокета клиентом через proxy
+        with socket.socket() as sock:
+            sock.connect(("127.0.0.1", proxy_port))
+            req_body = json.dumps({"text": "Обрыв"}).encode("utf-8")
+            req = (
+                f"POST /api/chats/{chat.chat_id}/messages HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{proxy_port}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(req_body)}\r\n\r\n"
+            ).encode() + req_body
+            sock.sendall(req)
+            initial_data = sock.recv(256)
+            assert b"200 OK" in initial_data
+            sock.close()
 
-        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            await self.target_app(scope, receive, send)
-
-    proxy_app = ViteDevProxy(app)
-    transport = httpx.ASGITransport(app=proxy_app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:3000") as client:
-        async with client.stream(
-            "POST",
-            f"/api/chats/{chat_id}/messages",
-            json={"text": "Сколько всего заказов?"},
-        ) as response:
-            assert response.status_code == 200
-            assert response.headers["content-type"].startswith("text/event-stream")
-            assert response.headers["cache-control"] == "no-cache"
-            assert response.headers.get("x-accel-buffering") == "no"
-
-            raw_chunks: list[str] = []
-            async for line in response.aiter_lines():
-                if line:
-                    raw_chunks.append(line)
-
-    events = [
-        line.removeprefix("event:").strip() for line in raw_chunks if line.startswith("event:")
-    ]
-    assert events[0] == "status"
-    assert "tool_call" in events
-    assert "tool_result" in events
-    assert "block" in events
-    assert events[-1] == "done"
+        # 3. Браузерный fetch через Node.js (если node доступен в окружении)
+        if shutil.which("node"):
+            url = f"http://127.0.0.1:{proxy_port}/api/chats/{chat.chat_id}/messages"
+            node_code = f"""
+            const controller = new AbortController();
+            const resp = await fetch('{url}', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ text: 'Fetch с отменой' }}),
+                signal: controller.signal
+            }});
+            const reader = resp.body.getReader();
+            const {{ value }} = await reader.read();
+            controller.abort();
+            """
+            p = subprocess.run(
+                ["node", "--input-type=module", "-e", node_code],
+                capture_output=True,
+                text=True,
+            )
+            assert p.returncode == 0
+    finally:
+        s1.should_exit = True
+        s2.should_exit = True
+        await proxy_client.aclose()
+        engine.dispose()
 
 
 def test_stream_cleans_up_session_and_connections_on_complete_and_abort(

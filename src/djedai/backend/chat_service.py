@@ -203,6 +203,7 @@ def stream_chat_turn(
     chat: ChatModel | str,
     text: str,
     runtime: AgentRuntime,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[AgentStreamEvent]:
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
     try:
@@ -257,6 +258,8 @@ def stream_chat_turn(
             config={"configurable": configurable},
             stream_mode="updates",
         ):
+            if is_cancelled and is_cancelled():
+                return
             now = perf_counter()
             for node, data in update.items():
                 trace.append(TraceStep(node=node, ms=int((now - previous) * 1000)))
