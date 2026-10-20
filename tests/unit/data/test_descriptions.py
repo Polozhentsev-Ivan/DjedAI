@@ -349,3 +349,46 @@ def test_prompts_exist_and_ask_for_russian():
         text = load_prompt(name)
         assert text != "Промпт не найден."
         assert "Russian" in text and "JSON" in text
+
+
+def test_rejected_summary_is_not_cached(con):
+    def english_summary(payload, model):
+        if model is DatasetSummary:
+            return ModelResponse(status="success", data=DatasetSummary(summary="Customer dataset"))
+        return answer_all(payload, model)
+
+    first = describe_catalog(con, blank_catalog(), FakeClient(english_summary))
+    assert first.catalog.summary is None
+    assert "не на русском" in " ".join(first.warnings)
+
+    client = FakeClient()
+    second = describe_catalog(con, blank_catalog(), client)
+    # таблицы из кэша, summary запрошен снова и принят
+    assert [m for _, _, m in client.calls] == [DatasetSummary]
+    assert second.catalog.summary == "Данные: orders, clients"
+    assert describe_catalog(con, blank_catalog(), FakeClient()).model_calls == 0
+
+
+@pytest.mark.parametrize("broken", ["column", "table"])
+def test_incomplete_table_answer_is_not_cached(con, broken):
+    def partly_english(payload, model):
+        response = answer_all(payload, model)
+        if model is TableDescriptions and payload["table"] == "clients":
+            data = response.data.model_dump()
+            if broken == "column":
+                data["columns"][0]["description"] = "Customer identifier"
+            else:
+                data["table"] = "Customers"
+            response = ModelResponse(status="success", data=TableDescriptions(**data))
+        return response
+
+    first = describe_catalog(con, only_clients(), FakeClient(partly_english))
+    (clients,) = first.catalog.tables
+    assert None in (clients.description, clients.columns[0].description)
+    assert cached(con) == 1  # только summary
+
+    client = FakeClient()
+    (clients,) = describe_catalog(con, only_clients(), client).catalog.tables
+    assert [p.get("table") for _, p, m in client.calls if m is TableDescriptions] == ["clients"]
+    assert clients.description == "Строка таблицы clients"
+    assert all(c.description == f"Смысл колонки {c.name}" for c in clients.columns)

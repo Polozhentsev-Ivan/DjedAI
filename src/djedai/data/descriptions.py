@@ -7,9 +7,11 @@
 ``summary`` датасета по описаниям таблиц, периодам и связям. Заполняются только пустые
 поля: описания, которые уже есть в каталоге, не перезаписываются.
 
-Успешные ответы кэшируются в ``_djedai_descriptions``. Ключ — SHA-256 от имени модели,
-текста промпта, схемы ответа и входного JSON, поэтому повторное чтение не обращается к
-модели, а при изменении данных, промпта, схемы или модели описание пересчитывается.
+Принятые ответы кэшируются в ``_djedai_descriptions``; отвергнутые и неполные — нет,
+чтобы пустые поля можно было получить при следующем вызове. Ключ — SHA-256 от имени
+модели, текста промпта, схемы ответа и входного JSON, поэтому повторное чтение не
+обращается к модели, а при изменении данных, промпта, схемы или модели описание
+пересчитывается.
 
 Ошибка модели не ломает каталог: таблицы и статистика остаются как были, в ``warnings``
 добавляется причина. Если модель недоступна (таймаут, ошибка сервера, исключение
@@ -21,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -93,8 +96,15 @@ class _Describer:
         self.share_values = share_values
         self.calls = 0
 
-    def ask[T: _Answer](self, prompt: str, payload: dict, answer: type[T]) -> T | str:
-        """Ответ из кэша или модели; при ошибке — её тип (``INVALID_JSON``, ...)."""
+    def ask[T: _Answer](
+        self, prompt: str, payload: dict, answer: type[T], complete: Callable[[T], bool]
+    ) -> T | str:
+        """Ответ из кэша или модели; при ошибке — её тип (``INVALID_JSON``, ...).
+
+        В кэш попадает только ответ, для которого ``complete`` истинно: все нужные описания
+        прошли проверку. Отвергнутый или неполный ответ не кэшируется, поэтому при
+        следующем вызове пустые поля можно получить заново.
+        """
         user = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         system = load_prompt(prompt)
         schema = json.dumps(answer.model_json_schema(), sort_keys=True)
@@ -116,10 +126,12 @@ class _Describer:
             if error_type in UNAVAILABLE:
                 raise _ModelUnavailable(error_type)
             return error_type
-        self.connection.execute(
-            f"INSERT OR REPLACE INTO {DESCRIPTIONS_TABLE} (key, kind, payload) VALUES (?, ?, ?)",
-            [key, prompt, response.data.model_dump_json()],
-        )
+        if complete(response.data):
+            self.connection.execute(
+                f"INSERT OR REPLACE INTO {DESCRIPTIONS_TABLE} (key, kind, payload) "
+                "VALUES (?, ?, ?)",
+                [key, prompt, response.data.model_dump_json()],
+            )
         return response.data
 
 
@@ -170,8 +182,14 @@ def _describe_table(describer: _Describer, table: Table, warnings: list[str]) ->
     rejected: list[str] = []
     for start in range(0, len(table.columns), MAX_COLUMNS_PER_CALL):
         part = table.columns[start : start + MAX_COLUMNS_PER_CALL]
+        needs_table = start == 0 and table.description is None
         answer = describer.ask(
-            TABLE_PROMPT, _table_payload(table, part, describer.share_values), TableDescriptions
+            TABLE_PROMPT,
+            _table_payload(table, part, describer.share_values),
+            TableDescriptions,
+            lambda found, part=part, needs_table=needs_table: _complete_table(
+                found, part, needs_table
+            ),
         )
         if isinstance(answer, str):
             warnings.append(
@@ -181,11 +199,8 @@ def _describe_table(describer: _Describer, table: Table, warnings: list[str]) ->
             return table
         if table_text is None:
             table_text = _clean(answer.table, MAX_DESCRIPTION_CHARS)
-        names = {c.name for c in part}
-        for item in answer.columns:
-            text = _clean(item.description, MAX_DESCRIPTION_CHARS)
-            if item.name in names and text is not None:
-                texts.setdefault(item.name, text)
+        for name, text in _accepted_columns(answer, part).items():
+            texts.setdefault(name, text)
     columns = []
     for column in table.columns:
         if column.description is None and column.name not in texts:
@@ -200,6 +215,25 @@ def _describe_table(describer: _Describer, table: Table, warnings: list[str]) ->
     )
 
 
+def _accepted_columns(answer: TableDescriptions, part: Sequence[Column]) -> dict[str, str]:
+    """Принятые описания колонок части: известное имя и текст на русском."""
+    names = {c.name for c in part}
+    accepted: dict[str, str] = {}
+    for item in answer.columns:
+        text = _clean(item.description, MAX_DESCRIPTION_CHARS)
+        if item.name in names and text is not None:
+            accepted.setdefault(item.name, text)
+    return accepted
+
+
+def _complete_table(answer: TableDescriptions, part: Sequence[Column], needs_table: bool) -> bool:
+    """Ответ можно кэшировать: описаны таблица (если нужна) и все пустые колонки части."""
+    if needs_table and _clean(answer.table, MAX_DESCRIPTION_CHARS) is None:
+        return False
+    accepted = _accepted_columns(answer, part)
+    return all(c.name in accepted for c in part if c.description is None)
+
+
 def _with_description(column: Column, text: str | None) -> Column:
     if column.description is not None or text is None:
         return column
@@ -209,7 +243,12 @@ def _with_description(column: Column, text: str | None) -> Column:
 def _describe_dataset(
     describer: _Describer, catalog: DatasetCatalog, tables: list[Table], warnings: list[str]
 ) -> str | None:
-    answer = describer.ask(DATASET_PROMPT, _dataset_payload(catalog, tables), DatasetSummary)
+    answer = describer.ask(
+        DATASET_PROMPT,
+        _dataset_payload(catalog, tables),
+        DatasetSummary,
+        lambda found: _clean(found.summary, MAX_SUMMARY_CHARS) is not None,
+    )
     if isinstance(answer, str):
         warnings.append(f"Краткое описание датасета не сгенерировано: ответ не принят ({answer})")
         return None
