@@ -7,7 +7,7 @@ import {
 // Intl separates digit groups with no-break spaces; \s matches them.
 const plain = (text: string) => text.replace(/\s/g, ' ');
 const db = createDb();
-const orders = ordersCatalog.tables[0]!;
+const orders = (ordersCatalog.tables ?? [])[0]!;
 const column = (name: string) => orders.columns.find((c) => c.name === name)!;
 
 describe('dataset views', () => {
@@ -49,7 +49,7 @@ describe('column views', () => {
   });
 
   it('explains columns in the note', () => {
-    const relations = ordersCatalog.relations;
+    const relations = ordersCatalog.relations ?? [];
     expect(columnNote(column('order_id'), orders, relations)).toBe('Уникальный ключ');
     expect(columnNote(column('customer_id'), orders, relations)).toBe('Связь с customers.id');
     expect(columnNote(column('payment_date'), orders, relations)).toBe('Формат ДД.ММ.ГГГГ');

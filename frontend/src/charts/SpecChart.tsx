@@ -6,7 +6,7 @@ import { isSupported, pieLegend, specOption } from './spec';
 import type { ChartTheme } from './theme';
 
 interface SpecChartProps {
-  spec: Schemas['ChartSpec'];
+  spec: Schemas['ChartTemplate'];
   data: Schemas['ResultData'];
   height?: ChartHeight | undefined;
 }

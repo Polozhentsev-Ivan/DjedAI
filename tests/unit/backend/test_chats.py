@@ -179,6 +179,33 @@ def test_chat_api_reports_missing_resources(chat_api: tuple[TestClient, Any, Any
     assert unknown_message.status_code == 404
 
 
+@pytest.mark.parametrize("rejected", [False, True])
+def test_verify_replaces_candidate_before_saving_or_publishing(chat_api, rejected):
+    client, _factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    verified = Block(type="error" if rejected else "text", markdown="Проверенный ответ")
+    use_runtime(
+        _runtime(
+            {
+                "compose": {
+                    "answer_blocks": [Block(type="text", markdown="Непроверенная цифра 999")]
+                }
+            },
+            {"verify": {"answer_blocks": [verified]}},
+        )
+    )
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
+    events = parse_sse(response.text)
+    assert "Непроверенная цифра" not in response.text
+    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    if rejected:
+        assert events[-1][0] == "error"
+        assert len(messages) == 1
+    else:
+        assert events[-1][0] == "done"
+        assert messages[-1]["blocks"] == [{"type": "text", "markdown": "Проверенный ответ"}]
+
+
 def test_send_message_streams_events_and_saves_history(
     chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
 ) -> None:

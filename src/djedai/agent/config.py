@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
 from djedai.agent.client import BIModelClient
+from djedai.config import get_limits
 
 
 class ModelConfig(BaseModel):
@@ -22,10 +23,13 @@ def get_agent_client() -> BIModelClient:
             name=os.environ.get("MODEL_NAME", ""),
             api_key=os.environ.get("MODEL_API_KEY", ""),
         )
+        limits = get_limits()
         return BIModelClient(
             api_key=config.api_key,
             base_url=config.base_url,
             model_name=config.name,
+            timeout=limits.model_timeout_seconds,
+            max_output_tokens=limits.model_max_output_tokens,
         )
     except ValidationError as e:
         raise ValueError(f"Отсутствует или неверна конфигурация модели: {e}") from e

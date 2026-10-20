@@ -13,7 +13,7 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   dataset_id: 'ds_orders',
   name: 'orders_2026',
   created_at: '2026-10-18T13:52:00',
-  source: { kind: 'csv_upload', files: 2 },
+  source: { kind: 'csv_upload' },
   summary: 'Заказы и клиенты интернет-магазина за 2026 год',
   tables: [
     {
@@ -22,7 +22,7 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
       columns: [
         { name: 'order_id', original_name: 'Номер заказа', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 120000, is_unique: true },
         { name: 'payment_date', original_name: 'Дата оплаты', physical_type: 'DATE', semantic_type: 'date', role: 'time', null_ratio: 0.001, distinct_count: 304, is_unique: false, parse: { format: '%d.%m.%Y', success_ratio: 0.9999 } },
-        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: '₽' },
+        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: 'RUB' },
         { name: 'discount', original_name: 'Скидка', physical_type: 'DOUBLE', semantic_type: 'percent', role: 'measure', null_ratio: 0.052, distinct_count: 21, is_unique: false },
         { name: 'status', original_name: 'Статус', physical_type: 'VARCHAR', semantic_type: 'category', role: 'dimension', null_ratio: 0, distinct_count: 4, is_unique: false },
         { name: 'customer_id', original_name: 'Клиент', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: false },
@@ -40,7 +40,7 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
     },
   ],
   relations: [
-    { from: { table: 'orders', column: 'customer_id' }, to: { table: 'customers', column: 'id' }, overlap: 0.998, cardinality: 'N:1', confidence: 'high' },
+    { from: { table: 'orders', column: 'customer_id' }, to: { table: 'customers', column: 'id' }, overlap: 0.998, jaccard: 0.998, cardinality: 'N:1', confidence: 'high' },
   ],
   warnings: ['В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL. Исходные значения сохранены в raw'],
   transformations: [
@@ -52,8 +52,8 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
 
 function readyDataset(catalog: Schemas['DatasetCatalog'], rows: number): DatasetDetail {
   return {
-    dataset_id: catalog.dataset_id, name: catalog.name, source: catalog.source, status: 'ready',
-    table_count: catalog.tables.length, row_count: rows, created_at: catalog.created_at, catalog, error: null,
+    dataset_id: catalog.dataset_id, name: catalog.name, source: { ...catalog.source, files: catalog.tables?.length ?? 0 }, status: 'ready',
+    table_count: catalog.tables?.length ?? 0, row_count: rows, created_at: catalog.created_at, catalog, error: null,
   };
 }
 
@@ -126,8 +126,8 @@ WHERE  payment_date >= date_trunc('quarter', now());`,
 
 const amount = { field: 'revenue', label: 'Сумма с НДС, руб', format: 'money' } as const;
 
-function widget(id: string, result: ToolResultMeta, chart: Schemas['ChartSpec'], caption: string): Schemas['Widget'] {
-  return { widget_id: id, tool_call: { tool: result.tool ?? 'unknown_tool', params: result.params ?? {} }, chart, caption, result_id: result.result_id, status: 'ok', error: null };
+function widget(id: string, result: ToolResultMeta, chart: Omit<Schemas['ChartSpec'], 'chart_id' | 'result_id'>, caption: string): Schemas['Widget'] {
+  return { widget_id: id, tool_call: { tool: result.tool ?? 'unknown_tool', params: result.params ?? {} }, layout: { x: 0, y: 0, w: 6, h: 4 }, chart: { ...chart, chart_id: `chart_${id}`, result_id: result.result_id }, caption, result_id: result.result_id, status: 'ok', error: null };
 }
 
 function quarterly(id: string, title: string): Dashboard {
@@ -196,8 +196,8 @@ export function uploadedDataset(id: string, fileName: string, files: number): Da
   catalog.dataset_id = id;
   catalog.name = name;
   catalog.created_at = new Date().toISOString();
-  catalog.source = { kind: 'csv_upload', files };
-  return { ...readyDataset(catalog, 8940), status: 'processing', catalog: null, table_count: null, row_count: null };
+  catalog.source = { kind: 'csv_upload' };
+  return { ...readyDataset(catalog, 8940), source: { kind: 'csv_upload', files }, status: 'processing', catalog: null, table_count: null, row_count: null };
 }
 
 export { ordersCatalog };

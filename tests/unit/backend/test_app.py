@@ -177,7 +177,8 @@ def test_api_subroutes_stubs() -> None:
     assert res_res.json()["result_id"] == "r_test"
 
     # Dashboards
-    res_dash = client.get("/api/dashboards")
+    assert client.get("/api/dashboards").status_code == 422
+    res_dash = client.get("/api/dashboards", params={"dataset_id": "ds_test"})
     assert res_dash.status_code == 200
     assert res_dash.json() == []
 

@@ -2,6 +2,7 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
+from djedai.contracts.chart import ChartSpec
 from djedai.contracts.tool_result import ToolResult
 
 
@@ -41,12 +42,6 @@ class Message(BaseModel):
 class PlannedCall(BaseModel):
     tool: str
     args: dict[str, Any]
-
-
-class ChartSpec(BaseModel):
-    title: str
-    type: str
-    data_ref: str
 
 
 class Block(BaseModel):

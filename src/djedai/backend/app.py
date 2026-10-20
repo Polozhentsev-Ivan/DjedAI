@@ -6,11 +6,14 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
+from starlette.exceptions import HTTPException
 
 from djedai.backend.api.router import api_router
 from djedai.backend.config import Settings, get_settings
@@ -24,7 +27,9 @@ from djedai.contracts import (
     ChatMessage,
     ChatSummary,
     Dashboard,
+    DashboardSnapshot,
     DatasetCatalog,
+    DatasetDetail,
     DatasetStreamEvent,
     DatasetSummary,
     ErrorResponse,
@@ -32,6 +37,7 @@ from djedai.contracts import (
     MessageBlock,
     SendMessageRequest,
     TokenResponse,
+    ToolError,
     ToolResult,
     ToolResultData,
     UserCreate,
@@ -42,11 +48,13 @@ from djedai.contracts import (
 # Корневые модели контрактов для включения в OpenAPI / components.schemas
 CONTRACT_ROOT_MODELS = [
     DatasetCatalog,
+    DatasetDetail,
     ToolResult,
     ToolResultData,
     ChartSpec,
     AssistantMessage,
     Dashboard,
+    DashboardSnapshot,
     UserCreate,
     UserLogin,
     UserRead,
@@ -110,6 +118,19 @@ def get_custom_openapi(app: FastAPI) -> dict[str, Any]:
                 schemas[def_name] = def_schema
         schemas[name] = u_schema
 
+    error_response = {
+        "description": "Ошибка запроса",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+    }
+    for path in openapi_schema.get("paths", {}).values():
+        for method, operation in path.items():
+            if method not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+                continue
+            responses = operation.setdefault("responses", {})
+            responses.setdefault("default", error_response)
+            if "422" in responses:
+                responses["422"] = error_response
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
@@ -137,6 +158,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Подключение всех API маршрутов с префиксом /api
     app.include_router(api_router, prefix=cfg.api_prefix)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(_request: Request, error: HTTPException) -> JSONResponse:
+        codes = {
+            401: "unauthorized",
+            403: "forbidden",
+            404: "not_found",
+            409: "conflict",
+            429: "rate_limit",
+            503: "unavailable",
+        }
+        payload = ErrorResponse(
+            error=ToolError(
+                code=codes.get(error.status_code, f"http_{error.status_code}"),
+                message=str(error.detail)
+                if error.status_code < 500
+                else "Сервис временно недоступен",
+            )
+        )
+        return JSONResponse(
+            payload.model_dump(mode="json"), status_code=error.status_code, headers=error.headers
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_request: Request, _error: RequestValidationError) -> JSONResponse:
+        # ValidationError.errors() includes input values, including passwords and DSNs.
+        payload = ErrorResponse(
+            error=ToolError(
+                code="invalid_request",
+                message="Проверьте поля запроса",
+                suggestion="Параметры запроса должны соответствовать схеме API",
+            )
+        )
+        return JSONResponse(payload.model_dump(mode="json"), status_code=422)
+
+    @app.exception_handler(Exception)
+    async def internal_error(_request: Request, _error: Exception) -> JSONResponse:
+        payload = ErrorResponse(
+            error=ToolError(
+                code="internal_error",
+                message="Внутренняя ошибка сервера",
+            )
+        )
+        return JSONResponse(payload.model_dump(mode="json"), status_code=500)
 
     # Кастомный генератор схемы OpenAPI с полным набором общих контрактов
     app.openapi = lambda: get_custom_openapi(app)

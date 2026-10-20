@@ -11,6 +11,23 @@ from export_schema import build_openapi_schema, get_component_refs
 
 OUTPUT = Path(__file__).resolve().parents[1] / "frontend/schema/contracts.json"
 CONTRACTS = {
+    "DatasetCatalog",
+    "DatasetSummary",
+    "DatasetDetail",
+    "ChartSpec",
+    "AssistantMessage",
+    "ChatSummary",
+    "ChatMessage",
+    "ChatDetail",
+    "MessageBlock",
+    "Dashboard",
+    "DashboardSnapshot",
+    "DashboardSummary",
+    "DashboardCreate",
+    "DashboardPatch",
+    "UserRead",
+    "TokenResponse",
+    "ErrorResponse",
     "Transformation",
     "ToolResult",
     "ToolResultData",

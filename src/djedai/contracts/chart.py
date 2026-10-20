@@ -62,13 +62,12 @@ class Annotation(BaseModel):
     text: str
 
 
-class ChartSpec(BaseModel):
-    """Спецификация графика. Данные фронтенд запрашивает отдельно по result_id."""
+class ChartTemplate(BaseModel):
+    """Визуальные настройки, сохраняемые до первого успешного вычисления."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     chart_id: str = Field(description="Уникальный идентификатор графика")
-    result_id: str = Field(description="ID результата вычислений в хранилище результатов")
     type: ChartType = Field(description="Тип графика")
     title: str = Field(description="Понятный заголовок для бизнес-пользователя")
     subtitle: str | None = Field(default=None, description="Краткий вывод или подзаголовок")
@@ -82,3 +81,9 @@ class ChartSpec(BaseModel):
     annotations: list[Annotation] = Field(
         default_factory=list, description="Текстовые метки на точках"
     )
+
+
+class ChartSpec(ChartTemplate):
+    """Спецификация графика. Данные фронтенд запрашивает отдельно по result_id."""
+
+    result_id: str = Field(description="ID результата вычислений в хранилище результатов")

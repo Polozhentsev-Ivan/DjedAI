@@ -30,12 +30,13 @@ function errorJson(status: number, error: Schemas['ErrorBody']) {
 type SseFrame = readonly [string, unknown];
 
 /** text/event-stream response that sends frames one by one with a pause. */
-function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal): HttpResponse<ReadableStream> {
+function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal, beforeSend?: (event: string) => void): HttpResponse<ReadableStream> {
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       for (const [event, data] of frames) {
         if (signal.aborted) break;
         if (tick > 0) await delay(tick);
+        beforeSend?.(event);
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       }
       controller.close();
@@ -94,8 +95,8 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     const catalog = structuredClone(ordersCatalog);
     catalog.dataset_id = id;
     catalog.name = ready.name;
-    catalog.source = ready.source;
-    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables.length, row_count: 8940 });
+    catalog.source = { kind: ready.source.kind };
+    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables?.length ?? 0, row_count: 8940 });
   };
 
   return [
@@ -153,10 +154,10 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     http.get(api('/datasets/:id/events'), ({ params, request }) => {
       const id = String(params.id);
       const frames = profilingFrames(id);
-      const ok = frames.at(-1)?.[0] === 'done';
-      // The mock finishes the job when the stream is opened; a real backend would run it in the background.
-      setTimeout(() => { finishProfiling(id, ok); }, tick * frames.length);
-      return eventStream(frames, tick, request.signal);
+      // Persist the outcome before the terminal event causes the client to reload the list.
+      return eventStream(frames, tick, request.signal, (event) => {
+        if (event === 'done' || event === 'error') finishProfiling(id, event === 'done');
+      });
     }),
 
     http.get(api('/chats'), async ({ request }) => {
@@ -173,7 +174,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
         ['tool_call', { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } }],
         ['tool_result', { result_id: 'r_rev', ok: true }],
         ['block', { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' }],
-        ['block', { type: 'chart', chart: { result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
+        ['block', { type: 'chart', chart: { chart_id: 'chart_revenue', result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
         ['done', { message_id: `m_${Date.now()}` }],
       ];
       const timeout: SseFrame = ['error', { message: 'Запрос превысил таймаут 30 сек.', detail: 'Попробуйте уточнить период.' }];
@@ -206,9 +207,12 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       if (scenario() !== 'error') return HttpResponse.json(dashboard);
       return HttpResponse.json({
         ...dashboard,
-        widgets: dashboard.widgets.map((w) => (w.widget_id === 'w_cat'
-          ? { ...w, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } }
-          : w)),
+        widgets: dashboard.widgets.map((w) => {
+          if (w.widget_id !== 'w_cat') return w;
+          const chart: Schemas['ChartTemplate'] & { result_id?: string } = { ...w.chart };
+          delete chart.result_id;
+          return { ...w, chart, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } };
+        }),
       });
     }),
 
@@ -240,6 +244,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       }
       dashboard.widgets.push({
         widget_id: `w_${Date.now()}`, tool_call: { tool: result?.tool ?? 'unknown', params: result?.params ?? {} },
+        layout: { x: 0, y: 0, w: 6, h: 4 },
         chart: body.chart, caption: null, result_id: body.result_id, status: 'ok', error: null,
       });
       return HttpResponse.json(dashboard);

@@ -47,6 +47,7 @@ from djedai.backend.db.repositories import (  # noqa: E402
     load_tool_result,
 )
 from djedai.backend.db.session import create_db_engine  # noqa: E402
+from djedai.config import LimitSettings  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
 from djedai.data.catalog_builder import build_csv_catalog  # noqa: E402
 from djedai.data.csv_ingest import load_raw_csv  # noqa: E402
@@ -61,7 +62,7 @@ DATASET_URL = (
     f"https://gitverse.ru/api/repos/kban/HK_Datasets/raw/commit/{REVISION}/{quote(DATASET_FILE)}"
 )
 BASE_URL = "https://api.deepinfra.com/v1/openai"
-MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+MODEL = "Qwen/Qwen3.6-35B-A3B"
 
 
 class SmokeFailure(RuntimeError):
@@ -134,13 +135,15 @@ def download_dataset(cache: Path) -> Path:
 
 def model_client(args: argparse.Namespace) -> BIModelClient:
     values = {**dotenv_values(args.env_file), **os.environ}
+    limits = LimitSettings(_env_file=args.env_file)
     key = values.get("DEEPINFRA_API_KEY") or values.get("MODEL_API_KEY")
     require(bool(key and key.strip()), "Задайте DEEPINFRA_API_KEY в окружении или .env")
     return BIModelClient(
         api_key=key,
         base_url=args.base_url,
         model_name=args.model,
-        timeout=60.0,
+        timeout=limits.model_timeout_seconds,
+        max_output_tokens=limits.model_max_output_tokens,
     )
 
 

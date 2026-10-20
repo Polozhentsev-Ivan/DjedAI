@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 
 class UserBase(BaseModel):
@@ -11,13 +13,20 @@ class UserBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     username: str = Field(min_length=3, max_length=50, description="Логин пользователя")
-    email: str | None = Field(default=None, description="Email пользователя")
+    email: str | None = Field(default=None, max_length=255, description="Email пользователя")
+
+    @field_validator("username")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Логин не должен состоять из пробелов")
+        return value
 
 
 class UserCreate(UserBase):
     """Данные для регистрации нового пользователя."""
 
-    password: str = Field(min_length=6, description="Пароль пользователя")
+    password: str = Field(min_length=6, max_length=1024, description="Пароль пользователя")
 
 
 class UserLogin(BaseModel):
@@ -42,6 +51,6 @@ class TokenResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    access_token: str = Field(description="Токен авторизации / идентификатор сессии")
-    token_type: str = Field(default="bearer", description="Тип токена")
-    expires_in: int = Field(description="Время жизни токена в секундах")
+    access_token: str = Field(min_length=1, description="Токен авторизации / идентификатор сессии")
+    token_type: Literal["bearer"] = Field(default="bearer", description="Тип токена")
+    expires_in: int = Field(gt=0, description="Время жизни токена в секундах")
