@@ -3,25 +3,30 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from djedai.backend.app import create_app
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.models import ToolResultModel
 from djedai.backend.db.repositories import (
+    create_chat,
     create_dataset,
     get_chat_messages,
     get_or_create_user,
 )
-from djedai.backend.db.session import create_db_engine, get_db, init_db
+from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
 from djedai.contracts.message import MessageBlock
@@ -100,6 +105,7 @@ def chat_api(
         app.dependency_overrides[get_agent_runtime] = lambda: runtime
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_session_factory] = lambda: factory
     try:
         with TestClient(app) as client:
             yield client, factory, use_runtime
@@ -398,3 +404,225 @@ def test_chat_ids_are_unique(chat_api: tuple[TestClient, Any, Any]) -> None:
 
     assert len(ids) == 5
     assert all(chat_id.startswith("c_") for chat_id in ids)
+
+
+@pytest.mark.anyio
+async def test_stream_proxy_unbuffered_and_events(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Проверяет unbuffered SSE-стриминг через /api proxy, заголовки и пошаговую отдачу событий."""
+    test_client, _factory, use_runtime = chat_api
+    app = test_client.app
+    chat_id = _create_chat(test_client)
+
+    tool_res = ToolResult(
+        result_id="r_proxy_1",
+        status="ok",
+        tool="run_sql",
+        params={"sql": "SELECT 42"},
+        sql="SELECT 42",
+        data=ToolResultData(columns=["val"], rows=[[42]], row_count=1),
+    )
+    graph = FakeGraph(
+        [
+            {"plan": {"plan": [], "retries": 1}},
+            {"execute": {"results": [tool_res]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="Ответ получен")]}},
+            {"verify": {}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=graph))
+
+    class ViteDevProxy:
+        def __init__(self, target_app: ASGIApp) -> None:
+            self.target_app = target_app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            await self.target_app(scope, receive, send)
+
+    proxy_app = ViteDevProxy(app)
+    transport = httpx.ASGITransport(app=proxy_app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:3000") as client:
+        async with client.stream(
+            "POST",
+            f"/api/chats/{chat_id}/messages",
+            json={"text": "Сколько всего заказов?"},
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers.get("x-accel-buffering") == "no"
+
+            raw_chunks: list[str] = []
+            async for line in response.aiter_lines():
+                if line:
+                    raw_chunks.append(line)
+
+    events = [
+        line.removeprefix("event:").strip() for line in raw_chunks if line.startswith("event:")
+    ]
+    assert events[0] == "status"
+    assert "tool_call" in events
+    assert "tool_result" in events
+    assert "block" in events
+    assert events[-1] == "done"
+
+
+def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверяет, что сессии и соединения закрываются после завершения и отмены (дефект [P2])."""
+    engine = create_db_engine(f"sqlite:///{tmp_path / 'cleanup.db'}")
+    init_db(engine)
+    base_factory = sessionmaker(bind=engine)
+
+    with base_factory() as db:
+        user = get_or_create_user(db, "u_clean", "clean_owner")
+        create_dataset(db, "ds_clean", user.id, "Датасет очистки")
+        chat = create_chat(db, "c_clean", user.id, "ds_clean")
+
+    monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results_clean"))
+    get_settings.cache_clear()
+
+    app = create_app(Settings(_env_file=None))
+
+    open_sessions: set[Session] = set()
+
+    def tracking_factory() -> Session:
+        session = base_factory()
+        open_sessions.add(session)
+        orig_close = session.close
+
+        def tracked_close() -> None:
+            open_sessions.discard(session)
+            orig_close()
+
+        session.close = tracked_close
+        return session
+
+    def override_db() -> Iterator[Session]:
+        session = tracking_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_session_factory] = lambda: tracking_factory
+    app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
+        graph=FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}])
+    )
+
+    try:
+        with TestClient(app) as client:
+            # 1. Четыре успешных запроса
+            for i in range(4):
+                res = client.post(
+                    f"/api/chats/{chat.chat_id}/messages", json={"text": f"Вопрос {i}"}
+                )
+                assert res.status_code == 200
+                assert "event: done" in res.text
+
+            # 2. Два запроса с ошибкой агента
+            app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
+                graph=FakeGraph(error=RuntimeError("Имитация сбоя"))
+            )
+            for i in range(2):
+                res = client.post(f"/api/chats/{chat.chat_id}/messages", json={"text": f"Сбой {i}"})
+                assert res.status_code == 200
+                assert "event: error" in res.text
+
+            # 3. Два запроса с отменой клиентом (генератор прерывается до конца)
+            app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
+                graph=FakeGraph([{"plan": {}}, {"execute": {}}])
+            )
+
+            async def test_abort() -> None:
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                    for i in range(2):
+                        async with c.stream(
+                            "POST",
+                            f"/api/chats/{chat.chat_id}/messages",
+                            json={"text": f"Отмена {i}"},
+                        ) as r:
+                            assert r.status_code == 200
+                            async for line in r.aiter_lines():
+                                if "event: status" in line:
+                                    break
+                            await r.aclose()
+
+            import anyio
+
+            anyio.run(test_abort)
+
+        assert len(open_sessions) == 0, f"Остались незакрытые сессии: {len(open_sessions)}"
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+
+
+def test_stream_initial_save_failure_emits_error_event(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Проверяет, что сбой начального save_message отдаёт event: error (дефект [P2])."""
+    client, _factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(_runtime({"compose": {"answer_blocks": [Block(type="text", markdown="Успех")]}}))
+
+    with patch(
+        "djedai.backend.chat_service.save_message",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        response = client.post(
+            f"/api/chats/{chat_id}/messages",
+            json={"text": "Вопрос при заблокированной БД"},
+        )
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert len(events) == 1
+    name, data = events[0]
+    assert name == "error"
+    assert data["message"] == "Не удалось получить ответ агента"
+    assert "database is locked" in data["detail"]
+
+
+@pytest.mark.anyio
+async def test_stream_network_error_vs_event_error_distinguishable(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Проверяет различимость ошибки приложения (SSE error) и разрыва сети (обрыв соединения)."""
+    test_client, _factory, use_runtime = chat_api
+    app = test_client.app
+    chat_id = _create_chat(test_client)
+
+    # Случай 1: Ошибка приложения формирует валидное событие event: error
+    use_runtime(_runtime(error=ValueError("Ошибка вычислений")))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST", f"/api/chats/{chat_id}/messages", json={"text": "Тест ошибки"}
+        ) as resp:
+            content = await resp.aread()
+            events = parse_sse(content.decode("utf-8"))
+            event_names = [ev[0] for ev in events]
+            assert "error" in event_names
+            assert "done" not in event_names
+
+    # Случай 2: Сетевой обрыв (клиент закрывает сокет до получения done/error)
+    use_runtime(_runtime({"plan": {}}, {"execute": {}}, {"compose": {}}))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST", f"/api/chats/{chat_id}/messages", json={"text": "Тест обрыва"}
+        ) as resp:
+            received_events: list[str] = []
+            async for line in resp.aiter_lines():
+                if line.startswith("event:"):
+                    received_events.append(line.removeprefix("event:").strip())
+                    if len(received_events) == 1:
+                        break
+            await resp.aclose()
+            assert "done" not in received_events
+            assert "error" not in received_events

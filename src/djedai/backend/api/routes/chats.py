@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.chat_service import (
     AgentRuntime,
@@ -30,7 +30,7 @@ from djedai.backend.db.repositories import (
 from djedai.backend.db.repositories import (
     list_chats as list_chat_records,
 )
-from djedai.backend.db.session import get_db
+from djedai.backend.db.session import get_db, get_session_factory
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.chat import (
     ChatCreate,
@@ -43,6 +43,7 @@ from djedai.contracts.chat import (
 router = APIRouter(prefix="/chats", tags=["chats"])
 
 DbSession = Annotated[Session, Depends(get_db)]
+DbSessionFactory = Annotated[sessionmaker[Session], Depends(get_session_factory)]
 AgentRuntimeDep = Annotated[AgentRuntime, Depends(get_agent_runtime)]
 
 
@@ -97,6 +98,7 @@ def send_chat_message(
     chat_id: str,
     payload: SendMessageRequest,
     db: DbSession,
+    session_factory: DbSessionFactory,
     runtime: AgentRuntimeDep,
 ) -> StreamingResponse:
     """Сохраняет вопрос и отдаёт ответ агента потоком SSE."""
@@ -105,8 +107,12 @@ def send_chat_message(
         raise HTTPException(status_code=404, detail="Чат не найден")
 
     def frames() -> Iterator[str]:
-        for event in stream_chat_turn(db, chat, payload.text, runtime):
-            yield encode_sse_event(event)
+        session = session_factory()
+        try:
+            for event in stream_chat_turn(session, chat_id, payload.text, runtime):
+                yield encode_sse_event(event)
+        finally:
+            session.close()
 
     return StreamingResponse(
         frames(),

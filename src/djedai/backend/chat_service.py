@@ -18,6 +18,9 @@ from djedai.agent.graph import build_agent_graph
 from djedai.analytics.registry import execute_tool
 from djedai.backend.db.models import ChatModel, MessageModel
 from djedai.backend.db.repositories import (
+    get_chat as get_chat_record,
+)
+from djedai.backend.db.repositories import (
     get_chat_messages,
     save_assistant_message,
     save_message,
@@ -197,40 +200,56 @@ def _status_event(node: str) -> SSEStatusEvent:
 
 def stream_chat_turn(
     db: Session,
-    chat: ChatModel,
+    chat: ChatModel | str,
     text: str,
     runtime: AgentRuntime,
 ) -> Iterator[AgentStreamEvent]:
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
-    user_message_id = _new_id("m")
-    save_message(
-        db,
-        message_id=user_message_id,
-        chat_id=chat.chat_id,
-        role="user",
-        content=text,
-    )
-    history = [_history_message(message) for message in get_chat_messages(db, chat.chat_id)[-10:]]
-    state: dict[str, Any] = {
-        "chat_id": chat.chat_id,
-        "dataset_id": chat.dataset_id,
-        "messages": history,
-    }
-
-    configurable: dict[str, Any] = {"thread_id": chat.chat_id}
-    if runtime.client is not None:
-        configurable["client"] = runtime.client
-    if runtime.tool_dispatcher is not None:
-        configurable["tool_dispatcher"] = runtime.tool_dispatcher
-
-    trace: list[TraceStep] = []
-    results: list[ToolResult] = []
-    seen_results: set[str] = set()
-    answer_blocks: list[Block] = []
-    started = perf_counter()
-    previous = started
-
     try:
+        chat_model = (
+            get_chat_record(db, chat)
+            if isinstance(chat, str)
+            else (get_chat_record(db, chat.chat_id) or chat)
+        )
+        if chat_model is None:
+            yield SSEErrorEvent(
+                data=SSEErrorData(
+                    message="Не удалось получить ответ агента",
+                    detail="Чат не найден",
+                )
+            )
+            return
+
+        user_message_id = _new_id("m")
+        save_message(
+            db,
+            message_id=user_message_id,
+            chat_id=chat_model.chat_id,
+            role="user",
+            content=text,
+        )
+        history = [
+            _history_message(message) for message in get_chat_messages(db, chat_model.chat_id)[-10:]
+        ]
+        state: dict[str, Any] = {
+            "chat_id": chat_model.chat_id,
+            "dataset_id": chat_model.dataset_id,
+            "messages": history,
+        }
+
+        configurable: dict[str, Any] = {"thread_id": chat_model.chat_id}
+        if runtime.client is not None:
+            configurable["client"] = runtime.client
+        if runtime.tool_dispatcher is not None:
+            configurable["tool_dispatcher"] = runtime.tool_dispatcher
+
+        trace: list[TraceStep] = []
+        results: list[ToolResult] = []
+        seen_results: set[str] = set()
+        answer_blocks: list[Block] = []
+        started = perf_counter()
+        previous = started
+
         yield _status_event("understand")
 
         for update in runtime.graph.stream(
@@ -257,8 +276,8 @@ def stream_chat_turn(
                         save_tool_result(
                             db,
                             result,
-                            chat_id=chat.chat_id,
-                            owner_id=chat.owner_id,
+                            chat_id=chat_model.chat_id,
+                            owner_id=chat_model.owner_id,
                         )
                         yield SSEToolCallEvent(
                             data=SSEToolCallData(
@@ -294,7 +313,7 @@ def stream_chat_turn(
         )
         assistant = AssistantMessage(
             message_id=_new_id("m"),
-            chat_id=chat.chat_id,
+            chat_id=chat_model.chat_id,
             role="assistant",
             created_at=datetime.now(UTC),
             blocks=message_blocks,
@@ -307,6 +326,10 @@ def stream_chat_turn(
             yield SSEBlockEvent(data=block)
         yield SSEDoneEvent(data=SSEDoneData(message_id=assistant.message_id))
     except Exception as exc:  # The stream must end with an event, not a broken connection.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         yield SSEErrorEvent(
             data=SSEErrorData(
                 message="Не удалось получить ответ агента",
