@@ -435,3 +435,50 @@ def test_view_suffix_does_not_change_entity_name(con, tmp_path):
     )
     assert pairs(report) == {("orders", "client_id", "clients_typed", "id")}
     assert report.relations[0].name_match
+
+
+JOIN_CASES = {
+    "все суммы пропали": (["1", "2"], ["1", "1", "2", "3"], ["", "", "", "10"]),
+    "сироты и пустой ключ": (["1", "2"], ["1", "1", "2", "3", ""], ["5", "", "7", "10", "40"]),
+    "размножение": (["1", "2", "2"], ["1", "2", "2", "3"], ["5", "5", "7", "7"]),
+    "пустые суммы и размножение": (["1", "1", "2"], ["1", "2", "2", "9"], ["", "3", "", "8"]),
+}
+
+
+@pytest.mark.parametrize("case", JOIN_CASES)
+def test_join_impact_matches_real_join(con, tmp_path, case):
+    stores, keys, amounts = JOIN_CASES[case]
+    report = relations_of(
+        con,
+        tmp_path,
+        {"stores": {"store_id": stores}, "sales": {"store_id": keys, "amount": amounts}},
+    )
+    (relation,) = report.relations
+    assert (relation.from_table, relation.to_table) == ("sales", "stores")
+
+    def real(kind: str):
+        return con.execute(
+            f"SELECT count(*), sum(s.amount) FROM sales s {kind} JOIN stores t "
+            "ON NULLIF(trim(s.store_id), '') = NULLIF(trim(t.store_id), '')"
+        ).fetchone()
+
+    before = con.execute("SELECT count(*), sum(amount) FROM sales").fetchone()
+    impact = relation.impact
+    (amount,) = impact.sums
+    assert (impact.rows_before, amount.before) == before
+    assert (impact.rows_after, amount.after) == real("LEFT")
+    assert (impact.rows_inner, amount.inner_after) == real("INNER")
+
+
+def test_inner_join_without_values_is_not_reported_as_zero(con, tmp_path):
+    stores, keys, amounts = JOIN_CASES["все суммы пропали"]
+    report = relations_of(
+        con,
+        tmp_path,
+        {"stores": {"store_id": stores}, "sales": {"store_id": keys, "amount": amounts}},
+    )
+    (amount,) = report.relations[0].impact.sums
+    assert (amount.before, amount.after, amount.inner_after) == (10, 10, None)
+    (warning,) = report.warnings
+    assert "amount 10 → нет значений" in warning
+    assert read_relations(con) == report  # None сохраняется и читается как None

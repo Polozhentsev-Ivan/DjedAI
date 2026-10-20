@@ -180,9 +180,10 @@ def join_impact(
     """Число строк и суммы числовых колонок ``from`` до и после ``LEFT`` и ``INNER JOIN``.
 
     JOIN не материализуется: каждая строка ``from`` весит столько, сколько строк ``to``
-    с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — 0). Суммы считаются в
-    точном типе, как в профайлере. CTE выбирают только ключ и меры под служебными именами
-    ``_djedai_*``, поэтому колонки таблиц (например, ``k`` или ``n``) с ними не пересекаются.
+    с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — исключается). Суммы
+    считаются в точном типе, как в профайлере; сумма без значений — ``None`` (SQL NULL).
+    CTE выбирают только ключ и меры под служебными именами ``_djedai_*``, поэтому колонки
+    таблиц (например, ``k`` или ``n``) с ними не пересекаются.
     """
     measures = [c for c in from_table.columns if c.semantic_type in NUMERIC]
     values = []
@@ -191,8 +192,10 @@ def join_impact(
         values.append(f"CAST({_ident(column.name)} AS {wide})" if wide else _ident(column.name))
     selected = "".join(f", {v} AS _djedai_m{i}" for i, v in enumerate(values))
     sums = "".join(
+        # INNER: у строки без пары _djedai_n IS NULL, произведение NULL и в сумму не входит —
+        # если пар нет совсем, сумма NULL, как у настоящего JOIN, а не 0
         f", sum(f._djedai_m{i}), sum(f._djedai_m{i} * coalesce(m._djedai_n, 1)), "
-        f"sum(f._djedai_m{i} * coalesce(m._djedai_n, 0))"
+        f"sum(f._djedai_m{i} * m._djedai_n)"
         for i in range(len(values))
     )
     row = connection.execute(
@@ -237,7 +240,8 @@ def relation_warnings(relation: TableRelation) -> tuple[str, ...]:
         )
         if impact.changed_sums:
             text += "; суммы меняются: " + ", ".join(
-                f"{s.column} {s.before} → {s.after}" for s in impact.changed_sums
+                f"{s.column} {_sum_text(s.before)} → {_sum_text(s.after)}"
+                for s in impact.changed_sums
             )
         warnings.append(text)
     if impact.loses_rows:
@@ -254,10 +258,14 @@ def relation_warnings(relation: TableRelation) -> tuple[str, ...]:
         changed = [s for s in impact.sums if s.inner_after != s.after]
         if changed:
             text += "; суммы меняются: " + ", ".join(
-                f"{s.column} {s.after} → {s.inner_after}" for s in changed
+                f"{s.column} {_sum_text(s.after)} → {_sum_text(s.inner_after)}" for s in changed
             )
         warnings.append(text)
     return tuple(warnings)
+
+
+def _sum_text(value: object) -> str:
+    return "нет значений" if value is None else str(value)
 
 
 def _report(relations: list[TableRelation]) -> RelationReport:
