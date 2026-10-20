@@ -27,7 +27,8 @@ function DashboardWidget({ widget, refreshing, onRefresh, onRemove }: WidgetProp
   const failed = widget.status === 'error' || widget.result_id === null || result.isError || data.isError;
   const state: WidgetState = refreshing || (!failed && (result.isPending || data.isPending)) ? 'loading' : failed ? 'error' : 'default';
   const error = widget.error ?? (result.isError ? result.error : data.isError ? data.error : null);
-  const how = result.data ? calculation(result.data) : { tool: toolCall(widget.tool_call.tool, widget.tool_call.params), columns: [], sql: '—' };
+  const call = widget.tool_call ?? widget.recipe?.steps.find((step) => step.step_id === widget.recipe?.output_step_id)?.call;
+  const how = result.data ? calculation(result.data) : { tool: call ? toolCall(call.tool, call.params ?? {}) : 'Вычисление виджета', columns: [], sql: '—' };
   const kpi = widget.chart.type === 'kpi' && data.data ? kpiView(widget.chart, data.data, result.data) : null;
   return (
     <WidgetCard

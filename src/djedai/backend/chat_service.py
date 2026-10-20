@@ -302,9 +302,10 @@ def stream_chat_turn(
                             )
                         )
 
-                if node in ("compose", "clarify"):
+                if node in ("compose", "clarify", "verify"):
                     compose_update = data if isinstance(data, dict) else {}
-                    answer_blocks = compose_update.get("answer_blocks") or answer_blocks
+                    if "answer_blocks" in compose_update:
+                        answer_blocks = compose_update["answer_blocks"] or []
 
         error_detail = _agent_error(answer_blocks)
         if error_detail is not None:

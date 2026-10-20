@@ -39,7 +39,7 @@ export function datasetMeta(d: Schemas['DatasetSummary']): string {
 
 /** «2 таблицы · 120 450 строк · CSV · загружен 18.10.2026 13:52». */
 export function catalogSummary(d: Schemas['DatasetDetail']): string {
-  const tables = d.table_count ?? d.catalog?.tables.length ?? 0;
+  const tables = d.table_count ?? d.catalog?.tables?.length ?? 0;
   const parts = [`${tables} ${plural(tables, TABLES)}`];
   if (d.row_count !== null) parts.push(rowsLabel(d.row_count));
   parts.push(sourceShort[d.source.kind], `загружен ${formatDateTime(d.created_at)}`);
@@ -53,7 +53,10 @@ export function tableMeta(table: Table): string {
 
 /** Type badge text: «money (₽)», «text (id)», «date». */
 export function typeLabel(column: Column): string {
-  if (column.semantic_type === 'money') return column.currency ? `money (${column.currency})` : 'money';
+  if (column.semantic_type === 'money') {
+    const symbols: Record<string, string> = { RUB: '₽', USD: '$', EUR: '€' };
+    return column.currency ? `money (${symbols[column.currency] ?? column.currency})` : 'money';
+  }
   if (column.semantic_type === 'id') return /INT/i.test(column.physical_type) ? 'integer (id)' : 'text (id)';
   return column.semantic_type;
 }
@@ -85,16 +88,16 @@ export function columnNote(column: Column, table: Table, relations: readonly Sch
 
 export function journal(catalog: Catalog): { level: LogLevel; text: string }[] {
   return [
-    ...catalog.transformations.map((t) => {
+    ...(catalog.transformations ?? []).map((t) => {
       const target = [t.table, t.column].filter(Boolean).join('.');
       const detail = Object.entries(t.detail ?? {}).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join(', ');
       return { level: 'info' as const, text: `${target}: ${t.action}${detail ? ` — ${detail}` : ''}` };
     }),
-    ...catalog.warnings.map((text) => ({ level: 'warning' as const, text })),
+    ...(catalog.warnings ?? []).map((text) => ({ level: 'warning' as const, text })),
   ];
 }
 
-const CARDINALITY = { '1:1': 'Один к одному', 'N:1': 'Многие к одному', '1:N': 'Один ко многим', 'N:N': 'Многие ко многим' } as const;
+const CARDINALITY = { '1:1': 'Один к одному', 'N:1': 'Многие к одному', '1:N': 'Один ко многим', 'N:M': 'Многие ко многим' } as const;
 const CONFIDENCE = { high: 'высокая', medium: 'средняя', low: 'низкая' } as const;
 
 export interface RelationView {
@@ -107,12 +110,12 @@ export interface RelationView {
 }
 
 function columnLabel(catalog: Catalog, ref: Schemas['ColumnRef']): string {
-  const table = catalog.tables.find((t) => t.table_id === ref.table);
+  const table = catalog.tables?.find((t) => t.table_id === ref.table);
   return table?.columns.find((c) => c.name === ref.column)?.original_name ?? ref.column;
 }
 
 export function relationViews(catalog: Catalog): RelationView[] {
-  return catalog.relations.map((r) => ({
+  return (catalog.relations ?? []).map((r) => ({
     key: `${r.from.table}.${r.from.column}->${r.to.table}.${r.to.column}`,
     from: { label: columnLabel(catalog, r.from), column: `${r.from.table}.${r.from.column}` },
     to: { label: columnLabel(catalog, r.to), column: `${r.to.table}.${r.to.column}` },

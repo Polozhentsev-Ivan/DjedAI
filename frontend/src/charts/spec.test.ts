@@ -31,7 +31,7 @@ interface PieOption {
 describe.each(columnCases)('$name result columns', ({ columns }) => {
   const payload = '<img src=x onerror="globalThis.injected=true"> & <svg onload=alert(1)>\'quoted\'</svg>';
   const data: Schemas['ResultData'] = { columns, rows: [[payload, 42], ['B', 8]], row_count: 2, truncated: false };
-  const spec: Schemas['ChartSpec'] = { type: 'bar', title: 'Сумма', x: { field: 'category' }, y: [{ field: 'amount' }] };
+  const spec: Schemas['ChartSpec'] = { chart_id: 'chart_amount', result_id: 'r_amount', type: 'bar', title: 'Сумма', x: { field: 'category' }, y: [{ field: 'amount' }] };
 
   function expectSafeTooltip(html: string) {
     // Match the HTML sink used by ECharts, including entity decoding by the browser.
@@ -63,7 +63,7 @@ describe.each(columnCases)('$name result columns', ({ columns }) => {
 });
 
 describe('defaulted backend result fields', () => {
-  const spec: Schemas['ChartSpec'] = { type: 'bar', title: 'Сумма', x: { field: 'category' }, y: [{ field: 'amount' }] };
+  const spec: Schemas['ChartSpec'] = { chart_id: 'chart_amount', result_id: 'r_amount', type: 'bar', title: 'Сумма', x: { field: 'category' }, y: [{ field: 'amount' }] };
 
   it('treats omitted rows and columns as an empty result', () => {
     const data: Schemas['ResultData'] = {};

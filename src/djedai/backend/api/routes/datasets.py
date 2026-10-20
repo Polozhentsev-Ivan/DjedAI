@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from djedai.contracts.catalog import DatasetCatalog, DatasetSource
-from djedai.contracts.common import DatasetSummary
+from djedai.contracts.common import DatasetDetail, DatasetSummary
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -17,15 +16,10 @@ def list_datasets() -> list[DatasetSummary]:
     return []
 
 
-@router.get("/{dataset_id}", response_model=DatasetCatalog)
-def get_dataset(dataset_id: str) -> DatasetCatalog:
+@router.get("/{dataset_id}", response_model=DatasetDetail)
+def get_dataset(dataset_id: str) -> DatasetDetail:
     """Возвращает статус и каталог датасета по идентификатору (заглушка для B5-3)."""
-    return DatasetCatalog(
-        dataset_id=dataset_id,
-        name="stub_dataset",
-        source=DatasetSource(kind="csv"),
-        tables=[],
-    )
+    raise HTTPException(status_code=501, detail="API датасетов ещё не реализован")
 
 
 @router.get(

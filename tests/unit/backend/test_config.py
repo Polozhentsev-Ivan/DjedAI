@@ -55,10 +55,12 @@ def test_settings_empty_env_values(monkeypatch) -> None:
     assert settings.session_secret == "dev-session-secret-change-in-production"
 
 
-def test_settings_explicit_zero_preserved(monkeypatch) -> None:
+def test_settings_reject_zero_row_limit(monkeypatch) -> None:
+    import pytest
+
     monkeypatch.setenv("SQL_MAX_ROWS", "0")
-    settings = Settings(_env_file=None)
-    assert settings.sql_max_rows == 0
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
 
 
 def test_settings_cors_origins_defaults() -> None:

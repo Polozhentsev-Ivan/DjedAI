@@ -57,6 +57,7 @@ export const STARTERS: readonly { question: string; columns: string }[] = [
 export const ANSWER_RESULT_ID = 'r_rev';
 
 export const ANSWER_CHART: Schemas['ChartSpec'] = {
+  chart_id: 'chart_revenue',
   result_id: ANSWER_RESULT_ID,
   type: 'line',
   title: 'Выручка по месяцам, ₽',

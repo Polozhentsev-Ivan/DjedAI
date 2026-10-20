@@ -139,7 +139,7 @@ describe('chat, result and dashboard queries', () => {
   it('saves a chart to an existing or a new dashboard', async () => {
     const { wrapper } = setup();
     const { result } = renderHook(() => useSaveToDashboard(), { wrapper });
-    const chart = { type: 'line', title: 'Выручка' } as const;
+    const chart = { chart_id: 'chart_revenue', result_id: 'r_rev', type: 'line', title: 'Выручка' } as const;
     act(() => { result.current.mutate({ dataset_id: 'ds_orders', dashboard_id: 'd_q', result_id: 'r_rev', chart }); });
     await waitFor(() => { expect(result.current.data?.widgets).toHaveLength(5); });
     act(() => { result.current.mutate({ dataset_id: 'ds_orders', result_id: 'r_rev', chart, title: 'Новый' }); });

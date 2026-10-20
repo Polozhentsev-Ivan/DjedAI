@@ -243,31 +243,181 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * UserRead
+         * @description Данные пользователя для чтения через API (без хешей паролей).
+         */
+        UserRead: {
+            /**
+             * Username
+             * @description Логин пользователя
+             */
+            username: string;
+            /**
+             * Email
+             * @description Email пользователя
+             * @default null
+             */
+            email?: string | null;
+            /**
+             * User Id
+             * @description Уникальный идентификатор пользователя
+             */
+            user_id: string;
+            /**
+             * Is Active
+             * @description Активен ли аккаунт
+             * @default true
+             */
+            is_active?: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             * @description Время регистрации
+             */
+            created_at: string;
+        };
+        /**
+         * TokenResponse
+         * @description Ответ API при успешной аутентификации.
+         */
+        TokenResponse: {
+            /**
+             * Access Token
+             * @description Токен авторизации / идентификатор сессии
+             */
+            access_token: string;
+            /**
+             * Token Type
+             * @description Тип токена
+             * @default bearer
+             * @constant
+             */
+            token_type?: "bearer";
+            /**
+             * Expires In
+             * @description Время жизни токена в секундах
+             */
+            expires_in: number;
+        };
+        /**
+         * AssistantMessage
+         * @description Сообщение ассистента в чате со структурированными блоками и аудитом вычислений.
+         */
+        AssistantMessage: {
+            /**
+             * Message Id
+             * @description Уникальный идентификатор сообщения
+             */
+            message_id: string;
+            /**
+             * Chat Id
+             * @description ID чата, к которому относится сообщение
+             */
+            chat_id: string;
+            /**
+             * Role
+             * @default assistant
+             * @constant
+             */
+            role?: "assistant";
+            /**
+             * Created At
+             * Format: date-time
+             * @description Время создания сообщения
+             */
+            created_at: string;
+            /**
+             * Blocks
+             * @description Структурированные блоки ответа
+             */
+            blocks?: (components["schemas"]["TextBlock"] | components["schemas"]["ChartBlock"] | components["schemas"]["TableBlock"] | components["schemas"]["ClarificationBlock"] | components["schemas"]["DashboardLinkBlock"] | components["schemas"]["SuggestionsBlock"])[];
+            /**
+             * Result Ids
+             * @description ID результатов вычислений (provenance: «как посчитано»)
+             */
+            result_ids?: string[];
+            /**
+             * Trace
+             * @description Шаги графа агента при формировании ответа
+             */
+            trace?: components["schemas"]["TraceStep"][];
+        };
+        DashboardDefinition: components["schemas"]["schemas-Dashboard"];
         ErrorBody: components["schemas"]["ToolError"];
+        /**
+         * ErrorResponse
+         * @description Стандартный формат ошибки API.
+         */
         ErrorResponse: {
+            /** @description Код, понятное сообщение и рекомендация */
             error: components["schemas"]["ToolError"];
         };
         /** @enum {string} */
         SourceKind: "csv_upload" | "postgres" | "clickhouse";
         /** @enum {string} */
         DatasetStatus: "processing" | "ready" | "error";
-        DatasetSource: {
-            kind: components["schemas"]["SourceKind"];
-            /** @description Number of uploaded CSV files */
-            files?: number;
-        };
-        /** @description Row of the «Ваши датасеты» table (x-proposal; the specification lists only the storage fields) */
+        DatasetSource: components["schemas"]["DatasetListSource"];
+        /**
+         * DatasetSummary
+         * @description Краткая сводка датасета для списков в API.
+         */
         DatasetSummary: {
+            /**
+             * Dataset Id
+             * @description ID датасета
+             */
             dataset_id: string;
+            /**
+             * Name
+             * @description Имя датасета
+             */
             name: string;
-            source: components["schemas"]["DatasetSource"];
-            status: components["schemas"]["DatasetStatus"];
+            source: components["schemas"]["DatasetListSource"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "ready" | "error";
+            /** Table Count */
             table_count: number | null;
+            /** Row Count */
             row_count: number | null;
-            /** Format: date-time */
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания
+             */
             created_at: string;
         };
-        DatasetDetail: components["schemas"]["DatasetSummary"] & {
+        /** DatasetDetail */
+        DatasetDetail: {
+            /**
+             * Dataset Id
+             * @description ID датасета
+             */
+            dataset_id: string;
+            /**
+             * Name
+             * @description Имя датасета
+             */
+            name: string;
+            source: components["schemas"]["DatasetListSource"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "ready" | "error";
+            /** Table Count */
+            table_count: number | null;
+            /** Row Count */
+            row_count: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания
+             */
+            created_at: string;
             catalog: components["schemas"]["DatasetCatalog"] | null;
             error: components["schemas"]["ToolError"] | null;
         };
@@ -283,48 +433,32 @@ export interface components {
         };
         /** @enum {string} */
         SemanticType: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
-        CatalogColumn: {
-            name: string;
-            original_name: string;
-            physical_type: string;
-            semantic_type: components["schemas"]["SemanticType"];
-            /** @enum {string} */
-            role?: "id" | "measure" | "dimension" | "time" | "text";
-            null_ratio: number;
-            distinct_count: number;
-            is_unique: boolean;
-            /** @description Currency sign of money columns, e.g. ₽ */
-            currency?: string | null;
-            parse?: {
-                format?: string | null;
-                success_ratio?: number;
-            };
-            description?: string | null;
-        };
-        CatalogTable: {
-            table_id: string;
-            raw_table?: string;
-            original_name: string;
-            description?: string | null;
-            row_count: number;
-            primary_key_candidates?: string[];
-            time_columns?: string[];
-            duplicate_rows?: number;
-            columns: components["schemas"]["CatalogColumn"][];
-        };
+        CatalogColumn: components["schemas"]["Column"];
+        CatalogTable: components["schemas"]["Table"];
+        /** ColumnRef */
         ColumnRef: {
+            /** Table */
             table: string;
+            /** Column */
             column: string;
         };
+        /** Relation */
         Relation: {
             from: components["schemas"]["ColumnRef"];
             to: components["schemas"]["ColumnRef"];
-            /** @description Share of matched keys, 0..1 */
+            /** Overlap */
             overlap: number;
-            jaccard?: number;
-            /** @enum {string} */
-            cardinality: "1:1" | "N:1" | "1:N" | "N:N";
-            /** @enum {string} */
+            /** Jaccard */
+            jaccard: number;
+            /**
+             * Cardinality
+             * @enum {string}
+             */
+            cardinality: "1:1" | "1:N" | "N:1" | "N:M";
+            /**
+             * Confidence
+             * @enum {string}
+             */
             confidence: "high" | "medium" | "low";
         };
         /** Transformation */
@@ -343,17 +477,37 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** DatasetCatalog */
         DatasetCatalog: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: 1;
+            /** Dataset Id */
             dataset_id: string;
+            /** Name */
             name: string;
-            /** Format: date-time */
+            /**
+             * Created At
+             * Format: date-time
+             */
             created_at: string;
-            source: components["schemas"]["DatasetSource"];
+            source: components["schemas"]["schemas-DatasetSource"];
+            /**
+             * Summary
+             * @default null
+             */
             summary?: string | null;
-            tables: components["schemas"]["CatalogTable"][];
-            relations: components["schemas"]["Relation"][];
-            warnings: string[];
-            transformations: components["schemas"]["Transformation"][];
+            /** Tables */
+            tables?: components["schemas"]["Table"][];
+            /** Relations */
+            relations?: components["schemas"]["Relation"][];
+            /** Warnings */
+            warnings?: string[];
+            /** Transformations */
+            transformations?: components["schemas"]["Transformation"][];
         };
         /** @enum {string} */
         ProfilingStep: "read" | "types" | "profile";
@@ -361,45 +515,84 @@ export interface components {
         ProfilingDone: components["schemas"]["DatasetDoneData"];
         /** @description Events of /datasets/{id}/events: progress → ProfilingProgress, done → ProfilingDone, error → StreamError */
         ProfilingEvent: components["schemas"]["DatasetProgressData"] | components["schemas"]["DatasetDoneData"] | components["schemas"]["SSEErrorData"];
-        ChartAxis: {
-            field: string;
-            label?: string;
-            /** @enum {string} */
-            kind?: "time" | "category" | "number";
-        };
-        ChartMeasure: {
-            field: string;
-            label?: string;
-            /** @enum {string} */
-            format?: "number" | "money" | "percent" | "int";
-        };
+        ChartAxis: components["schemas"]["XAxis"];
+        ChartMeasure: components["schemas"]["YMeasure"];
+        /**
+         * ChartSpec
+         * @description Спецификация графика. Данные фронтенд запрашивает отдельно по result_id.
+         */
         ChartSpec: {
-            chart_id?: string;
-            /** @description Rows come from /results/{result_id}/data */
-            result_id?: string;
-            /** @enum {string} */
-            type: "bar" | "line" | "area" | "scatter" | "pie" | "histogram" | "heatmap" | "box" | "table" | "kpi";
+            /**
+             * Chart Id
+             * @description Уникальный идентификатор графика
+             */
+            chart_id: string;
+            /**
+             * Result Id
+             * @description ID результата вычислений в хранилище результатов
+             */
+            result_id: string;
+            /**
+             * Type
+             * @description Тип графика
+             * @enum {string}
+             */
+            type: "line" | "bar" | "area" | "scatter" | "pie" | "histogram" | "heatmap" | "box" | "table" | "kpi";
+            /**
+             * Title
+             * @description Понятный заголовок для бизнес-пользователя
+             */
             title: string;
+            /**
+             * Subtitle
+             * @description Краткий вывод или подзаголовок
+             * @default null
+             */
             subtitle?: string | null;
-            x?: components["schemas"]["ChartAxis"];
-            y?: components["schemas"]["ChartMeasure"][];
-            color?: {
-                field?: string;
-                label?: string;
-            };
-            /** @enum {string} */
+            /**
+             * @description Ось X
+             * @default null
+             */
+            x?: components["schemas"]["XAxis"] | null;
+            /**
+             * Y
+             * @description Меры по оси Y
+             */
+            y?: components["schemas"]["YMeasure"][];
+            /**
+             * @description Цветовая группировка
+             * @default null
+             */
+            color?: components["schemas"]["ColorField"] | null;
+            /**
+             * Orientation
+             * @description Ориентация столбцов
+             * @default vertical
+             * @enum {string}
+             */
             orientation?: "vertical" | "horizontal";
+            /**
+             * Stacked
+             * @description Наложение рядов
+             * @default false
+             */
             stacked?: boolean;
-            sort?: {
-                field?: string;
-                /** @enum {string} */
-                order?: "asc" | "desc";
-            };
+            /**
+             * @description Сортировка
+             * @default null
+             */
+            sort?: components["schemas"]["SortSpec"] | null;
+            /**
+             * Limit
+             * @description Лимит отображаемых категорий/точек
+             * @default 20
+             */
             limit?: number;
-            annotations?: {
-                x?: string | number;
-                text?: string;
-            }[];
+            /**
+             * Annotations
+             * @description Текстовые метки на точках
+             */
+            annotations?: components["schemas"]["Annotation"][];
         };
         /**
          * Fact
@@ -428,78 +621,217 @@ export interface components {
         ResultColumn: components["schemas"]["ToolResultColumn"];
         ResultData: components["schemas"]["ToolResultData"];
         ToolResultMeta: components["schemas"]["ToolResult"];
+        /**
+         * TextBlock
+         * @description Текстовый блок в формате Markdown.
+         */
         TextBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "text";
+            /**
+             * Markdown
+             * @description Текст ответа на понятном русском языке
+             */
             markdown: string;
         };
+        /**
+         * ChartBlock
+         * @description Блок с декларативным описанием графика.
+         */
         ChartBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "chart";
+            /** @description Спецификация графика */
             chart: components["schemas"]["ChartSpec"];
         };
+        /**
+         * TableBlock
+         * @description Табличный блок со ссылкой на результат вычислений.
+         */
         TableBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "table";
+            /**
+             * Result Id
+             * @description ID результата, из которого берутся строки
+             */
             result_id: string;
+            /**
+             * Columns
+             * @description Отображаемые колонки
+             */
             columns?: string[];
+            /**
+             * Limit
+             * @description Лимит строк
+             * @default 20
+             */
             limit?: number;
         };
+        /**
+         * ClarificationBlock
+         * @description Блок уточняющего вопроса с вариантами выбора при неоднозначности (T8).
+         */
         ClarificationBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "clarification";
+            /**
+             * Question
+             * @description Уточняющий вопрос пользователю
+             */
             question: string;
+            /**
+             * Options
+             * @description Варианты ответа в виде кнопок (минимум 2)
+             */
             options: string[];
         };
+        /**
+         * DashboardLinkBlock
+         * @description Ссылка на созданный или предложенный дашборд.
+         */
         DashboardLinkBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "dashboard_link";
+            /**
+             * Dashboard Id
+             * @description ID дашборда
+             */
             dashboard_id: string;
+            /**
+             * Title
+             * @description Название дашборда
+             */
             title: string;
         };
+        /**
+         * SuggestionsBlock
+         * @description Подсказки для следующего шага анализа.
+         */
         SuggestionsBlock: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "suggestions";
-            items: string[];
+            /**
+             * Items
+             * @description Тексты предложений следующих вопросов
+             */
+            items?: string[];
         };
-        Block: components["schemas"]["TextBlock"] | components["schemas"]["ChartBlock"] | components["schemas"]["TableBlock"] | components["schemas"]["ClarificationBlock"] | components["schemas"]["DashboardLinkBlock"] | components["schemas"]["SuggestionsBlock"];
+        Block: components["schemas"]["MessageBlock"];
+        /**
+         * ChatSummary
+         * @description Краткое описание чата для списка.
+         */
         ChatSummary: {
+            /**
+             * Chat Id
+             * @description ID чата
+             */
             chat_id: string;
+            /**
+             * Dataset Id
+             * @description ID датасета
+             */
             dataset_id: string;
+            /**
+             * Title
+             * @description Название чата
+             */
             title: string;
-            /** Format: date-time */
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания чата
+             */
             created_at: string;
         };
+        /**
+         * ChatMessage
+         * @description Сообщение в истории чата: вопрос пользователя или ответ ассистента.
+         */
         ChatMessage: {
+            /**
+             * Message Id
+             * @description ID сообщения
+             */
             message_id: string;
-            /** @enum {string} */
+            /**
+             * Role
+             * @description Роль автора сообщения
+             * @enum {string}
+             */
             role: "user" | "assistant";
-            /** Format: date-time */
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания сообщения
+             */
             created_at: string;
-            /** @description User question */
-            text?: string;
-            blocks?: components["schemas"]["Block"][];
+            /**
+             * Text
+             * @description Текст вопроса пользователя
+             * @default null
+             */
+            text?: string | null;
+            /**
+             * Blocks
+             * @description Структурированные блоки ответа ассистента
+             */
+            blocks?: (components["schemas"]["TextBlock"] | components["schemas"]["ChartBlock"] | components["schemas"]["TableBlock"] | components["schemas"]["ClarificationBlock"] | components["schemas"]["DashboardLinkBlock"] | components["schemas"]["SuggestionsBlock"])[];
+            /**
+             * Result Ids
+             * @description ID результатов вычислений, на которые опирается ответ
+             */
             result_ids?: string[];
         };
-        ChatDetail: components["schemas"]["ChatSummary"] & {
+        /**
+         * ChatDetail
+         * @description Чат с полной историей сообщений.
+         */
+        ChatDetail: {
+            /**
+             * Chat Id
+             * @description ID чата
+             */
+            chat_id: string;
+            /**
+             * Dataset Id
+             * @description ID датасета
+             */
+            dataset_id: string;
+            /**
+             * Title
+             * @description Название чата
+             */
+            title: string;
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания чата
+             */
+            created_at: string;
+            /**
+             * Messages
+             * @description Сообщения чата в хронологическом порядке
+             */
             messages: components["schemas"]["ChatMessage"][];
         };
         AgentStatus: components["schemas"]["SSEStatusData"];
@@ -507,34 +839,35 @@ export interface components {
         AgentToolResult: components["schemas"]["SSEToolResultData"];
         AgentDone: components["schemas"]["SSEDoneData"];
         /** @description Events of POST /chats/{id}/messages: status, tool_call, tool_result, block (Block), done, error (StreamError) */
-        AgentEvent: components["schemas"]["SSEStatusData"] | components["schemas"]["SSEToolCallData"] | components["schemas"]["SSEToolResultData"] | components["schemas"]["Block"] | components["schemas"]["SSEDoneData"] | components["schemas"]["SSEErrorData"];
-        ToolCall: {
-            tool: string;
-            params: {
-                [key: string]: unknown;
-            };
-        };
+        AgentEvent: components["schemas"]["SSEStatusData"] | components["schemas"]["SSEToolCallData"] | components["schemas"]["SSEToolResultData"] | components["schemas"]["MessageBlock"] | components["schemas"]["SSEDoneData"] | components["schemas"]["SSEErrorData"];
+        ToolCall: components["schemas"]["WidgetToolCall"];
+        /**
+         * WidgetLayout
+         * @description Позиция и размеры виджета в сетке дашборда.
+         */
         WidgetLayout: {
+            /**
+             * X
+             * @description Позиция X в сетке
+             */
             x: number;
+            /**
+             * Y
+             * @description Позиция Y в сетке
+             */
             y: number;
+            /**
+             * W
+             * @description Ширина виджета в колонках
+             */
             w: number;
+            /**
+             * H
+             * @description Высота виджета в строках
+             */
             h: number;
         };
-        Widget: {
-            widget_id: string;
-            tool_call: components["schemas"]["ToolCall"];
-            chart: components["schemas"]["ChartSpec"];
-            caption?: string | null;
-            layout?: components["schemas"]["WidgetLayout"];
-            /** @description Result of the latest run; null until the widget has run */
-            result_id: string | null;
-            /**
-             * @description Outcome of the latest run, so one failed widget does not fail the dashboard
-             * @enum {string}
-             */
-            status: "ok" | "error" | "empty";
-            error?: components["schemas"]["ToolError"] | null;
-        };
+        Widget: components["schemas"]["WidgetSnapshot"];
         DashboardSummary: {
             dashboard_id: string;
             dataset_id: string;
@@ -542,18 +875,7 @@ export interface components {
             /** Format: date-time */
             refreshed_at?: string | null;
         };
-        Dashboard: {
-            dashboard_id: string;
-            dataset_id: string;
-            title: string;
-            description?: string | null;
-            source_chat_id?: string | null;
-            widgets: components["schemas"]["Widget"][];
-            /** Format: date-time */
-            created_at: string;
-            /** Format: date-time */
-            refreshed_at?: string | null;
-        };
+        Dashboard: components["schemas"]["DashboardSnapshot"];
         DashboardCreate: {
             dataset_id: string;
             /** @description Existing dashboard to add to; a new one is created when omitted */
@@ -591,6 +913,180 @@ export interface components {
              * @default null
              */
             suggestion?: string | null;
+        };
+        /**
+         * DatasetListSource
+         * @description Источник в списке UI; files — метаданные загрузки, не поле каталога.
+         */
+        DatasetListSource: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "csv_upload" | "postgres" | "clickhouse";
+            /**
+             * Files
+             * @default null
+             */
+            files?: number | null;
+        };
+        /** DatasetSource */
+        "schemas-DatasetSource": {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "csv_upload" | "postgres" | "clickhouse";
+        };
+        /** TableSource */
+        TableSource: {
+            /**
+             * File
+             * @default null
+             */
+            file?: string | null;
+            /**
+             * Encoding
+             * @default null
+             */
+            encoding?: string | null;
+            /**
+             * Delimiter
+             * @default null
+             */
+            delimiter?: string | null;
+            /**
+             * Header
+             * @default null
+             */
+            header?: boolean | null;
+            /**
+             * Relation
+             * @default null
+             */
+            relation?: string | null;
+        };
+        /** TopValue */
+        TopValue: {
+            /** Value */
+            value: boolean | number | string;
+            /** Count */
+            count: number;
+        };
+        /** ColumnStats */
+        ColumnStats: {
+            /**
+             * Min
+             * @default null
+             */
+            min?: boolean | number | string | null;
+            /**
+             * Max
+             * @default null
+             */
+            max?: boolean | number | string | null;
+            /**
+             * Mean
+             * @default null
+             */
+            mean?: number | null;
+            /**
+             * Median
+             * @default null
+             */
+            median?: number | null;
+            /**
+             * Std
+             * @default null
+             */
+            std?: number | null;
+            /**
+             * Granularity
+             * @default null
+             */
+            granularity?: ("second" | "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year") | null;
+        };
+        /** ParseInfo */
+        ParseInfo: {
+            /**
+             * Format
+             * @default null
+             */
+            format?: string | null;
+            /** Success Ratio */
+            success_ratio: number;
+            /** Failed Examples */
+            failed_examples?: string[];
+        };
+        /** Column */
+        Column: {
+            /** Name */
+            name: string;
+            /** Original Name */
+            original_name: string;
+            /** Physical Type */
+            physical_type: string;
+            /**
+             * Semantic Type
+             * @enum {string}
+             */
+            semantic_type: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "id" | "measure" | "dimension" | "time" | "text";
+            /** Null Ratio */
+            null_ratio: number;
+            /** Distinct Count */
+            distinct_count: number;
+            /** Is Unique */
+            is_unique: boolean;
+            /** Sample Values */
+            sample_values?: (boolean | number | string)[];
+            /** Top Values */
+            top_values?: components["schemas"]["TopValue"][];
+            stats?: components["schemas"]["ColumnStats"];
+            /** @default null */
+            parse?: components["schemas"]["ParseInfo"] | null;
+            /**
+             * Currency
+             * @default null
+             */
+            currency?: string | null;
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+        };
+        /** Table */
+        Table: {
+            /** Table Id */
+            table_id: string;
+            /**
+             * Raw Table
+             * @default null
+             */
+            raw_table?: string | null;
+            /** Original Name */
+            original_name: string;
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /** Row Count */
+            row_count: number;
+            source?: components["schemas"]["TableSource"];
+            /** Primary Key Candidates */
+            primary_key_candidates?: string[];
+            /** Time Columns */
+            time_columns?: string[];
+            /** Duplicate Rows */
+            duplicate_rows: number;
+            /** Columns */
+            columns: components["schemas"]["Column"][];
         };
         /**
          * DatasetProgressData
@@ -641,6 +1137,81 @@ export interface components {
              * @default null
              */
             detail?: string | null;
+        };
+        /**
+         * XAxis
+         * @description Конфигурация оси X.
+         */
+        XAxis: {
+            /** Field */
+            field: string;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Kind
+             * @default category
+             * @enum {string}
+             */
+            kind?: "time" | "category" | "number";
+        };
+        /**
+         * YMeasure
+         * @description Показатель оси Y с правилами числового форматирования.
+         */
+        YMeasure: {
+            /** Field */
+            field: string;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Format
+             * @default number
+             * @enum {string}
+             */
+            format?: "number" | "money" | "percent" | "int";
+        };
+        /**
+         * ColorField
+         * @description Поле цветовой разбивки (сегментации).
+         */
+        ColorField: {
+            /** Field */
+            field: string;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+        };
+        /**
+         * SortSpec
+         * @description Спецификация сортировки графика.
+         */
+        SortSpec: {
+            /** Field */
+            field: string;
+            /**
+             * Order
+             * @default desc
+             * @enum {string}
+             */
+            order?: "asc" | "desc";
+        };
+        /**
+         * Annotation
+         * @description Текстовая аннотация на графике (пик, событие).
+         */
+        Annotation: {
+            /** X */
+            x: string;
+            /** Text */
+            text: string;
         };
         /**
          * SSEStatusData
@@ -698,6 +1269,7 @@ export interface components {
              */
             error?: string | null;
         };
+        MessageBlock: components["schemas"]["TextBlock"] | components["schemas"]["ChartBlock"] | components["schemas"]["TableBlock"] | components["schemas"]["ClarificationBlock"] | components["schemas"]["DashboardLinkBlock"] | components["schemas"]["SuggestionsBlock"];
         /**
          * SSEDoneData
          * @description Данные события успешного завершения генерации ответа.
@@ -861,6 +1433,244 @@ export interface components {
              * @default null
              */
             duration_ms?: number | null;
+        };
+        /**
+         * WidgetToolCall
+         * @description Рецепт перевычисления данных виджета.
+         */
+        WidgetToolCall: {
+            /**
+             * Tool
+             * @description Имя инструмента, например 'time_aggregate'
+             */
+            tool: string;
+            /**
+             * Params
+             * @description Параметры вызова
+             */
+            params?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * WidgetRecipeStep
+         * @description Шаг пересчёта; зависимость ссылается на шаг рецепта, а не старый result_id.
+         */
+        WidgetRecipeStep: {
+            /** Step Id */
+            step_id: string;
+            call: components["schemas"]["WidgetToolCall"];
+            /**
+             * Source Step Id
+             * @default null
+             */
+            source_step_id?: string | null;
+        };
+        /**
+         * WidgetRecipe
+         * @description Версионированный рецепт в порядке выполнения, без временных ID результата.
+         */
+        WidgetRecipe: {
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: 1;
+            /** Steps */
+            steps: components["schemas"]["WidgetRecipeStep"][];
+            /** Output Step Id */
+            output_step_id: string;
+        };
+        /**
+         * WidgetSnapshot
+         * @description Ответ refresh: рецепт вместе с результатом последнего запуска виджета.
+         */
+        WidgetSnapshot: {
+            /**
+             * Widget Id
+             * @description Уникальный идентификатор виджета
+             */
+            widget_id: string;
+            /**
+             * @description Независимый одиночный вызов; для цепочки используют recipe
+             * @default null
+             */
+            tool_call?: components["schemas"]["WidgetToolCall"] | null;
+            /** @default null */
+            recipe?: components["schemas"]["WidgetRecipe"] | null;
+            chart: components["schemas"]["ChartSpec"];
+            /**
+             * Caption
+             * @description Краткий текстовый вывод или инсайт
+             * @default null
+             */
+            caption?: string | null;
+            /** @description Расположение на сетке */
+            layout: components["schemas"]["WidgetLayout"];
+            /** Result Id */
+            result_id: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "error" | "empty";
+            /** @default null */
+            error?: components["schemas"]["ToolError"] | null;
+        };
+        /**
+         * DashboardSnapshot
+         * @description Отдельный wire-формат GET/refresh: сохранённый Dashboard и исход каждого виджета.
+         */
+        DashboardSnapshot: {
+            /**
+             * Dashboard Id
+             * @description Уникальный идентификатор дашборда
+             */
+            dashboard_id: string;
+            /**
+             * Dataset Id
+             * @description ID датасета, к которому привязан дашборд
+             */
+            dataset_id: string;
+            /**
+             * Title
+             * @description Название дашборда
+             */
+            title: string;
+            /**
+             * Description
+             * @description Описание дашборда
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Source Chat Id
+             * @description ID чата, в котором был создан дашборд
+             * @default null
+             */
+            source_chat_id?: string | null;
+            /** Widgets */
+            widgets: components["schemas"]["WidgetSnapshot"][];
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания
+             */
+            created_at: string;
+            /**
+             * Refreshed At
+             * @description Дата последнего пересчета
+             * @default null
+             */
+            refreshed_at?: string | null;
+        };
+        /**
+         * TraceStep
+         * @description Шаг трассировки рассуждения агента (для стриминга и отладки).
+         */
+        TraceStep: {
+            /**
+             * Node
+             * @description Имя узла графа LangGraph (understand, plan, execute...)
+             */
+            node: string;
+            /**
+             * Tool
+             * @description Вызванный инструмент, если был
+             * @default null
+             */
+            tool?: string | null;
+            /**
+             * Ms
+             * @description Время выполнения шага
+             * @default null
+             */
+            ms?: number | null;
+        };
+        /**
+         * DashboardWidget
+         * @description Виджет дашборда со схемой пересчета и визуализацией.
+         */
+        DashboardWidget: {
+            /**
+             * Widget Id
+             * @description Уникальный идентификатор виджета
+             */
+            widget_id: string;
+            /**
+             * @description Независимый одиночный вызов; для цепочки используют recipe
+             * @default null
+             */
+            tool_call?: components["schemas"]["WidgetToolCall"] | null;
+            /** @default null */
+            recipe?: components["schemas"]["WidgetRecipe"] | null;
+            /**
+             * Chart
+             * @description ChartSpec без result_id — подставляется при рендере
+             * @default null
+             */
+            chart?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Caption
+             * @description Краткий текстовый вывод или инсайт
+             * @default null
+             */
+            caption?: string | null;
+            /** @description Расположение на сетке */
+            layout: components["schemas"]["WidgetLayout"];
+        };
+        /**
+         * Dashboard
+         * @description Сущность дашборда, сохраняемая в БД приложения и доступная для обновления.
+         */
+        "schemas-Dashboard": {
+            /**
+             * Dashboard Id
+             * @description Уникальный идентификатор дашборда
+             */
+            dashboard_id: string;
+            /**
+             * Dataset Id
+             * @description ID датасета, к которому привязан дашборд
+             */
+            dataset_id: string;
+            /**
+             * Title
+             * @description Название дашборда
+             */
+            title: string;
+            /**
+             * Description
+             * @description Описание дашборда
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Source Chat Id
+             * @description ID чата, в котором был создан дашборд
+             * @default null
+             */
+            source_chat_id?: string | null;
+            /**
+             * Widgets
+             * @description Список виджетов
+             */
+            widgets?: components["schemas"]["DashboardWidget"][];
+            /**
+             * Created At
+             * Format: date-time
+             * @description Дата создания
+             */
+            created_at: string;
+            /**
+             * Refreshed At
+             * @description Дата последнего пересчета
+             * @default null
+             */
+            refreshed_at?: string | null;
         };
     };
     responses: {
@@ -1212,7 +2022,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Dashboard"];
+                    "application/json": components["schemas"]["DashboardSnapshot"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1235,7 +2045,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Dashboard"];
+                    "application/json": components["schemas"]["DashboardSnapshot"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1262,7 +2072,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Dashboard"];
+                    "application/json": components["schemas"]["DashboardSnapshot"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1285,7 +2095,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Dashboard"];
+                    "application/json": components["schemas"]["DashboardSnapshot"];
                 };
             };
             default: components["responses"]["Error"];

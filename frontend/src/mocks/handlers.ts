@@ -94,8 +94,8 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     const catalog = structuredClone(ordersCatalog);
     catalog.dataset_id = id;
     catalog.name = ready.name;
-    catalog.source = ready.source;
-    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables.length, row_count: 8940 });
+    catalog.source = { kind: ready.source.kind };
+    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables?.length ?? 0, row_count: 8940 });
   };
 
   return [
@@ -173,7 +173,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
         ['tool_call', { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } }],
         ['tool_result', { result_id: 'r_rev', ok: true }],
         ['block', { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' }],
-        ['block', { type: 'chart', chart: { result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
+        ['block', { type: 'chart', chart: { chart_id: 'chart_revenue', result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
         ['done', { message_id: `m_${Date.now()}` }],
       ];
       const timeout: SseFrame = ['error', { message: 'Запрос превысил таймаут 30 сек.', detail: 'Попробуйте уточнить период.' }];
@@ -240,6 +240,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       }
       dashboard.widgets.push({
         widget_id: `w_${Date.now()}`, tool_call: { tool: result?.tool ?? 'unknown', params: result?.params ?? {} },
+        layout: { x: 0, y: 0, w: 6, h: 4 },
         chart: body.chart, caption: null, result_id: body.result_id, status: 'ok', error: null,
       });
       return HttpResponse.json(dashboard);

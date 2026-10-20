@@ -9,12 +9,20 @@
 - `chart.py` — `ChartSpec`, `XAxis`, `YMeasure`, `ColorField` (§6.2);
 - `message.py` — `AssistantMessage`, `TextBlock`, `ChartBlock`, `TableBlock`, `ClarificationBlock`, `DashboardLinkBlock`, `SuggestionsBlock` (§5.6);
 - `chat.py` — `ChatCreate`, `ChatCreated`, `ChatSummary`, `ChatMessage`, `ChatDetail`, `SendMessageRequest` (§7.3);
-- `dashboard.py` — `Dashboard`, `DashboardWidget`, `WidgetToolCall`, `WidgetLayout` (§7.2);
+- `dashboard.py` — `Dashboard`, `DashboardWidget`, `WidgetToolCall`, `WidgetRecipe`,
+  `WidgetRecipeStep`, `WidgetLayout`, `DashboardSnapshot`, `WidgetSnapshot` (§7.2);
 - `auth.py` — `UserCreate`, `UserLogin`, `UserRead`, `TokenResponse`;
 - `common.py` — `HealthCheck`, `ErrorResponse`, `DatasetSummary`;
 - `sse.py` — `AgentStreamEvent`, `DatasetStreamEvent` и события стриминга (`status`, `tool_call`, `tool_result`, `block`, `done`, `error`) (§7.3).
 
 Все модели экспортируются напрямую из пакета `djedai.contracts`.
+
+Согласованные правила — [PL-1 / #47](../../../docs/decisions/47-contracts-and-runtime.md).
+`Dashboard` хранит определение; `DashboardSnapshot` — результат refresh с исходом
+каждого виджета. Рецепт хранит зависимости шагов вместо прежних UUID результатов.
+Успешный обмен, ошибка и частичный сбой зависимого виджета приведены в
+[component_exchange.json](examples/component_exchange.json) и проверяются общими моделями.
+Обёртка HTTP-ошибки — `ErrorResponse = {"error": ToolError}`, версия API — 0.2.0.
 
 ## DatasetCatalog (#59)
 

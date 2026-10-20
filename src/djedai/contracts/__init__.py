@@ -36,11 +36,15 @@ from djedai.contracts.chat import (
     ChatSummary,
     SendMessageRequest,
 )
-from djedai.contracts.common import DatasetSummary, ErrorResponse, HealthCheck
+from djedai.contracts.common import DatasetDetail, DatasetSummary, ErrorResponse, HealthCheck
 from djedai.contracts.dashboard import (
     Dashboard,
+    DashboardSnapshot,
     DashboardWidget,
     WidgetLayout,
+    WidgetRecipe,
+    WidgetRecipeStep,
+    WidgetSnapshot,
     WidgetToolCall,
 )
 from djedai.contracts.message import (
@@ -129,8 +133,12 @@ __all__ = [
     "TraceStep",
     # Дашборды
     "Dashboard",
+    "DashboardSnapshot",
     "DashboardWidget",
     "WidgetLayout",
+    "WidgetRecipe",
+    "WidgetRecipeStep",
+    "WidgetSnapshot",
     "WidgetToolCall",
     # Авторизация
     "TokenResponse",
@@ -140,6 +148,7 @@ __all__ = [
     "UserRead",
     # Общие технические
     "DatasetSummary",
+    "DatasetDetail",
     "ErrorResponse",
     "HealthCheck",
     # SSE события стриминга (§7.3)
