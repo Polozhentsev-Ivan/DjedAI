@@ -26,7 +26,18 @@ def create_db_engine(database_url: str | None = None) -> Engine:
             file_path = url.split(":///", 1)[1]
             Path(file_path).parent.mkdir(parents=True, exist_ok=True)
 
-    return create_engine(url, connect_args=connect_args, echo=False)
+    engine = create_engine(url, connect_args=connect_args, echo=False)
+
+    if url.startswith("sqlite"):
+        from sqlalchemy import event
+
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ARG001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+    return engine
 
 
 _engine: Engine | None = None
