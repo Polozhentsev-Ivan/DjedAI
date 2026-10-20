@@ -243,6 +243,8 @@ def stream_chat_turn(
             configurable["client"] = runtime.client
         if runtime.tool_dispatcher is not None:
             configurable["tool_dispatcher"] = runtime.tool_dispatcher
+        if is_cancelled is not None:
+            configurable["is_cancelled"] = is_cancelled
 
         trace: list[TraceStep] = []
         results: list[ToolResult] = []
@@ -308,6 +310,9 @@ def stream_chat_turn(
                     detail=error_detail,
                 )
             )
+            return
+
+        if is_cancelled and is_cancelled():
             return
 
         message_blocks = [_block_to_message_block(block) for block in answer_blocks]

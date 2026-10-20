@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -415,6 +416,40 @@ def test_chat_ids_are_unique(chat_api: tuple[TestClient, Any, Any]) -> None:
     assert all(chat_id.startswith("c_") for chat_id in ids)
 
 
+class BarrierFakeGraph:
+    """Управляемый граф с барьером для проверки unbuffered-потока, неблокирующего цикла и отмены."""
+
+    def __init__(
+        self,
+        updates: list[dict[str, Any]] | None = None,
+        barrier: threading.Event | None = None,
+    ) -> None:
+        self.updates = updates or []
+        self.barrier = barrier
+        self.started = threading.Event()
+        self.completed = threading.Event()
+
+    def stream(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any],
+        stream_mode: str,
+    ) -> Iterator[dict[str, Any]]:
+        self.started.set()
+        is_cancelled = config.get("configurable", {}).get("is_cancelled")
+        if self.barrier is not None:
+            while not self.barrier.is_set():
+                if is_cancelled and is_cancelled():
+                    return
+                time.sleep(0.01)
+
+        for update in self.updates:
+            if is_cancelled and is_cancelled():
+                return
+            yield update
+        self.completed.set()
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -425,7 +460,7 @@ def _free_port() -> int:
 async def test_stream_proxy_unbuffered_and_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Проверяет поток через сетевой /api proxy, заголовки, чанки, обрыв и fetch."""
+    """Проверяет unbuffered-поток, неблокирующий event loop, ранний обрыв и AbortController."""
     backend_port = _free_port()
     proxy_port = _free_port()
 
@@ -443,18 +478,21 @@ async def test_stream_proxy_unbuffered_and_events(
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results_live"))
     get_settings.cache_clear()
 
+    barrier1 = threading.Event()
+    graph1 = BarrierFakeGraph(
+        [
+            {"plan": {}},
+            {"execute": {}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="Живой ответ")]}},
+        ],
+        barrier=barrier1,
+    )
+    current_graph = graph1
+
     backend_app = create_app(Settings(_env_file=None))
     backend_app.dependency_overrides[get_db] = lambda: factory()
     backend_app.dependency_overrides[get_session_factory] = lambda: factory
-    backend_app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
-        graph=FakeGraph(
-            [
-                {"plan": {}},
-                {"execute": {}},
-                {"compose": {"answer_blocks": [Block(type="text", markdown="Живой ответ")]}},
-            ]
-        )
-    )
+    backend_app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(graph=current_graph)
 
     # Настоящий сетевой Reverse Proxy (эмуляция Vite dev proxy / nginx по /api)
     proxy_app = FastAPI()
@@ -493,7 +531,7 @@ async def test_stream_proxy_unbuffered_and_events(
         await anyio.sleep(0.05)
 
     try:
-        # 1. Потоковое чтение через живой TCP proxy без буферизации
+        # 1. Потоковое чтение через живой TCP proxy без буферизации + параллельный /api/health
         async with httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{proxy_port}", trust_env=False
         ) as client:
@@ -508,7 +546,35 @@ async def test_stream_proxy_unbuffered_and_events(
                 assert response.headers.get("x-accel-buffering") == "no"
 
                 raw_chunks: list[str] = []
-                async for line in response.aiter_lines():
+                lines_iter = response.aiter_lines()
+                first_event_found = False
+                async for line in lines_iter:
+                    if line:
+                        raw_chunks.append(line)
+                        if "event: status" in line:
+                            first_event_found = True
+                            break
+
+                assert first_event_found, "Первое событие status должно быть получено клиентом"
+                # КРИТЕРИЙ [P2]: Бэкенд удерживается на барьере и НЕ завершил ответ,
+                # но клиент уже получил первый кадр по сети через proxy!
+                assert not graph1.completed.is_set(), "Бэкенд не должен завершаться до барьера"
+                assert not barrier1.is_set(), "Барьер ещё не должен быть снят"
+
+                # КРИТЕРИЙ [P1]: Параллельный запрос к /api/health во время удержания графа
+                # должен выполниться мгновенно (< 200мс), доказывая, что event loop не заблокирован
+                t0 = time.perf_counter()
+                health_resp = await client.get("/api/health")
+                health_lat = time.perf_counter() - t0
+                assert health_resp.status_code == 200
+                assert health_resp.json()["status"] == "ok"
+                assert (
+                    health_lat < 0.2
+                ), f"/api/health задержан ({health_lat*1000:.1f}мс), event loop заблокирован"
+
+                # Отпускаем барьер и дочитываем остаток потока
+                barrier1.set()
+                async for line in lines_iter:
                     if line:
                         raw_chunks.append(line)
 
@@ -517,11 +583,26 @@ async def test_stream_proxy_unbuffered_and_events(
         ]
         assert events[0] == "status"
         assert events[-1] == "done"
+        assert graph1.completed.is_set(), "Граф должен штатно завершиться после снятия барьера"
 
-        # 2. Реальный обрыв сокета клиентом через proxy
+        # 2. Реальный обрыв сокета клиентом через proxy ДО завершения агента
+        barrier2 = threading.Event()
+        graph2 = BarrierFakeGraph(
+            [
+                {"plan": {}},
+                {
+                    "compose": {
+                        "answer_blocks": [Block(type="text", markdown="Не должно сохраниться")]
+                    }
+                },
+            ],
+            barrier=barrier2,
+        )
+        current_graph = graph2
+
         with socket.socket() as sock:
             sock.connect(("127.0.0.1", proxy_port))
-            req_body = json.dumps({"text": "Обрыв"}).encode("utf-8")
+            req_body = json.dumps({"text": "Обрыв до конца"}).encode("utf-8")
             req = (
                 f"POST /api/chats/{chat.chat_id}/messages HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{proxy_port}\r\n"
@@ -529,24 +610,54 @@ async def test_stream_proxy_unbuffered_and_events(
                 f"Content-Length: {len(req_body)}\r\n\r\n"
             ).encode() + req_body
             sock.sendall(req)
-            initial_data = sock.recv(256)
-            assert b"200 OK" in initial_data
+
+            received = b""
+            while b"event: status" not in received:
+                chunk = sock.recv(512)
+                if not chunk:
+                    break
+                received += chunk
+
+            assert b"200 OK" in received
+            assert b"event: status" in received
+            # Граф ещё удерживается на барьере и НЕ завершился
+            assert not graph2.completed.is_set(), "Граф не должен завершиться до обрыва сокета"
             sock.close()
 
-        # 3. Браузерный fetch через Node.js (если node доступен в окружении)
+        await anyio.sleep(0.1)
+        barrier2.set()
+        await anyio.sleep(0.1)
+
+        assert not graph2.completed.is_set(), "Граф не должен завершаться после обрыва"
+        with factory() as db:
+            messages = get_chat_messages(db, chat.chat_id)
+            assistant_messages = [m for m in messages if m.role == "assistant"]
+            assert len(assistant_messages) == 1  # Только от первого успешного запроса!
+
+        # 3. Браузерный fetch через Node.js с прерыванием ДО завершения backend
         if shutil.which("node"):
+            barrier3 = threading.Event()
+            graph3 = BarrierFakeGraph(
+                [
+                    {"plan": {}},
+                    {"compose": {"answer_blocks": [Block(type="text", markdown="Node отмена")]}},
+                ],
+                barrier=barrier3,
+            )
+            current_graph = graph3
+
             url = f"http://127.0.0.1:{proxy_port}/api/chats/{chat.chat_id}/messages"
             node_code = f"""
             const controller = new AbortController();
             const resp = await fetch('{url}', {{
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ text: 'Fetch с отменой' }}),
+                body: JSON.stringify({{ text: 'Fetch с отменой на барьере' }}),
                 signal: controller.signal
             }});
             const reader = resp.body.getReader();
-            const {{ value }} = await reader.read();
-            controller.abort();
+            const {{ value }} = await reader.read(); // Получили первый чанк до завершения
+            controller.abort(); // Отмена до завершения backend!
             """
             p = subprocess.run(
                 ["node", "--input-type=module", "-e", node_code],
@@ -554,6 +665,16 @@ async def test_stream_proxy_unbuffered_and_events(
                 text=True,
             )
             assert p.returncode == 0
+            await anyio.sleep(0.1)
+            barrier3.set()
+            await anyio.sleep(0.1)
+            assert (
+                not graph3.completed.is_set()
+            ), "Граф не должен завершаться после Node AbortController"
+            with factory() as db:
+                messages = get_chat_messages(db, chat.chat_id)
+                assistant_messages = [m for m in messages if m.role == "assistant"]
+                assert len(assistant_messages) == 1
     finally:
         s1.should_exit = True
         s2.should_exit = True
