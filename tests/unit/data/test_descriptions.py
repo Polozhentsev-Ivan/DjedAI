@@ -13,7 +13,9 @@ import duckdb
 import pytest
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import DatasetCatalog
+from djedai.data import descriptions
 from djedai.data.descriptions import (
     DESCRIPTIONS_TABLE,
     MAX_DESCRIPTION_CHARS,
@@ -289,3 +291,61 @@ def test_empty_catalog_needs_no_model(con):
     catalog = blank_catalog(tables=[], relations=[], transformations=[], warnings=[])
     report = describe_catalog(con, catalog, FakeClient())
     assert (report.model_calls, report.catalog.summary) == (0, None)
+
+
+def test_values_are_not_shared_when_disabled(con):
+    client = FakeClient()
+    report = describe_catalog(con, blank_catalog(), client, share_values=False)
+
+    sent = json.dumps([payload for _, payload, _ in client.calls], ensure_ascii=False)
+    for value in ("sample_values", "top_values", "000123", "C-0007", "доставлен"):
+        assert value not in sent
+    amount = next(c for c in client.calls[0][1]["columns"] if c["name"] == "amount")
+    assert amount["original_name"] == "Сумма" and "max" in amount["stats"]
+    assert report.catalog.tables[0].columns[0].description is not None
+    # с примерами вход таблиц другой — их описания пересчитываются; вход summary тот же
+    assert describe_catalog(con, blank_catalog(), FakeClient()).model_calls == 2
+
+
+def test_prompt_change_invalidates_cache(con, monkeypatch):
+    describe_catalog(con, blank_catalog(), FakeClient())
+    original = descriptions.load_prompt
+    monkeypatch.setattr(
+        descriptions,
+        "load_prompt",
+        lambda name: original(name) + "\nNew rule." if name == "describe_table" else original(name),
+    )
+    client = FakeClient()
+    describe_catalog(con, blank_catalog(), client)
+    assert [payload.get("table", "summary") for _, payload, _ in client.calls] == [
+        "orders",
+        "clients",
+    ]
+
+
+@pytest.mark.parametrize("model", [TableDescriptions, DatasetSummary])
+def test_answer_schemas_fit_strict_guided_decoding(model):
+    """``strict: true`` требует у каждого объекта все поля в required и запрет лишних."""
+
+    def objects(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield node
+            for value in node.values():
+                yield from objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from objects(value)
+
+    found = list(objects(model.model_json_schema()))
+    assert found
+    for node in found:
+        assert node["additionalProperties"] is False
+        assert set(node["required"]) == set(node["properties"])
+
+
+def test_prompts_exist_and_ask_for_russian():
+    for name in ("describe_table", "describe_dataset"):
+        text = load_prompt(name)
+        assert text != "Промпт не найден."
+        assert "Russian" in text and "JSON" in text

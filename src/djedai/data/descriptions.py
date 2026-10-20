@@ -1,14 +1,15 @@
 """LLM-описания каталога (B1-6): колонки, таблицы и краткое описание датасета.
 
 Модель получает компактный JSON по каждой таблице — имена, оригинальные заголовки, тип,
-роль, примеры и статистику — и одним вызовом описывает таблицу и её колонки (широкие
+роль, примеры и статистику (примеры и частые значения — только при ``share_values``) —
+и одним вызовом описывает таблицу и её колонки (широкие
 таблицы делятся на части по ``MAX_COLUMNS_PER_CALL``). Затем одним вызовом пишется
 ``summary`` датасета по описаниям таблиц, периодам и связям. Заполняются только пустые
 поля: описания, которые уже есть в каталоге, не перезаписываются.
 
-Успешные ответы кэшируются в ``_djedai_descriptions``. Ключ — SHA-256 от версии промптов,
-имени модели и входного JSON, поэтому повторное чтение не обращается к модели, а при
-изменении данных, промпта или модели описание пересчитывается.
+Успешные ответы кэшируются в ``_djedai_descriptions``. Ключ — SHA-256 от имени модели,
+текста промпта, схемы ответа и входного JSON, поэтому повторное чтение не обращается к
+модели, а при изменении данных, промпта, схемы или модели описание пересчитывается.
 
 Ошибка модели не ломает каталог: таблицы и статистика остаются как были, в ``warnings``
 добавляется причина. Если модель недоступна (таймаут, ошибка сервера, исключение
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING, Protocol
 import duckdb
 from pydantic import BaseModel, ConfigDict
 
+from djedai.agent.client import MODEL_UNAVAILABLE
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import Column, DatasetCatalog, Table
 
@@ -33,14 +35,13 @@ if TYPE_CHECKING:
     from djedai.agent.client import ModelResponse
 
 DESCRIPTIONS_TABLE = "_djedai_descriptions"
-PROMPT_VERSION = 1  # менять вместе с prompts/describe_table.md и describe_dataset.md
 TABLE_PROMPT = "describe_table"
 DATASET_PROMPT = "describe_dataset"
 MAX_COLUMNS_PER_CALL = 40
 MAX_DESCRIPTION_CHARS = 200
 MAX_SUMMARY_CHARS = 400
 TOP_VALUES = 5
-UNAVAILABLE = ("TIMEOUT", "SERVER_ERROR", "CLIENT_ERROR")  # дальше вызывать модель незачем
+UNAVAILABLE = (*MODEL_UNAVAILABLE, "CLIENT_ERROR")  # дальше вызывать модель незачем
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 
 
@@ -84,16 +85,21 @@ class _ModelUnavailable(Exception):
 
 
 class _Describer:
-    def __init__(self, connection: duckdb.DuckDBPyConnection, client: ModelClient) -> None:
+    def __init__(
+        self, connection: duckdb.DuckDBPyConnection, client: ModelClient, share_values: bool
+    ) -> None:
         self.connection = connection
         self.client = client
+        self.share_values = share_values
         self.calls = 0
 
     def ask[T: _Answer](self, prompt: str, payload: dict, answer: type[T]) -> T | str:
         """Ответ из кэша или модели; при ошибке — её тип (``INVALID_JSON``, ...)."""
         user = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        system = load_prompt(prompt)
+        schema = json.dumps(answer.model_json_schema(), sort_keys=True)
         key = hashlib.sha256(
-            f"{PROMPT_VERSION}\n{self.client.model}\n{prompt}\n{user}".encode()
+            "\n".join((self.client.model, prompt, system, schema, user)).encode()
         ).hexdigest()
         cached = self.connection.execute(
             f"SELECT payload FROM {DESCRIPTIONS_TABLE} WHERE key = ?", [key]
@@ -102,7 +108,7 @@ class _Describer:
             return answer.model_validate_json(cached[0])
         self.calls += 1
         try:
-            response = self.client.generate_typed_response(load_prompt(prompt), user, answer)
+            response = self.client.generate_typed_response(system, user, answer)
         except Exception as error:  # клиент не должен ронять загрузку данных
             raise _ModelUnavailable("CLIENT_ERROR") from error
         if response.status != "success" or response.data is None:
@@ -118,11 +124,20 @@ class _Describer:
 
 
 def describe_catalog(
-    connection: duckdb.DuckDBPyConnection, catalog: DatasetCatalog, client: ModelClient
+    connection: duckdb.DuckDBPyConnection,
+    catalog: DatasetCatalog,
+    client: ModelClient,
+    *,
+    share_values: bool = True,
 ) -> DescriptionReport:
-    """Копия каталога с описаниями колонок, таблиц и ``summary``; сбой модели — в warnings."""
+    """Копия каталога с описаниями колонок, таблиц и ``summary``; сбой модели — в warnings.
+
+    ``share_values=False`` не передаёт модели значения ячеек (примеры и частые значения):
+    для внешней модели, которой нельзя показывать данные пользователя. Остаются имена,
+    типы и агрегаты; описания при этом обычно менее точны.
+    """
     _ensure_table(connection)
-    describer = _Describer(connection, client)
+    describer = _Describer(connection, client, share_values)
     warnings: list[str] = []
     tables = list(catalog.tables)
     summary = catalog.summary
@@ -155,7 +170,9 @@ def _describe_table(describer: _Describer, table: Table, warnings: list[str]) ->
     rejected: list[str] = []
     for start in range(0, len(table.columns), MAX_COLUMNS_PER_CALL):
         part = table.columns[start : start + MAX_COLUMNS_PER_CALL]
-        answer = describer.ask(TABLE_PROMPT, _table_payload(table, part), TableDescriptions)
+        answer = describer.ask(
+            TABLE_PROMPT, _table_payload(table, part, describer.share_values), TableDescriptions
+        )
         if isinstance(answer, str):
             warnings.append(
                 f"Описания таблицы {table.table_id} не сгенерированы: ответ модели "
@@ -212,7 +229,9 @@ def _clean(text: str, limit: int) -> str | None:
     return text
 
 
-def _table_payload(table: Table, columns: tuple[Column, ...] | list[Column]) -> dict:
+def _table_payload(
+    table: Table, columns: tuple[Column, ...] | list[Column], share_values: bool = True
+) -> dict:
     """Вход модели: структура и статистика без описаний, журнала и сведений о файле."""
     head = {
         "table": table.table_id,
@@ -221,10 +240,10 @@ def _table_payload(table: Table, columns: tuple[Column, ...] | list[Column]) -> 
         "primary_key_candidates": table.primary_key_candidates,
         "time_columns": table.time_columns,
     }
-    return head | {"columns": [_column_payload(c) for c in columns]}
+    return head | {"columns": [_column_payload(c, share_values) for c in columns]}
 
 
-def _column_payload(column: Column) -> dict:
+def _column_payload(column: Column, share_values: bool = True) -> dict:
     stats = {
         k: v
         for k, v in column.stats.model_dump(include={"min", "max", "granularity"}).items()
@@ -239,8 +258,10 @@ def _column_payload(column: Column) -> dict:
         "null_ratio": round(column.null_ratio, 4),
         "distinct_count": column.distinct_count,
         "is_unique": column.is_unique,
-        "sample_values": column.sample_values,
-        "top_values": [t.model_dump() for t in column.top_values[:TOP_VALUES]],
+        "sample_values": column.sample_values if share_values else None,
+        "top_values": (
+            [t.model_dump() for t in column.top_values[:TOP_VALUES]] if share_values else None
+        ),
         "stats": stats,
     }
     return {k: v for k, v in payload.items() if v not in (None, [], {})}
