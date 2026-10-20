@@ -88,6 +88,61 @@ def test_public_upload_catalog_list_and_terminal_sse_survive_restart(configured)
             assert response.json()["error"]["code"] == "not_found"
 
 
+@pytest.mark.parametrize(
+    "filenames", [("raw_sales.csv", "sales.csv"), ("sales.csv", "raw_sales.csv")]
+)
+def test_raw_prefix_filenames_upload_in_either_order_and_survive_restart(
+    configured, filenames
+) -> None:
+    settings, _ = configured
+    expected = {
+        "raw_sales.csv": [(1, 10), (2, 20)],
+        "sales.csv": [(3, 40), (4, 50)],
+    }
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/datasets/upload",
+            files=[
+                (
+                    "files",
+                    (
+                        name,
+                        "id,amount\n"
+                        + "".join(f"{key},{amount}\n" for key, amount in expected[name]),
+                        "text/csv",
+                    ),
+                )
+                for name in filenames
+            ],
+        )
+        assert response.status_code == 202
+        dataset_id = response.json()["dataset_id"]
+        events = client.get(f"/api/datasets/{dataset_id}/events")
+        assert "event: done\n" in events.text
+        assert "event: error\n" not in events.text
+        detail = client.get(f"/api/datasets/{dataset_id}").json()
+        assert detail["status"] == "ready"
+        assert (detail["table_count"], detail["row_count"]) == (2, 4)
+        tables = detail["catalog"]["tables"]
+        assert {table["original_name"] for table in tables} == set(filenames)
+        assert len({table["table_id"] for table in tables}) == 2
+        assert len({table["raw_table"] for table in tables}) == 2
+
+    with TestClient(create_app(settings)) as restarted:
+        assert restarted.get(f"/api/datasets/{dataset_id}").json() == detail
+        assert restarted.get(f"/api/datasets/{dataset_id}/catalog").json() == detail["catalog"]
+        context = restarted.app.state.dataset_service.get_context("local", dataset_id)
+        with duckdb.connect(str(context.duckdb_path), read_only=True) as connection:
+            for table in tables:
+                original = expected[table["original_name"]]
+                assert connection.execute(
+                    f'SELECT id, amount FROM "{table["table_id"]}" ORDER BY id'
+                ).fetchall() == [(str(key), amount) for key, amount in original]
+                assert connection.execute(
+                    f'SELECT id, amount FROM "{table["raw_table"]}" ORDER BY id'
+                ).fetchall() == [(str(key), str(amount)) for key, amount in original]
+
+
 def test_api_error_is_persisted_and_stream_ends_without_done(configured) -> None:
     settings, _ = configured
     with TestClient(create_app(settings)) as client:
