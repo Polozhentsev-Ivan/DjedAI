@@ -368,10 +368,20 @@ def value_counts(
 
         if filter:
             try:
-                parsed_filter = sqlglot.parse_one(f"SELECT * FROM t WHERE {filter}", read="duckdb")
+                statements = sqlglot.parse(f"SELECT * FROM t WHERE (\n{filter}\n)", read="duckdb")
+                if len(statements) != 1 or not isinstance(statements[0], exp.Select):
+                    raise ValueError("Expected a single WHERE expression")
+                parsed_filter = statements[0]
+                if any(
+                    value
+                    for key, value in parsed_filter.args.items()
+                    if key not in {"expressions", "from_", "where"}
+                ):
+                    raise ValueError("Unexpected SQL clause in filter")
                 where_clause = parsed_filter.args.get("where")
-                if where_clause:
-                    query += f" WHERE {where_clause.this.sql(dialect='duckdb')}"
+                if not isinstance(where_clause, exp.Where):
+                    raise ValueError("Missing WHERE expression")
+                query += f" WHERE {where_clause.this.sql(dialect='duckdb')}"
             except Exception:
                 return ToolResult(
                     result_id=str(uuid.uuid4()),

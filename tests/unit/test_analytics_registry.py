@@ -42,6 +42,7 @@ EXPECTED_TOOLS = [
         "description": "Показывает общую информацию о загруженных данных (список таблиц, колонок).",
         "parameters_schema": {
             "description": "Модель параметров для describe_dataset. У этой функции нет параметров.",
+            "examples": [{}],
             "properties": {},
             "title": "DescribeDatasetParams",
             "type": "object",
@@ -52,6 +53,7 @@ EXPECTED_TOOLS = [
         "description": "Показывает статистику по конкретной колонке (пропуски, "
         "уникальные значения).",
         "parameters_schema": {
+            "examples": [{"table": "test", "column": "age"}],
             "properties": {
                 "table": {
                     "description": "Имя таблицы",
@@ -73,6 +75,7 @@ EXPECTED_TOOLS = [
         "name": "value_counts",
         "description": "Показывает самые частые значения в колонке.",
         "parameters_schema": {
+            "examples": [{"table": "test", "column": "city", "top_n": 3, "filter": "age > 25"}],
             "properties": {
                 "table": {
                     "description": "Имя таблицы",

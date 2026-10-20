@@ -1,6 +1,6 @@
 from typing import Any, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunSqlParams(BaseModel):
@@ -17,15 +17,23 @@ class RunSqlParams(BaseModel):
 class DescribeDatasetParams(BaseModel):
     """Модель параметров для describe_dataset. У этой функции нет параметров."""
 
-    pass
+    model_config = ConfigDict(json_schema_extra={"examples": [{}]})
 
 
 class DescribeColumnParams(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"table": "test", "column": "age"}]})
+
     table: str = Field(description="Имя таблицы")
     column: str = Field(description="Имя колонки")
 
 
 class ValueCountsParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"table": "test", "column": "city", "top_n": 3, "filter": "age > 25"}]
+        }
+    )
+
     table: str = Field(description="Имя таблицы")
     column: str = Field(description="Имя колонки")
     top_n: int = Field(default=10, description="Количество топ-значений")

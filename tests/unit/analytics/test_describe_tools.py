@@ -1,3 +1,6 @@
+import pytest
+
+from djedai.analytics.registry import TOOLS_REGISTRY, get_tools_for_llm
 from djedai.analytics.tools import describe_column, describe_dataset, value_counts
 
 # ---------- helpers ----------
@@ -163,6 +166,55 @@ def test_accepts_filter_keyword():
     r = value_counts("test", "city", filter="age > 100")
     assert r.status == "empty"
     assert "не найдены" in r.facts[0].text
+
+
+@pytest.mark.parametrize(
+    "filter_sql",
+    [
+        "age > 100; age < 20",
+        "age > 100 UNION SELECT * FROM test",
+        "age > 100) UNION SELECT * FROM test WHERE (TRUE",
+        "age > 100) ORDER BY city --",
+        "age > 100) LIMIT 1 --",
+        "age > 100); DELETE FROM test; SELECT (1",
+    ],
+)
+def test_rejects_filter_that_changes_query_structure(filter_sql):
+    result = value_counts("test", "city", filter=filter_sql)
+    assert result.status == "error"
+    assert result.error.code == "invalid_filter"
+
+
+def test_accepts_compound_filter_with_semicolon_in_string():
+    result = value_counts(
+        "test", "city", filter="(age > 25 OR age IS NULL) AND city <> 'city;name'"
+    )
+    assert result.status == "ok"
+    assert {row[0]: row[1] for row in result.data.rows} == {"СПб": 1, "Казань": 1}
+
+
+def test_accepts_filter_with_trailing_sql_comment():
+    result = value_counts("test", "city", filter="age > 25 -- older customers")
+    assert result.status == "ok"
+    assert result.data.rows == [["СПб", 1]]
+
+
+@pytest.mark.parametrize("tool_name", ["describe_dataset", "describe_column", "value_counts"])
+def test_agent_call_examples_are_valid_and_executable(tool_name):
+    exported = next(tool for tool in get_tools_for_llm() if tool["name"] == tool_name)
+    definition = next(tool for tool in TOOLS_REGISTRY if tool.name == tool_name)
+    example = exported["parameters_schema"]["examples"][0]
+    params = definition.parameters_model.model_validate(example).model_dump()
+    tool = {
+        "describe_dataset": describe_dataset,
+        "describe_column": describe_column,
+        "value_counts": value_counts,
+    }[tool_name]
+    result = tool(**params)
+    assert result.status == "ok"
+    if tool_name == "value_counts":
+        assert example["top_n"] == 3
+        assert result.data.rows == [["СПб", 1]]
 
 
 # ---------- injection ----------
