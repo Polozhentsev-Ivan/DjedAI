@@ -51,4 +51,23 @@
 
 Ограничения: сэмплирования и MinHash нет, составные ключи не ищутся, суммы проверяются только у таблицы `from`.
 
+## PostgreSQL
+
+`postgres` (B1-8): `connect_postgres(connection, dsn, tables)` подключает БД через `ATTACH ... (TYPE postgres, READ_ONLY)` и строит представления выбранных таблиц; дальше общий конвейер, как для CSV: `profile_tables` и `find_relations`. Данные не копируются, запросы идут в живую БД.
+
+- строка подключения: URI `postgresql://user:password@host:port/db?sslmode=...` или `key=value`. Пользователь и пароль обязательны; принимаются только `host`, `port`, `dbname`, `user`, `password`, `sslmode`, `connect_timeout` (по умолчанию 10 с), `application_name`. `options`, `passfile`, `service`, пути к SSL-ключам и прочее отклоняются: они могли бы снять read-only или прочитать файлы сервера DjedAI;
+- `tables` — `схема.таблица` или имя в `public`; `None` — все таблицы и представления, кроме системных схем. Неизвестное имя — `PostgresError` со списком;
+- для таблицы строятся «сырое» представление `pg_<схема>_<таблица>` (`SELECT *`) и типизированное `<таблица>` (при коллизии `_typed`, как у CSV). Колонки записываются в `_djedai_columns` и журнал, исходная таблица — в `_djedai_db_sources` (`raw_table`, `view_name`, `source_kind`, `relation` = `схема.таблица`, читается через `read_db_sources`); таблицы подключённой БД имена представлений не занимают;
+- типы берутся из БД: целые → `integer` (`id`, если имя ID-подобное), `DECIMAL`/`DOUBLE` → `float`, `DATE` → `date`, `TIMESTAMP` → `datetime`, `TIMESTAMPTZ` → `datetime` в UTC без зоны (`cast_type`), `BOOLEAN` → `bool`, текст → `text` (`id` по имени), `UUID` → `id` и `ENUM` → `text` строкой (`cast_type`). Остальное (`TIME`, `INTERVAL`, `JSON`, массивы, `BYTEA`, `money` …) — текстом, в журнале `keep_text` с `reason: unsupported_type` и исходным типом. Денежные колонки, проценты и валюта из типа БД не выводятся;
+- запись запрещена трижды: `READ_ONLY` у ATTACH, сессия с `default_transaction_read_only=on` (проверяется после подключения, иначе отказ) и read-only роль на стороне БД ([демо-роли](../../../infra/postgres/README.md)). Даже `postgres_execute` с `COMMIT` и `SET` внутри получает отказ, но гарантия — только права роли: подключайте учётную запись с одним `SELECT`;
+- пароль живёт только во временном секрете DuckDB (`duckdb_secrets()` показывает `redacted`); в строке ATTACH, `duckdb_databases()` и `PostgresError` его нет, исходное исключение не сцепляется. Ошибки: неверный пользователь или пароль, база не найдена, сервер недоступен, `pg_hba.conf`;
+- ATTACH и секрет не сохраняются в файле DuckDB: после открытия датасета `attach_postgres` повторяют, без него представления не читаются. Хранение зашифрованного DSN и вызов из API — #62/#103;
+- запрет `enable_external_access = false` не мешает читать уже подключённую БД — `run_sql` может включать его после ATTACH. Функции `postgres_query`/`postgres_execute` идут в БД мимо представлений, поэтому для SQL агента их нужно запрещать отдельно.
+
+Ограничения: первая установка расширения DuckDB `postgres` требует доступа к extensions.duckdb.org; кеша нет — профиль и запросы читают таблицы целиком; `numeric` без точности DuckDB читает как `DOUBLE`; составные ключи не ищутся.
+
+## Рабочие пространства
+
+`workspace`: отдельный файл DuckDB на датасет — `<root>/<owner_id>/<dataset_id>.duckdb`. `create_workspace(root, owner_id, source_kind)` даёт новый `ds_<hex>` и соединение, `open_workspace(root, owner_id, dataset_id)` открывает только свой датасет: владелец сверяется по пути и по таблице `_djedai_dataset` внутри файла. Чужой и несуществующий датасет дают одинаковый `DatasetAccessError` («Датасет не найден или недоступен»); идентификаторы — только `[A-Za-z0-9_-]`, до 64 символов, поэтому выйти из `root` нельзя. `owner_id` должен приходить из проверенной сессии (AUTH-3, #103), а не из запроса клиента или текста модели.
+
 Реализация предоставляет согласованный Python-интерфейс backend и аналитике. HTTP-обработчики находятся в `backend/`, аналитические функции — в `analytics/`. Пользовательские файлы, локальные БД и выгрузки не храним в исходном коде.
