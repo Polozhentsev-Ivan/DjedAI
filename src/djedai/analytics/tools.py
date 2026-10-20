@@ -19,8 +19,14 @@ def _quote_id(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
+def run_sql(
+    sql: str,
+    max_rows: int = 5000,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> ToolResult:
     """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
+    con = None
     try:
         # 1. ПАРСИМ SQL
         try:
@@ -49,11 +55,12 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
             )
 
         # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
-        con = duckdb.connect(database=":memory:")
+        con = connection if connection is not None else duckdb.connect(database=":memory:")
         con.execute("SET enable_external_access = false;")
 
-        con.execute("CREATE TABLE test (id INT, name VARCHAR)")
-        con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
+        if connection is None:
+            con.execute("CREATE TABLE test (id INT, name VARCHAR)")
+            con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
 
         timer = threading.Timer(30.0, con.interrupt)
         timer.start()
@@ -116,6 +123,9 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 suggestion=suggestion,
             ),
         )
+    finally:
+        if connection is None and con is not None:
+            con.close()
 
 
 # --- ОПИСАТЕЛЬНЫЕ ИНСТРУМЕНТЫ (B2-3) ---
@@ -133,9 +143,9 @@ def _get_mock_connection():
     return con
 
 
-def describe_dataset() -> ToolResult:
+def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
     try:
         tables = con.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
@@ -198,9 +208,11 @@ def describe_dataset() -> ToolResult:
         )
 
 
-def describe_column(table: str, column: str) -> ToolResult:
+def describe_column(
+    table: str, column: str, *, connection: duckdb.DuckDBPyConnection | None = None
+) -> ToolResult:
     """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
     try:
         # [P1] Проверка через параметры
         col_check = con.execute(
@@ -333,10 +345,13 @@ def value_counts(
     column: str,
     top_n: int = 10,
     filter: str | None = None,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
 ) -> ToolResult:
     """Возвращает топ-N самых частых значений в колонке."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
     try:
+        con.execute("SET enable_external_access = false;")
         col_check = con.execute(
             "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
             [table, column],

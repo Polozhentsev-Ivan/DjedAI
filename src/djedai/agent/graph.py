@@ -19,11 +19,16 @@ from djedai.contracts.agent import (
 from djedai.contracts.tool_result import ToolError, ToolResult
 
 
-def load_ctx(state: AgentState) -> dict:
+def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     """Loads the catalog and context for the specific dataset, and resets per-turn state."""
-    # Stub: Real implementation will fetch from DB based on state["dataset_id"]
+    catalog_loader = config.get("configurable", {}).get("catalog_loader")
+    catalog_prompt = (
+        catalog_loader(state["dataset_id"]).to_prompt()
+        if catalog_loader is not None
+        else f"Catalog mapped for {state.get('dataset_id')}"
+    )
     return {
-        "catalog_prompt": f"Catalog mapped for {state.get('dataset_id')}",
+        "catalog_prompt": catalog_prompt,
         "results": [],
         "charts": [],
         "answer_blocks": [],
@@ -164,6 +169,8 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         state.get("understanding").resolved_question if state.get("understanding") else None
     )
     user_prompt = user_prompt or last_msg or "Explain the results."
+    if last_msg and user_prompt != last_msg:
+        user_prompt += f"\nOriginal question and response requirements: {last_msg}"
 
     if client:
         response = client.generate_typed_response(sys_prompt, user_prompt, ComposeResponse)
