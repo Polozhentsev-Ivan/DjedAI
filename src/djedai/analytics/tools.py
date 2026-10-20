@@ -37,25 +37,7 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 ),
             )
 
-        # 3. ДОБАВЛЯЕМ ЛИМИТ (на уровне SQL, чтобы база не считала лишнее)
-        # Проверяем, есть ли LIMIT в запросе. Если нет или он больше max_rows — ставим свой.
-        limit_node = parsed.args.get("limit")
-        rewrite_limit = True
-        if limit_node:
-            try:
-                # Пытаемся вытащить число из LIMIT. Если там LIMIT ALL — выдаст ошибку,
-                # и мы перезапишем.
-                limit_val = int(limit_node.expression.this)
-                if limit_val <= max_rows:
-                    rewrite_limit = False  # Если лимит адекватный, оставляем как есть
-            except Exception:
-                pass  # Если не смогли распарсить, принудительно перезапишем
-
-        if rewrite_limit:
-            parsed = parsed.limit(max_rows)
-            sql = parsed.sql(dialect="duckdb")
-
-        # 4. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
+        # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = duckdb.connect(database=":memory:")
 
         # [P1] БЛОКИРУЕМ ВНЕШНИЕ ИСТОЧНИКИ (чтение файлов, сеть) НА УРОВНЕ ДВИЖКА
@@ -70,14 +52,16 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
         timer.start()
 
         try:
-            cursor = con.execute(sql)
+            # Лимит на уровне relation ограничивает работу движка, сохраняя
+            # исходные LIMIT/FETCH, ORDER BY, OFFSET и повторяющиеся имена колонок.
+            cursor = con.sql(sql).limit(max_rows).execute()
             # [P2] FETCHMANY гарантирует, что в память Python попадет не больше строк, чем max_rows
             result = cursor.fetchmany(max_rows)
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
         finally:
             timer.cancel()
 
-        # 5. УПАКОВЫВАЕМ
+        # 4. УПАКОВЫВАЕМ
         data = {
             "columns": columns,
             "rows": result,

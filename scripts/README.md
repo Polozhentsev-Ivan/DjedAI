@@ -6,8 +6,17 @@ Python-команды запускаем в среде проекта через
 
 ## Команды
 
-- `generate_synthetic_data.py` — генерация синтетических CSV-файлов магазинов, товаров и продаж с аномалиями и сезонностью в `tests/fixtures/synthetic/`.
+- `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
   - Запуск: `uv run python scripts/generate_synthetic_data.py`
+  - В другую папку: `uv run python scripts/generate_synthetic_data.py --output-dir /tmp/djedai-synthetic`
+  - `campaigns.csv`: `date` в формате `dd.mm.yyyy`, `activity` — 1 в день рекламного импульса, 0 в остальные дни. Отклик вычисляется по дневному числу записей в `sales.csv`.
+  - Полные копии продаж сохраняют исходный `sale_id`; ключ дубля — все колонки, число лишних копий — 208 (5% от 4168 исходных записей с округлением). Генератор не меняет эталоны автоматически.
+- `verify_synthetic_data.py` — независимая сверка CSV с `eval/synthetic_expectations.json` средствами стандартной библиотеки Python, без аналитических функций приложения.
+  - Проверка сохранённых CSV: `uv run python scripts/verify_synthetic_data.py`
+  - Проверка другой папки: `uv run python scripts/verify_synthetic_data.py --data-dir /tmp/djedai-synthetic`
+  - Лаг определяется максимумом корреляции рекламной активности и дневного числа продаж при сдвигах 0–14 дней. Источник сигнала — CSV; эталонный лаг не используется в расчёте.
+  - Сезонность измеряется числом сырых записей: декабрь, 861 строка. Денежный максимум отдельно: апрель, 253 427 853,81 RUB. Суммы считаются через `Decimal`, до скидки; дубли, пропуски количества и аномалии включены. Это эталоны до очистки; меры, агрегации, единицы и политики перечислены в JSON.
+  - Код выхода 0 — эталоны совпали, 1 — несовпадение или неполные входные данные. В тестах две генерации во временные папки побайтово сравниваются с сохранёнными CSV.
 - `export_schema.py` — экспорт полной схемы OpenAPI и отдельных JSON Schema контрактов для генерации TypeScript-типов frontend (#92, #83).
   - Проверка схемы: `uv run python scripts/export_schema.py --check`
   - Экспорт OpenAPI в файл: `uv run python scripts/export_schema.py -o openapi.json`

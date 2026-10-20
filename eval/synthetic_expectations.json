@@ -1,21 +1,101 @@
 {
-  "description": "Эталонные ожидания для синтетического датасета. Данные содержат намеренно грязные форматы (даты dd.mm.yyyy, деньги с рублями, проценты со знаком, пропуски в количестве).",
+  "description": "Эталоны CSV генератора с seed=42. Проверка: python scripts/verify_synthetic_data.py. Деньги заданы строками с точностью до копейки.",
+  "seed": 42,
+  "calendar": {"start": "01.01.2023", "end": "31.12.2023"},
+  "lag_search_days": [0, 14],
+  "populations": {
+    "raw_sales": "Все строки sales.csv: полные дубли, пропуски quantity ('', '-', 'n/a') и аномалии quantity=1000 включены. total_amount — записанная валовая сумма до скидки, без повторного расчёта по quantity. Аномалии влияют на суммы. Даты dd.mm.yyyy; деньги RUB; календарные месяцы 2023 года.",
+    "full_row_duplicates": "Ключ дубля — все колонки sales.csv, включая sale_id. Число дублей = число строк минус число уникальных полных строк; первая строка группы не считается дублем. Копии сохраняют исходный sale_id. Пропуски и аномалии не исключаются.",
+    "campaign_response": "Сигнал — campaigns.csv: одна запись на календарный день, activity=1 для импульса, 0 иначе. Отклик — дневной COUNT(*) сырых строк sales.csv: дубли, пропуски quantity и аномалии включены. Лаг — единственный положительный максимум корреляции Пирсона activity[d] с COUNT(sales[d+lag]) на общих датах; поиск включительно в lag_search_days. Дата отклика = дата экспортированного импульса плюс рассчитанный лаг."
+  },
   "metrics": {
     "total_rows_in_sales": {
       "expected_value": 4376,
-      "description": "Общее количество строк в таблице sales (включая дубли)."
+      "measure": "sales rows",
+      "aggregation": "COUNT(*)",
+      "unit": "rows",
+      "population": "raw_sales",
+      "description": "Объём исходной выгрузки продаж до очистки."
+    },
+    "duplicate_rows": {
+      "expected_value": 208,
+      "measure": "excess identical rows",
+      "aggregation": "COUNT(*) - COUNT(DISTINCT all columns)",
+      "unit": "rows",
+      "population": "full_row_duplicates",
+      "description": "Число полных копий, которые должна удалить очистка дублей."
+    },
+    "missing_quantity_rows": {
+      "expected_value": 210,
+      "measure": "quantity in ('', '-', 'n/a')",
+      "aggregation": "COUNT(*) WHERE quantity is a missing marker",
+      "unit": "rows",
+      "population": "raw_sales",
+      "description": "Число строк с намеренными пропусками количества; суммы этих строк сохраняются."
     },
     "seasonality_peak_month": {
       "expected_value": 12,
-      "description": "Пик продаж приходится на декабрь."
+      "measure": "monthly sales row count",
+      "aggregation": "ARGMAX over months of COUNT(*); earliest month breaks ties",
+      "unit": "calendar month number",
+      "population": "raw_sales",
+      "description": "Декабрь — пик частоты записей продаж, а не денежной выручки."
+    },
+    "seasonality_peak_rows": {
+      "expected_value": 861,
+      "measure": "monthly sales row count",
+      "aggregation": "MAX over months of COUNT(*)",
+      "unit": "rows/month",
+      "population": "raw_sales",
+      "description": "Число записей продаж в декабрьском пике сезонности."
+    },
+    "revenue_peak_month": {
+      "expected_value": 4,
+      "measure": "monthly gross amount before discounts",
+      "aggregation": "ARGMAX over months of SUM(parsed total_amount); earliest month breaks ties",
+      "unit": "calendar month number",
+      "population": "raw_sales",
+      "description": "Апрель — максимум сырых денежных сумм; на него влияют аномально большие покупки."
+    },
+    "revenue_peak_amount": {
+      "expected_value": "253427853.81",
+      "measure": "monthly gross amount before discounts",
+      "aggregation": "MAX over months of SUM(parsed total_amount), exact decimal arithmetic",
+      "unit": "RUB/month",
+      "population": "raw_sales",
+      "description": "Валовая сумма апреля с дублями и аномалиями; диагностический эталон до очистки."
+    },
+    "lag_days": {
+      "expected_value": 5,
+      "measure": "delay of sales row count response to advertising activity",
+      "aggregation": "ARGMAX Pearson correlation over integer lag_search_days",
+      "unit": "calendar days",
+      "population": "campaign_response",
+      "description": "Сдвиг между экспортированной рекламной активностью и числом продаж."
     },
     "lag_spike_date": {
       "expected_value": "06.06.2023",
-      "description": "Пик продаж после рекламной кампании 01.06.2023 (лаг 5 дней). Формат даты в файле: dd.mm.yyyy."
+      "measure": "campaign response date",
+      "aggregation": "exported campaign impulse date + calculated lag_days",
+      "unit": "date dd.mm.yyyy",
+      "population": "campaign_response",
+      "description": "Дата отклика на кампанию; дата кампании и лаг не берутся из кода генератора."
+    },
+    "lag_spike_rows": {
+      "expected_value": 49,
+      "measure": "sales rows on calculated response date",
+      "aggregation": "COUNT(*) WHERE date = calculated response date",
+      "unit": "rows/day",
+      "population": "campaign_response",
+      "description": "Число записей продаж в день рекламного отклика."
     },
     "anomalies_max_amount": {
-      "expected_value": 48266240.0,
-      "description": "Максимальная сумма покупки (аномалия). В сырых данных лежит как строка '48 266 240,00 руб.'"
+      "expected_value": "48266240.00",
+      "measure": "gross amount of one sales row before discount",
+      "aggregation": "MAX(parsed total_amount), exact decimal arithmetic",
+      "unit": "RUB/sales row",
+      "population": "raw_sales",
+      "description": "Самая большая покупка в сырой выгрузке, контроль намеренной денежной аномалии."
     }
   }
 }
