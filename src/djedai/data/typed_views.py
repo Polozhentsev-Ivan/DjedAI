@@ -269,24 +269,33 @@ def _ensure_tables(connection: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def _view_name(connection: duckdb.DuckDBPyConnection, raw_table: str) -> str:
-    """Имя представления — имя сырой таблицы без ``raw_``; при коллизии суффикс ``_typed``.
+def _view_name(
+    connection: duckdb.DuckDBPyConnection, raw_table: str, base: str | None = None
+) -> str:
+    """Имя представления — ``base`` или имя сырой таблицы без ``raw_``; при коллизии ``_typed``.
 
-    Занятыми считаются таблицы, чужие представления DuckDB и представления других
-    raw-таблиц из реестра. Своё прежнее представление можно пересоздать под тем же именем.
+    Занятыми считаются таблицы, чужие представления текущей БД DuckDB и представления
+    других raw-таблиц из реестра; таблицы подключённых БД (``ATTACH``) имя не занимают.
+    Своё прежнее представление можно пересоздать под тем же именем.
     """
-    base = raw_table.removeprefix("raw_") or raw_table
+    base = base or raw_table.removeprefix("raw_") or raw_table
     own = {
         r[0]
         for r in connection.execute(
             f"SELECT view_name FROM {COLUMNS_TABLE} WHERE raw_table = ?", [raw_table]
         ).fetchall()
     }
-    taken = {r[0] for r in connection.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+    here = "database_name = current_database()"
+    taken = {
+        r[0]
+        for r in connection.execute(
+            f"SELECT table_name FROM duckdb_tables() WHERE {here}"
+        ).fetchall()
+    }
     taken |= {
         r[0]
         for r in connection.execute(
-            "SELECT view_name FROM duckdb_views() WHERE NOT internal"
+            f"SELECT view_name FROM duckdb_views() WHERE NOT internal AND {here}"
         ).fetchall()
     } - own
     taken |= {
