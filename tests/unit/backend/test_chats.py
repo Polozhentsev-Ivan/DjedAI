@@ -568,9 +568,9 @@ async def test_stream_proxy_unbuffered_and_events(
                 health_lat = time.perf_counter() - t0
                 assert health_resp.status_code == 200
                 assert health_resp.json()["status"] == "ok"
-                assert (
-                    health_lat < 0.2
-                ), f"/api/health задержан ({health_lat*1000:.1f}мс), event loop заблокирован"
+                assert health_lat < 0.2, (
+                    f"/api/health задержан ({health_lat * 1000:.1f}мс), event loop заблокирован"
+                )
 
                 # Отпускаем барьер и дочитываем остаток потока
                 barrier1.set()
@@ -668,9 +668,9 @@ async def test_stream_proxy_unbuffered_and_events(
             await anyio.sleep(0.1)
             barrier3.set()
             await anyio.sleep(0.1)
-            assert (
-                not graph3.completed.is_set()
-            ), "Граф не должен завершаться после Node AbortController"
+            assert not graph3.completed.is_set(), (
+                "Граф не должен завершаться после Node AbortController"
+            )
             with factory() as db:
                 messages = get_chat_messages(db, chat.chat_id)
                 assistant_messages = [m for m in messages if m.role == "assistant"]

@@ -115,8 +115,15 @@ class ClosableStreamingResponse(StreamingResponse):
                     pass
 
 
+def _require_chat(chat_id: str, db: DbSession) -> None:
+    """Проверяет существование чата в рабочем потоке FastAPI до открытия SSE."""
+    if get_chat_record(db, chat_id) is None:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+
+
 @router.post(
     "/{chat_id}/messages",
+    dependencies=[Depends(_require_chat)],
     responses={
         200: {
             "content": {
@@ -134,15 +141,10 @@ async def send_chat_message(
     chat_id: str,
     payload: SendMessageRequest,
     request: Request,
-    db: DbSession,
     session_factory: DbSessionFactory,
     runtime: AgentRuntimeDep,
 ) -> StreamingResponse:
     """Сохраняет вопрос и отдаёт ответ агента потоком SSE вне event loop."""
-    chat = get_chat_record(db, chat_id)
-    if chat is None:
-        raise HTTPException(status_code=404, detail="Чат не найден")
-
     cancel_event = threading.Event()
     queue: asyncio.Queue[str | object] = asyncio.Queue()
     done_sentinel = object()
@@ -175,9 +177,7 @@ async def send_chat_message(
                 pass
             loop.call_soon_threadsafe(queue.put_nowait, done_sentinel)
 
-    worker_thread = threading.Thread(
-        target=worker, name=f"chat-agent-{chat_id}", daemon=True
-    )
+    worker_thread = threading.Thread(target=worker, name=f"chat-agent-{chat_id}", daemon=True)
     worker_thread.start()
 
     async def frames() -> AsyncIterator[str]:
