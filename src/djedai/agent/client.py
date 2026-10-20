@@ -11,12 +11,23 @@ class ModelResponse[T: BaseModel](BaseModel):
     error_type: str | None = None
     message: str | None = None
     raw_response: Any = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    finish_reason: str | None = None
 
 
 class BIModelClient:
-    def __init__(self, api_key: str, base_url: str, model_name: str, timeout: float = 15.0):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model_name: str,
+        timeout: float = 15.0,
+        max_output_tokens: int | None = None,
+    ):
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=2)
         self.model = model_name
+        self.max_output_tokens = max_output_tokens
 
     def generate_typed_response[T: BaseModel](
         self, system_prompt: str, user_prompt: str, response_model: type[T]
@@ -37,7 +48,15 @@ class BIModelClient:
                 ],
                 response_format=structured_format,
                 temperature=0.1,
+                **({"max_tokens": self.max_output_tokens} if self.max_output_tokens else {}),
             )
+
+            if response.choices[0].finish_reason == "length":
+                return ModelResponse(
+                    status="error",
+                    error_type="OUTPUT_LIMIT",
+                    message="Model output token limit reached.",
+                )
 
             raw_content = response.choices[0].message.content.strip()
 
@@ -49,7 +68,13 @@ class BIModelClient:
             parsed_json = json.loads(clean_content)
             validated_data = response_model.model_validate(parsed_json)
 
-            return ModelResponse(status="success", data=validated_data)
+            return ModelResponse(
+                status="success",
+                data=validated_data,
+                prompt_tokens=response.usage.prompt_tokens if response.usage else None,
+                completion_tokens=response.usage.completion_tokens if response.usage else None,
+                finish_reason=response.choices[0].finish_reason,
+            )
 
         except json.JSONDecodeError as e:
             return ModelResponse(

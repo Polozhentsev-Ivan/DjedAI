@@ -88,3 +88,15 @@ def test_snapshot_does_not_present_failed_or_stale_data_as_fresh(example, invali
         snapshot["widgets"][1]["result_id"] = "r_different"
     with pytest.raises(ValueError):
         DashboardSnapshot.model_validate(snapshot)
+
+
+def test_first_refresh_failure_retains_template_without_inventing_result(example):
+    snapshot = deepcopy(example["partial_failure"])
+    snapshot["widgets"][0]["chart"].pop("result_id", None)
+    parsed = DashboardSnapshot.model_validate(snapshot)
+    assert "result_id" not in parsed.widgets[0].chart.model_dump()
+    assert parsed.widgets[0].result_id is None
+    assert DashboardSnapshot.model_validate_json(parsed.model_dump_json()) == parsed
+    snapshot["widgets"][0].update(status="ok", error=None)
+    with pytest.raises(ValueError):
+        DashboardSnapshot.model_validate(snapshot)

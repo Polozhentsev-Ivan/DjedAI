@@ -196,9 +196,138 @@
             "title": "Chart Id",
             "type": "string"
           },
+          "type": {
+            "description": "Тип графика",
+            "enum": [
+              "line",
+              "bar",
+              "area",
+              "scatter",
+              "pie",
+              "histogram",
+              "heatmap",
+              "box",
+              "table",
+              "kpi"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "title": {
+            "description": "Понятный заголовок для бизнес-пользователя",
+            "title": "Title",
+            "type": "string"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Краткий вывод или подзаголовок",
+            "title": "Subtitle"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/XAxis"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ось X"
+          },
+          "y": {
+            "description": "Меры по оси Y",
+            "items": {
+              "$ref": "#/components/schemas/YMeasure"
+            },
+            "title": "Y",
+            "type": "array"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColorField"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Цветовая группировка"
+          },
+          "orientation": {
+            "default": "vertical",
+            "description": "Ориентация столбцов",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "title": "Orientation",
+            "type": "string"
+          },
+          "stacked": {
+            "default": false,
+            "description": "Наложение рядов",
+            "title": "Stacked",
+            "type": "boolean"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SortSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Сортировка"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Лимит отображаемых категорий/точек",
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "annotations": {
+            "description": "Текстовые метки на точках",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
           "result_id": {
             "description": "ID результата вычислений в хранилище результатов",
             "title": "Result Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chart_id",
+          "type",
+          "title",
+          "result_id"
+        ],
+        "title": "ChartSpec",
+        "type": "object"
+      },
+      "ChartTemplate": {
+        "additionalProperties": false,
+        "description": "Визуальные настройки, сохраняемые до первого успешного вычисления.",
+        "properties": {
+          "chart_id": {
+            "description": "Уникальный идентификатор графика",
+            "title": "Chart Id",
             "type": "string"
           },
           "type": {
@@ -314,11 +443,10 @@
         },
         "required": [
           "chart_id",
-          "result_id",
           "type",
           "title"
         ],
-        "title": "ChartSpec",
+        "title": "ChartTemplate",
         "type": "object"
       },
       "ChatDetail": {
@@ -900,6 +1028,52 @@
         "title": "Dashboard",
         "type": "object"
       },
+      "DashboardCreate": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "dashboard_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dashboard Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "result_id": {
+            "type": "string",
+            "title": "Result Id"
+          },
+          "chart": {
+            "$ref": "#/components/schemas/ChartSpec"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "result_id",
+          "chart"
+        ],
+        "title": "DashboardCreate",
+        "description": "Сохранение графика в новый или существующий дашборд; рецепт восстанавливает сервер."
+      },
       "DashboardLinkBlock": {
         "additionalProperties": false,
         "description": "Ссылка на созданный или предложенный дашборд.",
@@ -927,6 +1101,53 @@
         ],
         "title": "DashboardLinkBlock",
         "type": "object"
+      },
+      "DashboardPatch": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "remove_widget_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Widget Ids"
+          },
+          "layout": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/WidgetLayout"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DashboardPatch"
       },
       "DashboardSnapshot": {
         "additionalProperties": false,
@@ -1011,6 +1232,42 @@
         "title": "DashboardSnapshot",
         "type": "object"
       },
+      "DashboardSummary": {
+        "properties": {
+          "dashboard_id": {
+            "type": "string",
+            "title": "Dashboard Id"
+          },
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dashboard_id",
+          "dataset_id",
+          "title"
+        ],
+        "title": "DashboardSummary"
+      },
       "DashboardWidget": {
         "additionalProperties": false,
         "description": "Виджет дашборда со схемой пересчета и визуализацией.",
@@ -1044,18 +1301,8 @@
             "default": null
           },
           "chart": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "ChartSpec без result_id — подставляется при рендере",
-            "title": "Chart"
+            "$ref": "#/components/schemas/ChartTemplate",
+            "description": "Настройки графика без временного result_id"
           },
           "caption": {
             "anyOf": [
@@ -1077,6 +1324,7 @@
         },
         "required": [
           "widget_id",
+          "chart",
           "layout"
         ],
         "title": "DashboardWidget",
@@ -2574,7 +2822,15 @@
             "default": null
           },
           "chart": {
-            "$ref": "#/components/schemas/ChartSpec"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "$ref": "#/components/schemas/ChartTemplate"
+              }
+            ],
+            "title": "Chart"
           },
           "caption": {
             "anyOf": [

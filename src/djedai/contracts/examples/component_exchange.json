@@ -306,7 +306,6 @@
         },
         "chart": {
           "chart_id": "chart_count",
-          "result_id": "r_count_1",
           "type": "kpi",
           "title": "Число строк",
           "subtitle": null,

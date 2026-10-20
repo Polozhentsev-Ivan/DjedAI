@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from djedai.contracts.chart import ChartSpec
+from djedai.contracts.chart import ChartSpec, ChartTemplate
 from djedai.contracts.tool_result import ToolError
 
 
@@ -75,9 +75,7 @@ class DashboardWidget(BaseModel):
         default=None, description="Независимый одиночный вызов; для цепочки используют recipe"
     )
     recipe: WidgetRecipe | None = None
-    chart: dict[str, Any] | None = Field(
-        default=None, description="ChartSpec без result_id — подставляется при рендере"
-    )
+    chart: ChartTemplate = Field(description="Настройки графика без временного result_id")
     caption: str | None = Field(default=None, description="Краткий текстовый вывод или инсайт")
     layout: WidgetLayout = Field(description="Расположение на сетке")
 
@@ -112,7 +110,7 @@ class Dashboard(BaseModel):
 class WidgetSnapshot(DashboardWidget):
     """Ответ refresh: рецепт вместе с результатом последнего запуска виджета."""
 
-    chart: ChartSpec
+    chart: ChartSpec | ChartTemplate
     result_id: str | None
     status: Literal["ok", "error", "empty"]
     error: ToolError | None = None
@@ -122,7 +120,11 @@ class WidgetSnapshot(DashboardWidget):
         if self.status == "error":
             if self.error is None or self.result_id is not None:
                 raise ValueError("Ошибка виджета требует error и result_id=null")
-        elif self.error is not None or self.result_id != self.chart.result_id:
+        elif (
+            self.error is not None
+            or not isinstance(self.chart, ChartSpec)
+            or self.result_id != self.chart.result_id
+        ):
             raise ValueError("Успешный виджет ссылается на актуальный result_id графика")
         return self
 
@@ -131,3 +133,38 @@ class DashboardSnapshot(Dashboard):
     """Отдельный wire-формат GET/refresh: сохранённый Dashboard и исход каждого виджета."""
 
     widgets: list[WidgetSnapshot]
+
+
+class DashboardSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dashboard_id: str
+    dataset_id: str
+    title: str
+    refreshed_at: AwareDatetime | None = None
+
+
+class DashboardCreate(BaseModel):
+    """Сохранение графика в новый или существующий дашборд; рецепт восстанавливает сервер."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dataset_id: str
+    dashboard_id: str | None = None
+    title: str | None = None
+    result_id: str
+    chart: ChartSpec
+
+    @model_validator(mode="after")
+    def same_result(self) -> DashboardCreate:
+        if self.result_id != self.chart.result_id:
+            raise ValueError("График должен ссылаться на сохраняемый результат")
+        return self
+
+
+class DashboardPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str | None = Field(default=None, min_length=1)
+    remove_widget_ids: list[str] | None = None
+    layout: dict[str, WidgetLayout] | None = None

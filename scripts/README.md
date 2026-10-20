@@ -20,9 +20,10 @@ HTTP-сервер, UI, Compose и регистрация не нужны; исп
 Секрет в командную строку передавать не требуется. Используются
 [DeepInfra Chat Completions](https://docs.deepinfra.com/chat/overview):
 `https://api.deepinfra.com/v1/openai`, модель
-[`Qwen/Qwen3-235B-A22B-Instruct-2507`](https://deepinfra.com/Qwen/Qwen3-235B-A22B-Instruct-2507).
+[`Qwen/Qwen3.6-35B-A3B`](https://deepinfra.com/Qwen/Qwen3.6-35B-A3B) (35B суммарных параметров).
 Модель возвращает типизированные JSON-ответы; ключ безуспешным ответом заглушки не заменяется.
-Адрес и модель можно изменить через `--base-url` и `--model`; из `.env` скрипт берёт ключ.
+Адрес и модель можно изменить через `--base-url` и `--model`; из `.env` скрипт берёт ключ,
+`MODEL_TIMEOUT_SECONDS` и `MODEL_MAX_OUTPUT_TOKENS`.
 
 Из корня репозитория:
 
@@ -69,6 +70,12 @@ uv run --locked pytest tests/integration/test_cp1_smoke.py -q
 Python-команды запускаем в среде проекта через uv. Серверная логика приложения остаётся в `src/djedai/`, браузерный интерфейс — в [frontend/](../frontend/README.md); отчёты и выгрузки — вне исходного кода. Текущие `check-repository.mjs` и его тесты проверяют структуру, UTF-8, локальные ссылки и запрет сгенерированных файлов. Frontend npm scripts и его CI появятся в B4-1 / #83 вместе с рабочим каркасом.
 
 ## Команды
+
+- `benchmark_model_profiles.py` — реальная серия Understand/Plan/Compose через API без пользовательских данных: отдельно считает валидность схем и корректность ответа/SQL, latency и prompt tokens. Ошибочный план записывает как неуспех, не обрывая серию. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
+  - Запуск: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --repeats 3 --context-lines 200`
+  - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
+  - Сравнение: повторить `--model` для каждого профиля. `--base-url`, `--timeout`, `--max-output-tokens`, `--context-lines` задают параметры замера. Ограничение проекта — открытые веса до 80B суммарных параметров.
+  - Результаты и ограничения выбранного профиля: [протокол PL-1](../docs/model-profile-pl1.md). Это минимальная диагностика, не полный eval #81.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
   - Запуск: `uv run python scripts/generate_synthetic_data.py`

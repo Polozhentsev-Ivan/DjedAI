@@ -35,9 +35,11 @@ class Settings(LimitSettings):
     app_database_url: str = Field(default="sqlite:///./var/app.db", alias="APP_DATABASE_URL")
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
 
-    # Параметры инференса модели (vLLM / локальный endpoint)
-    model_base_url: str = Field(default="http://localhost:8000/v1", alias="MODEL_BASE_URL")
-    model_name: str = Field(default="Qwen/Qwen2.5-Coder-32B-Instruct", alias="MODEL_NAME")
+    # Согласованный управляемый профиль PL-1; совместимый endpoint можно переопределить.
+    model_base_url: str = Field(
+        default="https://api.deepinfra.com/v1/openai", alias="MODEL_BASE_URL"
+    )
+    model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
 
     # Сетевая политика (исходящий трафик только по whitelist)

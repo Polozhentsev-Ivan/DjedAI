@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from djedai.contracts import (
     AssistantMessage,
     ChartSpec,
+    ChartTemplate,
     ClarificationBlock,
     Dashboard,
     DashboardWidget,
@@ -92,6 +93,7 @@ def test_dashboard_model() -> None:
             DashboardWidget(
                 widget_id="w_1",
                 tool_call=WidgetToolCall(tool="time_aggregate", params={"freq": "month"}),
+                chart=ChartTemplate(chart_id="chart_growth", type="kpi", title="Рост продаж"),
                 caption="Рост продаж",
                 layout=WidgetLayout(x=0, y=0, w=6, h=4),
             )

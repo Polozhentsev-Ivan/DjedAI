@@ -5,7 +5,7 @@ import { formatCount, formatDate, formatMillions, formatMoney, formatPercent } f
 import type { EChartsCoreOption } from './echarts';
 import type { ChartTheme } from './theme';
 
-type Spec = Schemas['ChartSpec'];
+type Spec = Schemas['ChartTemplate'];
 type Data = Schemas['ResultData'];
 type Measure = Schemas['ChartMeasure'];
 type Cell = string | number | boolean | null;

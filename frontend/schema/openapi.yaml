@@ -363,6 +363,9 @@ components:
     ChartSpec:
       $ref: './contracts.json#/components/schemas/ChartSpec'
 
+    ChartTemplate:
+      $ref: './contracts.json#/components/schemas/ChartTemplate'
+
     Fact:
       $ref: './contracts.json#/components/schemas/Fact'
 
@@ -437,33 +440,16 @@ components:
       $ref: './contracts.json#/components/schemas/WidgetSnapshot'
 
     DashboardSummary:
-      type: object
-      required: [dashboard_id, dataset_id, title]
-      properties:
-        dashboard_id: { type: string }
-        dataset_id: { type: string }
-        title: { type: string }
-        refreshed_at: { type: [string, 'null'], format: date-time }
+      $ref: './contracts.json#/components/schemas/DashboardSummary'
+
     Dashboard:
       $ref: './contracts.json#/components/schemas/DashboardSnapshot'
 
     DashboardCreate:
-      type: object
-      required: [dataset_id, result_id, chart]
-      properties:
-        dataset_id: { type: string }
-        dashboard_id: { type: string, description: Existing dashboard to add to; a new one is created when omitted }
-        title: { type: string }
-        result_id: { type: string }
-        chart: { $ref: '#/components/schemas/ChartSpec' }
+      $ref: './contracts.json#/components/schemas/DashboardCreate'
+
     DashboardPatch:
-      type: object
-      properties:
-        title: { type: string }
-        remove_widget_ids: { type: array, items: { type: string } }
-        layout:
-          type: object
-          additionalProperties: { $ref: '#/components/schemas/WidgetLayout' }
+      $ref: './contracts.json#/components/schemas/DashboardPatch'
 
     StreamError:
       $ref: './contracts.json#/components/schemas/SSEErrorData'

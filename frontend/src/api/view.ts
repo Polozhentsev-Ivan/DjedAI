@@ -156,7 +156,7 @@ export function formatMeasure(value: unknown, format: Schemas['ChartMeasure']['f
 }
 
 /** KPI card from a one-row result: main measure, delta facts and the other measures. */
-export function kpiView(chart: Schemas['ChartSpec'], data: Schemas['ResultData'], result: Schemas['ToolResultMeta'] | undefined): Kpi | null {
+export function kpiView(chart: Schemas['ChartTemplate'], data: Schemas['ResultData'], result: Schemas['ToolResultMeta'] | undefined): Kpi | null {
   const row = data.rows?.[0];
   const [main, ...rest] = chart.y ?? [];
   if (!row || !main) return null;

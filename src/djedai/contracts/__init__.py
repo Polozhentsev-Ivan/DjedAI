@@ -22,6 +22,7 @@ from djedai.contracts.catalog import (
 from djedai.contracts.chart import (
     Annotation,
     ChartSpec,
+    ChartTemplate,
     ChartType,
     ColorField,
     SortSpec,
@@ -39,7 +40,10 @@ from djedai.contracts.chat import (
 from djedai.contracts.common import DatasetDetail, DatasetSummary, ErrorResponse, HealthCheck
 from djedai.contracts.dashboard import (
     Dashboard,
+    DashboardCreate,
+    DashboardPatch,
     DashboardSnapshot,
+    DashboardSummary,
     DashboardWidget,
     WidgetLayout,
     WidgetRecipe,
@@ -109,6 +113,7 @@ __all__ = [
     # Визуализация
     "Annotation",
     "ChartSpec",
+    "ChartTemplate",
     "ChartType",
     "ColorField",
     "SortSpec",
@@ -133,7 +138,10 @@ __all__ = [
     "TraceStep",
     # Дашборды
     "Dashboard",
+    "DashboardCreate",
+    "DashboardPatch",
     "DashboardSnapshot",
+    "DashboardSummary",
     "DashboardWidget",
     "WidgetLayout",
     "WidgetRecipe",

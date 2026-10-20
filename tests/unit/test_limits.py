@@ -26,6 +26,9 @@ def clear_limits_cache():
         ("TOOL_TIMEOUT_SECONDS", 0),
         ("TOOL_TIMEOUT_SECONDS", float("inf")),
         ("DASHBOARD_MAX_TOOL_CALLS", 0),
+        ("MODEL_TIMEOUT_SECONDS", 0),
+        ("MODEL_MAX_OUTPUT_TOKENS", 0),
+        ("MODEL_CONTEXT_TOKENS", 2048),
     ],
 )
 def test_invalid_limits_fail_before_execution(field: str, value: float):

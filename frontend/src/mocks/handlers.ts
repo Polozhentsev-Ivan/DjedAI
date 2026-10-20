@@ -30,12 +30,13 @@ function errorJson(status: number, error: Schemas['ErrorBody']) {
 type SseFrame = readonly [string, unknown];
 
 /** text/event-stream response that sends frames one by one with a pause. */
-function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal): HttpResponse<ReadableStream> {
+function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal, beforeSend?: (event: string) => void): HttpResponse<ReadableStream> {
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       for (const [event, data] of frames) {
         if (signal.aborted) break;
         if (tick > 0) await delay(tick);
+        beforeSend?.(event);
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       }
       controller.close();
@@ -153,10 +154,10 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     http.get(api('/datasets/:id/events'), ({ params, request }) => {
       const id = String(params.id);
       const frames = profilingFrames(id);
-      const ok = frames.at(-1)?.[0] === 'done';
-      // The mock finishes the job when the stream is opened; a real backend would run it in the background.
-      setTimeout(() => { finishProfiling(id, ok); }, tick * frames.length);
-      return eventStream(frames, tick, request.signal);
+      // Persist the outcome before the terminal event causes the client to reload the list.
+      return eventStream(frames, tick, request.signal, (event) => {
+        if (event === 'done' || event === 'error') finishProfiling(id, event === 'done');
+      });
     }),
 
     http.get(api('/chats'), async ({ request }) => {
@@ -206,9 +207,12 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       if (scenario() !== 'error') return HttpResponse.json(dashboard);
       return HttpResponse.json({
         ...dashboard,
-        widgets: dashboard.widgets.map((w) => (w.widget_id === 'w_cat'
-          ? { ...w, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } }
-          : w)),
+        widgets: dashboard.widgets.map((w) => {
+          if (w.widget_id !== 'w_cat') return w;
+          const chart: Schemas['ChartTemplate'] & { result_id?: string } = { ...w.chart };
+          delete chart.result_id;
+          return { ...w, chart, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } };
+        }),
       });
     }),
 

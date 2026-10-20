@@ -528,10 +528,82 @@ export interface components {
              */
             chart_id: string;
             /**
+             * Type
+             * @description Тип графика
+             * @enum {string}
+             */
+            type: "line" | "bar" | "area" | "scatter" | "pie" | "histogram" | "heatmap" | "box" | "table" | "kpi";
+            /**
+             * Title
+             * @description Понятный заголовок для бизнес-пользователя
+             */
+            title: string;
+            /**
+             * Subtitle
+             * @description Краткий вывод или подзаголовок
+             * @default null
+             */
+            subtitle?: string | null;
+            /**
+             * @description Ось X
+             * @default null
+             */
+            x?: components["schemas"]["XAxis"] | null;
+            /**
+             * Y
+             * @description Меры по оси Y
+             */
+            y?: components["schemas"]["YMeasure"][];
+            /**
+             * @description Цветовая группировка
+             * @default null
+             */
+            color?: components["schemas"]["ColorField"] | null;
+            /**
+             * Orientation
+             * @description Ориентация столбцов
+             * @default vertical
+             * @enum {string}
+             */
+            orientation?: "vertical" | "horizontal";
+            /**
+             * Stacked
+             * @description Наложение рядов
+             * @default false
+             */
+            stacked?: boolean;
+            /**
+             * @description Сортировка
+             * @default null
+             */
+            sort?: components["schemas"]["SortSpec"] | null;
+            /**
+             * Limit
+             * @description Лимит отображаемых категорий/точек
+             * @default 20
+             */
+            limit?: number;
+            /**
+             * Annotations
+             * @description Текстовые метки на точках
+             */
+            annotations?: components["schemas"]["Annotation"][];
+            /**
              * Result Id
              * @description ID результата вычислений в хранилище результатов
              */
             result_id: string;
+        };
+        /**
+         * ChartTemplate
+         * @description Визуальные настройки, сохраняемые до первого успешного вычисления.
+         */
+        ChartTemplate: {
+            /**
+             * Chart Id
+             * @description Уникальный идентификатор графика
+             */
+            chart_id: string;
             /**
              * Type
              * @description Тип графика
@@ -868,28 +940,43 @@ export interface components {
             h: number;
         };
         Widget: components["schemas"]["WidgetSnapshot"];
+        /** DashboardSummary */
         DashboardSummary: {
+            /** Dashboard Id */
             dashboard_id: string;
+            /** Dataset Id */
             dataset_id: string;
+            /** Title */
             title: string;
-            /** Format: date-time */
+            /** Refreshed At */
             refreshed_at?: string | null;
         };
         Dashboard: components["schemas"]["DashboardSnapshot"];
+        /**
+         * DashboardCreate
+         * @description Сохранение графика в новый или существующий дашборд; рецепт восстанавливает сервер.
+         */
         DashboardCreate: {
+            /** Dataset Id */
             dataset_id: string;
-            /** @description Existing dashboard to add to; a new one is created when omitted */
-            dashboard_id?: string;
-            title?: string;
+            /** Dashboard Id */
+            dashboard_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Result Id */
             result_id: string;
             chart: components["schemas"]["ChartSpec"];
         };
+        /** DashboardPatch */
         DashboardPatch: {
-            title?: string;
-            remove_widget_ids?: string[];
+            /** Title */
+            title?: string | null;
+            /** Remove Widget Ids */
+            remove_widget_ids?: string[] | null;
+            /** Layout */
             layout?: {
                 [key: string]: components["schemas"]["WidgetLayout"];
-            };
+            } | null;
         };
         StreamError: components["schemas"]["SSEErrorData"];
         /**
@@ -1499,7 +1586,8 @@ export interface components {
             tool_call?: components["schemas"]["WidgetToolCall"] | null;
             /** @default null */
             recipe?: components["schemas"]["WidgetRecipe"] | null;
-            chart: components["schemas"]["ChartSpec"];
+            /** Chart */
+            chart: components["schemas"]["ChartSpec"] | components["schemas"]["ChartTemplate"];
             /**
              * Caption
              * @description Краткий текстовый вывод или инсайт
@@ -1605,14 +1693,8 @@ export interface components {
             tool_call?: components["schemas"]["WidgetToolCall"] | null;
             /** @default null */
             recipe?: components["schemas"]["WidgetRecipe"] | null;
-            /**
-             * Chart
-             * @description ChartSpec без result_id — подставляется при рендере
-             * @default null
-             */
-            chart?: {
-                [key: string]: unknown;
-            } | null;
+            /** @description Настройки графика без временного result_id */
+            chart: components["schemas"]["ChartTemplate"];
             /**
              * Caption
              * @description Краткий текстовый вывод или инсайт

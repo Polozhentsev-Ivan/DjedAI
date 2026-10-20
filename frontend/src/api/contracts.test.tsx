@@ -24,7 +24,7 @@ it('uses string columns in KPI and calculation views as returned by run_sql', ()
   const data: Schemas['ResultData'] = { columns: ['amount'], rows: [[42]] };
   const result: Schemas['ToolResultMeta'] = { result_id: 'r', status: 'ok', data };
   expect(calculation(result).columns).toEqual([{ label: 'amount', name: 'amount' }]);
-  expect(kpiView({ chart_id: 'chart_kpi', result_id: 'r', type: 'kpi', title: 'Сумма', y: [{ field: 'amount' }] }, data, result)?.value).toBe('42');
+  expect(kpiView({ chart_id: 'chart_kpi', type: 'kpi', title: 'Сумма', y: [{ field: 'amount' }] }, data, result)?.value).toBe('42');
 });
 
 it('maps canonical stage/progress/message SSE payloads, including new stages and done', async () => {
