@@ -18,6 +18,11 @@ from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
     ChartSpec,
+    ChatCreate,
+    ChatCreated,
+    ChatDetail,
+    ChatMessage,
+    ChatSummary,
     Dashboard,
     DatasetCatalog,
     DatasetStreamEvent,
@@ -25,6 +30,7 @@ from djedai.contracts import (
     ErrorResponse,
     HealthCheck,
     MessageBlock,
+    SendMessageRequest,
     TokenResponse,
     ToolResult,
     ToolResultData,
@@ -48,6 +54,12 @@ CONTRACT_ROOT_MODELS = [
     DatasetSummary,
     ErrorResponse,
     HealthCheck,
+    ChatCreate,
+    ChatCreated,
+    ChatSummary,
+    ChatMessage,
+    ChatDetail,
+    SendMessageRequest,
 ]
 
 # Дискриминированные объединения (unions) для схемы

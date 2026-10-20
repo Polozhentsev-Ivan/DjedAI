@@ -1,0 +1,64 @@
+{
+  "blocks": [
+    {
+      "type": "text",
+      "markdown": "Выручка выросла на **12%** к прошлому месяцу."
+    },
+    {
+      "type": "chart",
+      "chart": {
+        "chart_id": "ch_fixture",
+        "result_id": "r_fixture",
+        "type": "line",
+        "title": "Выручка по месяцам",
+        "x": { "field": "month", "label": "Месяц", "kind": "time" },
+        "y": [{ "field": "revenue", "label": "Выручка", "format": "money" }]
+      }
+    },
+    {
+      "type": "table",
+      "result_id": "r_fixture",
+      "columns": ["month", "revenue"],
+      "limit": 12
+    },
+    {
+      "type": "clarification",
+      "question": "Какую метрику считать продажами?",
+      "options": ["Сумма заказа", "Количество заказов"]
+    },
+    {
+      "type": "dashboard_link",
+      "dashboard_id": "d_fixture",
+      "title": "Квартальная статистика"
+    },
+    {
+      "type": "suggestions",
+      "items": ["Сравнить с прошлым годом", "Разбить по регионам"]
+    }
+  ],
+  "events": [
+    {
+      "event": "status",
+      "data": { "node": "execute", "text": "Считаю выручку…" }
+    },
+    {
+      "event": "tool_call",
+      "data": { "tool": "time_aggregate", "params": { "table": "orders" } }
+    },
+    {
+      "event": "tool_result",
+      "data": { "result_id": "r_fixture", "ok": true, "error": null }
+    },
+    {
+      "event": "done",
+      "data": { "message_id": "m_fixture" }
+    },
+    {
+      "event": "error",
+      "data": {
+        "message": "Не удалось получить ответ агента",
+        "detail": "Модель не ответила за 15 секунд"
+      }
+    }
+  ]
+}

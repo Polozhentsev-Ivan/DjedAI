@@ -692,13 +692,13 @@ def get_chat(db: Session, chat_id: str) -> ChatModel | None:
 def list_chats(
     db: Session, owner_id: str | None = None, dataset_id: str | None = None
 ) -> list[ChatModel]:
-    """Возвращает список чатов с опциональной фильтрацией."""
+    """Возвращает чаты с опциональной фильтрацией, сначала новые."""
     stmt = select(ChatModel)
     if owner_id is not None:
         stmt = stmt.where(ChatModel.owner_id == owner_id)
     if dataset_id is not None:
         stmt = stmt.where(ChatModel.dataset_id == dataset_id)
-    return list(db.scalars(stmt).all())
+    return list(db.scalars(stmt.order_by(ChatModel.created_at.desc())).all())
 
 
 def save_message(

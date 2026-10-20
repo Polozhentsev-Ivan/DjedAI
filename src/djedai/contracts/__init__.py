@@ -28,6 +28,14 @@ from djedai.contracts.chart import (
     XAxis,
     YMeasure,
 )
+from djedai.contracts.chat import (
+    ChatCreate,
+    ChatCreated,
+    ChatDetail,
+    ChatMessage,
+    ChatSummary,
+    SendMessageRequest,
+)
 from djedai.contracts.common import DatasetSummary, ErrorResponse, HealthCheck
 from djedai.contracts.dashboard import (
     Dashboard,
@@ -102,6 +110,13 @@ __all__ = [
     "SortSpec",
     "XAxis",
     "YMeasure",
+    # Чаты
+    "ChatCreate",
+    "ChatCreated",
+    "ChatDetail",
+    "ChatMessage",
+    "ChatSummary",
+    "SendMessageRequest",
     # Чат и сообщения агента
     "AssistantMessage",
     "ChartBlock",
