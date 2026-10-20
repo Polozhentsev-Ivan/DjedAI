@@ -9,6 +9,7 @@ from djedai.analytics.registry import (
     DescribeDatasetParams,
     RunSqlParams,
     ValueCountsParams,
+    execute_tool,
     get_tools_for_llm,
 )
 
@@ -157,6 +158,37 @@ def test_internal_registry_retains_schema_and_validation_model(tool, expected):
         assert params.filter == "age > 20"
         with pytest.raises(ValidationError):
             tool.parameters_model.model_validate({"column": "city"})
+
+
+def test_execute_tool_validates_params_and_dispatches():
+    result = execute_tool("run_sql", {"sql": "SELECT 1 AS value"})
+
+    assert result.status == "ok"
+    assert result.tool == "run_sql"
+    assert result.data is not None
+    assert result.data.rows == [[1]]
+
+    described = execute_tool("describe_dataset", {})
+    assert described.tool == "describe_dataset"
+    assert described.status == "ok"
+
+
+def test_execute_tool_ignores_future_source_result_id():
+    result = execute_tool(
+        "run_sql",
+        {"sql": "SELECT 1 AS value", "source_result_id": "r_previous"},
+    )
+
+    assert result.status == "ok"
+    assert result.params["sql"] == "SELECT 1 AS value"
+
+
+def test_execute_tool_rejects_unknown_tool_and_invalid_params():
+    with pytest.raises(ValueError, match="не зарегистрирован"):
+        execute_tool("unknown_tool", {})
+
+    with pytest.raises(ValidationError):
+        execute_tool("run_sql", {"sql": 1})
 
 
 def test_export_can_be_modified_without_changing_registry_or_future_exports():

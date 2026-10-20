@@ -33,6 +33,12 @@ REQUIRED_SCHEMAS = [
     "DatasetStreamEvent",
     "DatasetSummary",
     "HealthCheck",
+    "ChatCreate",
+    "ChatCreated",
+    "ChatSummary",
+    "ChatMessage",
+    "ChatDetail",
+    "SendMessageRequest",
 ]
 
 
@@ -162,10 +168,8 @@ def test_api_subroutes_stubs() -> None:
     assert res_ds.status_code == 200
     assert res_ds.json() == []
 
-    # Chats
     res_chats = client.get("/api/chats")
-    assert res_chats.status_code == 200
-    assert res_chats.json() == []
+    assert res_chats.status_code == 422
 
     # Results
     res_res = client.get("/api/results/r_test")

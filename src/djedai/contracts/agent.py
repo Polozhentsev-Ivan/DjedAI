@@ -50,9 +50,18 @@ class ChartSpec(BaseModel):
 
 
 class Block(BaseModel):
+    """Блок ответа агента до преобразования в контракт MessageBlock."""
+
     type: str
     markdown: str | None = None
     result_id: str | None = None
+    columns: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=1)
+    chart: dict[str, Any] | None = None
+    options: list[str] = Field(default_factory=list)
+    dashboard_id: str | None = None
+    title: str | None = None
+    items: list[str] = Field(default_factory=list)
 
 
 class AgentState(TypedDict, total=False):
