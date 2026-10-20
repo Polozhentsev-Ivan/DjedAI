@@ -430,7 +430,9 @@ def test_agent_error_block_becomes_error_event(
 def test_send_message_rejects_blank_text(
     chat_api: tuple[TestClient, Any, Any],
 ) -> None:
-    client, _factory, _use_runtime = chat_api
+    client, _factory, use_runtime = chat_api
+    # Request validation is independent of a developer's local model credentials.
+    use_runtime(_runtime())
     chat_id = _create_chat(client)
 
     response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "   "})
