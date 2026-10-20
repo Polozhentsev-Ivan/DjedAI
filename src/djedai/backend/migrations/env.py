@@ -8,7 +8,7 @@ from logging.config import fileConfig
 from alembic import context
 
 from djedai.backend.config import get_settings
-from djedai.backend.db.base import Base
+from djedai.backend.db import Base
 from djedai.backend.db.session import create_db_engine
 
 config = context.config
@@ -23,7 +23,10 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Возвращает URL базы данных из конфигурации приложения."""
+    """Возвращает URL базы данных из конфигурации приложения или Alembic config."""
+    cfg_url = config.get_main_option("sqlalchemy.url")
+    if cfg_url:
+        return cfg_url
     settings = get_settings()
     url = settings.app_database_url
     if not url:
