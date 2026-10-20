@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import Any, TypedDict
 
+import duckdb
 from pydantic import BaseModel, ConfigDict, Field
 
 from djedai.analytics.tools import describe_column, describe_dataset, run_sql, value_counts
@@ -110,7 +111,12 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
 }
 
 
-def execute_tool(tool_name: str, params: dict[str, Any]) -> ToolResult:
+def execute_tool(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> ToolResult:
     """Валидирует параметры и выполняет инструмент из реестр."""
     definition = next((tool for tool in TOOLS_REGISTRY if tool.name == tool_name), None)
     if definition is None:
@@ -121,4 +127,6 @@ def execute_tool(tool_name: str, params: dict[str, Any]) -> ToolResult:
     # source_result_id относится к будущей работе поверх сохранённого результата,
     # а run_sql принимает только SQL и лимит строк.
     arguments.pop("source_result_id", None)
+    if connection is not None:
+        arguments["connection"] = connection
     return TOOL_FUNCTIONS[tool_name](**arguments)

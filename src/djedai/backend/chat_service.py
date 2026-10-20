@@ -27,6 +27,7 @@ from djedai.backend.db.repositories import (
     save_tool_result,
 )
 from djedai.contracts.agent import Block, Message
+from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.chart import ChartSpec
 from djedai.contracts.chat import ChatMessage, ChatSummary
 from djedai.contracts.message import (
@@ -86,6 +87,7 @@ class AgentRuntime:
     graph: Any
     client: Any | None = None
     tool_dispatcher: Callable[[str, dict[str, Any]], ToolResult] | None = None
+    catalog_loader: Callable[[str], DatasetCatalog] | None = None
 
 
 def build_agent_runtime() -> AgentRuntime:
@@ -245,6 +247,8 @@ def stream_chat_turn(
             configurable["tool_dispatcher"] = runtime.tool_dispatcher
         if is_cancelled is not None:
             configurable["is_cancelled"] = is_cancelled
+        if runtime.catalog_loader is not None:
+            configurable["catalog_loader"] = runtime.catalog_loader
 
         trace: list[TraceStep] = []
         results: list[ToolResult] = []
