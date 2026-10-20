@@ -10,6 +10,7 @@ from djedai.backend.db.models import (
     MessageModel,
     ToolResultModel,
     UserModel,
+    UTCDateTime,
 )
 from djedai.backend.db.repositories import (
     create_chat,
@@ -23,11 +24,13 @@ from djedai.backend.db.repositories import (
     list_chats,
     list_dashboards,
     list_datasets,
+    load_assistant_message,
     load_tool_result,
     read_parquet,
     save_assistant_message,
     save_message,
     save_tool_result,
+    to_assistant_message,
     write_parquet,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_engine, init_db
@@ -40,6 +43,7 @@ __all__ = [
     "MessageModel",
     "ToolResultModel",
     "UserModel",
+    "UTCDateTime",
     "create_chat",
     "create_dashboard",
     "create_dataset",
@@ -55,10 +59,12 @@ __all__ = [
     "list_chats",
     "list_dashboards",
     "list_datasets",
+    "load_assistant_message",
     "load_tool_result",
     "read_parquet",
     "save_assistant_message",
     "save_message",
     "save_tool_result",
+    "to_assistant_message",
     "write_parquet",
 ]

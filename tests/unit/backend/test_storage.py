@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -28,10 +28,12 @@ from djedai.backend.db.repositories import (
     get_chat_messages,
     get_dataset,
     get_or_create_user,
+    load_assistant_message,
     load_tool_result,
     save_assistant_message,
     save_message,
     save_tool_result,
+    to_assistant_message,
     write_parquet,
 )
 from djedai.backend.db.session import create_db_engine, init_db
@@ -630,11 +632,12 @@ def test_save_tool_result_with_decimals_and_dates(tmp_path: Path) -> None:
 
         loaded = load_tool_result(db, "r_decimal_date", storage_dir=tmp_path)
         assert loaded is not None
-        assert loaded.params["amount"] == 1234.56
+        assert loaded.params["amount"] == "1234.56"
         assert loaded.params["target_date"] == "2026-10-20"
         assert loaded.data is not None
         assert len(loaded.data.rows) == 2
-        assert loaded.facts[0].values["total"] == 301.25
+        assert loaded.data.rows[0][0] == Decimal("100.50")
+        assert loaded.facts[0].values["total"] == "301.25"
 
 
 def test_duckdb_type_inference_mixed_ints_and_floats(tmp_path: Path) -> None:
@@ -774,12 +777,14 @@ def test_tool_result_owner_cascade_delete(tmp_path: Path) -> None:
 
 
 def test_assistant_message_preserves_created_at() -> None:
-    """[P3] Проверяет сохранение и неизменность метки created_at в save_assistant_message."""
+    """[P2] Сохранение и неизменность момента времени created_at со смещением часового пояса."""
     engine = create_db_engine("sqlite:///:memory:")
     init_db(engine)
     session_factory = sessionmaker(bind=engine)
 
-    custom_ts = datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC)
+    # Задаем метку со смещением часового пояса (+03:00)
+    tz_msk = timezone(timedelta(hours=3))
+    custom_ts = datetime(2020, 1, 1, 3, 0, 0, tzinfo=tz_msk)
 
     with session_factory() as db:
         user = get_or_create_user(db, "u_ts", "ts_tester")
@@ -795,21 +800,74 @@ def test_assistant_message_preserves_created_at() -> None:
         )
 
         saved = save_assistant_message(db, msg)
-        saved_ts = (
-            saved.created_at.replace(tzinfo=UTC)
-            if saved.created_at.tzinfo is None
-            else saved.created_at
-        )
-        assert saved_ts == custom_ts
+        # created_at должен быть timezone-aware без ручного replace(tzinfo=UTC)
+        assert saved.created_at.tzinfo is not None
+        assert saved.created_at == custom_ts
 
         history = get_chat_messages(db, chat.chat_id)
         assert len(history) == 1
-        loaded_ts = (
-            history[0].created_at.replace(tzinfo=UTC)
-            if history[0].created_at.tzinfo is None
-            else history[0].created_at
+        loaded = history[0]
+        assert loaded.created_at.tzinfo is not None
+        assert loaded.created_at == custom_ts
+
+        # Проверяем успешное восстановление контракта AssistantMessage
+        restored = to_assistant_message(loaded)
+        assert restored.created_at.tzinfo is not None
+        assert restored.created_at == custom_ts
+
+        loaded_by_id = load_assistant_message(db, "m_ts_1")
+        assert loaded_by_id is not None
+        assert loaded_by_id.created_at == custom_ts
+
+
+def test_assistant_message_preserves_timezone_offset_across_db_reopen(tmp_path: Path) -> None:
+    """[P2] Сохранение момента времени при повторном открытии SQLite БД без сдвига на 3 часа."""
+    db_file = tmp_path / "ts_reopen_test.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+
+    engine1 = create_db_engine(db_url)
+    init_db(engine1)
+    session_factory1 = sessionmaker(bind=engine1)
+
+    tz_msk = timezone(timedelta(hours=3))
+    orig_dt = datetime(2020, 1, 1, 3, 0, 0, tzinfo=tz_msk)
+
+    with session_factory1() as db:
+        user = get_or_create_user(db, "u_reopen", "reopen_tester")
+        ds = create_dataset(db, "ds_reopen", user.id, "Reopen DS")
+        chat = create_chat(db, "c_reopen", user.id, ds.dataset_id)
+
+        msg = AssistantMessage(
+            message_id="m_reopen_1",
+            chat_id=chat.chat_id,
+            role="assistant",
+            created_at=orig_dt,
+            blocks=[TextBlock(markdown="Проверка сохранения смещения")],
         )
-        assert loaded_ts == custom_ts
+        save_assistant_message(db, msg)
+
+    engine1.dispose()
+
+    # Повторное открытие БД
+    engine2 = create_db_engine(db_url)
+    session_factory2 = sessionmaker(bind=engine2)
+
+    with session_factory2() as db:
+        history = get_chat_messages(db, "c_reopen")
+        assert len(history) == 1
+        loaded = history[0]
+
+        # Убеждаемся, что дата не naive и момент времени не сдвинут
+        assert loaded.created_at.tzinfo is not None
+        assert loaded.created_at == orig_dt
+        assert loaded.created_at == datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+        # Восстановление AssistantMessage не вызывает ошибку timezone_aware
+        restored = to_assistant_message(loaded)
+        assert restored.created_at.tzinfo is not None
+        assert restored.created_at == orig_dt
+
+    engine2.dispose()
 
 
 def test_save_tool_result_owner_mismatch(tmp_path: Path) -> None:
@@ -840,6 +898,83 @@ def test_save_tool_result_owner_mismatch(tmp_path: Path) -> None:
                 owner_id=user_bob.id,
                 storage_dir=tmp_path,
             )
+
+
+def test_save_tool_result_upsert_owner_mismatch(tmp_path: Path) -> None:
+    """[Security] Запрет смены владельца при upsert результата относительно сохранённого чата."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        user_alice = get_or_create_user(db, "u_alice", "alice")
+        user_bob = get_or_create_user(db, "u_bob", "bob")
+        ds = create_dataset(db, "ds_alice", user_alice.id, "Alice DS")
+        chat_alice = create_chat(db, "c_alice", user_alice.id, ds.dataset_id)
+        chat_bob = create_chat(db, "c_bob", user_bob.id, ds.dataset_id)
+
+        res = ToolResult(
+            result_id="r_alice_upsert",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT 1",
+            data=ToolResultData(columns=["val"], rows=[[1]]),
+        )
+
+        # 1. Сохраняем результат в чате Alice
+        saved = save_tool_result(
+            db,
+            res,
+            chat_id=chat_alice.chat_id,
+            storage_dir=tmp_path,
+        )
+        assert saved.owner_id == user_alice.id
+        assert saved.chat_id == chat_alice.chat_id
+
+        # 2. Попытка обновить результат с указанием owner_id=bob без chat_id
+        with pytest.raises(ValueError, match="Конфликт владельцев"):
+            save_tool_result(
+                db,
+                res,
+                owner_id=user_bob.id,
+                storage_dir=tmp_path,
+            )
+
+        # 3. Попытка обновить результат с привязкой к чату Bob
+        with pytest.raises(ValueError, match="Конфликт владельцев"):
+            save_tool_result(
+                db,
+                res,
+                chat_id=chat_bob.chat_id,
+                storage_dir=tmp_path,
+            )
+
+        # 4. Проверяем, что в БД владелец и чат Alice остались неизменными
+        db.refresh(saved)
+        assert saved.owner_id == user_alice.id
+        assert saved.chat_id == chat_alice.chat_id
+
+        # 5. Удаление Bob не приводит к удалению результата Alice
+        db.delete(user_bob)
+        db.commit()
+
+        existing = db.query(ToolResultModel).filter_by(result_id="r_alice_upsert").first()
+        assert existing is not None
+        assert existing.owner_id == user_alice.id
+        assert existing.chat_id == chat_alice.chat_id
+
+        # 6. Корректный upsert без смены владельца (без параметров владельца) работает
+        res_updated = ToolResult(
+            result_id="r_alice_upsert",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT 2",
+            data=ToolResultData(columns=["val"], rows=[[2]]),
+        )
+        updated = save_tool_result(db, res_updated, storage_dir=tmp_path)
+        assert updated.owner_id == user_alice.id
+        assert updated.chat_id == chat_alice.chat_id
+        assert updated.sql == "SELECT 2"
 
 
 def test_data_ref_path_traversal_protection(tmp_path: Path) -> None:
@@ -885,3 +1020,76 @@ def test_atomic_parquet_write(tmp_path: Path) -> None:
     # Проверяем отсутствие оставшихся временных файлов .tmp_*
     tmp_files = list(tmp_path.glob("*.tmp*"))
     assert len(tmp_files) == 0
+
+
+def test_save_and_load_tool_result_decimal_precision(tmp_path: Path) -> None:
+    """[P2] Проверяет сохранение точного значения DECIMAL(18,2) без округления float."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    large_amount = Decimal("1234567890123456.78")
+
+    res = ToolResult(
+        result_id="r_exact_decimal",
+        status="ok",
+        tool="run_sql",
+        sql="SELECT CAST(1234567890123456.78 AS DECIMAL(18,2)) AS amount",
+        data=ToolResultData(
+            columns=["amount"],
+            rows=[[large_amount]],
+            row_count=1,
+            truncated=False,
+        ),
+        facts=[
+            Fact(
+                text="Сумма транзакции",
+                values={"amount": large_amount},
+            )
+        ],
+    )
+
+    with session_factory() as db:
+        save_tool_result(db, res, storage_dir=tmp_path)
+        loaded = load_tool_result(db, "r_exact_decimal", storage_dir=tmp_path)
+
+        assert loaded is not None
+        assert loaded.data is not None
+        assert len(loaded.data.rows) == 1
+        # Точность DECIMAL не должна быть потеряна (не должно стать 1234567890123456.8)
+        assert loaded.data.rows[0][0] == large_amount
+        assert str(loaded.data.rows[0][0]) == "1234567890123456.78"
+        # Проверяем сохранение точности в фактах (JSON)
+        assert loaded.facts[0].values["amount"] == "1234567890123456.78"
+
+
+def test_save_and_load_tool_result_empty_no_columns(tmp_path: Path) -> None:
+    """[P2] Проверяет сохранение ToolResult с пустыми данными без колонок (columns=[])."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    res = ToolResult(
+        result_id="r_empty_no_cols",
+        status="empty",
+        tool="run_sql",
+        sql="SELECT * FROM non_existent_table WHERE 1=0",
+        data=ToolResultData(),  # columns=[], rows=[]
+    )
+
+    with session_factory() as db:
+        saved = save_tool_result(db, res, storage_dir=tmp_path)
+        assert saved.result_id == "r_empty_no_cols"
+        assert saved.status == "empty"
+        # Для пустых данных без колонок data_ref не создается (хранится в БД без Parquet)
+        assert saved.data_ref is None
+
+        loaded = load_tool_result(db, "r_empty_no_cols", storage_dir=tmp_path)
+        assert loaded is not None
+        assert loaded.result_id == "r_empty_no_cols"
+        assert loaded.status == "empty"
+        assert loaded.data_ref is None
+        assert loaded.data is not None
+        assert loaded.data.columns == []
+        assert loaded.data.rows == []
+        assert loaded.data.row_count == 0

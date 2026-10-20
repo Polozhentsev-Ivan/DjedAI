@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -22,10 +23,39 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
 )
 from sqlalchemy.orm import relationship
 
 from djedai.backend.db.base import Base
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """SQLAlchemy TypeDecorator для DateTime с гарантией сохранения и чтения в UTC timezone-aware.
+
+    - При сохранении (bind): переводит aware datetime в UTC или добавляет UTC к naive datetime.
+    - При чтении (result): гарантирует возвращение timezone-aware datetime с tzinfo=UTC (в SQLite
+      драйвер возвращает naive значение, поэтому tzinfo восстанавливается без сдвига момента).
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is not None:
+            if not isinstance(value, datetime):
+                raise TypeError(f"Ожидался datetime, получен {type(value).__name__}")
+            if value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+        return None
+
+    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is not None:
+            if value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+        return None
 
 
 def _utc_now() -> datetime:
@@ -42,10 +72,8 @@ class UserModel(Base):
     email = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
-    )
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+    updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
     # Связи владения
     datasets = relationship("DatasetModel", back_populates="owner", cascade="all, delete-orphan")
@@ -78,10 +106,8 @@ class DatasetModel(Base):
         String(64), default="ready", nullable=False
     )  # uploading, profiling, ready, error
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
-    )
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+    updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
     # Связи
     owner = relationship("UserModel", back_populates="datasets")
@@ -108,10 +134,8 @@ class ChatModel(Base):
     )
     title = Column(String(255), nullable=False, default="Новый чат")
     summary = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
-    )
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+    updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
     # Связи
     owner = relationship("UserModel", back_populates="chats")
@@ -139,7 +163,7 @@ class MessageModel(Base):
     blocks = Column(JSON, nullable=True)  # список словарей MessageBlock
     result_ids = Column(JSON, nullable=True)  # список ID результатов (provenance)
     trace = Column(JSON, nullable=True)  # шаги выполнения графа
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
 
     # Связи
     chat = relationship("ChatModel", back_populates="messages")
@@ -168,7 +192,7 @@ class ToolResultModel(Base):
     data_preview = Column(JSON, nullable=True)  # превью таблицы для небольших данных
     source_result_id = Column(String(64), nullable=True)
     duration_ms = Column(Integer, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
 
     # Связи
     owner = relationship("UserModel", back_populates="results")
@@ -196,8 +220,8 @@ class DashboardModel(Base):
         String(64), ForeignKey("chats.chat_id", ondelete="SET NULL"), nullable=True
     )
     widgets = Column(JSON, nullable=False, default=list)  # список DashboardWidget
-    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    refreshed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+    refreshed_at = Column(UTCDateTime, nullable=True)
 
     # Связи
     owner = relationship("UserModel", back_populates="dashboards")

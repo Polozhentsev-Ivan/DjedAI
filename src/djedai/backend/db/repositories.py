@@ -66,12 +66,6 @@ def _sanitize_for_json(obj: Any) -> Any:
             return None
         return obj
     if isinstance(obj, Decimal):
-        try:
-            f = float(obj)
-            if not math.isinf(f):
-                return f
-        except (OverflowError, ValueError):
-            pass
         return str(obj)
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
@@ -107,6 +101,8 @@ def _normalize_columns(raw_columns: list[Any]) -> list[str]:
 
 def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
     """Определяет точный DuckDB-тип для всей колонки без потери точности."""
+    non_nulls = [v for v in values if v is not None]
+
     if isinstance(col_meta, ToolResultColumn) or (
         isinstance(col_meta, dict) and "type" in col_meta
     ):
@@ -115,7 +111,29 @@ def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
         )
         if meta_type:
             m = str(meta_type).lower()
-            if m in ("money", "number", "float", "double", "decimal", "real"):
+            dec_match = re.match(r"^(?:decimal|numeric)\((\d+),\s*(\d+)\)$", m)
+            if dec_match:
+                return f"DECIMAL({dec_match.group(1)},{dec_match.group(2)})"
+            if m in ("decimal", "numeric", "money"):
+                scales = [
+                    -v.as_tuple().exponent
+                    for v in non_nulls
+                    if isinstance(v, Decimal)
+                    and isinstance(v.as_tuple().exponent, int)
+                    and v.as_tuple().exponent < 0
+                ]
+                scale = max(scales) if scales else (2 if m == "money" else 2)
+                return f"DECIMAL(38,{scale})"
+            if m in ("number", "float", "double", "real"):
+                decimals = [v for v in non_nulls if isinstance(v, Decimal)]
+                if decimals:
+                    scales = [
+                        -v.as_tuple().exponent
+                        for v in decimals
+                        if isinstance(v.as_tuple().exponent, int) and v.as_tuple().exponent < 0
+                    ]
+                    scale = max(scales) if scales else 2
+                    return f"DECIMAL(38,{scale})"
                 return "DOUBLE"
             if m in ("int", "integer", "bigint", "smallint"):
                 return "BIGINT"
@@ -126,12 +144,12 @@ def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
             if m in ("bool", "boolean"):
                 return "BOOLEAN"
 
-    non_nulls = [v for v in values if v is not None]
     if not non_nulls:
         return "VARCHAR"
 
     has_str = False
     has_float = False
+    has_decimal = False
     has_int = False
     has_bool = False
     has_datetime = False
@@ -142,7 +160,9 @@ def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
             has_bool = True
         elif isinstance(v, int):
             has_int = True
-        elif isinstance(v, (float, Decimal)):
+        elif isinstance(v, Decimal):
+            has_decimal = True
+        elif isinstance(v, float):
             has_float = True
         elif isinstance(v, datetime):
             has_datetime = True
@@ -155,8 +175,18 @@ def _infer_duckdb_type(col_meta: Any, values: list[Any]) -> str:
         return "VARCHAR"
     if has_datetime:
         return "TIMESTAMP"
-    if has_date and not (has_int or has_float or has_bool):
+    if has_date and not (has_int or has_float or has_decimal or has_bool):
         return "DATE"
+    if has_decimal and not (has_str or has_datetime or has_date or has_bool or has_float):
+        scales = [
+            -v.as_tuple().exponent
+            for v in non_nulls
+            if isinstance(v, Decimal)
+            and isinstance(v.as_tuple().exponent, int)
+            and v.as_tuple().exponent < 0
+        ]
+        scale = max(scales) if scales else 0
+        return f"DECIMAL(38,{scale})"
     if has_float:
         return "DOUBLE"
     if has_int and not has_bool:
@@ -190,6 +220,11 @@ def write_parquet(
         escaped_path = _escape_sql_literal(duck_path)
         meta_list = columns_meta or [None] * len(columns)
 
+        if not columns:
+            raise ValueError(
+                "Невозможно записать Parquet-файл без колонок: требуется минимум одна колонка"
+            )
+
         if not rows:
             col_defs = ", ".join(f"{_escape_sql_ident(col)} VARCHAR" for col in columns)
             con.execute(f"CREATE TEMPORARY TABLE _res_empty ({col_defs})")
@@ -217,6 +252,8 @@ def write_parquet(
                 t = col_types[i]
                 if v is None:
                     row_data.append(None)
+                elif t.startswith("DECIMAL"):
+                    row_data.append(Decimal(str(v)) if not isinstance(v, Decimal) else v)
                 elif t == "DOUBLE":
                     row_data.append(float(v))
                 elif t == "BIGINT":
@@ -332,6 +369,8 @@ def save_tool_result(
     settings = get_settings()
     target_storage = Path(storage_dir or settings.results_data_dir).resolve()
 
+    record = db.query(ToolResultModel).filter_by(result_id=tool_result.result_id).first()
+
     # Разрешаем owner_id из чата, если не передан явно, и проверяем согласованность
     effective_owner_id = owner_id
     if chat_id is not None:
@@ -345,6 +384,41 @@ def save_tool_result(
             if effective_owner_id is None:
                 effective_owner_id = chat.owner_id
 
+    # При upsert проверяем согласованность с уже сохранёнными связями
+    if record is not None:
+        # Проверяем владельца относительно уже сохранённого чата
+        if record.chat_id is not None:
+            saved_chat = db.query(ChatModel).filter_by(chat_id=record.chat_id).first()
+            if saved_chat is not None:
+                if (
+                    effective_owner_id is not None
+                    and saved_chat.owner_id is not None
+                    and effective_owner_id != saved_chat.owner_id
+                ):
+                    raise ValueError(
+                        f"Конфликт владельцев: переданный owner_id='{effective_owner_id}' "
+                        f"не совпадает с владельцем сохранённого чата "
+                        f"chat.owner_id='{saved_chat.owner_id}'"
+                    )
+                if chat_id is not None and chat_id != record.chat_id:
+                    raise ValueError(
+                        f"Конфликт владельцев: результат '{tool_result.result_id}' "
+                        f"уже привязан к чату '{record.chat_id}', "
+                        f"смена привязки к чату '{chat_id}' запрещена"
+                    )
+                if effective_owner_id is None:
+                    effective_owner_id = saved_chat.owner_id
+
+        # Проверяем неизменность уже сохранённого владельца
+        if record.owner_id is not None:
+            if effective_owner_id is not None and effective_owner_id != record.owner_id:
+                raise ValueError(
+                    f"Конфликт владельцев: результат уже принадлежит пользователю "
+                    f"'{record.owner_id}', невозможно сменить владельца на '{effective_owner_id}'"
+                )
+            if effective_owner_id is None:
+                effective_owner_id = record.owner_id
+
     data_ref = tool_result.data_ref
     data_preview: dict[str, Any] | None = None
 
@@ -352,7 +426,8 @@ def save_tool_result(
         columns = _normalize_columns(tool_result.data.columns)
         rows = tool_result.data.rows
 
-        if persist_data and rows is not None:
+        # Сохраняем в Parquet только если есть колонки и persist_data=True
+        if persist_data and rows is not None and len(columns) > 0:
             file_name = f"{tool_result.result_id}.parquet"
             parquet_path = (target_storage / file_name).resolve()
             write_parquet(
@@ -376,7 +451,7 @@ def save_tool_result(
             else len(rows or []),
             "truncated": bool(tool_result.data.truncated),
         }
-        # Санитизируем для JSON (Decimal -> float, date/datetime -> isoformat)
+        # Санитизируем для JSON (Decimal -> str, date/datetime -> isoformat)
         data_preview = _sanitize_for_json(raw_preview)
 
     facts_data = (
@@ -396,7 +471,6 @@ def save_tool_result(
     )
     params_data = _sanitize_for_json(tool_result.params) if tool_result.params else {}
 
-    record = db.query(ToolResultModel).filter_by(result_id=tool_result.result_id).first()
     if record is None:
         record = ToolResultModel(
             result_id=tool_result.result_id,
@@ -484,7 +558,7 @@ def load_tool_result(
                 )
             elif record.data_preview and "rows" in record.data_preview:
                 p_rows = record.data_preview["rows"]
-                eff_rc = row_count or len(p_rows)
+                eff_rc = row_count if row_count is not None else len(p_rows)
                 data = ToolResultData(
                     columns=columns,
                     rows=p_rows,
@@ -493,7 +567,7 @@ def load_tool_result(
                 )
         elif record.data_preview and "rows" in record.data_preview:
             p_rows = record.data_preview["rows"]
-            eff_rc = row_count or len(p_rows)
+            eff_rc = row_count if row_count is not None else len(p_rows)
             data = ToolResultData(
                 columns=columns,
                 rows=p_rows,
@@ -639,6 +713,15 @@ def save_message(
     created_at: datetime | None = None,
 ) -> MessageModel:
     """Сохраняет сообщение в чате со структурированными блоками и аудитом."""
+    effective_created_at = created_at
+    if effective_created_at is not None:
+        if effective_created_at.tzinfo is None:
+            effective_created_at = effective_created_at.replace(tzinfo=UTC)
+        else:
+            effective_created_at = effective_created_at.astimezone(UTC)
+    else:
+        effective_created_at = _utc_now()
+
     msg = MessageModel(
         message_id=message_id,
         chat_id=chat_id,
@@ -647,7 +730,7 @@ def save_message(
         blocks=blocks,
         result_ids=result_ids,
         trace=trace,
-        created_at=created_at or _utc_now(),
+        created_at=effective_created_at,
     )
     db.add(msg)
     db.commit()
@@ -670,6 +753,33 @@ def save_assistant_message(db: Session, message: AssistantMessage) -> MessageMod
         trace=trace_data,
         created_at=message.created_at,
     )
+
+
+def to_assistant_message(message_model: MessageModel) -> AssistantMessage:
+    """Восстанавливает контракт AssistantMessage из MessageModel с сохранением момента времени."""
+    created_at = message_model.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    else:
+        created_at = created_at.astimezone(UTC)
+
+    return AssistantMessage(
+        message_id=message_model.message_id,
+        chat_id=message_model.chat_id,
+        role="assistant",
+        created_at=created_at,
+        blocks=message_model.blocks or [],
+        result_ids=message_model.result_ids or [],
+        trace=message_model.trace or [],
+    )
+
+
+def load_assistant_message(db: Session, message_id: str) -> AssistantMessage | None:
+    """Загружает сообщение ассистента по message_id и восстанавливает контракт AssistantMessage."""
+    record = db.query(MessageModel).filter_by(message_id=message_id).first()
+    if record is None or record.role != "assistant":
+        return None
+    return to_assistant_message(record)
 
 
 def get_chat_messages(db: Session, chat_id: str) -> list[MessageModel]:
