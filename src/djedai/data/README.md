@@ -38,7 +38,7 @@
 
 ## Связи таблиц
 
-`relations` (B1-5): `find_relations` ищет связи по сохранённым профилям (`read_profiles`), записывает их в `_djedai_relations` (повторный вызов заменяет все записи) и возвращает `RelationReport` со связями и предупреждениями; `read_relations` читает сохранённое. Поля `TableRelation` совпадают с `Relation` из `DatasetCatalog`, сборщик каталога переносит их без пересчёта; `warnings` идут в `DatasetCatalog.warnings`.
+`relations` (B1-5): `find_relations` ищет связи по сохранённым профилям (`read_profiles`), записывает их в `_djedai_relations` (повторный вызов заменяет все записи) и возвращает `RelationReport` со связями и предупреждениями; `read_relations` читает сохранённое. `TableRelation.to_contract()` даёт `Relation` для `DatasetCatalog.relations` (счётчики и проверка JOIN остаются в `TableRelation`), `warnings` идут в `DatasetCatalog.warnings`. Эталоны связей синтетики — раздел `relations` в `eval/synthetic_expectations.json`.
 
 - кандидаты — колонки типа `id`, а также `integer` / `text` с ID-подобным именем или из `primary_key_candidates`; не меньше 2 различных значений. Даты, деньги, проценты, числа, bool и прочий текст не сравниваются, пары внутри одной таблицы — тоже;
 - значения сравниваются строками после `trim`, пустые не учитываются; `"001"` и `1` — разные значения;

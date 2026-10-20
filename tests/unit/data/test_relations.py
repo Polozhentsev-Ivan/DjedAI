@@ -1,27 +1,33 @@
 """Связи таблиц (B1-5) против эталонов, посчитанных независимо от DuckDB.
 
-Таблицы собираются из Python-списков или берутся из синтетики PL-2; ожидаемые меры
-пересечения, число строк и суммы после JOIN считаются по тем же данным через ``set``,
-``Counter`` и ``Decimal``.
+Таблицы собираются из Python-списков, ожидаемые меры пересечения, число строк и суммы
+после JOIN считаются по тем же спискам через ``set`` и ``Counter``. Для синтетики PL-2
+эталоны берутся из ``eval/synthetic_expectations.json``: их независимо пересчитывает
+``scripts/verify_synthetic_data.py``.
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import random
 from collections import Counter
-from decimal import Decimal
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.data.csv_ingest import load_raw_csv, load_raw_csvs
-from djedai.data.profiler import profile_tables
+from djedai.data.profiler import profile_tables, read_profiles
 from djedai.data.relations import RELATIONS_TABLE, find_relations, read_relations
 from djedai.data.typed_views import create_typed_views
 
 SYNTHETIC = Path(__file__).parents[2] / "fixtures" / "synthetic"
+EXPECTATIONS = json.loads(
+    (Path(__file__).parents[3] / "eval" / "synthetic_expectations.json").read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture
@@ -55,48 +61,111 @@ def ids(values) -> list[str]:
     return [str(v) for v in values]
 
 
-def read_synthetic(name: str) -> list[dict[str, str]]:
-    with (SYNTHETIC / f"{name}.csv").open(encoding="utf-8", newline="") as file:
-        return list(csv.DictReader(file))
-
-
-def rub(text: str) -> Decimal:  # "36 381,51 руб." → Decimal("36381.51")
-    return Decimal(text.removesuffix(" руб.").replace(" ", "").replace(",", "."))
-
-
-def test_synthetic_relations_are_found(con):
+@pytest.fixture
+def synthetic(con):
     load_raw_csvs(con, sorted(SYNTHETIC.glob("*.csv")))
     create_typed_views(con)
     profile_tables(con)
-    report = find_relations(con)
+    return find_relations(con)
 
-    assert pairs(report) == {
-        ("sales", "product_id", "products", "product_id"),
-        ("sales", "store_id", "stores", "store_id"),
-    }
-    sales = read_synthetic("sales")
-    total = sum(rub(row["total_amount"]) for row in sales)
-    for relation in report.relations:
-        target = {row[relation.to_column] for row in read_synthetic(relation.to_table)}
-        source = {row[relation.from_column] for row in sales}
-        assert relation.overlap == round(len(source & target) / len(source), 4)
-        assert relation.jaccard == round(len(source & target) / len(source | target), 4)
-        assert (relation.cardinality, relation.confidence) == ("N:1", "high")
-        impact = relation.impact
-        assert (impact.rows_before, impact.rows_after) == (len(sales), len(sales))
-        assert (impact.unmatched_rows, impact.max_fanout) == (0, 1)
+
+def link(reference: dict) -> tuple[str, str, str, str]:
+    source, target = reference["from"], reference["to"]
+    return source["table"], source["column"], target["table"], target["column"]
+
+
+def test_synthetic_relations_match_references(synthetic):
+    """Эталоны из eval/ посчитаны по CSV независимо (scripts/verify_synthetic_data.py)."""
+    references = EXPECTATIONS["relations"]
+    assert pairs(synthetic) == {link(r) for r in references["expected"]}
+    for relation, reference in zip(synthetic.relations, references["expected"], strict=True):
+        assert (relation.from_table, relation.from_column) == link(reference)[:2]
+        assert (relation.overlap, relation.jaccard, relation.cardinality) == (
+            reference["overlap"],
+            reference["jaccard"],
+            reference["cardinality"],
+        )
+        assert relation.confidence == "high"
+        join, impact = reference["join"], relation.impact
+        assert (impact.rows_before, impact.rows_after, impact.unmatched_rows) == (
+            join["rows_before"],
+            join["rows_after"],
+            join["unmatched_rows"],
+        )
         amount = next(s for s in impact.sums if s.column == "total_amount")
-        assert (Decimal(amount.before), Decimal(amount.after)) == (total, total)
-    assert report.warnings == ()
+        assert (amount.before, amount.after) == (
+            join["total_amount_before"],
+            join["total_amount_after"],
+        )
+    assert synthetic.warnings == ()
 
 
-def test_synthetic_sale_id_is_not_linked_to_product_id(con):
-    """sale_id 1..4168 и product_id 1..50 — похожие ID, но не связь."""
-    load_raw_csvs(con, sorted(SYNTHETIC.glob("*.csv")))
-    create_typed_views(con)
-    profile_tables(con)
-    columns = {(r.from_column, r.to_column) for r in find_relations(con).relations}
-    assert all("sale_id" not in pair and "date" not in pair for pair in columns)
+def test_synthetic_lookalike_ids_are_not_linked(synthetic):
+    """sale_id 1..4168 и product_id 1..50 — похожие ID, но не связь; даты не сравниваются."""
+    found = pairs(synthetic)
+    for reference in EXPECTATIONS["relations"]["not_expected"]:
+        source, column, target, target_column = link(reference)
+        assert (source, column, target, target_column) not in found
+        assert (target, target_column, source, column) not in found
+    assert all("date" not in (r.from_column, r.to_column) for r in synthetic.relations)
+
+
+def test_synthetic_catalog_shows_relations(con, synthetic):
+    tables = [catalog_table(profile) for profile in read_profiles(con)]
+    catalog = DatasetCatalog(
+        dataset_id="ds_synthetic",
+        name="Синтетика",
+        created_at=datetime(2026, 10, 20, tzinfo=UTC),
+        source=DatasetSource(kind="csv_upload"),
+        tables=tables,
+        relations=[r.to_contract() for r in synthetic.relations],
+        warnings=list(synthetic.warnings),
+    )
+    dumped = catalog.model_dump(mode="json")["relations"]
+    assert dumped[1] == {
+        "from": {"table": "sales", "column": "store_id"},
+        "to": {"table": "stores", "column": "store_id"},
+        "overlap": 1.0,
+        "jaccard": 1.0,
+        "cardinality": "N:1",
+        "confidence": "high",
+    }
+    prompt = catalog.to_prompt()
+    assert "- store_id: id, id, FK → stores.store_id" in prompt
+    assert "- sales.product_id → products.product_id (N:1, уверенность high)" in prompt
+
+
+ROLES = {"id": "id", "date": "time", "datetime": "time", "text": "text"}
+
+
+def catalog_table(profile) -> Table:
+    """Минимальная таблица каталога из профиля: сборщик каталога (B1-7) ещё не готов."""
+    return Table(
+        table_id=profile.view_name,
+        raw_table=profile.raw_table,
+        original_name=profile.view_name,
+        row_count=profile.row_count,
+        primary_key_candidates=list(profile.primary_key_candidates),
+        time_columns=list(profile.time_columns),
+        duplicate_rows=profile.duplicate_rows,
+        columns=[
+            Column(
+                name=c.name,
+                original_name=c.name,
+                physical_type=c.physical_type,
+                semantic_type=c.semantic_type,
+                role=ROLES.get(c.semantic_type, "measure"),
+                null_ratio=c.null_ratio,
+                distinct_count=c.distinct_count,
+                is_unique=c.is_unique,
+            )
+            for c in profile.columns
+        ],
+    )
+
+
+def test_synthetic_relations_are_stored(con, synthetic):
+    assert read_relations(con) == synthetic
 
 
 def test_dense_id_ranges_are_not_a_relation(con, tmp_path):

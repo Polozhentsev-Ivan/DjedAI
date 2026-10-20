@@ -18,8 +18,9 @@
 ``LEFT JOIN``, строки без пары и суммы числовых колонок ``from``. Размножение строк и
 строки без пары понижают ``confidence`` и дают предупреждения для каталога.
 
-Связи сохраняются в ``_djedai_relations``; имена полей совпадают с ``Relation`` из
-``DatasetCatalog`` (спецификация, §3.3–3.4).
+Связи сохраняются в ``_djedai_relations``; ``TableRelation.to_contract()`` даёт ``Relation``
+для ``DatasetCatalog.relations``, а ``RelationReport.warnings`` идут в ``warnings`` каталога
+(спецификация, §3.3–3.4).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from itertools import combinations
 
 import duckdb
 
+from djedai.contracts.catalog import ColumnRef, Relation
 from djedai.data.profiler import (
     NUMERIC,
     ColumnProfile,
@@ -97,6 +99,17 @@ class TableRelation:
     to_distinct: int
     name_match: bool
     impact: JoinImpact
+
+    def to_contract(self) -> Relation:
+        """Связь для ``DatasetCatalog.relations``; счётчики и проверка JOIN туда не входят."""
+        return Relation(
+            from_=ColumnRef(table=self.from_table, column=self.from_column),
+            to=ColumnRef(table=self.to_table, column=self.to_column),
+            overlap=self.overlap,
+            jaccard=self.jaccard,
+            cardinality=self.cardinality,
+            confidence=self.confidence,
+        )
 
 
 @dataclass(frozen=True)
