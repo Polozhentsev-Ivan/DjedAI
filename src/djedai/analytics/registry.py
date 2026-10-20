@@ -1,6 +1,6 @@
 from typing import Any, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunSqlParams(BaseModel):
@@ -17,7 +17,29 @@ class RunSqlParams(BaseModel):
 class DescribeDatasetParams(BaseModel):
     """Модель параметров для describe_dataset. У этой функции нет параметров."""
 
-    pass
+    model_config = ConfigDict(json_schema_extra={"examples": [{}]})
+
+
+class DescribeColumnParams(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"table": "test", "column": "age"}]})
+
+    table: str = Field(description="Имя таблицы")
+    column: str = Field(description="Имя колонки")
+
+
+class ValueCountsParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"table": "test", "column": "city", "top_n": 3, "filter": "age > 25"}]
+        }
+    )
+
+    table: str = Field(description="Имя таблицы")
+    column: str = Field(description="Имя колонки")
+    top_n: int = Field(default=10, description="Количество топ-значений")
+    filter: str | None = Field(
+        default=None, description="Опциональный фильтр (SQL WHERE). Например: 'age > 25'"
+    )
 
 
 class ToolDefinition(BaseModel):
@@ -50,6 +72,16 @@ TOOLS_REGISTRY = [
         name="describe_dataset",
         description="Показывает общую информацию о загруженных данных (список таблиц, колонок).",
         parameters_model=DescribeDatasetParams,
+    ),
+    ToolDefinition(
+        name="describe_column",
+        description="Показывает статистику по конкретной колонке (пропуски, уникальные значения).",
+        parameters_model=DescribeColumnParams,
+    ),
+    ToolDefinition(
+        name="value_counts",
+        description="Показывает самые частые значения в колонке.",
+        parameters_model=ValueCountsParams,
     ),
 ]
 
