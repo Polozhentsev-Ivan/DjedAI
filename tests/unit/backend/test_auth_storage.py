@@ -160,6 +160,34 @@ def test_legacy_user_without_valid_password_cannot_authenticate(
     assert authenticate_user(db, "alice", _PASSWORD) is None
 
 
+@pytest.mark.parametrize("replacement", ["valid", None, "broken-hash"])
+def test_authentication_uses_persisted_password_without_overwriting_pending_changes(
+    db: Session, user: UserModel, password_hash: str, replacement: str | None
+) -> None:
+    db.autoflush = False  # The application session factory uses this setting.
+    user.email = "pending@example.org"
+    replacement_hash = hash_password("new-password") if replacement == "valid" else replacement
+    with Session(db.get_bind()) as writer:
+        record = writer.get(UserModel, user.id)
+        record.password_hash = replacement_hash
+        writer.commit()
+
+    # Retain the old object so SQLAlchemy's identity map still contains the old hash.
+    assert user.password_hash == password_hash
+    assert authenticate_user(db, "alice", _PASSWORD) is None
+    if replacement == "valid":
+        assert authenticate_user(db, "alice", "new-password").id == user.id
+    else:
+        assert authenticate_user(db, "alice", "new-password") is None
+    assert user.email == "pending@example.org"
+    assert db.is_modified(user)
+    db.commit()
+    with Session(db.get_bind()) as reader:
+        persisted = reader.get(UserModel, user.id)
+        assert persisted.email == "pending@example.org"
+        assert persisted.password_hash == replacement_hash
+
+
 def test_session_persists_only_token_digest_and_survives_new_db_session(
     db: Session, user: UserModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -192,7 +220,7 @@ def test_expired_session_is_rejected_at_expiration_boundary(
     assert get_session_user(db, token) is None
 
 
-@pytest.mark.parametrize("token", ["", "unknown-token"])
+@pytest.mark.parametrize("token", ["", "unknown-token", "\ud800", "token-\udfff", "токен"])
 def test_unknown_session_cannot_authenticate_or_be_revoked(db: Session, token: str) -> None:
     assert get_session_user(db, token) is None
     assert not revoke_session(db, token)

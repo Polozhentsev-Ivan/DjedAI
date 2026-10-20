@@ -25,8 +25,13 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def _token_hash(token: str) -> str | None:
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        return None
 
 
 def create_user(db: Session, username: str, password: str, email: str | None = None) -> UserModel:
@@ -55,10 +60,16 @@ def create_user(db: Session, username: str, password: str, email: str | None = N
 
 def authenticate_user(db: Session, username: str, password: str) -> UserModel | None:
     """Возвращает активного пользователя с верным паролем, иначе None."""
-    user = db.scalar(
-        select(UserModel).where(UserModel.username == username, UserModel.is_active.is_(True))
-    )
-    if user is None or not verify_password(password, user.password_hash):
+    # Read the persisted hash separately: the ORM object may be cached or have pending edits.
+    record = db.execute(
+        select(UserModel, UserModel.password_hash).where(
+            UserModel.username == username, UserModel.is_active.is_(True)
+        )
+    ).one_or_none()
+    if record is None:
+        return None
+    user, password_hash = record
+    if not verify_password(password, password_hash):
         return None
     return user
 
@@ -100,13 +111,14 @@ def create_session(db: Session, user_id: str, *, ttl: timedelta = timedelta(days
 
 def get_session_user(db: Session, token: str) -> UserModel | None:
     """Возвращает владельца действующей сессии; неизвестный токен даёт None."""
-    if not isinstance(token, str) or not token:
+    token_hash = _token_hash(token)
+    if token_hash is None:
         return None
     return db.scalar(
         select(UserModel)
         .join(SessionModel, SessionModel.user_id == UserModel.id)
         .where(
-            SessionModel.token_hash == _token_hash(token),
+            SessionModel.token_hash == token_hash,
             SessionModel.revoked_at.is_(None),
             SessionModel.expires_at > _utc_now(),
             UserModel.is_active.is_(True),
@@ -116,11 +128,12 @@ def get_session_user(db: Session, token: str) -> UserModel | None:
 
 def revoke_session(db: Session, token: str) -> bool:
     """Отзывает сессию, включая истёкшую; True означает первый успешный отзыв."""
-    if not isinstance(token, str) or not token:
+    token_hash = _token_hash(token)
+    if token_hash is None:
         return False
     result = db.execute(
         update(SessionModel)
-        .where(SessionModel.token_hash == _token_hash(token), SessionModel.revoked_at.is_(None))
+        .where(SessionModel.token_hash == token_hash, SessionModel.revoked_at.is_(None))
         .values(revoked_at=_utc_now())
     )
     db.commit()
