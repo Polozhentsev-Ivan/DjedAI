@@ -28,10 +28,12 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from itertools import combinations
+from pathlib import Path
 
 import duckdb
 
 from djedai.contracts.catalog import ColumnRef, Relation
+from djedai.data.csv_ingest import read_sources, slugify
 from djedai.data.profiler import (
     NUMERIC,
     ColumnProfile,
@@ -64,16 +66,23 @@ class RelationError(Exception):
 class SumChange:  # сумма числовой колонки ``from`` до и после JOIN (JSON-значения)
     column: str
     before: object
-    after: object
+    after: object  # после LEFT JOIN
+    inner_after: object  # после INNER JOIN: строки без пары и с пустым ключом пропадают
 
 
 @dataclass(frozen=True)
-class JoinImpact:  # что делает ``from LEFT JOIN to`` с таблицей ``from``
+class JoinImpact:  # что делает JOIN ``from`` с ``to`` с таблицей ``from``
     rows_before: int
-    rows_after: int
+    rows_after: int  # после LEFT JOIN
+    rows_inner: int  # после INNER JOIN
     unmatched_rows: int  # непустой ключ ``from`` без пары в ``to``
+    null_key_rows: int  # пустой ключ ``from``: пары нет ни при каком JOIN
     max_fanout: int  # наибольшее число строк ``to`` на одно значение ключа
     sums: tuple[SumChange, ...]
+
+    @property
+    def loses_rows(self) -> bool:
+        return self.rows_inner < self.rows_after
 
     @property
     def multiplies(self) -> bool:
@@ -124,6 +133,7 @@ class _Key:  # колонка-кандидат: различные значен�
     column: ColumnProfile
     distinct: int
     unique: bool
+    entity: str  # имя таблицы для сопоставления: из исходного файла, без суффиксов
 
 
 def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
@@ -167,42 +177,54 @@ def join_impact(
     to_table: str,
     to_column: str,
 ) -> JoinImpact:
-    """Число строк и суммы числовых колонок ``from`` до и после ``LEFT JOIN`` с ``to``.
+    """Число строк и суммы числовых колонок ``from`` до и после ``LEFT`` и ``INNER JOIN``.
 
     JOIN не материализуется: каждая строка ``from`` весит столько, сколько строк ``to``
-    с её ключом (1 — если пары нет). Суммы считаются в точном типе, как в профайлере.
+    с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — 0). Суммы считаются в
+    точном типе, как в профайлере. CTE выбирают только ключ и меры под служебными именами
+    ``_djedai_*``, поэтому колонки таблиц (например, ``k`` или ``n``) с ними не пересекаются.
     """
     measures = [c for c in from_table.columns if c.semantic_type in NUMERIC]
-    sums = []
+    values = []
     for column in measures:
         wide = _wide_type(column.physical_type, column.semantic_type)
-        value = f"CAST({_ident(column.name)} AS {wide})" if wide else _ident(column.name)
-        sums += [f"sum({value})", f"sum({value} * coalesce(m.n, 1))"]
+        values.append(f"CAST({_ident(column.name)} AS {wide})" if wide else _ident(column.name))
+    selected = "".join(f", {v} AS _djedai_m{i}" for i, v in enumerate(values))
+    sums = "".join(
+        f", sum(f._djedai_m{i}), sum(f._djedai_m{i} * coalesce(m._djedai_n, 1)), "
+        f"sum(f._djedai_m{i} * coalesce(m._djedai_n, 0))"
+        for i in range(len(values))
+    )
     row = connection.execute(
         f"""WITH m AS (
-                SELECT {_key(to_column)} AS k, count(*) AS n FROM {_ident(to_table)}
-                WHERE {_key(to_column)} IS NOT NULL GROUP BY k),
-            f AS (SELECT *, {_key(from_column)} AS k FROM {_ident(from_table.view_name)})
-            SELECT count(*), coalesce(sum(coalesce(m.n, 1)), 0),
-                count(*) FILTER (WHERE f.k IS NOT NULL AND m.n IS NULL),
-                coalesce(max(m.n), 0){"".join(", " + s for s in sums)}
-            FROM f LEFT JOIN m ON f.k = m.k"""
+                SELECT {_key(to_column)} AS _djedai_k, count(*) AS _djedai_n
+                FROM {_ident(to_table)} WHERE {_key(to_column)} IS NOT NULL GROUP BY 1),
+            f AS (SELECT {_key(from_column)} AS _djedai_k{selected}
+                FROM {_ident(from_table.view_name)})
+            SELECT count(*), coalesce(sum(coalesce(m._djedai_n, 1)), 0),
+                coalesce(sum(coalesce(m._djedai_n, 0)), 0),
+                count(*) FILTER (WHERE f._djedai_k IS NOT NULL AND m._djedai_n IS NULL),
+                count(*) FILTER (WHERE f._djedai_k IS NULL),
+                coalesce(max(m._djedai_n), 0){sums}
+            FROM f LEFT JOIN m ON f._djedai_k = m._djedai_k"""
     ).fetchone()
-    rows_before, rows_after, unmatched, fanout, *totals = row
+    rows_before, rows_after, rows_inner, unmatched, null_keys, fanout, *totals = row
     return JoinImpact(
         rows_before=rows_before,
         rows_after=int(rows_after),
+        rows_inner=int(rows_inner),
         unmatched_rows=unmatched,
+        null_key_rows=null_keys,
         max_fanout=fanout,
         sums=tuple(
-            SumChange(c.name, _json_value(totals[2 * i]), _json_value(totals[2 * i + 1]))
+            SumChange(c.name, *(_json_value(v) for v in totals[3 * i : 3 * i + 3]))
             for i, c in enumerate(measures)
         ),
     )
 
 
 def relation_warnings(relation: TableRelation) -> tuple[str, ...]:
-    """Предупреждения каталога: размножение строк, изменение сумм, строки без пары."""
+    """Предупреждения каталога: размножение строк, изменение сумм, потери при INNER JOIN."""
     impact = relation.impact
     link = (
         f"{relation.from_table}.{relation.from_column} → {relation.to_table}.{relation.to_column}"
@@ -218,12 +240,23 @@ def relation_warnings(relation: TableRelation) -> tuple[str, ...]:
                 f"{s.column} {s.before} → {s.after}" for s in impact.changed_sums
             )
         warnings.append(text)
-    if impact.unmatched_rows:
-        share = impact.unmatched_rows / impact.rows_before
-        warnings.append(
-            f"JOIN {link}: {impact.unmatched_rows} строк {relation.from_table} ({share:.1%}) "
-            f"без пары, при INNER JOIN они пропадут"
+    if impact.loses_rows:
+        reasons = []
+        if impact.unmatched_rows:
+            reasons.append(f"без пары {impact.unmatched_rows}")
+        if impact.null_key_rows:
+            reasons.append(f"с пустым ключом {impact.null_key_rows}")
+        lost = (impact.rows_after - impact.rows_inner) / impact.rows_after
+        text = (
+            f"INNER JOIN {link} теряет строки {relation.from_table} ({', '.join(reasons)}): "
+            f"остаётся {impact.rows_inner} из {impact.rows_after} ({lost:.1%} потеряно)"
         )
+        changed = [s for s in impact.sums if s.inner_after != s.after]
+        if changed:
+            text += "; суммы меняются: " + ", ".join(
+                f"{s.column} {s.after} → {s.inner_after}" for s in changed
+            )
+        warnings.append(text)
     return tuple(warnings)
 
 
@@ -247,9 +280,23 @@ def _is_candidate(table: TableProfile, column: ColumnProfile) -> bool:
     )
 
 
+def _entities(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """``raw_table → имя сущности`` из исходного имени файла.
+
+    Имя представления может получить технический суффикс (``clients_typed`` при занятом
+    ``clients``, ``raw_clients_2`` при повторе файла) — он не должен менять распознавание.
+    """
+    return {
+        source.raw_table: slugify(Path(source.original_name).stem)
+        for source in read_sources(connection)
+    }
+
+
 def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -> list[_Key]:
+    entities = _entities(connection)
     keys = []
     for table in profiles:
+        entity = entities.get(table.raw_table, table.view_name)
         for column in table.columns:
             if not _is_candidate(table, column):
                 continue
@@ -258,7 +305,7 @@ def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -
                 f"FROM {_ident(table.view_name)}"
             ).fetchone()
             if distinct >= MIN_DISTINCT:
-                keys.append(_Key(table, column, distinct, unique=present == distinct))
+                keys.append(_Key(table, column, distinct, present == distinct, entity))
     return keys
 
 
@@ -308,9 +355,9 @@ def _name_match(source: _Key, target: _Key) -> bool:
     if left and left == right:
         return True
     if not right and left:
-        return left in _table_stems(target.table.view_name)
+        return left in _table_stems(target.entity)
     if not left and right:
-        return right in _table_stems(source.table.view_name)
+        return right in _table_stems(source.entity)
     return False
 
 

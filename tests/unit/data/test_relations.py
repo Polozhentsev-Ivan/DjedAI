@@ -361,3 +361,77 @@ def test_relations_are_stored_and_replaced(con, tmp_path):
 def test_empty_dataset_has_no_relations(con):
     assert find_relations(con).relations == ()
     assert read_relations(con).relations == ()
+
+
+@pytest.mark.parametrize("extra", [["x", "x", "y"], ["5", "6", "7"]])
+def test_user_columns_named_like_service_aliases(con, tmp_path, extra):
+    """Колонки ``k`` и ``n`` (текстовые и числовые) не путаются со служебными именами."""
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "stores": {"store_id": ["1", "2", "2"], "n": ["7", "8", "9"]},
+            "sales": {"store_id": ["1", "1", "2"], "k": extra, "amount": ["10", "20", "30"]},
+        },
+    )
+    (relation,) = report.relations
+    impact = relation.impact
+    assert (impact.rows_before, impact.rows_after, impact.max_fanout) == (3, 4, 2)
+    amount = next(s for s in impact.sums if s.column == "amount")
+    assert (amount.before, amount.after) == (60, 90)
+    assert any("размножает строки" in w for w in report.warnings)
+
+
+def test_null_keys_are_lost_by_inner_join(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "stores": {"store_id": ["1", "2"]},
+            "sales": {"store_id": ["1", "1", "2", ""], "amount": ["10", "20", "30", "40"]},
+        },
+    )
+    (relation,) = report.relations
+    impact = relation.impact
+    assert (impact.unmatched_rows, impact.null_key_rows) == (0, 1)
+    assert (impact.rows_before, impact.rows_after, impact.rows_inner) == (4, 4, 3)
+    (amount,) = impact.sums
+    assert (amount.before, amount.after, amount.inner_after) == (100, 100, 60)
+    (warning,) = report.warnings
+    assert "с пустым ключом 1" in warning and "остаётся 3 из 4" in warning
+    assert "amount 100 → 60" in warning
+
+
+def test_orphans_and_null_keys_are_counted_separately(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "clients": {"client_id": ids(range(1, 21))},
+            "orders": {
+                "client_id": ids(range(1, 21)) * 2 + ["99", "", ""],
+                "amount": ids([1] * 43),
+            },
+        },
+    )
+    (relation,) = report.relations
+    impact = relation.impact
+    assert (impact.unmatched_rows, impact.null_key_rows, impact.rows_inner) == (1, 2, 40)
+    (warning,) = report.warnings
+    assert "без пары 1, с пустым ключом 2" in warning
+    assert "amount 43 → 40" in warning
+
+
+def test_view_suffix_does_not_change_entity_name(con, tmp_path):
+    """При занятом имени представление называется clients_typed — связь та же."""
+    con.execute("CREATE TABLE clients (x INTEGER)")
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "clients": {"id": ids(range(101, 201))},
+            "orders": {"client_id": ids([101, 102] * 5)},
+        },
+    )
+    assert pairs(report) == {("orders", "client_id", "clients_typed", "id")}
+    assert report.relations[0].name_match
