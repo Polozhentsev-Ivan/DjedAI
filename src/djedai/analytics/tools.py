@@ -48,22 +48,7 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 ),
             )
 
-        # 3. ДОБАВЛЯЕМ ЛИМИТ
-        limit_node = parsed.args.get("limit")
-        rewrite_limit = True
-        if limit_node:
-            try:
-                limit_val = int(limit_node.expression.this)
-                if limit_val <= max_rows:
-                    rewrite_limit = False
-            except Exception:
-                pass
-
-        if rewrite_limit:
-            parsed = parsed.limit(max_rows)
-            sql = parsed.sql(dialect="duckdb")
-
-        # 4. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
+        # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = duckdb.connect(database=":memory:")
         con.execute("SET enable_external_access = false;")
 
@@ -74,13 +59,15 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
         timer.start()
 
         try:
-            cursor = con.execute(sql)
+            # Лимит на уровне relation ограничивает работу движка, сохраняя
+            # исходные LIMIT/FETCH, ORDER BY, OFFSET и повторяющиеся имена колонок.
+            cursor = con.sql(sql).limit(max_rows).execute()
             result = cursor.fetchmany(max_rows)
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
         finally:
             timer.cancel()
 
-        # 5. УПАКОВЫВАЕМ ПОД НОВЫЙ КОНТРАКТ
+        # 4. УПАКОВЫВАЕМ ПОД НОВЫЙ КОНТРАКТ
         rows = [list(row) for row in result]  # tuple -> list для JSON
         row_count = len(rows)
 
