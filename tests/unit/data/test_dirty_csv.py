@@ -159,12 +159,6 @@ def test_set_loads_sequentially_with_expected_errors(con):
     }
 
 
-# # @pytest.mark.xfail(
-# #     strict=True,
-# #     reason="_has_header не считает заголовком строку с повторами/пустыми ячейками (#53)",
-# # )
-
-
 def test_duplicate_headers_are_detected_without_hint(con):
     table = load_raw_csv(con, FIXTURES / "dirty/duplicate_headers.csv")
     assert table.header is True

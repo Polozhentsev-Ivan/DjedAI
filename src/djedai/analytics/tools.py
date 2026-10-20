@@ -5,7 +5,13 @@ import duckdb
 import sqlglot
 from sqlglot import exp
 
-from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.contracts.tool_result import (
+    ChartHint,
+    Fact,
+    ToolError,
+    ToolResult,
+    ToolResultData,
+)
 
 
 def _quote_id(identifier: str) -> str:
@@ -42,19 +48,16 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 ),
             )
 
-        # 3. ДОБАВЛЯЕМ ЛИМИТ (на уровне SQL, чтобы база не считала лишнее)
-        # Проверяем, есть ли LIMIT в запросе. Если нет или он больше max_rows — ставим свой.
+        # 3. ДОБАВЛЯЕМ ЛИМИТ
         limit_node = parsed.args.get("limit")
         rewrite_limit = True
         if limit_node:
             try:
-                # Пытаемся вытащить число из LIMIT. Если там LIMIT ALL — выдаст ошибку,
-                # и мы перезапишем.
                 limit_val = int(limit_node.expression.this)
                 if limit_val <= max_rows:
-                    rewrite_limit = False  # Если лимит адекватный, оставляем как есть
+                    rewrite_limit = False
             except Exception:
-                pass  # Если не смогли распарсить, принудительно перезапишем
+                pass
 
         if rewrite_limit:
             parsed = parsed.limit(max_rows)
@@ -62,12 +65,8 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
 
         # 4. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = duckdb.connect(database=":memory:")
-
-        # [P1] БЛОКИРУЕМ ВНЕШНИЕ ИСТОЧНИКИ (чтение файлов, сеть) НА УРОВНЕ ДВИЖКА
-        # Это отсекает все обходы, включая read_text, SELECT * FROM '/path', etc.
         con.execute("SET enable_external_access = false;")
 
-        # Создаем тестовые данные
         con.execute("CREATE TABLE test (id INT, name VARCHAR)")
         con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
 
@@ -76,26 +75,34 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
 
         try:
             cursor = con.execute(sql)
-            # [P2] FETCHMANY гарантирует, что в память Python попадет не больше строк, чем max_rows
             result = cursor.fetchmany(max_rows)
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
         finally:
             timer.cancel()
 
-        # 5. УПАКОВЫВАЕМ
-        data = {
-            "columns": columns,
-            "rows": result,
-            "row_count": len(result),
-        }
+        # 5. УПАКОВЫВАЕМ ПОД НОВЫЙ КОНТРАКТ
+        rows = [list(row) for row in result]  # tuple -> list для JSON
+        row_count = len(rows)
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",  # [P2] Генерируем уникальный ID
+            result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="run_sql",
             sql=sql,
-            data=data,
-            facts=[{"text": f"Запрос выполнен успешно, получено строк: {len(result)}"}],
+            params={"sql": sql, "max_rows": max_rows},
+            data=ToolResultData(
+                columns=columns,
+                rows=rows,
+                row_count=row_count,
+                truncated=row_count >= max_rows,
+            ),
+            facts=[
+                Fact(
+                    text=f"Запрос выполнен успешно, получено строк: {row_count}",
+                    kind="summary",
+                    values={"row_count": row_count},
+                )
+            ],
         )
 
     except Exception as e:
@@ -109,8 +116,8 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
             )
         elif "external" in error_msg.lower() or "permission" in error_msg.lower():
             suggestion = (
-                "Запрещено обращаться к внешним файлам или сети."
-                " Используйте только загруженные таблицы."
+                "Запрещено обращаться к внешним файлам или сети. "
+                "Используйте только загруженные таблицы."
             )
 
         return ToolResult(
@@ -124,14 +131,13 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
         )
 
 
-# --- НОВЫЕ ФУНКЦИИ ДЛЯ B2-3 ---
+# --- ОПИСАТЕЛЬНЫЕ ИНСТРУМЕНТЫ (B2-3) ---
 
 
 def _get_mock_connection():
-    """Вспомогательная функция для создания тестовой БД (пока нет реального датасета от DE)."""
+    """Вспомогательная функция: тестовая БД в памяти."""
     con = duckdb.connect(database=":memory:")
     con.execute("SET enable_external_access = false;")
-    # Создаем тестовую таблицу с пропусками для проверки
     con.execute("CREATE TABLE test (id INT, city VARCHAR, age INT)")
     con.execute(
         "INSERT INTO test VALUES (1, 'Москва', 25), (2, 'СПб', 30), "
@@ -144,38 +150,57 @@ def describe_dataset() -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
     con = _get_mock_connection()
     try:
-        # Получаем список таблиц (в будущем заменим на чтение из DatasetCatalog #59)
         tables = con.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
         ).fetchall()
         table_names = [t[0] for t in tables]
-        tables_info = []
-        facts = []
+
+        rows: list[list] = []
+        facts: list[Fact] = [
+            Fact(
+                text=f"В базе {len(table_names)} таблиц: {', '.join(table_names) or '—'}",
+                kind="dataset_summary",
+                values={"table_count": len(table_names), "tables": table_names},
+            )
+        ]
 
         for t_name in table_names:
-            # Считаем строки
             row_count = con.execute(f"SELECT COUNT(*) FROM {_quote_id(t_name)}").fetchone()[0]
-            # Получаем колонки
-            cols = con.execute(
-                f"""SELECT column_name, data_type FROM information_schema.columns
-                 WHERE table_name = '{t_name}'"""
-            ).fetchall()
-            col_info = [{"name": c[0], "type": c[1]} for c in cols]
 
-            tables_info.append({"table_name": t_name, "row_count": row_count, "columns": col_info})
+            cols = con.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = ?",
+                [t_name],
+            ).fetchall()
+            col_names = [c[0] for c in cols]
+            col_types = {c[0]: c[1] for c in cols}
+
+            # Табличное представление: одна строка на таблицу
+            rows.append([t_name, row_count, ", ".join(col_names)])
+
             facts.append(
-                {
-                    "text": f"Таблица '{t_name}': {row_count} строк, колонки: {
-                        ', '.join([c['name'] for c in col_info])
-                    }"
-                }
+                Fact(
+                    text=f"Таблица '{t_name}': {row_count} строк, колонки: {', '.join(col_names)}",
+                    kind="table_overview",
+                    values={
+                        "table_name": t_name,
+                        "row_count": row_count,
+                        "columns": col_names,
+                        "column_types": col_types,
+                    },
+                )
             )
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="describe_dataset",
-            data={"tables": tables_info},
+            params={},
+            data=ToolResultData(
+                columns=["table_name", "row_count", "columns"],
+                rows=rows,
+                row_count=len(rows),
+            ),
             facts=facts,
         )
     except Exception as e:
@@ -187,12 +212,13 @@ def describe_dataset() -> ToolResult:
 
 
 def describe_column(table: str, column: str) -> ToolResult:
+    """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
     con = _get_mock_connection()
     try:
-        # [P1] Безопасно проверяем существование
+        # [P1] Проверка через параметры
         col_check = con.execute(
-            """SELECT data_type FROM information_schema.columns WHERE table_name = \
-                ? AND column_name = ?""",
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = ?",
             [table, column],
         ).fetchone()
 
@@ -215,67 +241,97 @@ def describe_column(table: str, column: str) -> ToolResult:
         safe_table = _quote_id(table)
         safe_col = _quote_id(column)
 
-        # [P2] Считаем базовый профиль
+        # --- Базовые счётчики ---
         stats = con.execute(
             f"SELECT COUNT(*), COUNT({safe_col}), COUNT(DISTINCT {safe_col}) FROM {safe_table}"
         ).fetchone()
         total, non_null, distinct = stats
         null_count = total - non_null
 
-        data = {
+        base_values = {
             "total": total,
             "non_null": non_null,
             "distinct": distinct,
             "null_count": null_count,
         }
-        facts = [{"text": f"Всего строк: {total}, пропусков: {null_count}, уникальных: {distinct}"}]
 
-        # [P2] Добавляем частоты и примеры для ЛЮБОЙ колонки
+        facts: list[Fact] = [
+            Fact(
+                text=f"Всего строк: {total}, пропусков: {null_count}, уникальных: {distinct}",
+                kind="profile",
+                values=base_values,
+            )
+        ]
+
+        # --- Числовая статистика ---
+        dtype = col_check[0].upper()
+        if any(t in dtype for t in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL")):
+            num_stats = con.execute(
+                f"SELECT MIN({safe_col}), MAX({safe_col}), AVG({safe_col}), "
+                f"MEDIAN({safe_col}), STDDEV_POP({safe_col}) FROM {safe_table}"
+            ).fetchone()
+            if num_stats[0] is not None:
+                std_val = round(num_stats[4], 2) if num_stats[4] is not None else None
+                num_values = {
+                    "min": num_stats[0],
+                    "max": num_stats[1],
+                    "mean": round(num_stats[2], 2),
+                    "median": num_stats[3],
+                    "std": std_val,
+                }
+                facts.append(
+                    Fact(
+                        text=f"Мин: {num_stats[0]}, Макс: {num_stats[1]}, "
+                        f"Среднее: {round(num_stats[2], 2)}, "
+                        f"Медиана: {num_stats[3]}, Std: {std_val}",
+                        kind="numeric_profile",
+                        values=num_values,
+                    )
+                )
+
+        # --- Частоты (табличное представление) + факты ---
         freqs = con.execute(
-            f"SELECT {safe_col}, COUNT(*) FROM {safe_table} GROUP BY {
-                safe_col
-            } ORDER BY COUNT(*) DESC LIMIT 10"
+            f"SELECT {safe_col}, COUNT(*) FROM {safe_table} "
+            f"GROUP BY {safe_col} ORDER BY COUNT(*) DESC LIMIT 10"
         ).fetchall()
-        data["frequencies"] = freqs
 
+        freq_rows = [[val, cnt] for val, cnt in freqs]
+        for val, cnt in freqs:
+            display = val if val is not None else "ПУСТО"
+            facts.append(
+                Fact(
+                    text=f"Значение '{display}' встречается {cnt} раз.",
+                    kind="frequency",
+                    values={"value": val, "count": cnt},
+                )
+            )
+
+        # --- Примеры значений ---
         examples = con.execute(
             f"SELECT DISTINCT {safe_col} FROM {safe_table} WHERE {safe_col} IS NOT NULL LIMIT 5"
         ).fetchall()
-        data["examples"] = [e[0] for e in examples]
-
-        # [P2] Добавляем числовую статистику
-        dtype = col_check[0].upper()
-        if "INT" in dtype or "DECIMAL" in dtype or "DOUBLE" in dtype or "FLOAT" in dtype:
-            num_stats = con.execute(
-                f"SELECT MIN({safe_col}), MAX({safe_col}), AVG({safe_col}), MEDIAN({
-                    safe_col
-                }), STDDEV_POP({safe_col}) FROM {safe_table}"
-            ).fetchone()
-            if num_stats[0] is not None:
-                data.update(
-                    {
-                        "min": num_stats[0],
-                        "max": num_stats[1],
-                        "mean": round(num_stats[2], 2),
-                        "median": num_stats[3],
-                        "std": round(num_stats[4], 2),
-                    }
+        if examples:
+            example_list = [e[0] for e in examples]
+            facts.append(
+                Fact(
+                    text=f"Примеры значений: {', '.join(map(str, example_list))}",
+                    kind="examples",
+                    values={"examples": example_list},
                 )
-                # ДОБАВЛЯЕМ МЕДИАНУ В FACTS (как просил тест)
-                facts.append(
-                    {
-                        "text": f"Мин: {num_stats[0]}, Макс: {num_stats[1]}, Среднее: {
-                            round(num_stats[2], 2)
-                        }, Медиана: {num_stats[3]}"
-                    }
-                )
+            )
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="describe_column",
-            data=data,
+            params={"table": table, "column": column},
+            data=ToolResultData(
+                columns=[column, "count"],
+                rows=freq_rows,
+                row_count=len(freq_rows),
+            ),
             facts=facts,
+            chart_hint=ChartHint(type="bar", x=column, y=["count"]),
         )
     except Exception as e:
         return ToolResult(
@@ -285,7 +341,13 @@ def describe_column(table: str, column: str) -> ToolResult:
         )
 
 
-def value_counts(table: str, column: str, top_n: int = 10, filter: str | None = None) -> ToolResult:
+def value_counts(
+    table: str,
+    column: str,
+    top_n: int = 10,
+    filter: str | None = None,
+) -> ToolResult:
+    """Возвращает топ-N самых частых значений в колонке."""
     con = _get_mock_connection()
     try:
         col_check = con.execute(
@@ -302,7 +364,7 @@ def value_counts(table: str, column: str, top_n: int = 10, filter: str | None = 
         safe_table = _quote_id(table)
         safe_col = _quote_id(column)
 
-        query = f"SELECT {safe_col}, COUNT(*) as cnt FROM {safe_table}"
+        query = f"SELECT {safe_col}, COUNT(*) AS cnt FROM {safe_table}"
 
         if filter:
             try:
@@ -326,20 +388,48 @@ def value_counts(table: str, column: str, top_n: int = 10, filter: str | None = 
                 result_id=f"r_{uuid.uuid4().hex[:8]}",
                 status="empty",
                 tool="value_counts",
-                facts=[{"text": "По заданному фильтру данные не найдены."}],
+                params={
+                    "table": table,
+                    "column": column,
+                    "top_n": top_n,
+                    "filter": filter,
+                },
+                facts=[
+                    Fact(
+                        text="По заданному фильтру данные не найдены.",
+                        kind="empty_result",
+                    )
+                ],
             )
 
-        facts = []
-        for row in result:
-            val = row[0] if row[0] is not None else "ПУСТО"
-            facts.append({"text": f"Значение '{val}' встречается {row[1]} раз."})
+        rows = [[val, cnt] for val, cnt in result]
+
+        facts = [
+            Fact(
+                text=f"Значение '{val if val is not None else 'ПУСТО'}' встречается {cnt} раз.",
+                kind="frequency",
+                values={"value": val, "count": cnt},
+            )
+            for val, cnt in result
+        ]
 
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex[:8]}",
             status="ok",
             tool="value_counts",
-            data={"rows": result, "columns": [column, "count"]},
+            params={
+                "table": table,
+                "column": column,
+                "top_n": top_n,
+                "filter": filter,
+            },
+            data=ToolResultData(
+                columns=[column, "count"],
+                rows=rows,
+                row_count=len(rows),
+            ),
             facts=facts,
+            chart_hint=ChartHint(type="bar", x=column, y=["count"]),
         )
     except Exception as e:
         return ToolResult(

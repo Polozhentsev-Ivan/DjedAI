@@ -25,7 +25,7 @@ def test_graph_shortest_path_and_isolation():
     assert result_1["catalog_prompt"] == "Catalog mapped for ds_alpha"
     assert result_1["understanding"].intent == "data_question"
     assert len(result_1["answer_blocks"]) == 1
-    assert result_1["answer_blocks"][0].markdown == "Calculated response"
+    assert result_1["answer_blocks"][0].markdown == "Based on facts: []"
 
     # --- Test Chat 1 (Turn 2: Ambiguous Flow) ---
     # This verifies that previous turn's results (answer_blocks, plan, etc.)

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="tokens.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</helmet>
+<div style="background:var(--surface-subtle); min-height:100vh; font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="max-width:var(--frame-desktop-w); margin:var(--space-0) auto; padding:var(--space-12) var(--space-8) var(--space-16); display:flex; flex-direction:column; gap:var(--space-8)">
+    <div>
+      <div style="font-family:var(--font-display); font-size:var(--text-2xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight)">Компоненты и токены DjedAI</div>
+      <div style="margin-top:var(--space-2); color:var(--muted-foreground); font-size:var(--text-base)">React + Tailwind + shadcn/ui · токены в <span style="font-family:var(--font-mono)">tokens.css</span> (:root и .dark)</div>
+      <div style="display:flex; gap:var(--space-4); margin-top:var(--space-2)"><a href="DjedAI.dc.html">Интерактивный прототип →</a><a href="Frames.dc.html">Все экраны и состояния →</a></div>
+    </div>
+
+    <div data-screen-label="Шрифты и иконки" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5)">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-3)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Шрифты</div>
+        <div><div style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">--font-sans / --font-display</div><div style="font-size:var(--text-base)">SF Pro Text / SF Pro Display (системный на Apple) → Inter (Google Fonts, 400/600/700, ss03)</div></div>
+        <div><div style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">--font-mono</div><div style="font-family:var(--font-mono)">SF Mono → JetBrains Mono (Google Fonts, 400/600)</div></div>
+        <div style="color:var(--muted-foreground)">Веса: 400 / 600 / 700. Вес 500 не используется. Числа — font-variant-numeric: tabular-nums.</div>
+      </div>
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-3)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Иконки · lucide-react 0.460</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--grid-fact-min),1fr)); gap:var(--space-2)">
+          <sc-for list="{{ icons }}" as="i" hint-placeholder-count="20"><div style="display:flex; align-items:center; gap:var(--space-2); color:var(--secondary-foreground)"><dc-import name="Icon" icon="{{ i.name }}" hint-size="18px,18px"></dc-import><span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ i.react }}</span></div></sc-for>
+        </div>
+        <div style="color:var(--muted-foreground)">strokeWidth 1.75 · размеры --size-icon-xs/sm/—/lg/xl = 12/16/18/20/24</div>
+      </div>
+    </div>
+
+    <div data-screen-label="Цвета" style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-4)">
+      <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Цвета · :root / .dark</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--grid-swatch-min),1fr)); gap:var(--space-3-5)">
+        <sc-for list="{{ colors }}" as="c" hint-placeholder-count="24">
+          <div style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+            <div style="display:grid; grid-template-columns:1fr 1fr; border-radius:var(--radius-sm); overflow:hidden; border:var(--border-width) solid var(--border)">
+              <div style="height:var(--size-control); background:{{ c.css }}"></div>
+              <div class="dark" style="height:var(--size-control); background:{{ c.css }}"></div>
+            </div>
+            <span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ c.name }}</span>
+            <span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ c.use }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); margin-top:var(--space-2)">Палитра графиков</div>
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-2-5)">
+        <sc-for list="{{ charts }}" as="c" hint-placeholder-count="6">
+          <div style="display:flex; align-items:center; gap:var(--space-2); padding:var(--space-1-5) var(--space-3) var(--space-1-5) var(--space-1-5); border-radius:var(--radius-full); border:var(--border-width) solid var(--border)"><span style="width:var(--space-6); height:var(--space-6); border-radius:var(--radius-full); background:{{ c.css }}"></span><span class="dark" style="width:var(--space-6); height:var(--space-6); border-radius:var(--radius-full); background:{{ c.css }}"></span><span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ c.name }}</span></div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div data-screen-label="Типографика и шкалы" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5)">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-2)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Типографика</div>
+        <sc-for list="{{ type }}" as="t" hint-placeholder-count="8">
+          <div style="display:flex; flex-direction:column; gap:var(--space-0-5); padding:var(--space-2) var(--space-0); border-bottom:var(--border-width) solid var(--border-subtle)">
+            <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground)">{{ t.name }}</span>
+            <span style="font-family:{{ t.ff }}; font-size:{{ t.size }}; font-weight:{{ t.w }}; line-height:{{ t.lh }}; letter-spacing:{{ t.ls }}">{{ t.sample }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-4)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Отступы</div>
+        <sc-for list="{{ spaces }}" as="s" hint-placeholder-count="12"><div style="display:flex; align-items:center; gap:var(--space-3)"><span style="font-family:var(--font-mono); font-size:var(--text-xs); width:var(--label-col)">{{ s.name }}</span><span style="height:var(--space-2); width:{{ s.css }}; background:var(--primary); border-radius:var(--radius-xs)"></span><span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ s.px }}</span></div></sc-for>
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold); margin-top:var(--space-2)">Радиусы и тени</div>
+        <div style="display:flex; flex-wrap:wrap; gap:var(--space-3)">
+          <sc-for list="{{ radii }}" as="r" hint-placeholder-count="5"><div style="display:flex; flex-direction:column; align-items:center; gap:var(--space-1-5)"><div style="width:var(--size-avatar-lg); height:var(--size-avatar-lg); border:var(--border-width-strong) solid var(--primary); border-radius:{{ r.css }}"></div><span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ r.name }}</span><span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ r.px }}</span></div></sc-for>
+        </div>
+        <div style="color:var(--muted-foreground)">--shadow-none / --shadow-popover = none. Элементы отделяются границей --border и сменой фона, тени не используются. Фокус: outline var(--focus-ring), offset var(--focus-offset). Нажатие: scale(var(--press-scale)).</div>
+      </div>
+    </div>
+
+    <div data-screen-label="Кнопки, поля, бейджи" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5)">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-4)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">Button <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground); font-weight:var(--font-weight-regular)">shadcn Button · variant</span></div>
+        <div style="display:flex; flex-wrap:wrap; gap:var(--space-2-5); align-items:center">
+          <button style="border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer" style-active="transform:scale(var(--press-scale))">default</button>
+          <button style="border:var(--border-width) solid var(--link); border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; cursor:pointer">outline</button>
+          <button style="border:none; border-radius:var(--radius-sm); padding:var(--space-2) var(--space-4); background:var(--inverse); color:var(--inverse-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer">inverse</button>
+          <button style="border:var(--border-width) solid var(--border); border-radius:var(--radius-md); padding:var(--space-2) var(--space-3-5); background:var(--secondary); color:var(--secondary-foreground); font-size:var(--text-sm); font-family:inherit; cursor:pointer">secondary</button>
+          <a>link</a><a style="color:var(--destructive)">destructive-link</a>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:var(--space-2-5); align-items:center">
+          <button disabled="{{ true }}" style="display:flex; align-items:center; gap:var(--space-2); border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-sm); font-family:inherit; opacity:.7; cursor:not-allowed"><dc-import name="Icon" icon="loader-circle" spin="{{ true }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>loading</button>
+          <button disabled="{{ true }}" style="border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-5); background:var(--muted); color:var(--muted-foreground); font-size:var(--text-sm); font-family:inherit">disabled</button>
+        </div>
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold); margin-top:var(--space-2)">Input</div>
+        <input placeholder="default" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid var(--input); background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; outline:none">
+        <input placeholder="focus" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid var(--input); background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; outline:var(--focus-ring); outline-offset:var(--focus-offset)">
+        <div style="display:flex; flex-direction:column; gap:var(--space-1-5)"><input placeholder="error" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid var(--destructive); background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; outline:none"><span style="font-size:var(--text-xs); color:var(--destructive)">Введите пароль</span></div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:var(--space-5)">
+        <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-3)">
+          <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">StatusBadge</div>
+          <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center">
+            <dc-import name="StatusBadge" tone="success" label="Готов" hint-size="70px,22px"></dc-import>
+            <dc-import name="StatusBadge" tone="info" label="Обработка" hint-size="90px,22px"></dc-import>
+            <dc-import name="StatusBadge" tone="danger" label="Ошибки" hint-size="80px,22px"></dc-import>
+            <dc-import name="StatusBadge" variant="tag" tone="accent" label="активный" hint-size="70px,20px"></dc-import>
+            <dc-import name="StatusBadge" variant="type" tone="neutral" label="money (₽)" hint-size="80px,20px"></dc-import>
+            <dc-import name="StatusBadge" tone="success" dot="{{ false }}" label="+18% к цели" hint-size="90px,22px"></dc-import>
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:var(--space-4); font-size:var(--text-base); font-variant-numeric:tabular-nums"><span>1 250 000 ₽</span><span>3,4 млн ₽</span><span>12,5%</span><span style="color:var(--success); font-weight:var(--font-weight-semibold)">+34%</span><span style="color:var(--destructive); font-weight:var(--font-weight-semibold)">−5%</span><span>18.10.2026</span></div>
+        </div>
+        <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+          <div style="padding:var(--space-5) var(--space-6) var(--space-3); font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">TransformLogItem</div>
+          <dc-import name="TransformLogItem" level="info" text="В колонке «Сумма с НДС, руб» распознан формат валюты (₽)" hint-size="100%,64px"></dc-import>
+          <dc-import name="TransformLogItem" level="warning" text="В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL." hint-size="100%,64px"></dc-import>
+        </div>
+        <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-3)">
+          <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">DatasetSelect · TopBar</div>
+          <div style="background:var(--topbar); border-radius:var(--radius-md); padding:var(--space-2) var(--space-3)"><dc-import name="DatasetSelect" value="orders_2026" options="{{ dsOptions }}" hint-size="260px,30px"></dc-import></div>
+        </div>
+      </div>
+    </div>
+
+    <div data-screen-label="DataTable" style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); overflow:hidden">
+      <div style="padding:var(--space-5) var(--space-6) var(--space-3); font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">DataTable <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground); font-weight:var(--font-weight-regular)">типы колонок: text · strong · mono · number · muted · name · badge · type · actions</span></div>
+      <dc-import name="DataTable" columns="{{ tableCols }}" rows="{{ tableRows }}" min-width="820px" hint-size="100%,150px"></dc-import>
+    </div>
+
+    <div data-screen-label="Состояния" style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-4)">
+      <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">LoadingState · EmptyState · ErrorState <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--muted-foreground); font-weight:var(--font-weight-regular)">size: page | inline | compact — одинаковый вид, меняется текст</span></div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-state-min),1fr)); gap:var(--space-4)">
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="LoadingState" title="Загрузка данных" text="Определение типов колонок…" hint-size="100%,220px"></dc-import></div>
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="EmptyState" title="Нет данных" text="Загрузите CSV или подключите БД." action-label="Загрузить" hint-size="100%,220px"></dc-import></div>
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="ErrorState" title="Не удалось загрузить" text="Файл пуст или повреждён." hint-size="100%,220px"></dc-import></div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-state-min),1fr)); gap:var(--space-4)">
+        <dc-import name="LoadingState" size="inline" title="Загрузка sales.csv" steps="{{ uploadSteps }}" hint-size="100%,130px"></dc-import>
+        <dc-import name="ErrorState" size="inline" title="Запрос превысил таймаут 30 сек." text="Попробуйте уточнить период." hint-size="100%,110px"></dc-import>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-state-min),1fr)); gap:var(--space-4)">
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="LoadingState" size="compact" title="Обновление данных…" hint-size="100%,100px"></dc-import></div>
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="EmptyState" size="compact" title="Нет виджетов" hint-size="100%,100px"></dc-import></div>
+        <div style="border:var(--border-width) solid var(--border); border-radius:var(--radius-lg)"><dc-import name="ErrorState" size="compact" title="Ошибка обновления данных" hint-size="100%,140px"></dc-import></div>
+      </div>
+    </div>
+
+    <div data-screen-label="Блоки чата" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5); align-items:start">
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-5)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">ChatMessage · AgentSteps · SuggestionChips</div>
+        <dc-import name="ChatMessage" role="user" text="Покажи динамику выручки по месяцам за 2026 год" hint-size="100%,48px"></dc-import>
+        <dc-import name="ChatMessage" role="assistant" parts="{{ parts }}" facts="{{ facts }}" hint-size="100%,160px">
+          <dc-import name="SuggestionChips" items="{{ chips }}" hint-size="100%,36px"></dc-import>
+        </dc-import>
+        <dc-import name="AgentSteps" title="Ассистент работает" steps="{{ agentSteps }}" hint-size="100%,130px"></dc-import>
+      </div>
+      <div style="background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-5)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">HowCalculated · ClarifyBlock</div>
+        <dc-import name="HowCalculated" default-open="{{ true }}" summary="1 инструмент · 1 SQL-запрос" tool="time_aggregate(table='orders', freq='month')" columns="{{ howCols }}" sql="{{ sql }}" hint-size="100%,240px"></dc-import>
+        <dc-import name="ClarifyBlock" question="Какую сумму показать?" hint="В таблице orders две колонки с суммой." options="{{ clarify }}" hint-size="100%,160px"></dc-import>
+      </div>
+    </div>
+
+    <div data-screen-label="Графики и виджеты" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(var(--grid-widget-min),1fr)); gap:var(--space-5)">
+      <dc-import name="ChartCard" title="ChartCard" subtitle="ECharts · --chart-1…6" chart="revenue" height="md" hint-size="100%,330px"></dc-import>
+      <dc-import name="WidgetCard" title="WidgetCard · default" subtitle="Электроника лидирует" chart="categories" how="{{ widgetHow }}" hint-size="100%,330px"></dc-import>
+      <dc-import name="WidgetCard" title="WidgetCard · loading" subtitle="Москва 45%, СПб 25%" chart="regions" state="loading" how="{{ widgetHow }}" hint-size="100%,330px"></dc-import>
+      <dc-import name="WidgetCard" title="WidgetCard · error" subtitle="Топ категорий" chart="categories" state="error" how="{{ widgetHow }}" hint-size="100%,330px"></dc-import>
+    </div>
+
+    <div data-screen-label="Каркас" style="display:grid; grid-template-columns:auto minmax(0,1fr); gap:var(--space-5); align-items:start">
+      <div style="display:flex; gap:var(--space-3); height:var(--frame-desktop-h); max-height:var(--widget-min-height)">
+        <div style="border-radius:var(--radius-md); overflow:hidden; border:var(--border-width) solid var(--border); display:flex"><dc-import name="Sidebar" active="chat" chats="{{ chats }}" active-chat="q1" hint-size="232px,100%"></dc-import></div>
+        <div style="border-radius:var(--radius-md); overflow:hidden; border:var(--border-width) solid var(--border); display:flex"><dc-import name="Sidebar" active="sources" compact="{{ true }}" hint-size="64px,100%"></dc-import></div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:var(--space-2)">
+        <div style="font-size:var(--text-lg); font-weight:var(--font-weight-semibold)">AppLayout = TopBar + Sidebar + main</div>
+        <div style="color:var(--muted-foreground)">Sidebar: вертикальное меню всегда на месте; в разделе «Чат» под меню добавляется история чатов. Ниже 1024px — compact (иконки 44×44).</div>
+        <div style="border-radius:var(--radius-md); overflow:hidden"><dc-import name="TopBar" dataset="orders_2026" datasets="{{ dsOptions }}" hint-size="100%,48px"></dc-import></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const colors = [
+      ['--background', 'Фон контента'], ['--foreground', 'Основной текст'], ['--card', 'Карточки'], ['--secondary', 'Вторичная поверхность'],
+      ['--secondary-foreground', 'Вторичный текст'], ['--muted', 'Чипы, трек'], ['--muted-foreground', 'Подписи'], ['--surface-subtle', 'Подложки, пузырь'],
+      ['--primary', 'Действие'], ['--link', 'Ссылки'], ['--accent', 'Выбранный пункт'], ['--accent-foreground', 'Текст выбранного'],
+      ['--border', 'Границы'], ['--border-subtle', 'Разделители строк'], ['--ring', 'Фокус'], ['--success', 'Рост, готово'],
+      ['--success-muted', 'Фон успеха'], ['--warning', 'Предупреждение'], ['--warning-muted', 'Фон предупреждения'], ['--destructive', 'Ошибка, падение'],
+      ['--destructive-muted', 'Фон ошибки'], ['--info-muted', 'Фон info'], ['--inverse', 'Аватар, выбранный таб'], ['--sidebar', 'Сайдбар'],
+      ['--topbar', 'Верхняя панель'], ['--code', 'Фон SQL'], ['--skeleton', 'Скелетон'], ['--toast', 'Тост']
+    ].map(([name, use]) => ({ name, use, css: `var(${name})` }));
+    const icons = [['database', 'Database'], ['table-2', 'Table2'], ['message-square', 'MessageSquare'], ['layout-dashboard', 'LayoutDashboard'], ['upload', 'Upload'],
+      ['inbox', 'Inbox'], ['loader-circle', 'LoaderCircle'], ['triangle-alert', 'TriangleAlert'], ['info', 'Info'], ['circle-help', 'CircleHelp'], ['check', 'Check'],
+      ['circle', 'Circle'], ['chevron-down', 'ChevronDown'], ['chevron-right', 'ChevronRight'], ['refresh-cw', 'RefreshCw'], ['plus', 'Plus'], ['square', 'Square'],
+      ['arrow-right', 'ArrowRight'], ['arrow-left-right', 'ArrowLeftRight'], ['download', 'Download'], ['log-out', 'LogOut']].map(([name, react]) => ({ name, react }));
+    const type = [
+      ['text-3xl · 56/600 · display', '--text-3xl', 600, '--leading-tight', '--tracking-display', 'var(--font-display)', '12,4 млн ₽'],
+      ['text-2xl · 40/600 · display', '--text-2xl', 600, '--leading-tight', '--tracking-display', 'var(--font-display)', 'DjedAI'],
+      ['text-xl · 28/600 · display', '--text-xl', 600, '--leading-tight', '--tracking-display', 'var(--font-display)', 'Каталог датасета'],
+      ['text-lg · 21/600', '--text-lg', 600, '--leading-snug', '--tracking-none', 'var(--font-sans)', 'Заголовок секции'],
+      ['text-base · 17/400', '--text-base', 400, '--leading-relaxed', '--tracking-body', 'var(--font-sans)', 'Выручка стабильно растёт: пик в июле — 3,4 млн ₽'],
+      ['text-sm · 14/400', '--text-sm', 400, '--leading-normal', '--tracking-sm', 'var(--font-sans)', 'Ячейка таблицы, кнопка'],
+      ['text-xs · 12/400', '--text-xs', 400, '--leading-normal', '--tracking-xs', 'var(--font-sans)', 'Подпись · 18.10.2026 14:00'],
+      ['mono · 12/400', '--text-xs', 400, '--leading-code', '--tracking-none', 'var(--font-mono)', "time_aggregate(table='orders')"]
+    ].map(([name, size, w, lh, ls, ff, sample]) => ({ name, size: `var(${size})`, w, lh: `var(${lh})`, ls: `var(${ls})`, ff, sample }));
+    const spaces = [['0-5', 2], ['1', 4], ['1-5', 6], ['2', 8], ['2-5', 10], ['3', 12], ['3-5', 14], ['4', 16], ['5', 20], ['6', 24], ['8', 32], ['10', 40], ['12', 48], ['16', 64]]
+      .map(([k, px]) => ({ name: `--space-${k}`, css: `var(--space-${k})`, px: px + 'px' }));
+    const radii = [['xs', 5], ['sm', 8], ['md', 11], ['lg', 18], ['full', 9999]].map(([k, px]) => ({ name: `--radius-${k}`, css: `var(--radius-${k})`, px: px + 'px' }));
+    const sql = "SELECT date_trunc('month', payment_date) AS month,\n       SUM(amount) AS revenue\nFROM   orders\nGROUP  BY month;";
+    return {
+      colors, icons, type, spaces, radii, sql,
+      charts: [1, 2, 3, 4, 5, 6].map(i => ({ name: `--chart-${i}`, css: `var(--chart-${i})` })),
+      dsOptions: [{ id: 'orders_2026', meta: 'CSV (2) · 120 450 строк' }, { id: 'retail_crm_prod', meta: 'Postgres · 1 420 000 строк' }, { id: 'marketing_q3', meta: 'Ошибки загрузки', disabled: true }],
+      tableCols: [{ key: 'name', label: 'Название', type: 'name', width: 'minmax(200px,2fr)' }, { key: 'src', label: 'Источник', type: 'muted', width: '110px' },
+        { key: 'rows', label: 'Строк', type: 'number', align: 'right', width: '120px' }, { key: 'status', label: 'Статус', type: 'badge', width: '110px' },
+        { key: 'actions', label: 'Действия', type: 'actions', width: 'minmax(260px,2fr)' }],
+      tableRows: [
+        { highlight: true, name: { text: 'orders_2026', tag: 'активный' }, src: 'CSV (2)', rows: '120 450', status: { text: 'Готов', tone: 'success' }, actions: [{ label: 'Посмотреть каталог' }, { label: 'Удалить', tone: 'danger' }] },
+        { name: { text: 'marketing_q3' }, src: 'CSV (1)', rows: '–', status: { text: 'Ошибки', tone: 'danger' }, actions: [{ label: 'Загрузить заново' }, { label: 'Удалить', tone: 'danger' }] }
+      ],
+      uploadSteps: [{ label: 'Чтение файла', status: 'done' }, { label: 'Определение типов', status: 'active', pct: 60 }, { label: 'Профилирование', status: 'pending' }],
+      agentSteps: [{ label: 'Определил колонки', status: 'done' }, { label: 'Анализирую данные…', status: 'active' }, { label: 'Считаю агрегаты…', status: 'pending' }],
+      parts: [{ t: 'Пик в июле — ' }, { t: '3,4 млн ₽', strong: true }, { t: ', ' }, { t: '+34%', tone: 'success' }, { t: ' к среднему.' }],
+      facts: [{ label: 'Итого', value: '25,4 млн ₽' }, { label: 'Среднее', value: '2 540 000 ₽' }],
+      chips: ['Сравнить с прошлым годом', 'Разбить по регионам'],
+      howCols: [{ label: 'Сумма с НДС, руб', name: 'amount' }, { label: 'Дата оплаты', name: 'payment_date' }],
+      clarify: [{ label: 'Сумма заказа', name: 'order_amount', hint: 'все заказы' }, { label: 'Сумма доставленных', name: 'delivered_amount', hint: 'без отмен' }],
+      widgetHow: { tool: "top_n(table='orders', by='category', n=5)", columns: [{ label: 'Категория', name: 'category' }], sql: 'SELECT category, SUM(amount) FROM orders GROUP BY 1;' },
+      chats: [{ id: 'q1', title: 'Продажи Q1', meta: 'Сегодня, 14:05' }, { id: 'reg', title: 'Регионы', meta: 'Вчера, 17:40' }, { id: 'seg', title: 'Сегменты', meta: '12.10.2026' }]
+    };
+  }
+}
+</script>
+</body>
+</html>

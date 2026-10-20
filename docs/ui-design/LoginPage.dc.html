@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="LoginPage" data-screen-label="01 Вход" style="position:absolute; inset:0; box-sizing:border-box; overflow:auto; background:var(--surface-subtle); display:flex; padding:var(--space-12) var(--space-4); font-family:var(--font-sans); color:var(--foreground); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm)">
+  <div style="margin:auto; width:100%; max-width:var(--login-max); display:flex; flex-direction:column; align-items:center; gap:var(--space-7)">
+    <div style="text-align:center">
+      <div style="font-family:var(--font-display); font-size:var(--text-2xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display)">DjedAI</div>
+      <div style="font-size:var(--text-base); color:var(--muted-foreground); margin-top:var(--space-2); letter-spacing:var(--tracking-body)">Локальная аналитическая платформа</div>
+    </div>
+    <div style="width:100%; box-sizing:border-box; background:var(--card); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); padding:var(--space-7); display:flex; flex-direction:column; gap:var(--space-4)">
+      <div style="display:grid; grid-template-columns:1fr 1fr; padding:var(--space-0-5); background:var(--muted); border-radius:var(--radius-full)">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.onClick }}" style="border:none; border-radius:var(--radius-full); padding:var(--space-2) var(--space-0); font-size:var(--text-sm); font-family:inherit; cursor:pointer; background:{{ t.bg }}; color:{{ t.ink }}; font-weight:{{ t.fw }}">{{ t.label }}</button></sc-for>
+      </div>
+      <sc-if value="{{ isError }}"><dc-import name="ErrorState" size="inline" title="{{ errTitle }}" text="{{ errText }}" action-label="" hint-size="100%,68px"></dc-import></sc-if>
+      <label style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+        <span style="font-size:var(--text-xs); font-weight:var(--font-weight-semibold); color:var(--secondary-foreground)">Имя пользователя / Email</span>
+        <input placeholder="ivan или ivan@company.ru" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid {{ fieldBorder }}; background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; letter-spacing:var(--tracking-body); outline:none" style-focus="outline:var(--focus-ring); outline-offset:var(--focus-offset)">
+        <sc-if value="{{ isEmpty }}"><span style="font-size:var(--text-xs); color:var(--destructive)">Введите имя пользователя или email</span></sc-if>
+      </label>
+      <label style="display:flex; flex-direction:column; gap:var(--space-1-5)">
+        <span style="font-size:var(--text-xs); font-weight:var(--font-weight-semibold); color:var(--secondary-foreground)">Пароль</span>
+        <input type="password" placeholder="Не менее 8 символов" style="height:var(--size-control); box-sizing:border-box; padding:var(--space-0) var(--space-3-5); border-radius:var(--radius-md); border:var(--border-width) solid {{ fieldBorder }}; background:var(--card); color:var(--foreground); font-size:var(--text-base); font-family:inherit; outline:none" style-focus="outline:var(--focus-ring); outline-offset:var(--focus-offset)">
+        <sc-if value="{{ isEmpty }}"><span style="font-size:var(--text-xs); color:var(--destructive)">Введите пароль</span></sc-if>
+      </label>
+      <button onClick="{{ submit }}" disabled="{{ isLoading }}" style="height:var(--size-control); border:none; border-radius:var(--radius-full); background:var(--primary); color:var(--primary-foreground); font-size:var(--text-base); font-family:inherit; letter-spacing:var(--tracking-body); cursor:{{ cursor }}; opacity:{{ op }}; display:flex; align-items:center; justify-content:center; gap:var(--space-2-5)" style-active="transform:scale(var(--press-scale))">
+        <sc-if value="{{ isLoading }}"><dc-import name="Icon" icon="loader-circle" spin="{{ true }}" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></sc-if>
+        <span>{{ submitLabel }}</span>
+      </button>
+      <div style="text-align:center; color:var(--muted-foreground)">{{ switchPrompt }} <a onClick="{{ switchTab }}">{{ switchLink }}</a></div>
+    </div>
+    <div style="font-size:var(--text-xs); color:var(--muted-foreground); text-align:center">Данные обрабатываются локально и не покидают ваш сервер</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:800},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;empty&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'empty'|'error'&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;login&quot;,&quot;register&quot;],&quot;default&quot;:&quot;login&quot;,&quot;tsType&quot;:&quot;'login'|'register'&quot;},&quot;onSubmit&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(tab) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { tab: this.props.tab ?? 'login' };
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default', reg = this.state.tab === 'register', loading = st === 'loading';
+    const pill = on => ({ bg: on ? 'var(--card)' : 'transparent', ink: on ? 'var(--foreground)' : 'var(--muted-foreground)', fw: on ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)' });
+    return {
+      tabs: [['login', 'Вход'], ['register', 'Регистрация']].map(([k, l]) => ({ label: l, ...pill(this.state.tab === k), onClick: () => this.setState({ tab: k }) })),
+      isError: st === 'error', isEmpty: st === 'empty', isLoading: loading,
+      errTitle: reg ? 'Пользователь с таким именем уже существует' : 'Неверный логин или пароль',
+      errText: reg ? 'Выберите другое имя или войдите в существующий аккаунт.' : 'Проверьте раскладку и попробуйте снова.',
+      fieldBorder: st === 'empty' ? 'var(--destructive)' : 'var(--input)',
+      cursor: loading ? 'not-allowed' : 'pointer', op: loading ? 0.7 : 1,
+      submitLabel: loading ? (reg ? 'Создаём аккаунт…' : 'Входим…') : (reg ? 'Зарегистрироваться' : 'Войти в систему'),
+      switchPrompt: reg ? 'Уже есть аккаунт?' : 'Нет аккаунта?', switchLink: reg ? 'Войти' : 'Зарегистрироваться',
+      switchTab: () => this.setState({ tab: reg ? 'login' : 'register' }),
+      submit: () => { if (!loading && p.onSubmit) p.onSubmit(this.state.tab); }
+    };
+  }
+}
+</script>
+</body>
+</html>

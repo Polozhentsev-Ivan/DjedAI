@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +35,7 @@ class ValueCountsParams(BaseModel):
 
 
 class ToolDefinition(BaseModel):
-    """Описание инструмента для нейросети (MLE)."""
+    """Внутреннее описание инструмента с моделью для валидации параметров."""
 
     name: str
     description: str
@@ -44,6 +44,14 @@ class ToolDefinition(BaseModel):
     @property
     def parameters_schema(self) -> dict[str, Any]:
         return self.parameters_model.model_json_schema()
+
+
+class LLMToolDefinition(TypedDict):
+    """JSON-совместимое описание инструмента для нейросети (MLE)."""
+
+    name: str
+    description: str
+    parameters_schema: dict[str, Any]
 
 
 TOOLS_REGISTRY = [
@@ -70,6 +78,13 @@ TOOLS_REGISTRY = [
 ]
 
 
-def get_tools_for_llm():
+def get_tools_for_llm() -> list[LLMToolDefinition]:
     """Возвращает список инструментов для передачи в нейросеть (MLE)."""
-    return TOOLS_REGISTRY
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters_schema": tool.parameters_schema,
+        }
+        for tool in TOOLS_REGISTRY
+    ]

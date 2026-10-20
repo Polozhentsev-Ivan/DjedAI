@@ -1,0 +1,587 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DjedAI shared frontend contracts",
+    "version": "0.1.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "ChartHint": {
+        "additionalProperties": false,
+        "description": "Подсказка аналитической функции о подходящем типе визуализации (§4.3).",
+        "properties": {
+          "type": {
+            "description": "Рекомендуемый тип графика, например 'line', 'bar'",
+            "title": "Type",
+            "type": "string"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Поле по оси X",
+            "title": "X"
+          },
+          "y": {
+            "description": "Поля по оси Y",
+            "items": {
+              "type": "string"
+            },
+            "title": "Y",
+            "type": "array"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Поле разбивки",
+            "title": "Color"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "ChartHint",
+        "type": "object"
+      },
+      "DatasetDoneData": {
+        "additionalProperties": false,
+        "description": "Данные об успешном завершении профилирования датасета.",
+        "properties": {
+          "dataset_id": {
+            "description": "Идентификатор профилированного датасета",
+            "title": "Dataset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id"
+        ],
+        "title": "DatasetDoneData",
+        "type": "object"
+      },
+      "DatasetProgressData": {
+        "additionalProperties": false,
+        "description": "Данные о прогрессе фонового профилирования датасета.",
+        "properties": {
+          "stage": {
+            "description": "Текущая стадия обработки датасета",
+            "title": "Stage",
+            "type": "string"
+          },
+          "progress": {
+            "description": "Доля завершения от 0.0 до 1.0",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "number"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Сообщение о выполняемом действии",
+            "title": "Message"
+          }
+        },
+        "required": [
+          "stage",
+          "progress"
+        ],
+        "title": "DatasetProgressData",
+        "type": "object"
+      },
+      "Fact": {
+        "additionalProperties": false,
+        "description": "Структурированный факт для передачи в LLM и верификации чисел.",
+        "properties": {
+          "text": {
+            "description": "Текстовый факт для формирования ответа пользователю",
+            "title": "Text",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Категория факта (например, 'metric', 'seasonal_peak')",
+            "title": "Kind"
+          },
+          "values": {
+            "additionalProperties": true,
+            "description": "Точные числовые значения для верификатора",
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "Fact",
+        "type": "object"
+      },
+      "SSEDoneData": {
+        "additionalProperties": false,
+        "description": "Данные события успешного завершения генерации ответа.",
+        "properties": {
+          "message_id": {
+            "description": "Идентификатор сформированного сообщения ассистента",
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "SSEDoneData",
+        "type": "object"
+      },
+      "SSEErrorData": {
+        "additionalProperties": false,
+        "description": "Данные события ошибки при обработке сообщения.",
+        "properties": {
+          "message": {
+            "description": "Понятное описание возникшей ошибки на русском языке",
+            "title": "Message",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Технические детали ошибки",
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "SSEErrorData",
+        "type": "object"
+      },
+      "SSEStatusData": {
+        "additionalProperties": false,
+        "description": "Данные события изменения статуса узла графа агента.",
+        "properties": {
+          "node": {
+            "description": "Узел графа агента (understand, plan, execute, compose, verify)",
+            "title": "Node",
+            "type": "string"
+          },
+          "text": {
+            "description": "Человекочитаемый статус текущего действия на русском языке",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "text"
+        ],
+        "title": "SSEStatusData",
+        "type": "object"
+      },
+      "SSEToolCallData": {
+        "additionalProperties": false,
+        "description": "Данные события вызова инструмента агентом.",
+        "properties": {
+          "tool": {
+            "description": "Название вызванного инструмента",
+            "title": "Tool",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "description": "Параметры вызова инструмента",
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "title": "SSEToolCallData",
+        "type": "object"
+      },
+      "SSEToolResultData": {
+        "additionalProperties": false,
+        "description": "Данные события завершения выполнения инструмента.",
+        "properties": {
+          "result_id": {
+            "description": "Идентификатор сохраненного результата",
+            "title": "Result Id",
+            "type": "string"
+          },
+          "ok": {
+            "description": "Признак успешного завершения инструмента",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Сообщение об ошибке, если вызов завершился сбоем",
+            "title": "Error"
+          }
+        },
+        "required": [
+          "result_id",
+          "ok"
+        ],
+        "title": "SSEToolResultData",
+        "type": "object"
+      },
+      "ToolError": {
+        "additionalProperties": false,
+        "description": "Информация об ошибке выполнения инструмента.",
+        "properties": {
+          "code": {
+            "description": "Код ошибки, например 'invalid_column' или 'timeout'",
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Понятное пользователю сообщение об ошибке",
+            "title": "Message",
+            "type": "string"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Подсказка, как исправить",
+            "title": "Suggestion"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ToolError",
+        "type": "object"
+      },
+      "ToolResult": {
+        "additionalProperties": false,
+        "description": "Единый результат выполнения любого инструмента (B2, §4.3).",
+        "properties": {
+          "result_id": {
+            "description": "Уникальный идентификатор вызова, например 'r_17'",
+            "title": "Result Id",
+            "type": "string"
+          },
+          "status": {
+            "description": "Статус: 'ok', 'error' или 'empty'",
+            "enum": [
+              "ok",
+              "error",
+              "empty"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolResultData"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Табличные данные результата"
+          },
+          "data_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ссылка на сохранение в DuckDB/Parquet при больших объёмах",
+            "title": "Data Ref"
+          },
+          "facts": {
+            "description": "Извлеченные факты для ответа и верификатора",
+            "items": {
+              "$ref": "#/components/schemas/Fact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "chart_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Подсказка для графика"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Объект ошибки, если status='error'"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Имя вызванного инструмента",
+            "title": "Tool"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Параметры, с которыми вызвали инструмент",
+            "title": "Params"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL-запрос, если он выполнялся",
+            "title": "Sql"
+          },
+          "source_result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID исходного результата при цепочке расчётов",
+            "title": "Source Result Id"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Время выполнения в миллисекундах",
+            "title": "Duration Ms"
+          }
+        },
+        "required": [
+          "result_id",
+          "status"
+        ],
+        "title": "ToolResult",
+        "type": "object"
+      },
+      "ToolResultColumn": {
+        "additionalProperties": false,
+        "description": "Описание колонки в результате аналитического инструмента (§4.3).",
+        "properties": {
+          "name": {
+            "description": "Имя колонки",
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Тип данных (например, 'date', 'money', 'number')",
+            "title": "Type"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Человекочитаемая подпись колонки",
+            "title": "Label"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolResultColumn",
+        "type": "object"
+      },
+      "ToolResultData": {
+        "additionalProperties": false,
+        "description": "Табличные данные результата для прямого рендера фронтендом (§4.3).",
+        "properties": {
+          "columns": {
+            "description": "Имена или описания колонок ({name, type, label})",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/components/schemas/ToolResultColumn"
+                }
+              ]
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "rows": {
+            "description": "Строки со значениями",
+            "items": {
+              "items": {},
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Полный объём результата (количество строк)",
+            "title": "Row Count"
+          },
+          "truncated": {
+            "default": false,
+            "description": "Флаг усечения строк по лимиту",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "ToolResultData",
+        "type": "object"
+      },
+      "Transformation": {
+        "additionalProperties": false,
+        "properties": {
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Column"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          }
+        },
+        "required": [
+          "table",
+          "action"
+        ],
+        "title": "Transformation",
+        "type": "object"
+      }
+    }
+  }
+}

@@ -13,6 +13,7 @@ from djedai.data.typed_views import (
     create_typed_view,
     create_typed_views,
     normalize_column_names,
+    read_currencies,
     read_journal,
     read_typed_views,
 )
@@ -301,3 +302,44 @@ def test_recreating_keeps_own_view_name_next_to_foreign_view(con, tmp_path):
     second = create_typed_view(con, raw)
     assert first.view_name == second.view_name == "t_typed"
     assert con.execute('SELECT sentinel FROM "t"').fetchall() == [(999,)]
+
+
+def test_currency_is_read_for_money_columns_only(con, tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "Сумма;Цена;Скидка;Количество\n1 234,56 ₽;$10.50;5%;3\n99,90 ₽;$20.00;7%;4\n",
+        encoding="utf-8",
+    )
+    view = create_typed_view(con, load_raw_csv(con, path))
+
+    assert read_currencies(con) == {
+        (view.view_name, "summa"): "RUB",
+        (view.view_name, "tsena"): "USD",
+    }  # проценты и целые числа без валюты в результат не попадают
+
+
+def test_currency_is_not_read_for_mixed_or_unknown_currencies(con, tmp_path):
+    path = tmp_path / "mixed.csv"
+    path.write_text(
+        "Смешанная;Без валюты\n100 ₽;100,5\n200 $;300,5\n300 ₽;400,5\n", encoding="utf-8"
+    )
+    create_typed_view(con, load_raw_csv(con, path))
+    assert read_currencies(con) == {}
+
+
+def test_currency_is_filtered_by_raw_table(con, tmp_path):
+    first = load(con, tmp_path, "v", ["100 EUR", "250 EUR"], name="a.csv")
+    second = load(con, tmp_path, "v", ["1 ₽", "2 ₽"], name="b.csv")
+    first_view = create_typed_view(con, first)
+    second_view = create_typed_view(con, second)
+
+    assert read_currencies(con, first.raw_table) == {(first_view.view_name, "v"): "EUR"}
+    assert read_currencies(con, second.raw_table) == {(second_view.view_name, "v"): "RUB"}
+    assert len(read_currencies(con)) == 2
+
+
+def test_currency_is_replaced_when_view_is_rebuilt(con, tmp_path):
+    raw = load(con, tmp_path, "v", ["100 EUR", "250 EUR"])
+    view = create_typed_view(con, raw)
+    create_typed_view(con, raw)  # повторный вызов заменяет записи журнала
+    assert read_currencies(con) == {(view.view_name, "v"): "EUR"}

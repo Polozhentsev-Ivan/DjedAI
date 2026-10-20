@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+</helmet>
+<span data-component="Icon" style="display:inline-flex; flex:none; width:{{ sz }}; height:{{ sz }}; animation:{{ anim }}">{{ svg }}</span>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:80,&quot;height&quot;:80},&quot;icon&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;database&quot;,&quot;tsType&quot;:&quot;string (lucide icon name, kebab-case)&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;var(--size-icon)&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;spin&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;strokeWidth&quot;:{&quot;editor&quot;:&quot;float&quot;,&quot;default&quot;:1.75,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    if (!window.lucide) this.iv = setInterval(() => { if (window.lucide) { clearInterval(this.iv); this.forceUpdate(); } }, 150);
+  }
+  componentWillUnmount() { clearInterval(this.iv); }
+  renderVals() {
+    const name = this.props.icon || 'circle';
+    const pascal = name.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
+    const node = window.lucide && window.lucide.icons && window.lucide.icons[pascal];
+    const kids = !node ? [] : node[0] === 'svg' ? (node[2] || []) : node;
+    const svg = React.createElement('svg', { width: '100%', height: '100%', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+      strokeWidth: this.props.strokeWidth ?? 1.75, strokeLinecap: 'round', strokeLinejoin: 'round' },
+      kids.map(([tag, attrs], i) => React.createElement(tag, { ...attrs, key: i })));
+    return { svg, sz: this.props.size || 'var(--size-icon)', anim: this.props.spin ? 'dj-spin var(--duration-spin) linear infinite' : 'none' };
+  }
+}
+</script>
+</body>
+</html>

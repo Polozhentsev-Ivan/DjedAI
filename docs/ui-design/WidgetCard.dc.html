@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="tokens.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="charts.js"></script>
+</helmet>
+<div data-component="WidgetCard" style="position:relative; background:var(--card); color:var(--card-foreground); border:var(--border-width) solid var(--border); border-radius:var(--radius-lg); display:flex; flex-direction:column; min-height:var(--widget-min-height); overflow:hidden; font-family:var(--font-sans); font-size:var(--text-sm); line-height:var(--leading-normal); letter-spacing:var(--tracking-sm); height:100%; box-sizing:border-box">
+  <sc-if value="{{ showLoading }}" hint-placeholder-val="{{ false }}"><div style="position:absolute; inset:0; z-index:2; background:var(--overlay); display:flex; align-items:center; justify-content:center"><dc-import name="LoadingState" size="compact" title="Обновление данных…" style="width:100%" hint-size="100%,100px"></dc-import></div></sc-if>
+  <div style="display:flex; align-items:flex-start; gap:var(--space-3); padding:var(--space-4) var(--space-5) var(--space-2)">
+    <div style="flex:1; min-width:0">
+      <div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); letter-spacing:var(--tracking-body); line-height:var(--leading-snug)">{{ title }}</div>
+      <div style="color:var(--muted-foreground); margin-top:var(--space-0-5)">{{ subtitle }}</div>
+    </div>
+    <div style="display:flex; gap:var(--space-3); flex:none; padding-top:var(--space-0-5)">
+      <a onClick="{{ toggleHow }}">{{ howLabel }}</a>
+      <a onClick="{{ onRemove }}" style="color:var(--muted-foreground)">Удалить</a>
+    </div>
+  </div>
+  <div style="position:relative; flex:1; display:flex; flex-direction:column; padding:var(--space-0) var(--space-3) var(--space-3)">
+    <sc-if value="{{ showChart }}" hint-placeholder-val="{{ true }}"><div ref="{{ chartRef }}" style="height:var(--chart-height-md); width:100%"></div></sc-if>
+    <sc-if value="{{ showKpi }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:var(--space-2-5); padding:var(--space-2) var(--space-2) var(--space-4)">
+        <span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ kpi.caption }}</span>
+        <div style="display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-3)">
+          <span style="font-family:var(--font-display); font-size:var(--text-3xl); font-weight:var(--font-weight-semibold); line-height:var(--leading-tight); letter-spacing:var(--tracking-display); font-variant-numeric:tabular-nums">{{ kpi.value }}</span>
+          <dc-import name="StatusBadge" tone="{{ kpi.deltaTone }}" label="{{ kpi.delta }}" dot="{{ false }}" hint-size="90px,22px"></dc-import>
+        </div>
+        <span style="color:var(--muted-foreground)">{{ kpi.target }}</span>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3); margin-top:var(--space-2); padding-top:var(--space-3); border-top:var(--border-width) solid var(--border-subtle)">
+          <sc-for list="{{ kpiStats }}" as="s" hint-placeholder-count="2">
+            <div><div style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ s.label }}</div><div style="font-size:var(--text-base); font-weight:var(--font-weight-semibold); font-variant-numeric:tabular-nums">{{ s.value }} <span style="font-size:var(--text-sm); color:{{ s.ink }}">{{ s.delta }}</span></div></div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ showHow }}" hint-placeholder-val="{{ false }}"><dc-import name="HowCalculated" variant="panel" tool="{{ how.tool }}" columns="{{ how.columns }}" sql="{{ how.sql }}" hint-size="100%,220px"></dc-import></sc-if>
+    <sc-if value="{{ showError }}" hint-placeholder-val="{{ false }}"><div style="flex:1; display:flex; align-items:center; justify-content:center; min-height:var(--chart-height-md)"><dc-import name="ErrorState" size="compact" title="Ошибка обновления данных" text="Источник не ответил за 30 сек." action-label="Повторить" on-action="{{ onRetry }}" style="width:100%" hint-size="100%,160px"></dc-import></div></sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:520,&quot;height&quot;:360},&quot;title&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Выручка по месяцам&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;subtitle&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Пик продаж — июль&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;kind&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;chart&quot;,&quot;kpi&quot;],&quot;default&quot;:&quot;chart&quot;,&quot;tsType&quot;:&quot;'chart'|'kpi'&quot;},&quot;chart&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;revenue&quot;,&quot;regions&quot;,&quot;categories&quot;],&quot;default&quot;:&quot;revenue&quot;,&quot;tsType&quot;:&quot;'revenue'|'regions'|'categories'&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;error&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'loading'|'error'&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;how&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;{tool:string; columns:{label:string;name:string}[]; sql:string}&quot;},&quot;kpi&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;{caption:string; value:string; delta:string; deltaTone:'success'|'danger'; target:string; stats:{label:string;value:string;delta:string;tone:'success'|'danger'}[]}&quot;},&quot;onRemove&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onRetry&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { how: false };
+  chartRef = React.createRef();
+  componentDidMount() { this.draw(); }
+  componentDidUpdate() { this.draw(); }
+  draw() {
+    const el = this.chartRef.current; if (!el) return;
+    const go = () => window.DjedCharts ? window.DjedCharts.render(el, this.props.chart ?? 'revenue', this.props.theme ?? 'light') : setTimeout(go, 200);
+    go();
+  }
+  renderVals() {
+    const p = this.props, st = p.state ?? 'default', kind = p.kind ?? 'chart', how = this.state.how, err = st === 'error';
+    const kpi = p.kpi || {};
+    const toneInk = { success: 'var(--success)', danger: 'var(--destructive)' };
+    return {
+      chartRef: this.chartRef, title: p.title ?? '', subtitle: p.subtitle ?? '',
+      howLabel: how ? 'Скрыть расчёт' : 'Как посчитано', toggleHow: () => this.setState(s => ({ how: !s.how })),
+      onRemove: p.onRemove, onRetry: p.onRetry,
+      showLoading: st === 'loading', showError: err, showHow: how && !err,
+      showChart: kind === 'chart' && !how && !err, showKpi: kind === 'kpi' && !how && !err,
+      how: p.how || { tool: '', columns: [], sql: '' },
+      kpi: { caption: kpi.caption ?? '', value: kpi.value ?? '', delta: kpi.delta ?? '', deltaTone: kpi.deltaTone ?? 'success', target: kpi.target ?? '' },
+      kpiStats: (kpi.stats || []).map(s => ({ ...s, ink: toneInk[s.tone] || 'var(--muted-foreground)' }))
+    };
+  }
+}
+</script>
+</body>
+</html>

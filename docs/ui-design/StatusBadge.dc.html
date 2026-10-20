@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<span data-component="StatusBadge" style="display:inline-flex; align-items:center; gap:var(--space-1-5); padding:{{ pad }}; border-radius:{{ rad }}; font-size:var(--text-xs); font-weight:{{ fw }}; font-family:{{ ff }}; line-height:var(--leading-normal); letter-spacing:var(--tracking-none); background:{{ bg }}; color:{{ fg }}; white-space:nowrap">
+  <sc-if value="{{ dot }}" hint-placeholder-val="{{ true }}"><span style="width:var(--size-dot); height:var(--size-dot); border-radius:var(--radius-full); background:currentColor"></span></sc-if>{{ label }}</span>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:200,&quot;height&quot;:60},&quot;label&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Готов&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tone&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;success&quot;,&quot;info&quot;,&quot;danger&quot;,&quot;warning&quot;,&quot;neutral&quot;,&quot;accent&quot;],&quot;default&quot;:&quot;success&quot;,&quot;tsType&quot;:&quot;'success'|'info'|'danger'|'warning'|'neutral'|'accent'&quot;},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;status&quot;,&quot;tag&quot;,&quot;type&quot;],&quot;default&quot;:&quot;status&quot;,&quot;tsType&quot;:&quot;'status'|'tag'|'type'&quot;},&quot;dot&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const tone = this.props.tone ?? 'neutral', variant = this.props.variant ?? 'status';
+    const T = {
+      success: ['var(--success-muted)', 'var(--success)'], info: ['var(--info-muted)', 'var(--link)'],
+      danger: ['var(--destructive-muted)', 'var(--destructive)'], warning: ['var(--warning-muted)', 'var(--warning)'],
+      neutral: ['var(--muted)', 'var(--secondary-foreground)'], accent: ['var(--accent)', 'var(--accent-foreground)']
+    }[tone] || ['var(--muted)', 'var(--secondary-foreground)'];
+    const isType = variant === 'type', isTag = variant === 'tag';
+    return {
+      label: this.props.label ?? '', bg: T[0], fg: T[1],
+      dot: variant === 'status' && (this.props.dot ?? true),
+      pad: isType ? 'var(--space-0-5) var(--space-2)' : isTag ? 'var(--space-0-5) var(--space-2)' : 'var(--space-0-5) var(--space-2-5)',
+      rad: isType ? 'var(--radius-xs)' : 'var(--radius-full)',
+      fw: variant === 'status' ? 'var(--font-weight-semibold)' : 'var(--font-weight-regular)',
+      ff: isType ? 'var(--font-mono)' : 'inherit'
+    };
+  }
+}
+</script>
+</body>
+</html>

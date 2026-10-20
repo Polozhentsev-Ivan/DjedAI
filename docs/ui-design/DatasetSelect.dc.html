@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="tokens.css"></helmet>
+<div data-component="DatasetSelect" style="position:relative; display:flex; align-items:center; gap:var(--space-2); font-family:var(--font-sans); font-size:var(--text-xs)">
+  <sc-if value="{{ showLabel }}" hint-placeholder-val="{{ true }}"><span style="color:var(--topbar-muted)">{{ label }}</span></sc-if>
+  <div style="position:relative"><button onClick="{{ toggle }}" style="display:flex; align-items:center; gap:var(--space-2-5); height:var(--size-control-xs); padding:var(--space-0) var(--space-2-5) var(--space-0) var(--space-3); background:var(--topbar-control); color:var(--topbar-foreground); border:var(--border-width) solid var(--topbar-control-border); border-radius:var(--radius-sm); font-size:var(--text-sm); font-family:var(--font-mono); cursor:pointer">{{ valueLabel }}<span style="display:flex; color:var(--topbar-muted)"><dc-import name="Icon" icon="chevron-down" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></span></button>
+  <sc-if value="{{ open }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute; top:calc(100% + var(--space-1-5)); left:var(--space-0); z-index:40; width:var(--popover-width); background:var(--popover); color:var(--popover-foreground); border:var(--border-width) solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-popover); padding:var(--space-1-5); display:flex; flex-direction:column; gap:var(--space-0-5)">
+      <sc-for list="{{ items }}" as="o" hint-placeholder-count="3">
+        <button onClick="{{ o.onClick }}" disabled="{{ o.disabled }}" style="display:flex; align-items:center; gap:var(--space-2); padding:var(--space-2) var(--space-2-5); border:none; border-radius:var(--radius-sm); background:{{ o.bg }}; color:var(--popover-foreground); font-family:inherit; text-align:left; cursor:pointer; opacity:{{ o.op }}">
+          <span style="display:flex; flex-direction:column; gap:var(--space-0-5); flex:1; min-width:0"><span style="font-family:var(--font-mono); font-size:var(--text-sm)">{{ o.id }}</span><span style="font-size:var(--text-xs); color:var(--muted-foreground)">{{ o.meta }}</span></span>
+          <sc-if value="{{ o.selected }}"><span style="display:flex; color:var(--link)"><dc-import name="Icon" icon="check" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import></span></sc-if>
+        </button>
+      </sc-for>
+      <div style="height:var(--border-width); background:var(--border-subtle); margin:var(--space-1) var(--space-0)"></div>
+      <button onClick="{{ onAddClick }}" style="display:flex; align-items:center; gap:var(--space-1-5); padding:var(--space-2) var(--space-2-5); border:none; background:transparent; color:var(--link); font-size:var(--text-sm); font-family:inherit; text-align:left; cursor:pointer"><dc-import name="Icon" icon="plus" size="var(--size-icon-sm)" hint-size="16px,16px"></dc-import>Добавить источник</button>
+    </div>
+  </sc-if></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:480,&quot;height&quot;:260},&quot;label&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Активный датасет&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;value&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;orders_2026&quot;,&quot;tsType&quot;:&quot;string | null&quot;},&quot;showLabel&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;defaultOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;options&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[{&quot;id&quot;:&quot;orders_2026&quot;,&quot;meta&quot;:&quot;CSV (2) · 120 450 строк&quot;},{&quot;id&quot;:&quot;retail_crm_prod&quot;,&quot;meta&quot;:&quot;Postgres · 1 420 000 строк&quot;},{&quot;id&quot;:&quot;marketing_q3&quot;,&quot;meta&quot;:&quot;Ошибки загрузки&quot;,&quot;disabled&quot;:true}],&quot;tsType&quot;:&quot;{id:string; meta:string; disabled?:boolean}[]&quot;},&quot;onChange&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(id: string) =&gt; void&quot;},&quot;onAdd&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { open: this.props.defaultOpen ?? false };
+  renderVals() {
+    const p = this.props, close = () => this.setState({ open: false });
+    return {
+      label: p.label ?? 'Активный датасет', showLabel: (p.showLabel ?? true) && !!(p.label ?? 'Активный датасет'),
+      valueLabel: p.value || 'не выбран', open: this.state.open, toggle: () => this.setState(s => ({ open: !s.open })),
+      menuLeft: (p.showLabel ?? true) ? 'auto' : '0',
+      items: (p.options || []).map(o => ({ ...o, selected: o.id === p.value, op: o.disabled ? 0.5 : 1,
+        bg: o.id === p.value ? 'var(--accent)' : 'transparent', onClick: () => { close(); p.onChange && p.onChange(o.id); } })),
+      onAddClick: () => { close(); p.onAdd && p.onAdd(); }
+    };
+  }
+}
+</script>
+</body>
+</html>
