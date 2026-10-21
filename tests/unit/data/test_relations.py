@@ -442,6 +442,11 @@ JOIN_CASES = {
     "сироты и пустой ключ": (["1", "2"], ["1", "1", "2", "3", ""], ["5", "", "7", "10", "40"]),
     "размножение": (["1", "2", "2"], ["1", "2", "2", "3"], ["5", "5", "7", "7"]),
     "пустые суммы и размножение": (["1", "1", "2"], ["1", "2", "2", "9"], ["", "3", "", "8"]),
+    "часть ключей с пробелами": (
+        ["1", "2", "3"],
+        ["1", "1", "1 ", "2", "2", "3", "3 ", "3"],
+        ["5", "5", "7", "7", "9", "", "9", "1"],
+    ),
 }
 
 
@@ -459,7 +464,7 @@ def test_join_impact_matches_real_join(con, tmp_path, case):
     def real(kind: str):
         return con.execute(
             f"SELECT count(*), sum(s.amount) FROM sales s {kind} JOIN stores t "
-            "ON NULLIF(trim(s.store_id), '') = NULLIF(trim(t.store_id), '')"
+            "ON s.store_id = t.store_id"
         ).fetchone()
 
     before = con.execute("SELECT count(*), sum(amount) FROM sales").fetchone()
@@ -482,3 +487,45 @@ def test_inner_join_without_values_is_not_reported_as_zero(con, tmp_path):
     (warning,) = report.warnings
     assert "amount 10 → нет значений" in warning
     assert read_relations(con) == report  # None сохраняется и читается как None
+
+
+def test_keys_matching_only_after_trim_are_not_a_safe_relation(con, tmp_path):
+    """Пример ревью: JOIN ON s.store_id = t.store_id не соединяет '1 ' и '1'."""
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "stores": {"store_id": ["1", "2"]},
+            "sales": {"store_id": ["1 ", "1 ", "2 ", "2 "], "amount": ["10", "20", "30", "40"]},
+        },
+    )
+    real = con.execute(
+        "SELECT count(*), sum(s.amount) FROM sales s JOIN stores t ON s.store_id = t.store_id"
+    ).fetchone()
+    assert real == (0, None)
+    assert report.relations == ()
+    (warning,) = report.warnings
+    assert "sales.store_id и stores.store_id совпадают только без пробелов" in warning
+    assert "(в sales.store_id)" in warning and "связь не найдена" in warning
+    assert read_relations(con) == report
+
+
+def test_partly_padded_keys_lower_relation_and_warn(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "stores": {"store_id": ["1", "2", "3"]},
+            "sales": {
+                "store_id": ["1", "1", "1 ", "2", "2", "3", "3 ", "3"],
+                "amount": ids([1] * 8),
+            },
+        },
+    )
+    (relation,) = report.relations
+    assert (relation.from_table, relation.cardinality) == ("sales", "N:1")
+    assert relation.overlap == round(3 / 5, 4)  # '1 ' и '3 ' — отдельные значения без пары
+    assert relation.impact.unmatched_rows == 2
+    assert any(
+        "по точным значениям overlap 0.6, без пробелов overlap 1.0" in w for w in report.warnings
+    )

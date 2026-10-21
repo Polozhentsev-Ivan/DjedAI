@@ -2,7 +2,8 @@
 
 Кандидаты — колонки типа ``id`` и целые/текстовые колонки с ID-подобным именем или из
 кандидатов в первичный ключ. Для пар кандидатов из разных таблиц значения сравниваются
-как строки (``trim``, пустые не учитываются), на различных значениях:
+как строки, точно так же, как их сравнит ``JOIN ... ON a.x = b.y`` (без ``trim`` и других
+скрытых нормализаций; NULL не учитывается), на различных значениях:
 
 - ``overlap = |A∩B| / |A|`` — доля значений ``from``, найденных в ``to``. Связь
   ориентирована от ссылки к ключу: ``to`` — уникальная сторона, поэтому кратность
@@ -18,6 +19,10 @@
 ``LEFT JOIN``, строки без пары и суммы числовых колонок ``from``. Размножение строк и
 строки без пары понижают ``confidence`` и дают предупреждения для каталога.
 
+Если ключи совпадают только после удаления пробелов по краям (``'1 '`` и ``'1'``),
+связь по точным значениям не находится или слабее, и в предупреждениях сказано, что
+JOIN по этим колонкам без ``trim`` теряет строки.
+
 Связи сохраняются в ``_djedai_relations``; ``TableRelation.to_contract()`` даёт ``Relation``
 для ``DatasetCatalog.relations``, а ``RelationReport.warnings`` идут в ``warnings`` каталога
 (спецификация, §3.3–3.4).
@@ -26,7 +31,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from itertools import combinations
 from pathlib import Path
 
@@ -45,6 +50,7 @@ from djedai.data.profiler import (
 from djedai.data.typed_views import _ID_NAME, _ident
 
 RELATIONS_TABLE = "_djedai_relations"
+WARNINGS_TABLE = "_djedai_relation_warnings"
 MIN_OVERLAP = 0.5  # порог связи при совпадении имён; в спецификации помечен [TBD]
 STRONG_OVERLAP = 0.95  # почти полное покрытие: high при совпадении имён, минимум без него
 MEDIUM_OVERLAP = 0.8
@@ -134,6 +140,8 @@ class _Key:  # колонка-кандидат: различные значен�
     distinct: int
     unique: bool
     entity: str  # имя таблицы для сопоставления: из исходного файла, без суффиксов
+    padded: bool  # есть значения с пробелами по краям
+    trim: bool = False  # сравнение после trim — только для предупреждения о пробелах
 
 
 def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
@@ -141,33 +149,48 @@ def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
     try:
         _ensure_table(connection)
         keys = _keys(connection, read_profiles(connection))
-        relations = []
+        relations, padding = [], []
         for a, b in combinations(keys, 2):
-            if a.table.view_name != b.table.view_name:
-                relation = _relation(connection, a, b)
-                if relation is not None:
-                    relations.append(relation)
+            if a.table.view_name == b.table.view_name:
+                continue
+            relation = _relation(connection, a, b)
+            if relation is not None:
+                relations.append(relation)
+            if a.padded or b.padded:
+                warning = _padding_warning(connection, a, b, relation)
+                if warning:
+                    padding.append(warning)
         relations.sort(key=lambda r: (r.from_table, r.from_column, r.to_table, r.to_column))
+        report = RelationReport(
+            relations=tuple(relations),
+            warnings=tuple(w for r in relations for w in relation_warnings(r)) + tuple(padding),
+        )
         connection.begin()
         try:
-            _write_relations(connection, relations)
+            _write_relations(connection, report)
             connection.commit()
         except Exception:
             connection.rollback()
             raise
     except duckdb.Error as error:
         raise RelationError(f"не удалось посчитать ({error})") from error
-    return _report(relations)
+    return report
 
 
 def read_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
-    """Читает сохранённые связи; предупреждения строятся заново по проверке JOIN."""
+    """Читает сохранённые связи и предупреждения последнего поиска."""
     _ensure_table(connection)
     rows = connection.execute(
         f"SELECT relation FROM {RELATIONS_TABLE} "
         "ORDER BY from_table, from_column, to_table, to_column"
     ).fetchall()
-    return _report([_relation_from_json(json.loads(row[0])) for row in rows])
+    warnings = connection.execute(
+        f"SELECT warning FROM {WARNINGS_TABLE} ORDER BY position"
+    ).fetchall()
+    return RelationReport(
+        relations=tuple(_relation_from_json(json.loads(row[0])) for row in rows),
+        warnings=tuple(row[0] for row in warnings),
+    )
 
 
 def join_impact(
@@ -268,16 +291,12 @@ def _sum_text(value: object) -> str:
     return "нет значений" if value is None else str(value)
 
 
-def _report(relations: list[TableRelation]) -> RelationReport:
-    return RelationReport(
-        relations=tuple(relations),
-        warnings=tuple(w for r in relations for w in relation_warnings(r)),
-    )
-
-
-def _key(column: str) -> str:
-    """Значение для сравнения: строка без пробелов по краям, пустая — NULL."""
-    return f"NULLIF(trim(CAST({_ident(column)} AS VARCHAR)), '')"
+def _key(column: str, trim: bool = False) -> str:
+    """Значение для сравнения — как в ``JOIN ON a.x = b.y``; ``CAST`` нужен только для
+    пар разных типов (``VARCHAR`` и ``BIGINT``). ``trim`` — проверка совпадения без
+    пробелов по краям, для предупреждения; сами связи по ней не строятся."""
+    value = f"CAST({_ident(column)} AS VARCHAR)"
+    return f"NULLIF(trim({value}), '')" if trim else value
 
 
 def _is_candidate(table: TableProfile, column: ColumnProfile) -> bool:
@@ -308,18 +327,53 @@ def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -
         for column in table.columns:
             if not _is_candidate(table, column):
                 continue
-            present, distinct = connection.execute(
-                f"SELECT count({_key(column.name)}), count(DISTINCT {_key(column.name)}) "
+            present, distinct, padded = connection.execute(
+                f"SELECT count({_key(column.name)}), count(DISTINCT {_key(column.name)}), "
+                f"count(*) FILTER (WHERE {_key(column.name)} <> trim({_key(column.name)})) "
                 f"FROM {_ident(table.view_name)}"
             ).fetchone()
             if distinct >= MIN_DISTINCT:
-                keys.append(_Key(table, column, distinct, present == distinct, entity))
+                keys.append(_Key(table, column, distinct, present == distinct, entity, padded > 0))
     return keys
+
+
+def _trimmed(connection: duckdb.DuckDBPyConnection, key: _Key) -> _Key:
+    """Тот же кандидат при сравнении без пробелов по краям."""
+    if not key.padded:
+        return replace(key, trim=True)
+    value = _key(key.column.name, trim=True)
+    present, distinct = connection.execute(
+        f"SELECT count({value}), count(DISTINCT {value}) FROM {_ident(key.table.view_name)}"
+    ).fetchone()
+    return replace(key, distinct=distinct, unique=present == distinct, trim=True)
+
+
+def _padding_warning(
+    connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key, exact: TableRelation | None
+) -> str | None:
+    """Предупреждение, если без пробелов по краям связь была бы сильнее, чем по точным
+    значениям: настоящий JOIN без ``trim`` такие строки не соединит."""
+    trimmed = _match(connection, _trimmed(connection, a), _trimmed(connection, b))
+    if trimmed is None:
+        return None
+    source, target, _, _, overlap, _, _ = trimmed
+    if exact is not None and exact.overlap >= round(overlap, 4):
+        return None
+    padded = [f"{k.table.view_name}.{k.column.name}" for k in (source, target) if k.padded]
+    found = f"overlap {exact.overlap}" if exact is not None else "связь не найдена"
+    return (
+        f"{source.table.view_name}.{source.column.name} и "
+        f"{target.table.view_name}.{target.column.name} совпадают только без пробелов "
+        f"по краям значений (в {', '.join(padded)}): по точным значениям {found}, "
+        f"без пробелов overlap {round(overlap, 4)}. JOIN по этим колонкам без trim "
+        "теряет строки"
+    )
 
 
 def _intersection(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> int:
     def values(key: _Key) -> str:
-        return f"SELECT DISTINCT {_key(key.column.name)} AS k FROM {_ident(key.table.view_name)}"
+        value = _key(key.column.name, key.trim)
+        return f"SELECT DISTINCT {value} AS k FROM {_ident(key.table.view_name)}"
 
     return connection.execute(
         f"SELECT count(*) FROM ({values(a)}) a JOIN ({values(b)}) b ON a.k = b.k"
@@ -369,7 +423,8 @@ def _name_match(source: _Key, target: _Key) -> bool:
     return False
 
 
-def _relation(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> TableRelation | None:
+def _match(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> tuple | None:
+    """Меры пересечения принятой пары: ``(from, to, кратность, ∩, overlap, jaccard, имена)``."""
     common = _intersection(connection, a, b)
     if not common:
         return None
@@ -384,6 +439,14 @@ def _relation(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> TableR
         accepted = cardinality != "N:M" and overlap >= STRONG_OVERLAP and jaccard >= MIN_JACCARD
     if not accepted:
         return None
+    return source, target, cardinality, common, overlap, jaccard, named
+
+
+def _relation(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> TableRelation | None:
+    found = _match(connection, a, b)
+    if found is None:
+        return None
+    source, target, cardinality, common, overlap, jaccard, named = found
     impact = join_impact(
         connection, source.table, source.column.name, target.table.view_name, target.column.name
     )
@@ -419,11 +482,18 @@ def _ensure_table(connection: duckdb.DuckDBPyConnection) -> None:
             relation VARCHAR, found_at TIMESTAMP DEFAULT current_timestamp,
             PRIMARY KEY (from_table, from_column, to_table, to_column))"""
     )
+    connection.execute(
+        f"CREATE TABLE IF NOT EXISTS {WARNINGS_TABLE} (position INTEGER PRIMARY KEY, "
+        "warning VARCHAR)"
+    )
 
 
-def _write_relations(connection: duckdb.DuckDBPyConnection, relations: list[TableRelation]) -> None:
-    connection.execute(f"DELETE FROM {RELATIONS_TABLE}")
-    for relation in relations:
+def _write_relations(connection: duckdb.DuckDBPyConnection, report: RelationReport) -> None:
+    for table in (RELATIONS_TABLE, WARNINGS_TABLE):
+        connection.execute(f"DELETE FROM {table}")
+    for position, warning in enumerate(report.warnings, start=1):
+        connection.execute(f"INSERT INTO {WARNINGS_TABLE} VALUES (?, ?)", [position, warning])
+    for relation in report.relations:
         connection.execute(
             f"INSERT INTO {RELATIONS_TABLE} (from_table, from_column, to_table, to_column, "
             "relation) VALUES (?, ?, ?, ?, ?)",

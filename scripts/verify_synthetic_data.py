@@ -162,7 +162,8 @@ def calculate_metrics(
 
 
 def keys(rows: list[dict[str, str]], column: str) -> list[str]:
-    return [row[column].strip() for row in rows if row[column].strip()]
+    """Значения ключа как в JOIN ON a.x = b.y: без trim; пустое поле CSV — NULL."""
+    return [row[column] for row in rows if row[column] != ""]
 
 
 def relation_link(reference: dict) -> str:
@@ -179,7 +180,7 @@ def calculate_relation(tables: dict[str, list[dict[str, str]]], reference: dict)
     target = keys(tables[reference["to"]["table"]], reference["to"]["column"])
     common = set(source) & set(target)
     per_key = Counter(target)
-    weights = [per_key.get(row[source_column].strip(), 1) for row in source_rows]
+    weights = [per_key.get(row[source_column], 1) for row in source_rows]
     amounts = [parse_money(row["total_amount"]) for row in source_rows]
     return {
         "overlap": round(len(common) / len(set(source)), 4),
