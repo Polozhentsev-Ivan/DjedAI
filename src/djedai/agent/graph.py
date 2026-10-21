@@ -207,17 +207,24 @@ def clarify(state: AgentState) -> dict:
 
     blocks = []
 
-    if intent in ("ambiguous", "invalid"):
+    if intent in ["ambiguous", "invalid"]:
         if understanding and understanding.clarification:
             opts = "\n".join(f"- {opt}" for opt in understanding.clarification.options)
             msg = f"{understanding.clarification.question}\n{opts}"
+            blocks.append(Block(type="clarification", markdown=msg))
         else:
             if intent == "ambiguous":
-                msg = "Запрос неоднозначен. Пожалуйста, уточните, какие именно данные вы имеете в виду."
+                msg = (
+                    "Запрос неоднозначен. Пожалуйста, уточните, "
+                    "какие именно данные вы имеете в виду."
+                )
+                blocks.append(Block(type="clarification", markdown=msg))
             else:
-                msg = "Запрашиваемые поля или метрики не найдены в данных. Пожалуйста, уточните ваш запрос или проверьте названия."
-
-        blocks.append(Block(type="clarification", markdown=msg))
+                msg = (
+                    "Запрашиваемые поля или метрики не найдены в данных. "
+                    "Пожалуйста, уточните ваш запрос или проверьте названия."
+                )
+                blocks.append(Block(type="error", markdown=msg))
 
     elif intent == "off_topic":
         msg = (

@@ -11,7 +11,7 @@ Rules for Intents:
 - `dashboard`: The user explicitly asks to create a dashboard.
 - `hypothesis`: The user asks to check correlations, patterns, or anomalies.
 - `ambiguous`: If a requested metric/column matches multiple possibilities in the catalog (e.g. "sales" but there are "gross_sales" and "net_sales"), select this intent. YOU MUST populate the `clarification` object with the `question` and `options`. Do NOT guess.
-- `invalid`: The requested metric or column is completely missing from the catalog.
+- `invalid`: The requested metric or column is completely missing from the catalog. YOU MUST populate the `clarification` object offering the closest matching available fields as `options`.
 - `off_topic`: The user asks something completely unrelated to data analysis or the dataset.
 
 Output STRICTLY valid JSON matching the schema.

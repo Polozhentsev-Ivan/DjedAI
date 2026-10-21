@@ -50,8 +50,24 @@ def test_clarify_invalid_field():
     assert len(result["answer_blocks"]) == 1
 
     block = result["answer_blocks"][0]
-    assert block.type == "clarification"
+    assert block.type == "error"
     assert "не найдены в данных" in block.markdown
+
+
+def test_clarify_invalid_field_with_options():
+    clarification = Clarification(
+        question="Поле 'температура' не найдено. Возможно, вы имели в виду:",
+        options=["Погода (weather)", "Регион (region)"],
+    )
+    result = run_understand_scenario("invalid", "Покажи температуру", clarification)
+
+    assert result["understanding"].intent == "invalid"
+    assert len(result["answer_blocks"]) == 1
+
+    block = result["answer_blocks"][0]
+    assert block.type == "clarification"
+    assert "не найдено. Возможно, вы имели в виду:" in block.markdown
+    assert "- Погода (weather)" in block.markdown
 
 
 def test_clarify_off_topic_capabilities():
