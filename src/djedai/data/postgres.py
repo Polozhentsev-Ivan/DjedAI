@@ -223,6 +223,8 @@ def select_tables(
     Неизвестные имена дают ``PostgresError`` со списком; повторы убираются.
     """
     if requested is None:
+        if not available:
+            raise PostgresError("в базе нет доступных таблиц")
         return list(available)
     known = set(available)
     selected: list[tuple[str, str]] = []

@@ -173,6 +173,10 @@ class TestSelectTables:
         with pytest.raises(PostgresError, match="ни одной"):
             select_tables(self.available, [])
 
+    def test_database_without_tables(self):
+        with pytest.raises(PostgresError, match="нет доступных таблиц"):
+            select_tables([], None)
+
 
 def test_list_tables(con):
     con.execute("CREATE TABLE local_table (a INTEGER)")
@@ -285,3 +289,38 @@ def test_shared_profiler_and_relations(con):
         ("orders", "client_id", "clients", "id")
     ]
     assert relations[0].to_contract().confidence == "high"
+
+
+def test_catalog_of_database_tables(con):
+    from djedai.contracts.catalog import DatasetCatalog
+    from djedai.data.catalog_builder import build_db_catalog
+    from djedai.data.profiler import profile_table
+
+    (view,), errors = create_postgres_views(con, [("main", "clients")])
+    assert errors == ()
+    (source,) = read_db_sources(con)
+    catalog = build_db_catalog(con, source, view, profile_table(con, view), dataset_id="ds_pg")
+    assert catalog.source.kind == "postgres"
+    (table,) = catalog.tables
+    assert (table.table_id, table.raw_table, table.original_name) == (
+        "clients",
+        None,
+        "main.clients",
+    )
+    assert table.source.relation == "main.clients"
+    assert table.source.file is None
+    roles = {c.name: c.role for c in table.columns}
+    assert roles == {
+        "id": "id", "imya_klienta": "text", "uid": "id", "active": "dimension",
+        "registered": "time", "born": "time", "mood": "text", "tags": "text",
+    }  # fmt: skip
+    assert table.column("imya_klienta").original_name == "Имя клиента"
+    assert all(c.parse is None for c in table.columns)
+    assert {(t.column, t.action) for t in catalog.transformations} == {
+        ("imya_klienta", "rename_column"),
+        ("uid", "cast_type"),
+        ("registered", "cast_type"),
+        ("mood", "cast_type"),
+        ("tags", "keep_text"),
+    }
+    assert DatasetCatalog.model_validate_json(catalog.model_dump_json()) == catalog

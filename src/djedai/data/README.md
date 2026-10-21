@@ -61,13 +61,17 @@
 - типы берутся из БД: целые → `integer` (`id`, если имя ID-подобное), `DECIMAL`/`DOUBLE` → `float`, `DATE` → `date`, `TIMESTAMP` → `datetime`, `TIMESTAMPTZ` → `datetime` в UTC без зоны (`cast_type`), `BOOLEAN` → `bool`, текст → `text` (`id` по имени), `UUID` → `id` и `ENUM` → `text` строкой (`cast_type`). Остальное (`TIME`, `INTERVAL`, `JSON`, массивы, `BYTEA`, `money` …) — текстом, в журнале `keep_text` с `reason: unsupported_type` и исходным типом. Денежные колонки, проценты и валюта из типа БД не выводятся;
 - запись запрещена трижды: `READ_ONLY` у ATTACH, сессия с `default_transaction_read_only=on` (проверяется после подключения, иначе отказ) и read-only роль на стороне БД ([демо-роли](../../../infra/postgres/README.md)). Даже `postgres_execute` с `COMMIT` и `SET` внутри получает отказ, но гарантия — только права роли: подключайте учётную запись с одним `SELECT`;
 - пароль живёт только во временном секрете DuckDB (`duckdb_secrets()` показывает `redacted`); в строке ATTACH, `duckdb_databases()` и `PostgresError` его нет, исходное исключение не сцепляется. Ошибки: неверный пользователь или пароль, база не найдена, сервер недоступен, `pg_hba.conf`;
-- ATTACH и секрет не сохраняются в файле DuckDB: после открытия датасета `attach_postgres` повторяют, без него представления не читаются. Хранение зашифрованного DSN и вызов из API — #62/#103;
+- ATTACH и секрет не сохраняются в файле DuckDB: после открытия датасета `attach_postgres` повторяют, без него представления не читаются. Хранение зашифрованного DSN, вызов из API и повторное подключение в `DatasetService` — #62/B5-3;
 - запрет `enable_external_access = false` не мешает читать уже подключённую БД — `run_sql` может включать его после ATTACH. Функции `postgres_query`/`postgres_execute` идут в БД мимо представлений, поэтому для SQL агента их нужно запрещать отдельно.
 
 Ограничения: первая установка расширения DuckDB `postgres` требует доступа к extensions.duckdb.org; кеша нет — профиль и запросы читают таблицы целиком; `numeric` без точности DuckDB читает как `DOUBLE`; составные ключи не ищутся.
 
-## Рабочие пространства
+## Датасет PostgreSQL
 
-`workspace`: отдельный файл DuckDB на датасет — `<root>/<owner_id>/<dataset_id>.duckdb`. `create_workspace(root, owner_id, source_kind)` даёт новый `ds_<hex>` и соединение, `open_workspace(root, owner_id, dataset_id)` открывает только свой датасет: владелец сверяется по пути и по таблице `_djedai_dataset` внутри файла. Чужой и несуществующий датасет дают одинаковый `DatasetAccessError` («Датасет не найден или недоступен»); идентификаторы — только `[A-Za-z0-9_-]`, до 64 символов, поэтому выйти из `root` нельзя. `owner_id` должен приходить из проверенной сессии (AUTH-3, #103), а не из запроса клиента или текста модели.
+`service.connect_postgres_dataset(dsn, tables, database_path, dataset_id=…, name=…, created_at=…, progress=…)` — то же, что `ingest_csv_dataset` для CSV: в файле DuckDB, которым владеет вызывающий, строятся представления выбранных таблиц, профили и связи, и возвращается полный `DatasetCatalog` (`source.kind = "postgres"`, `relations` и `warnings` из `find_relations`). Данные не копируются. Ошибка любой таблицы прерывает сборку целиком: частичный файл публиковать нельзя. Этапы `progress`: `connect`, `profile`, `relations`.
+
+`catalog_builder.build_db_catalog` собирает каталог одной таблицы: `raw_table = None`, `original_name` и `source.relation` — `схема.таблица`, `parse` не заполняется (типы заданы БД), журнал — переименования и приведения типов. Роли колонок вычисляются так же, как у CSV.
+
+Файл датасета размещает и выдаёт владельцу `backend.dataset_service.DatasetService` (`<DATASETS_DATA_DIR>/<dataset_id>/dataset.duckdb`, проверка владельца по БД приложения). Подключение и пароль в файле не сохраняются: перед запросами к такому датасету `attach_postgres` вызывают заново с DSN владельца.
 
 Реализация предоставляет согласованный Python-интерфейс backend и аналитике. HTTP-обработчики находятся в `backend/`, аналитические функции — в `analytics/`. Пользовательские файлы, локальные БД и выгрузки не храним в исходном коде.

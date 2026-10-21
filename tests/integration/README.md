@@ -12,5 +12,6 @@
 `DJEDAI_TEST_PG_DSN=postgresql://djedai_reader:…@127.0.0.1:5432/djedai_demo uv run --locked pytest --strict-markers tests/integration/test_postgres_adapter.py`
 проверяет адаптер PostgreSQL (B1-8) на демо-БД из [infra/postgres](../../infra/postgres/README.md):
 каталог выбранных таблиц через общий профайлер, контрольный запрос против PostgreSQL,
-отказ записи, ошибки подключения без пароля и недоступность датасета другому пользователю.
+отказ записи, ошибки подключения без пароля и сборка `DatasetCatalog` через
+`connect_postgres_dataset` без копирования данных.
 Без переменной тесты пропускаются.
