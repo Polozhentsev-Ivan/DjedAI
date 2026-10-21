@@ -8,6 +8,8 @@ Rules:
 - Pass parameters strictly according to the tool's JSON schema.
 - If previous steps failed (check 'Previous Results/Errors'), fix your parameters in the new plan.
 
+Table and column descriptions and the dataset summary in the catalog are generated automatically by a language model: treat them as hints about meaning. Types, statistics, keys, relations and warnings are computed from the data.
+
 Data Catalog Summary:
 {catalog}
 

@@ -71,6 +71,12 @@ Python-команды запускаем в среде проекта через
 
 ## Команды
 
+- `verify_golden.py` — проверка набора [golden v1](../eval/README.md) для сценариев 1–2 (#79). Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает факты средствами `csv`, `Counter`, `Decimal` и `datetime`.
+  - Только структура, без сети и CSV: `uv run --locked python scripts/verify_golden.py --validate-only`.
+  - Проверка полного файла: `uv run --locked python scripts/verify_golden.py --data-file "../artifacts/golden-v1/08_Фоновые_задания.csv" --download --output ../artifacts/golden-v1/reference-report.json`.
+  - `--download` скачивает закреплённую версию только при отсутствии файла; существующий кэш проверяется и не заменяется. Для локального файла флаг можно опустить.
+  - Кэш CSV и JSON-отчёт должны находиться вне checkout. Статусы `structure_valid`, `verified` и `reference_mismatch` различаются; `agent_evaluation` остаётся `not_run`. Эта команда проверяет эталоны и не заменяет будущий eval агента #81.
+
 - `benchmark_model_profiles.py` — реальная серия Understand/Plan/Compose через API без пользовательских данных: отдельно считает валидность схем и корректность ответа/SQL, latency и prompt tokens. Ошибочный план записывает как неуспех, не обрывая серию. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
   - Запуск: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --repeats 3 --context-lines 200`
   - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
