@@ -2709,6 +2709,74 @@
         "title": "Transformation",
         "type": "object"
       },
+      "UserCreate": {
+        "additionalProperties": false,
+        "description": "Данные для регистрации нового пользователя.",
+        "properties": {
+          "username": {
+            "description": "Логин пользователя",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Email пользователя",
+            "title": "Email"
+          },
+          "password": {
+            "description": "Пароль пользователя",
+            "maxLength": 1024,
+            "minLength": 6,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "UserCreate",
+        "type": "object"
+      },
+      "UserLogin": {
+        "additionalProperties": false,
+        "description": "Данные для аутентификации (входа).",
+        "properties": {
+          "username": {
+            "description": "Логин пользователя",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          },
+          "password": {
+            "description": "Пароль пользователя",
+            "maxLength": 1024,
+            "minLength": 6,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "UserLogin",
+        "type": "object"
+      },
       "UserRead": {
         "additionalProperties": false,
         "description": "Данные пользователя для чтения через API (без хешей паролей).",

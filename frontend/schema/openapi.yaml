@@ -17,6 +17,56 @@ info:
 servers:
   - url: /api
 paths:
+  /auth/register:
+    post:
+      operationId: register
+      summary: Create a local account without logging in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreate' }
+      responses:
+        '201':
+          description: Public user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserRead' }
+        default: { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      operationId: login
+      summary: Create a revocable 24-hour Bearer session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserLogin' }
+      responses:
+        '200':
+          description: Token returned once, never cached
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        default: { $ref: '#/components/responses/Error' }
+  /auth/me:
+    get:
+      operationId: currentUser
+      security: [{ BearerSession: [] }]
+      responses:
+        '200':
+          description: Public profile of the verified session owner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserRead' }
+        default: { $ref: '#/components/responses/Error' }
+  /auth/logout:
+    post:
+      operationId: logout
+      security: [{ BearerSession: [] }]
+      responses:
+        '204': { description: Current session revoked }
+        default: { $ref: '#/components/responses/Error' }
   /datasets:
     get:
       operationId: listDatasets
@@ -252,6 +302,10 @@ paths:
               schema: { $ref: '#/components/schemas/Dashboard' }
         default: { $ref: '#/components/responses/Error' }
 components:
+  securitySchemes:
+    BearerSession:
+      type: http
+      scheme: bearer
   responses:
     Error:
       description: Error with a user-facing message
@@ -261,6 +315,10 @@ components:
   schemas:
     UserRead:
       $ref: './contracts.json#/components/schemas/UserRead'
+    UserCreate:
+      $ref: './contracts.json#/components/schemas/UserCreate'
+    UserLogin:
+      $ref: './contracts.json#/components/schemas/UserLogin'
     TokenResponse:
       $ref: './contracts.json#/components/schemas/TokenResponse'
     AssistantMessage:
