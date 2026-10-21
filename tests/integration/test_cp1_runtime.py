@@ -271,6 +271,84 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
             assert restarted.get(f"/api/chats/{chat_id}").json() == history
 
 
+@pytest.mark.parametrize("failure", ["empty", "timeout", "timeout_after_rejection"])
+def test_unverified_numbers_are_neither_published_nor_saved(
+    configured, monkeypatch, failure
+) -> None:
+    settings, _ = configured
+
+    class UnverifiedModel(ControlledModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.compose_calls = 0
+            self.verify_calls = 0
+
+        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+            if failure == "empty" and response_model.__name__ == "PlanResponse":
+                return ModelResponse(
+                    status="success",
+                    data=response_model.model_validate(
+                        {
+                            "plan": [
+                                {
+                                    "tool": "value_counts",
+                                    "args": {
+                                        "table": "sales",
+                                        "column": "amount",
+                                        "filter": "FALSE",
+                                    },
+                                }
+                            ]
+                        }
+                    ),
+                )
+            if response_model is ComposeResponse:
+                self.compose_calls += 1
+                return ModelResponse(
+                    status="success",
+                    data=ComposeResponse.model_validate(
+                        {"answer_blocks": [{"type": "text", "markdown": "Количество строк: 999"}]}
+                    ),
+                )
+            if response_model is VerifyResponse:
+                self.verify_calls += 1
+                if failure == "timeout_after_rejection" and self.verify_calls == 1:
+                    return ModelResponse(
+                        status="success",
+                        data=VerifyResponse(
+                            is_valid=False,
+                            issues=["999 не подтверждено данными"],
+                            corrected_markdown="Количество строк: 2",
+                        ),
+                    )
+                return ModelResponse(status="error", error_type="TIMEOUT", message="Test timeout")
+            return super().generate_typed_response(system_prompt, user_prompt, response_model)
+
+    model = UnverifiedModel()
+    monkeypatch.setattr(chat_service, "get_agent_client", lambda: model)
+    with TestClient(create_app(settings)) as client:
+        _, chat_id = _upload(client)
+        events = _post_turn(client, chat_id)
+        names = [event for event, _ in events]
+        blocks = [data for event, data in events if event == "block"]
+        history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert "999" not in json.dumps(blocks, ensure_ascii=False)
+        assert "999" not in json.dumps(
+            [message.get("blocks", []) for message in history], ensure_ascii=False
+        )
+        if failure == "empty":
+            assert names[-1] == "done" and "error" not in names
+            assert blocks == [{"type": "text", "markdown": "Нет данных для формирования ответа."}]
+            assert [message["role"] for message in history] == ["user", "assistant"]
+            assert history[-1]["blocks"] == blocks
+            assert model.compose_calls == 1 and model.verify_calls == 0
+        else:
+            assert names[-1] == "error" and "done" not in names and "block" not in names
+            assert [message["role"] for message in history] == ["user"]
+            expected_calls = 2 if failure == "timeout_after_rejection" else 1
+            assert model.compose_calls == model.verify_calls == expected_calls
+
+
 def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatch) -> None:
     settings, factory = configured
     model = _model(monkeypatch)
