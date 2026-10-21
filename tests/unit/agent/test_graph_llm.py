@@ -10,6 +10,7 @@ from djedai.contracts.agent import (
     PlannedCall,
     PlanResponse,
     Understanding,
+    VerifyResponse,
 )
 from djedai.contracts.tool_result import ToolResult
 
@@ -31,6 +32,10 @@ def test_graph_live_client_branches():
         ModelResponse(
             status="success",
             data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Mocked response")]),
+        ),
+        ModelResponse(
+            status="success",
+            data=VerifyResponse(is_valid=True, corrected_markdown="Mocked response"),
         ),
     ]
 
