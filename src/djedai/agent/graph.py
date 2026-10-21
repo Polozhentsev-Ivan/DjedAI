@@ -225,7 +225,9 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
             facts_and_data.append(entry)
 
     if not facts_and_data:
-        return {"is_verified": True}
+        new_blocks = [b for b in blocks if b.type != "text"]
+        new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
+        return {"is_verified": True, "answer_blocks": new_blocks}
 
     if client:
         sys_prompt = load_prompt("verify").format(facts=str(facts_and_data), draft=draft)
@@ -247,7 +249,19 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                     # Triggers conditional route to loop back to compose
                     return {"is_verified": False}
         else:
-            return {"is_verified": True}  # Fail open if verification API crashes
+            # The API failed (timeout, 500, etc.).
+            # We do not allow the publication of an unvalidated draft.
+            new_blocks = [b for b in blocks if b.type != "text"]
+            new_blocks.append(
+                Block(
+                    type="error",
+                    markdown=(
+                        "Ошибка проверки ответа: недоступен API верификации. "
+                        "Неподтвержденный ответ удален."
+                    ),
+                )
+            )
+            return {"is_verified": True, "answer_blocks": new_blocks}
 
     return {"is_verified": True}
 
