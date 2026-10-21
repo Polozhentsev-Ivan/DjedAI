@@ -21,7 +21,12 @@ import pytest
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.data.csv_ingest import load_raw_csv, load_raw_csvs
 from djedai.data.profiler import profile_tables, read_profiles
-from djedai.data.relations import RELATIONS_TABLE, find_relations, read_relations
+from djedai.data.relations import (
+    RELATIONS_TABLE,
+    RelationReport,
+    find_relations,
+    read_relations,
+)
 from djedai.data.typed_views import create_typed_views
 
 SYNTHETIC = Path(__file__).parents[2] / "fixtures" / "synthetic"
@@ -529,3 +534,51 @@ def test_partly_padded_keys_lower_relation_and_warn(con, tmp_path):
     assert any(
         "по точным значениям overlap 0.6, без пробелов overlap 1.0" in w for w in report.warnings
     )
+
+
+@pytest.mark.parametrize(
+    ("sales_codes", "real_rows", "real_sum"),
+    [
+        (["1", "2", "3", "01"], 4, 700),  # пример ревью: строки совпадают, '01' размножает
+        (["01", "02", "03"], 3, 600),  # строки не совпадают вовсе, а JOIN соединяет все
+    ],
+)
+def test_mixed_key_types_are_not_compared(con, tmp_path, sales_codes, real_rows, real_sum):
+    """JOIN ON BIGINT = VARCHAR приводит текст к числу, строковое сравнение это скрывает."""
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "lookup": {"code": ["1", "2", "3"], "revenue": ["100", "200", "300"]},
+            "sales": {"code": sales_codes},
+        },
+    )
+    types = dict(
+        con.execute(
+            "SELECT table_name, data_type FROM duckdb_columns() WHERE column_name = 'code' "
+            "AND table_name IN ('lookup', 'sales')"
+        ).fetchall()
+    )
+    assert types == {"lookup": "BIGINT", "sales": "VARCHAR"}
+    real = con.execute(
+        "SELECT count(*), sum(l.revenue) FROM lookup l LEFT JOIN sales s ON l.code = s.code"
+    ).fetchone()
+    assert real == (real_rows, real_sum)
+
+    assert report.relations == ()
+    (warning,) = report.warnings
+    assert "lookup.code (BIGINT) и sales.code (VARCHAR) похожи на связь" in warning
+    assert "связь не проверялась и не предлагается" in warning
+    assert read_relations(con) == report
+
+
+def test_mixed_types_without_similarity_are_silent(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "lookup": {"code": ["1", "2", "3"]},
+            "sales": {"sale_id": ["001", "002", "003"]},
+        },
+    )
+    assert report == RelationReport(relations=(), warnings=())

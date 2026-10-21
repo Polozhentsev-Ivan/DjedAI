@@ -19,6 +19,11 @@
 ``LEFT JOIN``, строки без пары и суммы числовых колонок ``from``. Размножение строк и
 строки без пары понижают ``confidence`` и дают предупреждения для каталога.
 
+Сравниваются только ключи одного семейства типов: текст с текстом, целые с целыми.
+``JOIN ON число = текст`` приводит текст к числу (``'01'`` совпадает с ``1``), и строковое
+сравнение скрыло бы размножение строк и изменение сумм. Такие пары не дают связей, а если
+похожи на связь по именам или значениям, о них есть предупреждение.
+
 Если ключи совпадают только после удаления пробелов по краям (``'1 '`` и ``'1'``),
 связь по точным значениям не находится или слабее, и в предупреждениях сказано, что
 JOIN по этим колонкам без ``trim`` теряет строки.
@@ -57,6 +62,10 @@ MEDIUM_OVERLAP = 0.8
 MIN_JACCARD = 0.5  # без совпадения имён множества значений должны быть близки
 MIN_DISTINCT = 2  # колонка из одного значения не ключ
 KEY_TYPES = ("integer", "text")  # кроме ``id``: такие колонки — кандидаты по имени или ключу
+INTEGER_TYPES = (
+    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+)  # fmt: skip
 _ID_TOKENS = ("id", "kod")
 
 
@@ -149,9 +158,14 @@ def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
     try:
         _ensure_table(connection)
         keys = _keys(connection, read_profiles(connection))
-        relations, padding = [], []
+        relations, pair_warnings = [], []
         for a, b in combinations(keys, 2):
             if a.table.view_name == b.table.view_name:
+                continue
+            if _key_family(a) != _key_family(b):
+                warning = _type_warning(connection, a, b)
+                if warning:
+                    pair_warnings.append(warning)
                 continue
             relation = _relation(connection, a, b)
             if relation is not None:
@@ -159,11 +173,12 @@ def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
             if a.padded or b.padded:
                 warning = _padding_warning(connection, a, b, relation)
                 if warning:
-                    padding.append(warning)
+                    pair_warnings.append(warning)
         relations.sort(key=lambda r: (r.from_table, r.from_column, r.to_table, r.to_column))
         report = RelationReport(
             relations=tuple(relations),
-            warnings=tuple(w for r in relations for w in relation_warnings(r)) + tuple(padding),
+            warnings=tuple(w for r in relations for w in relation_warnings(r))
+            + tuple(pair_warnings),
         )
         connection.begin()
         try:
@@ -206,7 +221,8 @@ def join_impact(
     с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — исключается). Суммы
     считаются в точном типе, как в профайлере; сумма без значений — ``None`` (SQL NULL).
     CTE выбирают только ключ и меры под служебными именами ``_djedai_*``, поэтому колонки
-    таблиц (например, ``k`` или ``n``) с ними не пересекаются.
+    таблиц (например, ``k`` или ``n``) с ними не пересекаются. Ключи должны быть одного
+    семейства типов (``_key_family``): иначе строковое сравнение расходится с JOIN.
     """
     measures = [c for c in from_table.columns if c.semantic_type in NUMERIC]
     values = []
@@ -292,11 +308,37 @@ def _sum_text(value: object) -> str:
 
 
 def _key(column: str, trim: bool = False) -> str:
-    """Значение для сравнения — как в ``JOIN ON a.x = b.y``; ``CAST`` нужен только для
-    пар разных типов (``VARCHAR`` и ``BIGINT``). ``trim`` — проверка совпадения без
+    """Значение для сравнения — как в ``JOIN ON a.x = b.y``. Сравниваются только ключи
+    одного семейства типов (``_key_family``), а внутри семейства строка значения однозначна,
+    поэтому ``CAST`` в ``VARCHAR`` сравнения не меняет. ``trim`` — проверка совпадения без
     пробелов по краям, для предупреждения; сами связи по ней не строятся."""
     value = f"CAST({_ident(column)} AS VARCHAR)"
     return f"NULLIF(trim({value}), '')" if trim else value
+
+
+def _key_family(key: _Key) -> str:
+    """Семейство типа ключа: внутри семейства JOIN сравнивает значения так же, как строки.
+
+    Целые разной ширины (``INTEGER`` и ``BIGINT``) — одно семейство. Текст и число — разные:
+    ``JOIN ON число = текст`` приводит текст к числу, и ``'01'`` совпадает с ``1``, а на
+    нечисловом значении JOIN падает. Строковое сравнение такие пары не описывает.
+    """
+    physical = key.column.physical_type
+    return "integer" if physical in INTEGER_TYPES else physical
+
+
+def _type_warning(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> str | None:
+    """Предупреждение для пары ключей разных типов, похожей на связь по именам или значениям."""
+    if not (_name_match(a, b) or _name_match(b, a) or _match(connection, a, b)):
+        return None
+    left, right = sorted((a, b), key=lambda k: (k.table.view_name, k.column.name))
+    return (
+        f"{left.table.view_name}.{left.column.name} ({left.column.physical_type}) и "
+        f"{right.table.view_name}.{right.column.name} ({right.column.physical_type}) похожи "
+        "на связь, но типы ключей разные: JOIN приводит текст к числу ('01' совпадает с 1, "
+        "нечисловое значение даёт ошибку), поэтому связь не проверялась и не предлагается. "
+        "Приведите ключи к одному типу явно"
+    )
 
 
 def _is_candidate(table: TableProfile, column: ColumnProfile) -> bool:
