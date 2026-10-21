@@ -14,8 +14,17 @@ FastAPI, API и SSE, хранение метаданных приложения 
   - `session.py` — фабрика сессий `get_db()`, создание движка `create_db_engine()` с поддержкой `PRAGMA foreign_keys = ON` для SQLite;
   - `models.py` — SQLAlchemy-модели сущностей со связями владения (`users`, `sessions`, `datasets`, `chats`, `messages`, `results`, `dashboards`);
   - `repositories.py` — сохранение и чтение вызовов инструментов (`ToolResult` со статусами `ok`, `error`, `empty`), потоковый сброс больших табличных данных в Parquet через DuckDB по ссылке `data_ref`, CRUD-операции сущностей;
-- `auth/` — Argon2id-хеширование паролей и постоянные сессии с SHA-256 verifier токена, сроком действия и отзывом (AUTH-1); HTTP-роутеры пока остаются заглушками AUTH-2;
+- `auth/` — Argon2id, постоянные сессии, общий `get_current_user` для Bearer, ограничения попыток/тела и запрет кэширования ответов AUTH-2;
 - `migrations/` — среда и версионированные миграции Alembic. Применение: `uv run --locked alembic upgrade head`. `downgrade base` удаляет всё хранилище и применяется только к временной тестовой БД.
+
+## Регистрация и сессии
+
+Регистрация, вход, текущий пользователь и выход реализованы по
+[AUTH-2 / #102](../../../docs/decisions/102-auth-api.md): `/api/auth/register`,
+`/login`, `/me`, `/logout`. Передача сессии — только `Authorization: Bearer …`,
+срок 24 часа, logout отзывает текущий токен. Нужны миграции `alembic upgrade head`.
+Auth-маршруты работают независимо от CP1. Применение сессии ко всем ресурсным
+API — #103; до этого они сохраняют описанный ниже локальный CP1-контекст.
 
 ## Реестр результатов и Data API
 

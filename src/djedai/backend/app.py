@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
 from djedai.backend.api.router import api_router
+from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
 from djedai.contracts import (
@@ -163,6 +164,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bind=app.state.engine, autocommit=False, autoflush=False
     )
 
+    app.state.auth_limiter = AuthRateLimiter(
+        cfg.auth_rate_limit_requests, cfg.auth_rate_limit_window_seconds
+    )
+    app.add_middleware(AuthPolicyMiddleware, prefix=cfg.api_prefix, limiter=app.state.auth_limiter)
+
     # Настройка CORS с явным dev allowlist
     app.add_middleware(
         CORSMiddleware,
@@ -217,7 +223,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message="Внутренняя ошибка сервера",
             )
         )
-        return JSONResponse(payload.model_dump(mode="json"), status_code=500)
+        return JSONResponse(
+            payload.model_dump(mode="json"),
+            status_code=500,
+            headers=AUTH_CACHE_HEADERS
+            if _request.url.path.startswith(cfg.api_prefix + "/auth/")
+            else None,
+        )
 
     # Кастомный генератор схемы OpenAPI с полным набором общих контрактов
     app.openapi = lambda: get_custom_openapi(app)

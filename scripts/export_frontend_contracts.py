@@ -30,6 +30,8 @@ CONTRACTS = {
     "DashboardCreate",
     "DashboardPatch",
     "UserRead",
+    "UserCreate",
+    "UserLogin",
     "TokenResponse",
     "ErrorResponse",
     "Transformation",

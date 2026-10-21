@@ -55,9 +55,12 @@ def bootstrap_local_user(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Подготовить владельца локального режима CP1")
     parser.add_argument("--username", default="cp1-local")
+    parser.add_argument("--if-enabled", action="store_true", help="Skip bootstrap outside CP1 mode")
     args = parser.parse_args()
     settings = get_settings()
     if not settings.cp1_local_mode:
+        if args.if_enabled:
+            return
         parser.error("Установите CP1_LOCAL_MODE=true для однопользовательского режима")
     engine = create_db_engine(settings.app_database_url)
     try:

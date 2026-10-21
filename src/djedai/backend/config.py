@@ -36,10 +36,15 @@ class Settings(LimitSettings):
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
     datasets_data_dir: str = Field(default="./var/data/datasets", alias="DATASETS_DATA_DIR")
 
-    # Explicit single-user CP1 mode; the normal authentication API is a later stage.
+    # Explicit single-user CP1 adapter; separate from verified AUTH sessions.
     cp1_local_mode: bool = Field(default=False, alias="CP1_LOCAL_MODE")
     cp1_local_user_id: str = Field(
         default="cp1-local-user", min_length=1, alias="CP1_LOCAL_USER_ID"
+    )
+
+    auth_rate_limit_requests: int = Field(default=10, ge=1, alias="AUTH_RATE_LIMIT_REQUESTS")
+    auth_rate_limit_window_seconds: int = Field(
+        default=300, ge=1, alias="AUTH_RATE_LIMIT_WINDOW_SECONDS"
     )
 
     # Согласованный управляемый профиль PL-1; совместимый endpoint можно переопределить.
@@ -113,6 +118,8 @@ class Settings(LimitSettings):
         "datasets_data_dir",
         "cp1_local_mode",
         "cp1_local_user_id",
+        "auth_rate_limit_requests",
+        "auth_rate_limit_window_seconds",
         "model_base_url",
         "model_name",
         "model_revision",

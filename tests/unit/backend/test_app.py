@@ -182,5 +182,5 @@ def test_api_subroutes_stubs() -> None:
 
     # Auth
     res_auth = client.get("/api/auth/me")
-    assert res_auth.status_code == 200
-    assert "username" in res_auth.json()
+    assert res_auth.status_code == 401
+    assert res_auth.json()["error"]["code"] == "unauthorized"

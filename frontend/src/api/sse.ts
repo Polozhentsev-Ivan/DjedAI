@@ -1,4 +1,5 @@
 import { ApiError, errorFrom, apiUrl, type Schemas } from './client';
+import { clearSessionIfCurrent, sessionSignal, sessionSnapshot } from './session';
 
 export interface SseMessage {
   event: string;
@@ -94,43 +95,52 @@ export const STREAM_INTERRUPTED: Schemas['ErrorBody'] = {
  * the signal fires. A stream that ends without either rejects with STREAM_INTERRUPTED;
  * the request is never retried here, so a dropped connection cannot run the agent twice.
  */
-export async function streamEvents<M extends EventMap>(path: string, { onEvent, method = 'GET', json, signal }: StreamOptions<M>): Promise<StreamOutcome> {
+export async function streamEvents<M extends EventMap>(path: string, { onEvent, method = 'GET', json, signal: callerSignal }: StreamOptions<M>): Promise<StreamOutcome> {
+  const session = sessionSnapshot();
+  const signal = sessionSignal(session, callerSignal);
+  // Read on each boundary: the signal can change while fetch/read/callbacks run.
+  const aborted = () => signal.aborted;
   const headers: Record<string, string> = { Accept: 'text/event-stream' };
-  const init: RequestInit = { method, headers };
+  if (session.accessToken) headers.Authorization = `Bearer ${session.accessToken}`;
+  const init: RequestInit = { method, headers, signal };
   if (json !== undefined) {
     init.body = JSON.stringify(json);
     headers['Content-Type'] = 'application/json';
   }
-  if (signal) init.signal = signal;
 
   let response: Response;
   try {
     response = await fetch(apiUrl(path), init);
   } catch (error) {
-    if (signal?.aborted) return 'aborted';
+    if (aborted()) return 'aborted';
     if (error instanceof DOMException && error.name === 'AbortError') return 'aborted';
     throw new ApiError(0, { code: 'network', message: 'Нет связи с сервером' });
   }
-  if (!response.ok) throw await errorFrom(response);
+  if (!response.ok) {
+    const error = await errorFrom(response);
+    if (response.status === 401) clearSessionIfCurrent(session);
+    throw error;
+  }
+  if (aborted()) return 'aborted';
   if (!response.body) throw new ApiError(response.status, STREAM_INTERRUPTED);
 
   const reader = response.body.getReader();
   const parser = new SseParser();
   // Leaving the page aborts the signal; cancelling the reader ends a read that is still waiting.
   const stop = () => { reader.cancel().catch(() => undefined); };
-  signal?.addEventListener('abort', stop, { once: true });
+  signal.addEventListener('abort', stop, { once: true });
   try {
     for (;;) {
       let chunk: ReadableStreamReadResult<Uint8Array>;
       try {
         chunk = await reader.read();
       } catch (error) {
-        if (signal?.aborted) return 'aborted';
+        if (aborted()) return 'aborted';
         throw error instanceof ApiError ? error : new ApiError(response.status, STREAM_INTERRUPTED);
       }
       if (chunk.done) break;
       for (const message of parser.push(chunk.value)) {
-        if (signal?.aborted) return 'aborted';
+        if (aborted()) return 'aborted';
         let data: unknown;
         try {
           data = JSON.parse(message.data);
@@ -142,10 +152,10 @@ export async function streamEvents<M extends EventMap>(path: string, { onEvent, 
       }
     }
   } finally {
-    signal?.removeEventListener('abort', stop);
+    signal.removeEventListener('abort', stop);
     // Stops the network read on done/error; ignored if the stream already closed.
     reader.cancel().catch(() => undefined);
   }
-  if (signal?.aborted) return 'aborted';
+  if (aborted()) return 'aborted';
   throw new ApiError(response.status, STREAM_INTERRUPTED);
 }

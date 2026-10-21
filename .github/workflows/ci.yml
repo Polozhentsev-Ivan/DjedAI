@@ -129,6 +129,11 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - name: Test real auth API and browser session transport
+        working-directory: frontend
+        env:
+          DJEDAI_E2E_OUTPUT: ${{ runner.temp }}/djedai-auth
+        run: npm run test:e2e:auth
       - name: Test production UI against real backend and controlled model
         working-directory: frontend
         env:
@@ -160,6 +165,7 @@ jobs:
           path: |
             ${{ runner.temp }}/cp1-compose
             ${{ runner.temp }}/djedai-playwright
+            ${{ runner.temp }}/djedai-auth
             ${{ runner.temp }}/cp1-model.log
           retention-days: 7
           if-no-files-found: warn
