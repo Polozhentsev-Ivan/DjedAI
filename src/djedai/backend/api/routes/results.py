@@ -11,6 +11,7 @@ from djedai.backend.db.models import ToolResultModel
 from djedai.backend.db.repositories import load_tool_result
 from djedai.backend.db.session import get_db
 from djedai.backend.local_user import local_owner_id
+from djedai.contracts.common import ErrorResponse
 from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 router = APIRouter(prefix="/results", tags=["results"])
@@ -24,14 +25,35 @@ def _owned_result(db: Session, result_id: str, owner_id: str) -> None:
         raise HTTPException(status_code=404, detail="Результат не найден")
 
 
-@router.get("/{result_id}", response_model=ToolResult)
+@router.get(
+    "/{result_id}",
+    response_model=ToolResult,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Результат не найден или принадлежит другому пользователю",
+        }
+    },
+)
 def get_result(result_id: str, db: DbSession, owner_id: LocalOwner) -> ToolResult:
     """Возвращает происхождение расчёта без загрузки строк Parquet."""
     _owned_result(db, result_id, owner_id)
-    return load_tool_result(db, result_id, load_data=False)
+    result = load_tool_result(db, result_id, load_data=False)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Результат не найден")
+    return result
 
 
-@router.get("/{result_id}/data", response_model=ToolResultData)
+@router.get(
+    "/{result_id}/data",
+    response_model=ToolResultData,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Данные результата не найдены, либо результат недоступен",
+        }
+    },
+)
 def get_result_data(
     result_id: str, request: Request, db: DbSession, owner_id: LocalOwner
 ) -> ToolResultData:
@@ -40,6 +62,6 @@ def get_result_data(
     result = load_tool_result(
         db, result_id, storage_dir=request.app.state.settings.results_data_dir
     )
-    if result.data is None:
+    if result is None or result.data is None:
         raise HTTPException(status_code=404, detail="Данные результата не найдены")
     return result.data
