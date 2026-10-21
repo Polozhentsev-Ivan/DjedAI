@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -72,7 +73,16 @@ def test_references_match_newly_generated_data(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change", ["campaign", "activity_scale", "calendar", "duplicate_id", "money", "missing_signal"]
+    "change",
+    [
+        "campaign",
+        "activity_scale",
+        "calendar",
+        "duplicate_id",
+        "money",
+        "duplicate_store",
+        "missing_signal",
+    ],
 )
 def test_independent_check_detects_corrupted_patterns(tmp_path, change):
     output = tmp_path / "data"
@@ -111,6 +121,9 @@ def test_independent_check_detects_corrupted_patterns(tmp_path, change):
             output / "sales.csv", lambda rows: rows[0].update(total_amount="999 999 999,00 руб.")
         )
         expected_error = "anomalies_max_amount:"
+    elif change == "duplicate_store":  # дубль в справочнике: JOIN размножает продажи
+        rewrite_csv(output / "stores.csv", lambda rows: rows.append(dict(rows[0])))
+        expected_error = "sales.store_id -> stores.store_id: cardinality expected 'N:1', got 'N:M'"
     else:
         (output / "campaigns.csv").unlink()
         expected_error = "campaigns.csv"
@@ -127,3 +140,25 @@ def test_checker_rejects_empty_reference_set(tmp_path):
     result = verify(expectations=path)
     assert result.returncode == 1
     assert "Incomplete or unknown reference metrics" in result.stderr
+
+
+@pytest.mark.parametrize("change", [None, "duplicate_store"])
+def test_cli_output_works_with_legacy_console_encoding(tmp_path, change):
+    """Обычный запуск без ``-X utf8`` при stdout/stderr в cp1251, как на Windows."""
+    output = tmp_path / "data"
+    shutil.copytree(FIXTURES, output)
+    if change:
+        rewrite_csv(output / "stores.csv", lambda rows: rows.append(dict(rows[0])))
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    result = subprocess.run(
+        [sys.executable, "scripts/verify_synthetic_data.py", "--data-dir", output],
+        capture_output=True,
+        env={**env, "PYTHONIOENCODING": "cp1251", "PYTHONUTF8": "0"},
+    )
+    assert b"UnicodeEncodeError" not in result.stderr
+    if change is None:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["status"] == "ok"
+    else:
+        assert result.returncode == 1
+        assert b"cardinality expected 'N:1', got 'N:M'" in result.stderr
