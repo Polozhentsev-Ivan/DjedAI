@@ -280,20 +280,15 @@ def create_postgres_view(
                 f"CREATE OR REPLACE VIEW {_ident(view_name)} AS "
                 f"SELECT {select} FROM {_ident(raw_table)}"
             )
-            # типы заданы БД, поэтому распознано всё непустое: parsed = non_empty
-            counts = connection.execute(
-                "SELECT "
-                + ", ".join(_non_empty(name, physical) for name, _, physical, *_ in converted)
-                + f" FROM {_ident(view_name)}"
-            ).fetchone()
+            # живая таблица: счётчиков непустых нет, профайлер считает их в своём снимке
             plans = [
                 _Plan(
-                    TypedColumn(original, name, physical, semantic, None, count, count),
+                    TypedColumn(original, name, physical, semantic, None, None, None),
                     expr,
                     _rename_entries(original, name) + entries,
                 )
-                for (original, _), (name, expr, physical, semantic, entries), count in zip(
-                    columns, converted, counts, strict=True
+                for (original, _), (name, expr, physical, semantic, entries) in zip(
+                    columns, converted, strict=True
                 )
             ]
             _write_registry(connection, raw_table, view_name, plans)
@@ -459,14 +454,6 @@ def _convert(original: str, name: str, data_type: str) -> tuple[str, str, str, s
         return name, as_text, "VARCHAR", "id" if data_type == "UUID" else "text", (entry,)
     entry = ("keep_text", {"reason": "unsupported_type", "type": data_type})
     return name, as_text, "VARCHAR", "text", (entry,)
-
-
-def _non_empty(name: str, physical_type: str) -> str:
-    """Число непустых значений, как в профайлере: у текста пробелы — тоже пропуск."""
-    column = _ident(name)
-    if physical_type == "VARCHAR":
-        return f"count(*) FILTER (WHERE trim({column}) <> '')"
-    return f"count({column})"
 
 
 def _raw_name(connection: duckdb.DuckDBPyConnection, schema: str, table: str) -> str:

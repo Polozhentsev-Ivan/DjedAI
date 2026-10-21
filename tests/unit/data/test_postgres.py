@@ -24,7 +24,7 @@ from djedai.data.postgres import (
     read_db_sources,
     select_tables,
 )
-from djedai.data.profiler import profile_tables
+from djedai.data.profiler import profile_table, profile_tables
 from djedai.data.relations import find_relations
 from djedai.data.typed_views import read_journal, read_typed_views
 
@@ -199,12 +199,15 @@ class TestViews:
             "tags": ("VARCHAR", "text"),
         }
         assert columns["imya_klienta"].original_name == "Имя клиента"
-        # пустая строка из пробелов — пропуск, как в профайлере; типы БД разобраны полностью
-        assert {name: c.non_empty for name, c in columns.items()} == {
-            "id": 3, "imya_klienta": 1, "uid": 3, "active": 2,
-            "registered": 2, "born": 2, "mood": 2, "tags": 2,
+        # живая таблица: счётчики не сохраняются, их считает профайлер в своём снимке
+        assert all(c.non_empty is None and c.parsed is None for c in view.columns)
+        assert all(c.success_ratio == 1.0 for c in view.columns)
+        nulls = {c.name: c.null_count for c in profile_table(con, view).columns}
+        # пустая строка из пробелов — пропуск, как у CSV; нераспознанных значений нет
+        assert nulls == {
+            "id": 0, "imya_klienta": 2, "uid": 0, "active": 1,
+            "registered": 1, "born": 1, "mood": 1, "tags": 1,
         }  # fmt: skip
-        assert all(c.parsed == c.non_empty for c in view.columns)
         assert read_typed_views(con) == [view]
 
     def test_values_are_converted(self, con):
@@ -324,3 +327,32 @@ def test_catalog_of_database_tables(con):
         ("tags", "keep_text"),
     }
     assert DatasetCatalog.model_validate_json(catalog.model_dump_json()) == catalog
+
+
+@pytest.mark.parametrize(
+    ("change", "rows", "nulls"),
+    [
+        ("DELETE FROM pg_src.main.live WHERE id > 1", 1, 0),  # пример ревью: было бы -2
+        ("INSERT INTO pg_src.main.live VALUES (4, 'd'), (5, NULL)", 5, 1),  # ложные пропуски
+    ],
+)
+def test_profile_counts_live_rows_not_view_creation_time(tmp_path, change, rows, nulls):
+    """Источник меняется между созданием представления и профилем: счётчики не устаревают."""
+    from djedai.data.catalog_builder import build_db_catalog
+    from djedai.data.profiler import profile_table
+
+    connection = duckdb.connect(":memory:")
+    connection.execute(f"ATTACH '{tmp_path / 'live.duckdb'}' AS {ALIAS}")
+    connection.execute(f"CREATE TABLE {ALIAS}.main.live (id INTEGER, v VARCHAR)")
+    connection.execute(f"INSERT INTO {ALIAS}.main.live VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+    view = create_postgres_view(connection, "main", "live")
+    connection.execute(change)
+
+    profile = profile_table(connection, view)
+    v = next(c for c in profile.columns if c.name == "v")
+    assert profile.row_count == rows
+    assert (v.null_count, v.unparsed_count) == (nulls, 0)
+    assert v.null_ratio == nulls / rows
+    (source,) = read_db_sources(connection)
+    build_db_catalog(connection, source, view, profile, dataset_id="ds_live")  # не падает
+    connection.close()

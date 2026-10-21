@@ -33,7 +33,8 @@ uv run python scripts/seed_demo_postgres.py \
 
 ```sh
 DJEDAI_TEST_PG_DSN='postgresql://djedai_reader:<пароль читателя>@127.0.0.1:5432/djedai_demo' \
+DJEDAI_DEMO_PG_LOADER_DSN='postgresql://djedai_loader:<пароль загрузчика>@127.0.0.1:5432/djedai_demo' \
   uv run pytest --strict-markers tests/integration/test_postgres_adapter.py
 ```
 
-Без `DJEDAI_TEST_PG_DSN` эти тесты пропускаются. Пароли и DSN в Git не добавляются.
+Без `DJEDAI_TEST_PG_DSN` эти тесты пропускаются. `DJEDAI_DEMO_PG_LOADER_DSN` нужен только двум тестам, которые меняют таблицу «снаружи» во время профилирования (временная таблица `live`); без него пропускаются только они. Пароли и DSN в Git не добавляются.

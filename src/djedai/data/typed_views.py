@@ -91,11 +91,15 @@ class TypedColumn:  # колонка представления: оригина�
     physical_type: str
     semantic_type: str
     format: str | None
-    non_empty: int
-    parsed: int
+    # None — живой источник (подключённая БД): сохранённые счётчики устарели бы при
+    # изменении исходной таблицы, профайлер считает их сам в одном снимке с числом строк
+    non_empty: int | None
+    parsed: int | None
 
     @property
     def success_ratio(self) -> float:
+        if self.non_empty is None or self.parsed is None:
+            return 1.0
         return self.parsed / self.non_empty if self.non_empty else 1.0
 
 

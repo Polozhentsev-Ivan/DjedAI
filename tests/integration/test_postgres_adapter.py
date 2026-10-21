@@ -25,8 +25,10 @@ from djedai.data.postgres import (
 from djedai.data.profiler import profile_tables
 from djedai.data.relations import find_relations
 from djedai.data.service import connect_postgres_dataset
+from djedai.data.typed_views import _lit
 
 DSN = os.environ.get("DJEDAI_TEST_PG_DSN")
+WRITER_DSN = os.environ.get("DJEDAI_DEMO_PG_LOADER_DSN")  # меняет таблицу «снаружи»
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DSN, reason="DJEDAI_TEST_PG_DSN не задан (infra/postgres/README.md)"),
@@ -208,3 +210,65 @@ def test_dataset_fails_as_a_whole(tmp_path):
             name="x",
             created_at=datetime.now(UTC),
         )
+
+
+@pytest.fixture
+def writer():
+    """Внешний writer под ролью-владельцем: создаёт таблицу live и меняет её."""
+    if not WRITER_DSN:
+        pytest.skip("DJEDAI_DEMO_PG_LOADER_DSN не задан (infra/postgres/README.md)")
+    info = parse_dsn(WRITER_DSN)
+    connection = duckdb.connect()
+    connection.execute("LOAD postgres")
+    connection.execute(f"CREATE TEMPORARY SECRET w (TYPE postgres, PASSWORD {_lit(info.password)})")
+    connection.execute(f"ATTACH {_lit(info.libpq(read_only=False))} AS w (TYPE postgres, SECRET w)")
+
+    def execute(sql: str) -> None:
+        connection.execute(f"CALL postgres_execute('w', {_lit(sql)})")
+
+    execute("DROP TABLE IF EXISTS live")
+    execute("CREATE TABLE live (id integer, v text)")
+    execute("INSERT INTO live VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+    yield execute
+    execute("DROP TABLE IF EXISTS live")
+    connection.close()
+
+
+def test_profile_after_source_changed(con, writer):
+    """Пример ревью: из трёх непустых строк удалены две после создания представления."""
+    from djedai.data.catalog_builder import build_db_catalog
+    from djedai.data.postgres import read_db_sources
+    from djedai.data.profiler import profile_table
+
+    (view,) = connect_postgres(con, DSN, ["live"]).views
+    writer("DELETE FROM live WHERE id > 1")
+    profile = profile_table(con, view)
+    v = next(c for c in profile.columns if c.name == "v")
+    assert (profile.row_count, v.null_count, v.null_ratio) == (1, 0, 0.0)
+    (source,) = read_db_sources(con)
+    build_db_catalog(con, source, view, profile, dataset_id="ds_live")
+
+
+def test_profile_uses_one_snapshot(con, writer, monkeypatch):
+    """Изменение посреди профиля не видно: все счётчики из снимка, где считались строки."""
+    from djedai.data import profiler
+
+    (view,) = connect_postgres(con, DSN, ["live"]).views
+    original = profiler._profile_column
+    changed = []
+
+    def change_then_profile(*args, **kwargs):
+        if not changed:
+            writer("DELETE FROM live WHERE id > 1")
+            changed.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(profiler, "_profile_column", change_then_profile)
+    profile = profiler.profile_table(con, view)
+    assert changed
+    assert profile.row_count == 3
+    assert {c.name: (c.null_count, c.distinct_count) for c in profile.columns} == {
+        "id": (0, 3),
+        "v": (0, 3),
+    }
+    assert direct(con, "SELECT count(*) FROM live") == [(1,)]  # а сама таблица изменилась
