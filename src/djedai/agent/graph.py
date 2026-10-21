@@ -39,7 +39,14 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
 def understand(state: AgentState, config: RunnableConfig) -> dict:
     """Invokes the model to understand intent."""
     client = config.get("configurable", {}).get("client")
-    last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
+    messages = state.get("messages", [])
+    last_msg = messages[-1].content.strip() if messages else ""
+
+    # Short-circuit blank messages without wasting LLM tokens. A state without any
+    # messages is a resume/seed invocation (e.g. with a pre-built plan), not an
+    # empty user query, so it must keep flowing through the graph.
+    if messages and not last_msg:
+        return {"understanding": Understanding(intent="off_topic", entities=Entities())}
 
     if client:
         sys_prompt = load_prompt("understand").format(catalog=state.get("catalog_prompt"))
@@ -195,9 +202,40 @@ def clarify(state: AgentState) -> dict:
     if any(b.type == "error" for b in existing):
         return {"answer_blocks": existing}
 
+    understanding = state.get("understanding")
+    intent = understanding.intent if understanding else "invalid"
+
+    blocks = []
+
+    if intent == "ambiguous":
+        if understanding and understanding.clarification:
+            opts = "\n".join(f"- {opt}" for opt in understanding.clarification.options)
+            msg = f"{understanding.clarification.question}\n{opts}"
+        else:
+            msg = "Запрос неоднозначен. Пожалуйста, уточните, какие именно данные вы имеете в виду."
+        blocks.append(Block(type="clarification", markdown=msg))
+
+    elif intent == "invalid":
+        msg = (
+            "Запрашиваемые поля или метрики не найдены в данных. "
+            "Пожалуйста, проверьте названия и попробуйте еще раз."
+        )
+        blocks.append(Block(type="error", markdown=msg))
+
+    elif intent == "off_topic":
+        msg = (
+            "Я — аналитический ИИ-агент. Я могу исследовать датасеты, "
+            "писать SQL-запросы, строить графики и дашборды по вашим данным. "
+            "Ваш запрос выходит за рамки моих возможностей."
+        )
+        blocks.append(Block(type="error", markdown=msg))
+
+    else:
+        blocks.append(Block(type="clarification", markdown="Пожалуйста, уточните ваш запрос."))
+
     return {
         "plan": [],
-        "answer_blocks": [Block(type="clarification", markdown="Please clarify your request.")],
+        "answer_blocks": blocks,
     }
 
 
