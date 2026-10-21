@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import uuid
@@ -39,6 +40,8 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -541,30 +544,65 @@ def load_tool_result(
             truncated = record.data_preview.get("truncated", False)
 
         if record.data_ref:
-            parquet_path = _resolve_data_ref_path(
-                record.data_ref, storage_dir, expected_result_id=result_id
-            )
-            if parquet_path.exists():
-                cols, rows = read_parquet(parquet_path)
-                if not columns:
-                    columns = cols
-                if row_count is None:
-                    row_count = len(rows)
-                data = ToolResultData(
-                    columns=columns,
-                    rows=rows,
-                    row_count=row_count,
-                    truncated=truncated,
+            try:
+                parquet_path = _resolve_data_ref_path(
+                    record.data_ref, storage_dir, expected_result_id=result_id
                 )
-            elif record.data_preview and "rows" in record.data_preview:
-                p_rows = record.data_preview["rows"]
-                eff_rc = row_count if row_count is not None else len(p_rows)
-                data = ToolResultData(
-                    columns=columns,
-                    rows=p_rows,
-                    row_count=eff_rc,
-                    truncated=truncated or (eff_rc > len(p_rows)),
+                if parquet_path.exists():
+                    try:
+                        cols, rows = read_parquet(parquet_path)
+                        if not columns:
+                            columns = cols
+                        if row_count is None:
+                            row_count = len(rows)
+                        data = ToolResultData(
+                            columns=columns,
+                            rows=rows,
+                            row_count=row_count,
+                            truncated=truncated,
+                        )
+                    except (duckdb.Error, OSError) as exc:
+                        logger.warning(
+                            "Ошибка чтения Parquet для результата %s: %s, берём превью",
+                            result_id,
+                            exc,
+                        )
+                        # При повреждении Parquet на диске откатываемся к сохранённому preview
+                        if record.data_preview and "rows" in record.data_preview:
+                            p_rows = record.data_preview["rows"]
+                            eff_rc = row_count if row_count is not None else len(p_rows)
+                            data = ToolResultData(
+                                columns=columns,
+                                rows=p_rows,
+                                row_count=eff_rc,
+                                truncated=True,
+                            )
+                elif record.data_preview and "rows" in record.data_preview:
+                    p_rows = record.data_preview["rows"]
+                    eff_rc = row_count if row_count is not None else len(p_rows)
+                    data = ToolResultData(
+                        columns=columns,
+                        rows=p_rows,
+                        row_count=eff_rc,
+                        truncated=truncated or (eff_rc > len(p_rows)),
+                    )
+            except ValueError as exc:
+                logger.warning(
+                    "Некорректный data_ref '%s' для результата %s: %s",
+                    record.data_ref,
+                    result_id,
+                    exc,
                 )
+                # При некорректном data_ref нейтрализуем ошибку и используем preview
+                if record.data_preview and "rows" in record.data_preview:
+                    p_rows = record.data_preview["rows"]
+                    eff_rc = row_count if row_count is not None else len(p_rows)
+                    data = ToolResultData(
+                        columns=columns,
+                        rows=p_rows,
+                        row_count=eff_rc,
+                        truncated=True,
+                    )
         elif record.data_preview and "rows" in record.data_preview:
             p_rows = record.data_preview["rows"]
             eff_rc = row_count if row_count is not None else len(p_rows)

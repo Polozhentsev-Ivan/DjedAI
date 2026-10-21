@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,6 +16,7 @@ from djedai.contracts.common import ErrorResponse
 from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 router = APIRouter(prefix="/results", tags=["results"])
+logger = logging.getLogger(__name__)
 DbSession = Annotated[Session, Depends(get_db)]
 LocalOwner = Annotated[str, Depends(local_owner_id)]
 
@@ -63,5 +65,6 @@ def get_result_data(
         db, result_id, storage_dir=request.app.state.settings.results_data_dir
     )
     if result is None or result.data is None:
+        logger.warning("Данные результата '%s' не найдены (owner_id='%s')", result_id, owner_id)
         raise HTTPException(status_code=404, detail="Данные результата не найдены")
     return result.data

@@ -406,3 +406,100 @@ def test_disabled_local_mode_returns_503(tmp_path: Path) -> None:
         assert res.status_code == 503
         err = ErrorResponse.model_validate(res.json())
         assert err.error.code == "unavailable"
+
+
+def test_corrupted_parquet_graceful_fallback(
+    results_env: tuple[TestClient, sessionmaker[Session], Settings],
+) -> None:
+    """Повреждение Parquet-файла не ломает чтение и откатывается к preview с truncated=True."""
+    client, factory, settings = results_env
+
+    tool_res = ToolResult(
+        result_id="res_corrupt_test",
+        status="ok",
+        data=ToolResultData(
+            columns=["col_a", "col_b"],
+            rows=[[1, "alpha"], [2, "beta"]],
+            row_count=2,
+        ),
+        tool="run_sql",
+        sql="SELECT 1, 'alpha'",
+    )
+
+    with factory() as db:
+        save_tool_result(
+            db,
+            tool_res,
+            owner_id="u_alice",
+            persist_data=True,
+            storage_dir=settings.results_data_dir,
+        )
+
+    # Ломаем файл на диске
+    parquet_path = Path(settings.results_data_dir) / "res_corrupt_test.parquet"
+    assert parquet_path.is_file()
+    parquet_path.write_bytes(b"CORRUPTED_GARBAGE_BYTES_NOT_A_PARQUET")
+
+    # Метаданные не страдают
+    res_meta = client.get("/api/results/res_corrupt_test")
+    assert res_meta.status_code == 200
+    assert res_meta.json()["result_id"] == "res_corrupt_test"
+
+    # Данные возвращаются из сохранённого превью без падения с 500
+    res_data = client.get("/api/results/res_corrupt_test/data")
+    assert res_data.status_code == 200
+    data = res_data.json()
+    assert data["rows"] == [[1, "alpha"], [2, "beta"]]
+    assert data["truncated"] is True
+
+
+def test_missing_parquet_without_preview_returns_404(
+    results_env: tuple[TestClient, sessionmaker[Session], Settings],
+) -> None:
+    """Отсутствующий parquet-файл без preview отдаёт понятный 404."""
+    client, factory, _ = results_env
+
+    with factory() as db:
+        db.add(
+            ToolResultModel(
+                result_id="res_no_file",
+                owner_id="u_alice",
+                status="ok",
+                tool="run_sql",
+                data_ref="parquet://res_no_file.parquet",
+                data_preview=None,
+            )
+        )
+        db.commit()
+
+    res_data = client.get("/api/results/res_no_file/data")
+    assert res_data.status_code == 404
+    err = ErrorResponse.model_validate(res_data.json())
+    assert err.error.code == "not_found"
+    assert "не найдены" in err.error.message.lower()
+
+
+def test_data_ref_path_traversal_is_blocked(
+    results_env: tuple[TestClient, sessionmaker[Session], Settings],
+) -> None:
+    """Попытка Path Traversal в data_ref отклоняется без утечки файлов."""
+    client, factory, _ = results_env
+
+    with factory() as db:
+        db.add(
+            ToolResultModel(
+                result_id="res_traversal",
+                owner_id="u_alice",
+                status="ok",
+                tool="run_sql",
+                data_ref="parquet://../../../../etc/passwd",
+                data_preview=None,
+            )
+        )
+        db.commit()
+
+    res_data = client.get("/api/results/res_traversal/data")
+    assert res_data.status_code == 404
+    err = ErrorResponse.model_validate(res_data.json())
+    assert err.error.code == "not_found"
+    assert "root:" not in res_data.text
