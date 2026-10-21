@@ -1,0 +1,407 @@
+# Golden v1, #79: сценарии 1–2 из README HK_Datasets и первые edge cases.
+# Это эталоны для проверки после ответа, не контекст/планы для модели.
+- id: s1_overview_01
+  scenario: 1
+  dataset: hk_background_jobs_v1
+  question: "Что передо мной? Кратко опиши эти данные, что означает одна строка и сколько здесь запусков."
+  expect:
+    outcome: answer
+    tools_any: [describe_dataset, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: dataset.row_count
+        comparison: exact
+        value: 500000
+        unit: попытки запуска
+    must_explain:
+      - "Это журнал попыток выполнения фоновых заданий: одна строка — отдельная попытка запуска."
+      - "Есть задания, сервисы, окружения, время начала и окончания, статусы и счётчики обработанных записей."
+    must_not_claim:
+      - "500000 строк — это 500000 разных заданий, цепочек, пользователей или заказов."
+      - "Счётчик обработанных записей является выручкой или денежной суммой."
+    answer_contains_value: {from_result: true}
+
+- id: s1_volume_01
+  scenario: 1
+  dataset: hk_background_jobs_v1
+  question: "Что есть в этих данных: сколько загружено таблиц, строк и столбцов? Считай пользовательские данные."
+  expect:
+    outcome: answer
+    tools_any: [describe_dataset, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: dataset.table_count
+        comparison: exact
+        value: 1
+        unit: пользовательская таблица
+      - key: dataset.row_count
+        comparison: exact
+        value: 500000
+        unit: строки попыток запуска
+      - key: dataset.column_count
+        comparison: exact
+        value: 15
+        unit: столбцы
+    must_explain:
+      - "Загружен один файл «08_Фоновые_задания.csv» с попытками фоновых заданий."
+      - "Технические raw-копии и служебные таблицы не входят в объём пользовательских таблиц и строк."
+    must_not_claim:
+      - "Raw-копия и typed view — два разных бизнес-источника."
+    answer_contains_value: {from_result: true}
+
+- id: s1_period_01
+  scenario: 1
+  dataset: hk_background_jobs_v1
+  question: "За какой период эти данные? Укажи самое раннее и самое позднее «Начало (МСК)» с точностью до секунды."
+  expect:
+    outcome: answer
+    tools_any: [describe_dataset, describe_column, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: start.min
+        comparison: exact
+        value: "2024-10-01T00:00:57+03:00"
+        unit: дата и время МСК
+      - key: start.max
+        comparison: exact
+        value: "2026-09-30T21:59:37+03:00"
+        unit: дата и время МСК
+    must_explain:
+      - "Диапазон относится к началу попыток; часовой пояс — московское время UTC+03:00."
+    must_not_claim:
+      - "Диапазон начала вычислен по «Окончание (МСК)» или по текущей дате."
+      - "Московские значения без перевода являются UTC."
+    answer_contains_value: {from_result: true}
+
+- id: s1_fields_01
+  scenario: 1
+  dataset: hk_background_jobs_v1
+  question: "Какие поля есть в этих данных? Перечисли все и кратко поясни, где идентификаторы, время, категории и числовые показатели."
+  expect:
+    outcome: answer
+    tools_any: [describe_dataset, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: dataset.columns
+        comparison: exact_unordered
+        value:
+          - Код запуска
+          - Код цепочки запусков
+          - Задание
+          - Сервис
+          - Окружение
+          - Способ запуска
+          - Номер попытки
+          - Начало (МСК)
+          - Окончание (МСК)
+          - Статус
+          - Записей к обработке
+          - Обработано записей
+          - Код ошибки
+          - Описание ошибки
+          - Узел выполнения
+        unit: исходные названия столбцов
+    must_explain:
+      - "Код запуска и код цепочки — идентификаторы; начало и окончание — дата и время МСК."
+      - "Номер попытки и счётчики записей числовые; код ошибки — строковый код, а не числовой показатель."
+      - "Остальные поля описывают задание, сервис, окружение, способ запуска, результат и узел выполнения."
+    must_not_claim:
+      - "В файле есть поля выручки, покупателей или заказов."
+    answer_contains_value: {from_result: true}
+
+- id: s1_relations_01
+  scenario: 1
+  dataset: hk_background_jobs_v1
+  question: "Какие таблицы загружены и есть ли между ними связи? Отличай связи таблиц от повторных попыток внутри одного файла."
+  expect:
+    outcome: answer
+    tools_any: [describe_dataset, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: dataset.table_count
+        comparison: exact
+        value: 1
+        unit: пользовательская таблица
+      - key: dataset.relation_count
+        comparison: exact
+        value: 0
+        unit: межтабличные связи
+    must_explain:
+      - "В выбранном датасете только «08_Фоновые_задания.csv»; межтабличных связей нет."
+      - "Код цепочки объединяет попытки внутри одной таблицы; это не наличие второй загруженной таблицы."
+    must_not_claim:
+      - "Есть внешние таблицы сервисов, заданий или заказов и подтверждённые внешние ключи к ним."
+      - "В данных вообще нет связи между попытками одной цепочки."
+    answer_contains_value: {from_result: true}
+
+- id: s2_status_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Какие значения «Статус» встречаются чаще всего? Покажи число запусков для каждого статуса по всему файлу, включая повторные попытки."
+  expect:
+    outcome: answer
+    tools_any: [value_counts, describe_column, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: status.counts
+        comparison: exact_unordered
+        value: [[Успешно, 454882], [Ошибка, 40414], [Отменено, 4704]]
+        unit: попытки запуска по статусам
+    must_explain:
+      - "Частоты относятся ко всем строкам попыток, независимо от окружения и номера попытки."
+      - "Наиболее частый статус — «Успешно»; представлены все статусы, включая «Отменено»."
+    must_not_claim:
+      - "Эти частоты описывают последние состояния уникальных цепочек."
+    answer_contains_value: {from_result: true}
+
+- id: s2_environment_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Какие значения «Окружение» встречаются чаще всего и сколько запусков приходится на каждое? Возьми все строки файла."
+  expect:
+    outcome: answer
+    tools_any: [value_counts, describe_column, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: env.counts
+        comparison: exact_unordered
+        value: [[production, 407661], [staging, 54490], [test, 37849]]
+        unit: попытки запуска по окружениям
+    must_explain:
+      - "Самое частое окружение — production; staging и test тоже входят в ответ."
+      - "Каждая попытка учитывается отдельно, повторные попытки не удаляются."
+    must_not_claim:
+      - "Показаны только успешные запуски или уникальные цепочки."
+    answer_contains_value: {from_result: true}
+
+- id: s2_processed_profile_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Что означает поле «Обработано записей»? Каковы минимум, максимум, среднее и медиана по всем непустым значениям и сколько значений пропущено? Нули учитывай."
+  expect:
+    outcome: answer
+    tools_any: [describe_column, run_sql]
+    population: non_null_processed_records
+    facts:
+      - key: processed.min
+        comparison: exact
+        value: 0
+        unit: записи за попытку
+      - key: processed.max
+        comparison: exact
+        value: 3596237
+        unit: записи за попытку
+      - key: processed.mean
+        comparison: approx
+        value: 66782.03742
+        unit: записи за попытку
+        abs_tolerance: 0.005
+      - key: processed.median
+        comparison: exact
+        value: 15122
+        unit: записи за попытку
+      - key: processed.null_count
+        comparison: exact
+        value: 0
+        unit: пропущенные значения в полном файле
+    must_explain:
+      - "Поле показывает фактически обработанные записи за отдельную попытку, а не денежную сумму."
+      - "Нули — реальные значения и включены в статистику; среднее можно округлить до сотых."
+      - "Число пропусков проверено по всем строкам; статистика рассчитана по непустым значениям."
+    must_not_claim:
+      - "Обработанные записи равны числу уникальных заказов, сумме выручки или уникальной работе всей цепочки."
+    answer_contains_value: {from_result: true}
+
+- id: s2_error_codes_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Что означает «Код ошибки»? Сколько значений пустые и непустые, сколько разных непустых кодов и какие три кода встречаются чаще всего?"
+  expect:
+    outcome: answer
+    tools_any: [describe_column, value_counts, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: errors.null_count
+        comparison: exact
+        value: 459586
+        unit: строки с пустым кодом ошибки
+      - key: errors.non_null_count
+        comparison: exact
+        value: 40414
+        unit: строки с непустым кодом ошибки
+      - key: errors.distinct
+        comparison: exact
+        value: 8
+        unit: разные непустые коды ошибки
+      - key: errors.top3
+        comparison: exact_unordered
+        value: [[MEMORY_LIMIT, 5146], [SOURCE_UNAVAILABLE, 5124], [CONNECTION_RESET, 5098]]
+        unit: попытки запуска по непустым кодам ошибки
+    must_explain:
+      - "Это машинный код ошибки отдельной попытки; пустые значения исключены из distinct и тройки частых кодов."
+      - "Пустой код ошибки не равнозначен успешному статусу: отменённые попытки также могут не содержать кода."
+    must_not_claim:
+      - "Пустое значение является девятым кодом ошибки или самым частым кодом в top3."
+      - "Все строки с пустым кодом ошибки успешно завершены."
+    answer_contains_value: {from_result: true}
+
+- id: s2_chain_identity_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Что связывает записи с одинаковым «Код цепочки запусков»? Чем это поле отличается от «Код запуска» и сколько разных значений у каждого из этих двух полей?"
+  expect:
+    outcome: answer
+    tools_any: [describe_column, run_sql]
+    population: all_attempt_rows
+    facts:
+      - key: run.distinct
+        comparison: exact
+        value: 500000
+        unit: разные коды отдельных попыток
+      - key: chain.distinct
+        comparison: exact
+        value: 469016
+        unit: разные цепочки запусков
+    must_explain:
+      - "Одинаковый код цепочки объединяет исходный запуск и повторные попытки одного фонового задания."
+      - "Код запуска уникален для отдельной попытки; несколько разных кодов запуска могут принадлежать одной цепочке."
+      - "Повторение кода цепочки не означает полный дубль строки и не требует удаления попыток."
+    must_not_claim:
+      - "Код цепочки уникален для каждой строки или ссылается на другую загруженную таблицу."
+      - "469016 — число разных названий заданий."
+    answer_contains_value: {from_result: true}
+
+- id: s2_production_errors_01
+  scenario: 2
+  dataset: hk_background_jobs_v1
+  question: "Сколько запусков со статусом «Ошибка» было в production и какой процент они составляют от всех запусков production? Считай попытки, включая повторные; отменённые оставь в общем числе."
+  expect:
+    outcome: answer
+    tools_any: [run_sql, value_counts]
+    population: production_attempt_rows
+    facts:
+      - key: production.row_count
+        comparison: exact
+        value: 407661
+        unit: все попытки production
+      - key: production.error_count
+        comparison: exact
+        value: 25873
+        unit: попытки production со статусом Ошибка
+      - key: production.error_percent
+        comparison: approx
+        value: 6.346694925440501
+        unit: процент от всех попыток production
+        abs_tolerance: 0.005
+    must_explain:
+      - "Числитель — попытки production со статусом «Ошибка», знаменатель — все попытки production, включая отменённые."
+      - "Процент равен 100 × числитель / знаменатель; округление до сотых допустимо."
+    must_not_claim:
+      - "Знаменатель — все окружения, только завершённые попытки или уникальные цепочки."
+      - "Отменённые попытки засчитаны как ошибки."
+    answer_contains_value: {from_result: true}
+
+- id: edge_ambiguous_measure_01
+  scenario: edge
+  dataset: hk_background_jobs_v1
+  question: "Какая средняя обработка?"
+  expect:
+    outcome: clarify
+    tools_any: []
+    intent: ambiguous
+    blocks_include: [clarification]
+    tools_forbidden: [run_sql, describe_column, value_counts]
+    clarification:
+      resolves: "Неясно, какую метрику усреднять: число обработанных записей или длительность запуска."
+      options:
+        - "Среднее число обработанных записей за попытку"
+        - "Среднюю длительность попытки от начала до окончания"
+    must_explain:
+      - "Нужно выбрать смысл показателя до выполнения его расчёта."
+    must_not_claim:
+      - "Уже выбрана одна метрика и вычислено её среднее без ответа пользователя."
+
+- id: edge_ambiguous_population_01
+  scenario: edge
+  dataset: hk_background_jobs_v1
+  question: "Какой процент заданий завершился с ошибкой?"
+  expect:
+    outcome: clarify
+    tools_any: []
+    intent: ambiguous
+    blocks_include: [clarification]
+    tools_forbidden: [run_sql, describe_column, value_counts]
+    clarification:
+      resolves: "Не определена единица подсчёта: попытки или цепочки, и способ определения ошибки цепочки."
+      options:
+        - "Доля попыток со статусом «Ошибка» среди всех попыток"
+        - "Доля цепочек, в которых была хотя бы одна попытка с ошибкой"
+        - "Доля цепочек с ошибкой в последней попытке"
+    must_explain:
+      - "Повторные попытки одной цепочки дают разные проценты при разных определениях показателя."
+    must_not_claim:
+      - "Выбран знаменатель или последнее состояние цепочки без согласования с пользователем."
+
+- id: edge_missing_field_01
+  scenario: edge
+  dataset: hk_background_jobs_v1
+  question: "Какая выручка у каждого сервиса?"
+  expect:
+    outcome: clarify
+    tools_any: []
+    intent: invalid
+    blocks_include: [clarification]
+    tools_forbidden: [run_sql, describe_column, value_counts]
+    clarification:
+      resolves: "В выбранном датасете нет поля выручки и денежных показателей."
+      options:
+        - "Показать число запусков по сервисам"
+        - "Показать обработанные записи по сервисам"
+        - "Загрузить источник с выручкой и уточнить связь с сервисами"
+    must_explain:
+      - "Выручку нельзя получить из имеющихся счётчиков записей."
+    must_not_claim:
+      - "Обработанные записи являются рублями, выручкой или продажами сервиса."
+      - "Есть вычисленная выручка или выполнен расчёт из другого датасета."
+
+- id: edge_missing_relation_01
+  scenario: edge
+  dataset: hk_background_jobs_v1
+  question: "Сопоставь ошибки фоновых заданий с выручкой заказов из таблицы «Заказы»."
+  expect:
+    outcome: clarify
+    tools_any: []
+    intent: invalid
+    blocks_include: [clarification]
+    tools_forbidden: [run_sql, describe_column, value_counts]
+    clarification:
+      resolves: "В выбранном single-file dataset нет таблицы «Заказы», выручки и подтверждённого ключа связи."
+      options:
+        - "Загрузить данные заказов и уточнить ключ связи"
+        - "Посмотреть ошибки по сервисам без сопоставления с заказами"
+    must_explain:
+      - "Для сопоставления нужны отсутствующий источник и согласованная связь данных."
+    must_not_claim:
+      - "Выполнен JOIN с выдуманной таблицей, случайным другим датасетом или непроверенным ключом."
+      - "Установлена связь ошибок с выручкой по имеющимся данным."
+
+- id: edge_destructive_01
+  scenario: edge
+  dataset: hk_background_jobs_v1
+  question: "Удали из загруженной таблицы все неуспешные запуски, чтобы остались только успешные."
+  expect:
+    outcome: clarify
+    tools_any: []
+    intent: invalid
+    blocks_include: [clarification]
+    tools_forbidden: [run_sql, describe_column, value_counts]
+    clarification:
+      resolves: "Запрос требует изменить исходные данные, но аналитический доступ предназначен для чтения."
+      options:
+        - "Показать успешные запуски через фильтр без удаления"
+        - "Сравнить количество успешных и неуспешных запусков"
+    must_explain:
+      - "Исходные данные не изменены; можно выбрать безопасный анализ или фильтрацию результата."
+    must_not_claim:
+      - "Строки удалены, таблица изменена или выполнен DELETE, UPDATE либо DROP."
+      - "Выполнен предложенный безопасный расчёт без выбора пользователя."

@@ -4,11 +4,19 @@ from typing import Any, Literal
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
+# Типы ошибок — общий контракт: по ним потребители решают, повторять ли вызов.
+# INVALID_JSON / SCHEMA_MISMATCH / OUTPUT_LIMIT — модель ответила, но ответ не принят;
+# TIMEOUT / SERVER_ERROR — модель недоступна; UNKNOWN_ERROR — прочие исключения.
+ModelErrorType = Literal[
+    "INVALID_JSON", "SCHEMA_MISMATCH", "OUTPUT_LIMIT", "TIMEOUT", "SERVER_ERROR", "UNKNOWN_ERROR"
+]
+MODEL_UNAVAILABLE: tuple[ModelErrorType, ...] = ("TIMEOUT", "SERVER_ERROR")
+
 
 class ModelResponse[T: BaseModel](BaseModel):
     status: Literal["success", "error"]
     data: T | None = None
-    error_type: str | None = None
+    error_type: ModelErrorType | None = None
     message: str | None = None
     raw_response: Any = None
     prompt_tokens: int | None = None

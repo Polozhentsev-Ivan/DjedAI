@@ -91,26 +91,29 @@ def profile_table(connection: duckdb.DuckDBPyConnection, view: TypedView) -> Tab
     try:
         _ensure_tables(connection)
         table = _ident(view.view_name)
-        row_count = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-        duplicates = connection.execute(
-            f"SELECT count(*) - (SELECT count(*) FROM (SELECT DISTINCT * FROM "
-            f"{_ident(view.raw_table)})) FROM {_ident(view.raw_table)}"
-        ).fetchone()[0]
-        columns = tuple(
-            _profile_column(connection, table, column.name, column, row_count)
-            for column in view.columns
-        )
-        profile = TableProfile(
-            raw_table=view.raw_table,
-            view_name=view.view_name,
-            row_count=row_count,
-            duplicate_rows=duplicates,
-            primary_key_candidates=_key_candidates(columns, row_count),
-            time_columns=tuple(c.name for c in columns if c.semantic_type in TEMPORAL),
-            columns=columns,
-        )
+        # Вся статистика — в одной транзакции: у подключённой БД (ATTACH postgres) это один
+        # снимок REPEATABLE READ, поэтому число строк и счётчики колонок не расходятся,
+        # даже если исходную таблицу меняют во время профилирования.
         connection.begin()
         try:
+            row_count = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            duplicates = connection.execute(
+                f"SELECT count(*) - (SELECT count(*) FROM (SELECT DISTINCT * FROM "
+                f"{_ident(view.raw_table)})) FROM {_ident(view.raw_table)}"
+            ).fetchone()[0]
+            columns = tuple(
+                _profile_column(connection, table, column.name, column, row_count)
+                for column in view.columns
+            )
+            profile = TableProfile(
+                raw_table=view.raw_table,
+                view_name=view.view_name,
+                row_count=row_count,
+                duplicate_rows=duplicates,
+                primary_key_candidates=_key_candidates(columns, row_count),
+                time_columns=tuple(c.name for c in columns if c.semantic_type in TEMPORAL),
+                columns=columns,
+            )
             _write_profile(connection, profile)
             connection.commit()
         except Exception:
@@ -298,15 +301,19 @@ def _profile_column(
     ).fetchall()
 
     present_count = row["present"]
-    # пустые считаем по исходным данным: в представлении нераспознанные значения тоже NULL
-    null_count = row_count - column.non_empty
+    # пустые считаем по исходным данным: в представлении нераспознанные значения тоже NULL.
+    # У живого источника счётчиков нет: типы заданы БД, нераспознанных значений не бывает,
+    # и непустые считаются здесь же, в одном снимке с row_count
+    non_empty = present_count if column.non_empty is None else column.non_empty
+    parsed = non_empty if column.parsed is None else column.parsed
+    null_count = row_count - non_empty
     return ColumnProfile(
         name=name,
         physical_type=column.physical_type,
         semantic_type=semantic,
         null_count=null_count,
         null_ratio=null_count / row_count if row_count else 0.0,
-        unparsed_count=column.non_empty - column.parsed,
+        unparsed_count=non_empty - parsed,
         distinct_count=row["distinct"],
         is_unique=present_count > 0 and row["distinct"] == present_count,
         top_values=tuple(TopValue(_json_value(v), n) for v, n in top),
