@@ -63,3 +63,7 @@ docker compose -f compose.yaml -f infra/compose.test.yaml up --build -d --wait
 ```
 
 Overlay подставляет исключительно тестовые `MODEL_*` в backend и явно связывает `host.docker.internal` с Docker host gateway для Linux CI. Все HTTP-запросы приложения по-прежнему проходят через nginx, SQLite/DuckDB/Parquet используют обычный том. Этот тест не является проверкой выбранной реальной модели; её прогон выполняется отдельно без overlay.
+
+## Демо-PostgreSQL
+
+Сервиса demo-БД в Compose пока нет (#100). Для проверки подключения PostgreSQL (B1-8 / #60) сервер ставится локально: роли, установка на Fedora и загрузка синтетики описаны в [postgres/](postgres/README.md).

@@ -91,11 +91,15 @@ class TypedColumn:  # колонка представления: оригина�
     physical_type: str
     semantic_type: str
     format: str | None
-    non_empty: int
-    parsed: int
+    # None — живой источник (подключённая БД): сохранённые счётчики устарели бы при
+    # изменении исходной таблицы, профайлер считает их сам в одном снимке с числом строк
+    non_empty: int | None
+    parsed: int | None
 
     @property
     def success_ratio(self) -> float:
+        if self.non_empty is None or self.parsed is None:
+            return 1.0
         return self.parsed / self.non_empty if self.non_empty else 1.0
 
 
@@ -269,24 +273,33 @@ def _ensure_tables(connection: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def _view_name(connection: duckdb.DuckDBPyConnection, raw_table: str) -> str:
-    """Имя представления — имя сырой таблицы без ``raw_``; при коллизии суффикс ``_typed``.
+def _view_name(
+    connection: duckdb.DuckDBPyConnection, raw_table: str, base: str | None = None
+) -> str:
+    """Имя представления — ``base`` или имя сырой таблицы без ``raw_``; при коллизии ``_typed``.
 
-    Занятыми считаются таблицы, чужие представления DuckDB и представления других
-    raw-таблиц из реестра. Своё прежнее представление можно пересоздать под тем же именем.
+    Занятыми считаются таблицы, чужие представления текущей БД DuckDB и представления
+    других raw-таблиц из реестра; таблицы подключённых БД (``ATTACH``) имя не занимают.
+    Своё прежнее представление можно пересоздать под тем же именем.
     """
-    base = raw_table.removeprefix("raw_") or raw_table
+    base = base or raw_table.removeprefix("raw_") or raw_table
     own = {
         r[0]
         for r in connection.execute(
             f"SELECT view_name FROM {COLUMNS_TABLE} WHERE raw_table = ?", [raw_table]
         ).fetchall()
     }
-    taken = {r[0] for r in connection.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+    here = "database_name = current_database()"
+    taken = {
+        r[0]
+        for r in connection.execute(
+            f"SELECT table_name FROM duckdb_tables() WHERE {here}"
+        ).fetchall()
+    }
     taken |= {
         r[0]
         for r in connection.execute(
-            "SELECT view_name FROM duckdb_views() WHERE NOT internal"
+            f"SELECT view_name FROM duckdb_views() WHERE NOT internal AND {here}"
         ).fetchall()
     } - own
     taken |= {

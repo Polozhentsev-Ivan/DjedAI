@@ -44,6 +44,7 @@ import duckdb
 
 from djedai.contracts.catalog import ColumnRef, Relation
 from djedai.data.csv_ingest import read_sources, slugify
+from djedai.data.postgres import INTEGER_TYPES, read_db_sources
 from djedai.data.profiler import (
     NUMERIC,
     ColumnProfile,
@@ -62,10 +63,6 @@ MEDIUM_OVERLAP = 0.8
 MIN_JACCARD = 0.5  # без совпадения имён множества значений должны быть близки
 MIN_DISTINCT = 2  # колонка из одного значения не ключ
 KEY_TYPES = ("integer", "text")  # кроме ``id``: такие колонки — кандидаты по имени или ключу
-INTEGER_TYPES = (
-    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
-    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
-)  # fmt: skip
 _ID_TOKENS = ("id", "kod")
 
 
@@ -350,15 +347,20 @@ def _is_candidate(table: TableProfile, column: ColumnProfile) -> bool:
 
 
 def _entities(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
-    """``raw_table → имя сущности`` из исходного имени файла.
+    """``raw_table → имя сущности`` из исходного имени файла или таблицы подключённой БД.
 
     Имя представления может получить технический суффикс (``clients_typed`` при занятом
     ``clients``, ``raw_clients_2`` при повторе файла) — он не должен менять распознавание.
     """
-    return {
+    entities = {
         source.raw_table: slugify(Path(source.original_name).stem)
         for source in read_sources(connection)
     }
+    entities |= {
+        source.raw_table: slugify(source.relation.rpartition(".")[2])
+        for source in read_db_sources(connection)
+    }
+    return entities
 
 
 def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -> list[_Key]:
