@@ -33,6 +33,12 @@ REQUIRED_SCHEMAS = [
     "DatasetStreamEvent",
     "DatasetSummary",
     "HealthCheck",
+    "ChatCreate",
+    "ChatCreated",
+    "ChatSummary",
+    "ChatMessage",
+    "ChatDetail",
+    "SendMessageRequest",
 ]
 
 
@@ -157,23 +163,20 @@ def test_api_subroutes_stubs() -> None:
     app = create_app()
     client = TestClient(app)
 
-    # Datasets
+    # CP1 routes require an explicitly enabled local-user adapter.
     res_ds = client.get("/api/datasets")
-    assert res_ds.status_code == 200
-    assert res_ds.json() == []
+    assert res_ds.status_code == 503
 
-    # Chats
     res_chats = client.get("/api/chats")
-    assert res_chats.status_code == 200
-    assert res_chats.json() == []
+    assert res_chats.status_code == 503
 
     # Results
     res_res = client.get("/api/results/r_test")
-    assert res_res.status_code == 200
-    assert res_res.json()["result_id"] == "r_test"
+    assert res_res.status_code == 503
 
     # Dashboards
-    res_dash = client.get("/api/dashboards")
+    assert client.get("/api/dashboards").status_code == 422
+    res_dash = client.get("/api/dashboards", params={"dataset_id": "ds_test"})
     assert res_dash.status_code == 200
     assert res_dash.json() == []
 

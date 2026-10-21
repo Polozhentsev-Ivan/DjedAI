@@ -1,6 +1,11 @@
+from collections.abc import Callable
 from typing import Any, TypedDict
 
+import duckdb
 from pydantic import BaseModel, ConfigDict, Field
+
+from djedai.analytics.tools import describe_column, describe_dataset, run_sql, value_counts
+from djedai.contracts.tool_result import ToolResult
 
 
 class RunSqlParams(BaseModel):
@@ -96,3 +101,32 @@ def get_tools_for_llm() -> list[LLMToolDefinition]:
         }
         for tool in TOOLS_REGISTRY
     ]
+
+
+TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
+    "run_sql": run_sql,
+    "describe_dataset": describe_dataset,
+    "describe_column": describe_column,
+    "value_counts": value_counts,
+}
+
+
+def execute_tool(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> ToolResult:
+    """Валидирует параметры и выполняет инструмент из реестр."""
+    definition = next((tool for tool in TOOLS_REGISTRY if tool.name == tool_name), None)
+    if definition is None:
+        raise ValueError(f"Инструмент '{tool_name}' не зарегистрирован")
+
+    validated = definition.parameters_model.model_validate(params)
+    arguments = validated.model_dump(exclude_none=True)
+    # source_result_id относится к будущей работе поверх сохранённого результата,
+    # а run_sql принимает только SQL и лимит строк.
+    arguments.pop("source_result_id", None)
+    if connection is not None:
+        arguments["connection"] = connection
+    return TOOL_FUNCTIONS[tool_name](**arguments)

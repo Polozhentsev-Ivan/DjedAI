@@ -1,0 +1,11 @@
+# Deterministic CI/smoke model on the Docker host; application images are unchanged.
+# Start tests/e2e/serve_cp1.py:model_app on 0.0.0.0:18081 before Compose.
+# This overlay never uses a real provider key or contacts external inference.
+services:
+  backend:
+    environment:
+      MODEL_BASE_URL: http://host.docker.internal:18081/v1
+      MODEL_NAME: cp1-controlled-model
+      MODEL_API_KEY: cp1-test-only
+    extra_hosts:
+      - host.docker.internal:host-gateway

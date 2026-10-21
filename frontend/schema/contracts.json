@@ -2,11 +2,141 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DjedAI shared frontend contracts",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {},
   "components": {
     "schemas": {
+      "Annotation": {
+        "additionalProperties": false,
+        "description": "Текстовая аннотация на графике (пик, событие).",
+        "properties": {
+          "x": {
+            "title": "X",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "x",
+          "text"
+        ],
+        "title": "Annotation",
+        "type": "object"
+      },
+      "AssistantMessage": {
+        "additionalProperties": false,
+        "description": "Сообщение ассистента в чате со структурированными блоками и аудитом вычислений.",
+        "properties": {
+          "message_id": {
+            "description": "Уникальный идентификатор сообщения",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "chat_id": {
+            "description": "ID чата, к которому относится сообщение",
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "role": {
+            "const": "assistant",
+            "default": "assistant",
+            "title": "Role",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Время создания сообщения",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "blocks": {
+            "description": "Структурированные блоки ответа",
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "chart": "#/components/schemas/ChartBlock",
+                  "clarification": "#/components/schemas/ClarificationBlock",
+                  "dashboard_link": "#/components/schemas/DashboardLinkBlock",
+                  "suggestions": "#/components/schemas/SuggestionsBlock",
+                  "table": "#/components/schemas/TableBlock",
+                  "text": "#/components/schemas/TextBlock"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ChartBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/TableBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ClarificationBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/DashboardLinkBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/SuggestionsBlock"
+                }
+              ]
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "result_ids": {
+            "description": "ID результатов вычислений (provenance: «как посчитано»)",
+            "items": {
+              "type": "string"
+            },
+            "title": "Result Ids",
+            "type": "array"
+          },
+          "trace": {
+            "description": "Шаги графа агента при формировании ответа",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            },
+            "title": "Trace",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message_id",
+          "chat_id",
+          "created_at"
+        ],
+        "title": "AssistantMessage",
+        "type": "object"
+      },
+      "ChartBlock": {
+        "additionalProperties": false,
+        "description": "Блок с декларативным описанием графика.",
+        "properties": {
+          "type": {
+            "const": "chart",
+            "default": "chart",
+            "title": "Type",
+            "type": "string"
+          },
+          "chart": {
+            "$ref": "#/components/schemas/ChartSpec",
+            "description": "Спецификация графика"
+          }
+        },
+        "required": [
+          "chart"
+        ],
+        "title": "ChartBlock",
+        "type": "object"
+      },
       "ChartHint": {
         "additionalProperties": false,
         "description": "Подсказка аналитической функции о подходящем типе визуализации (§4.3).",
@@ -57,6 +187,1348 @@
         "title": "ChartHint",
         "type": "object"
       },
+      "ChartSpec": {
+        "additionalProperties": false,
+        "description": "Спецификация графика. Данные фронтенд запрашивает отдельно по result_id.",
+        "properties": {
+          "chart_id": {
+            "description": "Уникальный идентификатор графика",
+            "title": "Chart Id",
+            "type": "string"
+          },
+          "type": {
+            "description": "Тип графика",
+            "enum": [
+              "line",
+              "bar",
+              "area",
+              "scatter",
+              "pie",
+              "histogram",
+              "heatmap",
+              "box",
+              "table",
+              "kpi"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "title": {
+            "description": "Понятный заголовок для бизнес-пользователя",
+            "title": "Title",
+            "type": "string"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Краткий вывод или подзаголовок",
+            "title": "Subtitle"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/XAxis"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ось X"
+          },
+          "y": {
+            "description": "Меры по оси Y",
+            "items": {
+              "$ref": "#/components/schemas/YMeasure"
+            },
+            "title": "Y",
+            "type": "array"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColorField"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Цветовая группировка"
+          },
+          "orientation": {
+            "default": "vertical",
+            "description": "Ориентация столбцов",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "title": "Orientation",
+            "type": "string"
+          },
+          "stacked": {
+            "default": false,
+            "description": "Наложение рядов",
+            "title": "Stacked",
+            "type": "boolean"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SortSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Сортировка"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Лимит отображаемых категорий/точек",
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "annotations": {
+            "description": "Текстовые метки на точках",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "result_id": {
+            "description": "ID результата вычислений в хранилище результатов",
+            "title": "Result Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chart_id",
+          "type",
+          "title",
+          "result_id"
+        ],
+        "title": "ChartSpec",
+        "type": "object"
+      },
+      "ChartTemplate": {
+        "additionalProperties": false,
+        "description": "Визуальные настройки, сохраняемые до первого успешного вычисления.",
+        "properties": {
+          "chart_id": {
+            "description": "Уникальный идентификатор графика",
+            "title": "Chart Id",
+            "type": "string"
+          },
+          "type": {
+            "description": "Тип графика",
+            "enum": [
+              "line",
+              "bar",
+              "area",
+              "scatter",
+              "pie",
+              "histogram",
+              "heatmap",
+              "box",
+              "table",
+              "kpi"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "title": {
+            "description": "Понятный заголовок для бизнес-пользователя",
+            "title": "Title",
+            "type": "string"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Краткий вывод или подзаголовок",
+            "title": "Subtitle"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/XAxis"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ось X"
+          },
+          "y": {
+            "description": "Меры по оси Y",
+            "items": {
+              "$ref": "#/components/schemas/YMeasure"
+            },
+            "title": "Y",
+            "type": "array"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColorField"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Цветовая группировка"
+          },
+          "orientation": {
+            "default": "vertical",
+            "description": "Ориентация столбцов",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "title": "Orientation",
+            "type": "string"
+          },
+          "stacked": {
+            "default": false,
+            "description": "Наложение рядов",
+            "title": "Stacked",
+            "type": "boolean"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SortSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Сортировка"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Лимит отображаемых категорий/точек",
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "annotations": {
+            "description": "Текстовые метки на точках",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            },
+            "title": "Annotations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chart_id",
+          "type",
+          "title"
+        ],
+        "title": "ChartTemplate",
+        "type": "object"
+      },
+      "ChatCreate": {
+        "additionalProperties": false,
+        "description": "Запрос на создание нового чата по датасету.",
+        "properties": {
+          "dataset_id": {
+            "description": "ID датасета, к которому относится чат",
+            "minLength": 1,
+            "title": "Dataset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id"
+        ],
+        "title": "ChatCreate",
+        "type": "object"
+      },
+      "ChatCreated": {
+        "additionalProperties": false,
+        "description": "Ответ на создание чата.",
+        "properties": {
+          "chat_id": {
+            "description": "ID созданного чата",
+            "title": "Chat Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "title": "ChatCreated",
+        "type": "object"
+      },
+      "ChatDetail": {
+        "additionalProperties": false,
+        "description": "Чат с полной историей сообщений.",
+        "properties": {
+          "chat_id": {
+            "description": "ID чата",
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "dataset_id": {
+            "description": "ID датасета",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "title": {
+            "description": "Название чата",
+            "title": "Title",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Дата создания чата",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "messages": {
+            "description": "Сообщения чата в хронологическом порядке",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chat_id",
+          "dataset_id",
+          "title",
+          "created_at",
+          "messages"
+        ],
+        "title": "ChatDetail",
+        "type": "object"
+      },
+      "ChatMessage": {
+        "additionalProperties": false,
+        "description": "Сообщение в истории чата: вопрос пользователя или ответ ассистента.",
+        "properties": {
+          "message_id": {
+            "description": "ID сообщения",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "role": {
+            "description": "Роль автора сообщения",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Дата создания сообщения",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Текст вопроса пользователя",
+            "title": "Text"
+          },
+          "blocks": {
+            "description": "Структурированные блоки ответа ассистента",
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "chart": "#/components/schemas/ChartBlock",
+                  "clarification": "#/components/schemas/ClarificationBlock",
+                  "dashboard_link": "#/components/schemas/DashboardLinkBlock",
+                  "suggestions": "#/components/schemas/SuggestionsBlock",
+                  "table": "#/components/schemas/TableBlock",
+                  "text": "#/components/schemas/TextBlock"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ChartBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/TableBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ClarificationBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/DashboardLinkBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/SuggestionsBlock"
+                }
+              ]
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "result_ids": {
+            "description": "ID результатов вычислений, на которые опирается ответ",
+            "items": {
+              "type": "string"
+            },
+            "title": "Result Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message_id",
+          "role",
+          "created_at"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatSummary": {
+        "additionalProperties": false,
+        "description": "Краткое описание чата для списка.",
+        "properties": {
+          "chat_id": {
+            "description": "ID чата",
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "dataset_id": {
+            "description": "ID датасета",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "title": {
+            "description": "Название чата",
+            "title": "Title",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Дата создания чата",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "dataset_id",
+          "title",
+          "created_at"
+        ],
+        "title": "ChatSummary",
+        "type": "object"
+      },
+      "ClarificationBlock": {
+        "additionalProperties": false,
+        "description": "Блок уточняющего вопроса с вариантами выбора при неоднозначности (T8).",
+        "properties": {
+          "type": {
+            "const": "clarification",
+            "default": "clarification",
+            "title": "Type",
+            "type": "string"
+          },
+          "question": {
+            "description": "Уточняющий вопрос пользователю",
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "description": "Варианты ответа в виде кнопок (минимум 2)",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "question",
+          "options"
+        ],
+        "title": "ClarificationBlock",
+        "type": "object"
+      },
+      "ColorField": {
+        "additionalProperties": false,
+        "description": "Поле цветовой разбивки (сегментации).",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "ColorField",
+        "type": "object"
+      },
+      "Column": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "physical_type": {
+            "title": "Physical Type",
+            "type": "string"
+          },
+          "semantic_type": {
+            "enum": [
+              "id",
+              "integer",
+              "float",
+              "money",
+              "percent",
+              "datetime",
+              "date",
+              "category",
+              "text",
+              "bool"
+            ],
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "id",
+              "measure",
+              "dimension",
+              "time",
+              "text"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "null_ratio": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Null Ratio",
+            "type": "number"
+          },
+          "distinct_count": {
+            "minimum": 0,
+            "title": "Distinct Count",
+            "type": "integer"
+          },
+          "is_unique": {
+            "title": "Is Unique",
+            "type": "boolean"
+          },
+          "sample_values": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "maxItems": 5,
+            "title": "Sample Values",
+            "type": "array"
+          },
+          "top_values": {
+            "items": {
+              "$ref": "#/components/schemas/TopValue"
+            },
+            "maxItems": 10,
+            "title": "Top Values",
+            "type": "array"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/ColumnStats"
+          },
+          "parse": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParseInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{3}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currency"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          }
+        },
+        "required": [
+          "name",
+          "original_name",
+          "physical_type",
+          "semantic_type",
+          "role",
+          "null_ratio",
+          "distinct_count",
+          "is_unique"
+        ],
+        "title": "Column",
+        "type": "object"
+      },
+      "ColumnRef": {
+        "additionalProperties": false,
+        "properties": {
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "column": {
+            "title": "Column",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table",
+          "column"
+        ],
+        "title": "ColumnRef",
+        "type": "object"
+      },
+      "ColumnStats": {
+        "additionalProperties": false,
+        "properties": {
+          "min": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Min"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mean"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Median"
+          },
+          "std": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Std"
+          },
+          "granularity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "second",
+                  "minute",
+                  "hour",
+                  "day",
+                  "week",
+                  "month",
+                  "quarter",
+                  "year"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Granularity"
+          }
+        },
+        "title": "ColumnStats",
+        "type": "object"
+      },
+      "Dashboard": {
+        "additionalProperties": false,
+        "description": "Сущность дашборда, сохраняемая в БД приложения и доступная для обновления.",
+        "properties": {
+          "dashboard_id": {
+            "description": "Уникальный идентификатор дашборда",
+            "title": "Dashboard Id",
+            "type": "string"
+          },
+          "dataset_id": {
+            "description": "ID датасета, к которому привязан дашборд",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "title": {
+            "description": "Название дашборда",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Описание дашборда",
+            "title": "Description"
+          },
+          "source_chat_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID чата, в котором был создан дашборд",
+            "title": "Source Chat Id"
+          },
+          "widgets": {
+            "description": "Список виджетов",
+            "items": {
+              "$ref": "#/components/schemas/DashboardWidget"
+            },
+            "title": "Widgets",
+            "type": "array"
+          },
+          "created_at": {
+            "description": "Дата создания",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Дата последнего пересчета",
+            "title": "Refreshed At"
+          }
+        },
+        "required": [
+          "dashboard_id",
+          "dataset_id",
+          "title",
+          "created_at"
+        ],
+        "title": "Dashboard",
+        "type": "object"
+      },
+      "DashboardCreate": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "dashboard_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dashboard Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "result_id": {
+            "type": "string",
+            "title": "Result Id"
+          },
+          "chart": {
+            "$ref": "#/components/schemas/ChartSpec"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "result_id",
+          "chart"
+        ],
+        "title": "DashboardCreate",
+        "description": "Сохранение графика в новый или существующий дашборд; рецепт восстанавливает сервер."
+      },
+      "DashboardLinkBlock": {
+        "additionalProperties": false,
+        "description": "Ссылка на созданный или предложенный дашборд.",
+        "properties": {
+          "type": {
+            "const": "dashboard_link",
+            "default": "dashboard_link",
+            "title": "Type",
+            "type": "string"
+          },
+          "dashboard_id": {
+            "description": "ID дашборда",
+            "title": "Dashboard Id",
+            "type": "string"
+          },
+          "title": {
+            "description": "Название дашборда",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dashboard_id",
+          "title"
+        ],
+        "title": "DashboardLinkBlock",
+        "type": "object"
+      },
+      "DashboardPatch": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "remove_widget_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Widget Ids"
+          },
+          "layout": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/WidgetLayout"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DashboardPatch"
+      },
+      "DashboardSnapshot": {
+        "additionalProperties": false,
+        "description": "Отдельный wire-формат GET/refresh: сохранённый Dashboard и исход каждого виджета.",
+        "properties": {
+          "dashboard_id": {
+            "description": "Уникальный идентификатор дашборда",
+            "title": "Dashboard Id",
+            "type": "string"
+          },
+          "dataset_id": {
+            "description": "ID датасета, к которому привязан дашборд",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "title": {
+            "description": "Название дашборда",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Описание дашборда",
+            "title": "Description"
+          },
+          "source_chat_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID чата, в котором был создан дашборд",
+            "title": "Source Chat Id"
+          },
+          "widgets": {
+            "items": {
+              "$ref": "#/components/schemas/WidgetSnapshot"
+            },
+            "title": "Widgets",
+            "type": "array"
+          },
+          "created_at": {
+            "description": "Дата создания",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Дата последнего пересчета",
+            "title": "Refreshed At"
+          }
+        },
+        "required": [
+          "dashboard_id",
+          "dataset_id",
+          "title",
+          "widgets",
+          "created_at"
+        ],
+        "title": "DashboardSnapshot",
+        "type": "object"
+      },
+      "DashboardSummary": {
+        "properties": {
+          "dashboard_id": {
+            "type": "string",
+            "title": "Dashboard Id"
+          },
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dashboard_id",
+          "dataset_id",
+          "title"
+        ],
+        "title": "DashboardSummary"
+      },
+      "DashboardWidget": {
+        "additionalProperties": false,
+        "description": "Виджет дашборда со схемой пересчета и визуализацией.",
+        "properties": {
+          "widget_id": {
+            "description": "Уникальный идентификатор виджета",
+            "title": "Widget Id",
+            "type": "string"
+          },
+          "tool_call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WidgetToolCall"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Независимый одиночный вызов; для цепочки используют recipe"
+          },
+          "recipe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WidgetRecipe"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chart": {
+            "$ref": "#/components/schemas/ChartTemplate",
+            "description": "Настройки графика без временного result_id"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Краткий текстовый вывод или инсайт",
+            "title": "Caption"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/WidgetLayout",
+            "description": "Расположение на сетке"
+          }
+        },
+        "required": [
+          "widget_id",
+          "chart",
+          "layout"
+        ],
+        "title": "DashboardWidget",
+        "type": "object"
+      },
+      "DatasetCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "dataset_id": {
+            "minLength": 1,
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DatasetSource"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Summary"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/Table"
+            },
+            "title": "Tables",
+            "type": "array"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/Relation"
+            },
+            "title": "Relations",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "transformations": {
+            "items": {
+              "$ref": "#/components/schemas/Transformation"
+            },
+            "title": "Transformations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "name",
+          "created_at",
+          "source"
+        ],
+        "title": "DatasetCatalog",
+        "type": "object"
+      },
+      "DatasetDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset_id": {
+            "description": "ID датасета",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "Имя датасета",
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DatasetListSource"
+          },
+          "status": {
+            "enum": [
+              "processing",
+              "ready",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "table_count": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Count"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "created_at": {
+            "description": "Дата создания",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetCatalog"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "dataset_id",
+          "name",
+          "source",
+          "status",
+          "table_count",
+          "row_count",
+          "created_at",
+          "catalog",
+          "error"
+        ],
+        "title": "DatasetDetail",
+        "type": "object"
+      },
       "DatasetDoneData": {
         "additionalProperties": false,
         "description": "Данные об успешном завершении профилирования датасета.",
@@ -71,6 +1543,39 @@
           "dataset_id"
         ],
         "title": "DatasetDoneData",
+        "type": "object"
+      },
+      "DatasetListSource": {
+        "additionalProperties": false,
+        "description": "Источник в списке UI; files — метаданные загрузки, не поле каталога.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "csv_upload",
+              "postgres",
+              "clickhouse"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Files"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "DatasetListSource",
         "type": "object"
       },
       "DatasetProgressData": {
@@ -110,6 +1615,130 @@
         "title": "DatasetProgressData",
         "type": "object"
       },
+      "DatasetSource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "csv_upload",
+              "postgres",
+              "clickhouse"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "DatasetSource",
+        "type": "object"
+      },
+      "DatasetSummary": {
+        "additionalProperties": false,
+        "description": "Краткая сводка датасета для списков в API.",
+        "properties": {
+          "dataset_id": {
+            "description": "ID датасета",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "Имя датасета",
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DatasetListSource"
+          },
+          "status": {
+            "enum": [
+              "processing",
+              "ready",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "table_count": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Count"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "created_at": {
+            "description": "Дата создания",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "name",
+          "source",
+          "status",
+          "table_count",
+          "row_count",
+          "created_at"
+        ],
+        "title": "DatasetSummary",
+        "type": "object"
+      },
+      "DatasetUploadAccepted": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "processing",
+            "title": "Status",
+            "default": "processing"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id"
+        ],
+        "title": "DatasetUploadAccepted",
+        "description": "Acknowledgement of a persisted upload queued for profiling."
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "description": "Стандартный формат ошибки API.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ToolError",
+            "description": "Код, понятное сообщение и рекомендация"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
       "Fact": {
         "additionalProperties": false,
         "description": "Структурированный факт для передачи в LLM и верификации чисел.",
@@ -143,6 +1772,127 @@
           "text"
         ],
         "title": "Fact",
+        "type": "object"
+      },
+      "MessageBlock": {
+        "discriminator": {
+          "mapping": {
+            "chart": "#/components/schemas/ChartBlock",
+            "clarification": "#/components/schemas/ClarificationBlock",
+            "dashboard_link": "#/components/schemas/DashboardLinkBlock",
+            "suggestions": "#/components/schemas/SuggestionsBlock",
+            "table": "#/components/schemas/TableBlock",
+            "text": "#/components/schemas/TextBlock"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ChartBlock"
+          },
+          {
+            "$ref": "#/components/schemas/TableBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ClarificationBlock"
+          },
+          {
+            "$ref": "#/components/schemas/DashboardLinkBlock"
+          },
+          {
+            "$ref": "#/components/schemas/SuggestionsBlock"
+          }
+        ]
+      },
+      "ParseInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Format"
+          },
+          "success_ratio": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Success Ratio",
+            "type": "number"
+          },
+          "failed_examples": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Failed Examples",
+            "type": "array"
+          }
+        },
+        "required": [
+          "success_ratio"
+        ],
+        "title": "ParseInfo",
+        "type": "object"
+      },
+      "Relation": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "to": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "overlap": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Overlap",
+            "type": "number"
+          },
+          "jaccard": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Jaccard",
+            "type": "number"
+          },
+          "cardinality": {
+            "enum": [
+              "1:1",
+              "1:N",
+              "N:1",
+              "N:M"
+            ],
+            "title": "Cardinality",
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "overlap",
+          "jaccard",
+          "cardinality",
+          "confidence"
+        ],
+        "title": "Relation",
         "type": "object"
       },
       "SSEDoneData": {
@@ -267,6 +2017,308 @@
           "ok"
         ],
         "title": "SSEToolResultData",
+        "type": "object"
+      },
+      "SendMessageRequest": {
+        "additionalProperties": false,
+        "description": "Запрос на отправку вопроса в чат.",
+        "properties": {
+          "text": {
+            "description": "Текст вопроса к данным",
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SendMessageRequest",
+        "type": "object"
+      },
+      "SortSpec": {
+        "additionalProperties": false,
+        "description": "Спецификация сортировки графика.",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "order": {
+            "default": "desc",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Order",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "SortSpec",
+        "type": "object"
+      },
+      "SuggestionsBlock": {
+        "additionalProperties": false,
+        "description": "Подсказки для следующего шага анализа.",
+        "properties": {
+          "type": {
+            "const": "suggestions",
+            "default": "suggestions",
+            "title": "Type",
+            "type": "string"
+          },
+          "items": {
+            "description": "Тексты предложений следующих вопросов",
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "SuggestionsBlock",
+        "type": "object"
+      },
+      "Table": {
+        "additionalProperties": false,
+        "properties": {
+          "table_id": {
+            "minLength": 1,
+            "title": "Table Id",
+            "type": "string"
+          },
+          "raw_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Raw Table"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "row_count": {
+            "minimum": 0,
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TableSource"
+          },
+          "primary_key_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Primary Key Candidates",
+            "type": "array"
+          },
+          "time_columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Time Columns",
+            "type": "array"
+          },
+          "duplicate_rows": {
+            "minimum": 0,
+            "title": "Duplicate Rows",
+            "type": "integer"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            },
+            "minItems": 1,
+            "title": "Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "table_id",
+          "original_name",
+          "row_count",
+          "duplicate_rows",
+          "columns"
+        ],
+        "title": "Table",
+        "type": "object"
+      },
+      "TableBlock": {
+        "additionalProperties": false,
+        "description": "Табличный блок со ссылкой на результат вычислений.",
+        "properties": {
+          "type": {
+            "const": "table",
+            "default": "table",
+            "title": "Type",
+            "type": "string"
+          },
+          "result_id": {
+            "description": "ID результата, из которого берутся строки",
+            "title": "Result Id",
+            "type": "string"
+          },
+          "columns": {
+            "description": "Отображаемые колонки",
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Лимит строк",
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result_id"
+        ],
+        "title": "TableBlock",
+        "type": "object"
+      },
+      "TableSource": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "File"
+          },
+          "encoding": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Encoding"
+          },
+          "delimiter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delimiter"
+          },
+          "header": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Header"
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Relation"
+          }
+        },
+        "title": "TableSource",
+        "type": "object"
+      },
+      "TextBlock": {
+        "additionalProperties": false,
+        "description": "Текстовый блок в формате Markdown.",
+        "properties": {
+          "type": {
+            "const": "text",
+            "default": "text",
+            "title": "Type",
+            "type": "string"
+          },
+          "markdown": {
+            "description": "Текст ответа на понятном русском языке",
+            "title": "Markdown",
+            "type": "string"
+          }
+        },
+        "required": [
+          "markdown"
+        ],
+        "title": "TextBlock",
+        "type": "object"
+      },
+      "TokenResponse": {
+        "additionalProperties": false,
+        "description": "Ответ API при успешной аутентификации.",
+        "properties": {
+          "access_token": {
+            "description": "Токен авторизации / идентификатор сессии",
+            "minLength": 1,
+            "title": "Access Token",
+            "type": "string"
+          },
+          "token_type": {
+            "const": "bearer",
+            "default": "bearer",
+            "description": "Тип токена",
+            "title": "Token Type",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Время жизни токена в секундах",
+            "exclusiveMinimum": 0,
+            "title": "Expires In",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in"
+        ],
+        "title": "TokenResponse",
         "type": "object"
       },
       "ToolError": {
@@ -546,6 +2598,81 @@
         "title": "ToolResultData",
         "type": "object"
       },
+      "TopValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          },
+          "count": {
+            "minimum": 1,
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ],
+        "title": "TopValue",
+        "type": "object"
+      },
+      "TraceStep": {
+        "additionalProperties": false,
+        "description": "Шаг трассировки рассуждения агента (для стриминга и отладки).",
+        "properties": {
+          "node": {
+            "description": "Имя узла графа LangGraph (understand, plan, execute...)",
+            "title": "Node",
+            "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Вызванный инструмент, если был",
+            "title": "Tool"
+          },
+          "ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Время выполнения шага",
+            "title": "Ms"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "title": "TraceStep",
+        "type": "object"
+      },
       "Transformation": {
         "additionalProperties": false,
         "properties": {
@@ -580,6 +2707,356 @@
           "action"
         ],
         "title": "Transformation",
+        "type": "object"
+      },
+      "UserRead": {
+        "additionalProperties": false,
+        "description": "Данные пользователя для чтения через API (без хешей паролей).",
+        "properties": {
+          "username": {
+            "description": "Логин пользователя",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Email пользователя",
+            "title": "Email"
+          },
+          "user_id": {
+            "description": "Уникальный идентификатор пользователя",
+            "title": "User Id",
+            "type": "string"
+          },
+          "is_active": {
+            "default": true,
+            "description": "Активен ли аккаунт",
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "created_at": {
+            "description": "Время регистрации",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "user_id",
+          "created_at"
+        ],
+        "title": "UserRead",
+        "type": "object"
+      },
+      "WidgetLayout": {
+        "additionalProperties": false,
+        "description": "Позиция и размеры виджета в сетке дашборда.",
+        "properties": {
+          "x": {
+            "description": "Позиция X в сетке",
+            "minimum": 0,
+            "title": "X",
+            "type": "integer"
+          },
+          "y": {
+            "description": "Позиция Y в сетке",
+            "minimum": 0,
+            "title": "Y",
+            "type": "integer"
+          },
+          "w": {
+            "description": "Ширина виджета в колонках",
+            "minimum": 1,
+            "title": "W",
+            "type": "integer"
+          },
+          "h": {
+            "description": "Высота виджета в строках",
+            "minimum": 1,
+            "title": "H",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "WidgetLayout",
+        "type": "object"
+      },
+      "WidgetRecipe": {
+        "additionalProperties": false,
+        "description": "Версионированный рецепт в порядке выполнения, без временных ID результата.",
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/WidgetRecipeStep"
+            },
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          },
+          "output_step_id": {
+            "title": "Output Step Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "steps",
+          "output_step_id"
+        ],
+        "title": "WidgetRecipe",
+        "type": "object"
+      },
+      "WidgetRecipeStep": {
+        "additionalProperties": false,
+        "description": "Шаг пересчёта; зависимость ссылается на шаг рецепта, а не старый result_id.",
+        "properties": {
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "call": {
+            "$ref": "#/components/schemas/WidgetToolCall"
+          },
+          "source_step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Step Id"
+          }
+        },
+        "required": [
+          "step_id",
+          "call"
+        ],
+        "title": "WidgetRecipeStep",
+        "type": "object"
+      },
+      "WidgetSnapshot": {
+        "additionalProperties": false,
+        "description": "Ответ refresh: рецепт вместе с результатом последнего запуска виджета.",
+        "properties": {
+          "widget_id": {
+            "description": "Уникальный идентификатор виджета",
+            "title": "Widget Id",
+            "type": "string"
+          },
+          "tool_call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WidgetToolCall"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Независимый одиночный вызов; для цепочки используют recipe"
+          },
+          "recipe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WidgetRecipe"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "$ref": "#/components/schemas/ChartTemplate"
+              }
+            ],
+            "title": "Chart"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Краткий текстовый вывод или инсайт",
+            "title": "Caption"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/WidgetLayout",
+            "description": "Расположение на сетке"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "empty"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "widget_id",
+          "chart",
+          "layout",
+          "result_id",
+          "status"
+        ],
+        "title": "WidgetSnapshot",
+        "type": "object"
+      },
+      "WidgetToolCall": {
+        "additionalProperties": false,
+        "description": "Рецепт перевычисления данных виджета.",
+        "properties": {
+          "tool": {
+            "description": "Имя инструмента, например 'time_aggregate'",
+            "title": "Tool",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "description": "Параметры вызова",
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "title": "WidgetToolCall",
+        "type": "object"
+      },
+      "XAxis": {
+        "additionalProperties": false,
+        "description": "Конфигурация оси X.",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "kind": {
+            "default": "category",
+            "enum": [
+              "time",
+              "category",
+              "number"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "XAxis",
+        "type": "object"
+      },
+      "YMeasure": {
+        "additionalProperties": false,
+        "description": "Показатель оси Y с правилами числового форматирования.",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "format": {
+            "default": "number",
+            "enum": [
+              "number",
+              "money",
+              "percent",
+              "int"
+            ],
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "YMeasure",
         "type": "object"
       }
     }

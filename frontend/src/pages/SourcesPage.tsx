@@ -2,7 +2,7 @@ import { Check, Database, Upload } from 'lucide-react';
 import { useState, type SubmitEvent } from 'react';
 import { useNavigate } from 'react-router';
 import type { ApiError, Schemas } from '@/api/client';
-import { useConnectDatabase, useDatasets, useDeleteDataset, useProfilingProgress, useUploadCsv, type ProfilingState } from '@/api/queries';
+import { useConnectDatabase, useDatasets, useProfilingProgress, useUploadCsv, type ProfilingState } from '@/api/queries';
 import { countOrDash, sourceLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
@@ -45,6 +45,7 @@ const card = 'overflow-hidden rounded-lg border border-border bg-card';
 
 /** A running upload or connection: what to call it and which dataset's events to follow. */
 interface Job {
+  id: string;
   title: string;
   datasetId: string | null;
 }
@@ -65,7 +66,7 @@ function JobProgress({ job, progress, onCancel }: { job: Job; progress: Profilin
       title={job.title}
       text={progress.message ?? 'Можно продолжать работу — датасет появится в списке, когда будет готов.'}
       steps={progressSteps(progress)}
-      actionLabel="Отменить"
+      actionLabel="Скрыть прогресс"
       onAction={onCancel}
     />
   );
@@ -77,39 +78,45 @@ export function SourcesPage() {
   const { activeDataset, setActiveDataset } = useWorkspace();
   const upload = useUploadCsv();
   const connect = useConnectDatabase();
-  const remove = useDeleteDataset();
   const [tab, setTab] = useState<Tab>('csv');
   const [dbKind, setDbKind] = useState<DbKind>('postgres');
   const [dsn, setDsn] = useState('');
   const [tables, setTables] = useState<ReadonlySet<string>>(new Set(['orders', 'customers']));
   const [job, setJob] = useState<Job | null>(null);
   const [fileInput, setFileInput] = useState<HTMLInputElement | null>(null);
-  const progress = useProfilingProgress(job?.datasetId ?? null);
+  const progress = useProfilingProgress(job?.datasetId ?? null, job?.id ?? 'idle');
 
   const browse = () => { fileInput?.click(); };
   const startUpload = (files: File[]) => {
     const first = files[0];
     if (!first) return;
+    upload.reset();
+    connect.reset();
+    const id = crypto.randomUUID();
     const extra = files.length > 1 ? ` и ещё ${files.length - 1}` : '';
     setTab('csv');
-    setJob({ title: `Загрузка ${first.name}${extra} · ${formatBytes(files.reduce((sum, f) => sum + f.size, 0))}`, datasetId: null });
-    upload.mutate(files, { onSuccess: ({ dataset_id }) => { setJob((j) => j && { ...j, datasetId: dataset_id }); } });
+    setJob({ id, title: `Загрузка ${first.name}${extra} · ${formatBytes(files.reduce((sum, f) => sum + f.size, 0))}`, datasetId: null });
+    upload.mutate(files, { onSuccess: ({ dataset_id }) => { setJob((j) => j?.id === id ? { ...j, datasetId: dataset_id } : j); } });
   };
   const submitDb = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
+    upload.reset();
+    connect.reset();
+    const id = crypto.randomUUID();
     const kindLabel = DB_KINDS.find((k) => k.value === dbKind)?.label ?? dbKind;
-    setJob({ title: `Подключение ${kindLabel}`, datasetId: null });
-    connect.mutate({ kind: dbKind, dsn, tables: [...tables] }, { onSuccess: ({ dataset_id }) => { setJob((j) => j && { ...j, datasetId: dataset_id }); } });
+    setJob({ id, title: `Подключение ${kindLabel}`, datasetId: null });
+    connect.mutate({ kind: dbKind, dsn, tables: [...tables] }, { onSuccess: ({ dataset_id }) => { setJob((j) => j?.id === id ? { ...j, datasetId: dataset_id } : j); } });
   };
-  // Cancel stops watching and removes the half-made dataset; nothing is retried.
+  // Closing progress only aborts its GET stream; accepted processing continues on the server.
   const cancel = () => {
-    if (job?.datasetId) remove.mutate(job.datasetId);
     setJob(null);
     upload.reset();
     connect.reset();
   };
 
   const jobError: ApiError | null = progress.error ?? (job ? (upload.error ?? connect.error) : null);
+  const reconnect = job !== null && job.datasetId !== null && progress.error !== null && progress.error.code !== 'profiling_failed';
+  const retryProgress = () => { setJob((current) => current && { ...current, id: crypto.randomUUID() }); };
   const running = job !== null && !jobError && progress.phase !== 'done';
 
   const rows: Row[] = (datasets.data ?? []).map((d) => {
@@ -119,7 +126,7 @@ export function SourcesPage() {
     if (ready && !active) actions.push({ label: 'Выбрать для анализа', onClick: () => { setActiveDataset(d.dataset_id); } });
     if (ready) actions.push({ label: 'Посмотреть каталог', onClick: () => { setActiveDataset(d.dataset_id); void navigate(`/catalog/${d.dataset_id}`); } });
     if (d.status === 'error') actions.push({ label: 'Загрузить заново', onClick: browse });
-    actions.push({ label: 'Удалить', tone: 'danger', onClick: () => { remove.mutate(d.dataset_id); } });
+    if (d.status === 'processing') actions.push({ label: 'Следить за обработкой', onClick: () => { upload.reset(); connect.reset(); setJob({ id: crypto.randomUUID(), title: `Обработка ${d.name}`, datasetId: d.dataset_id }); } });
     return {
       id: d.dataset_id,
       highlight: active,
@@ -150,8 +157,10 @@ export function SourcesPage() {
         size="inline"
         title={tab === 'csv' ? 'Не удалось загрузить данные' : 'Не удалось подключить базу данных'}
         text={jobError.suggestion ? `${jobError.message}. ${jobError.suggestion}` : jobError.message}
-        actionLabel={tab === 'csv' ? 'Загрузить заново' : 'Закрыть'}
-        onAction={tab === 'csv' ? () => { cancel(); browse(); } : cancel}
+        actionLabel={reconnect ? 'Повторить получение прогресса' : tab === 'csv' ? 'Загрузить заново' : 'Закрыть'}
+        onAction={reconnect ? retryProgress : tab === 'csv' ? () => { cancel(); browse(); } : cancel}
+        secondaryLabel={reconnect ? 'Скрыть' : undefined}
+        onSecondary={reconnect ? cancel : undefined}
       />
     ));
 

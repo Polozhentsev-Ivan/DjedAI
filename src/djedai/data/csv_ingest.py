@@ -262,8 +262,13 @@ def load_raw_csv(
         raise CsvReadError(name, f"кодировка {encoding} не поддерживается") from error
     dialect = detect_dialect(text, header)
 
+    # Tables and views share DuckDB's case-insensitive relation namespace.
     taken = {
-        row[0] for row in connection.execute("SELECT table_name FROM duckdb_tables()").fetchall()
+        row[0].casefold()
+        for row in connection.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "UNION ALL SELECT view_name FROM duckdb_views() WHERE NOT internal"
+        ).fetchall()
     }
     table = raw_table_name(name, taken)
     with tempfile.TemporaryDirectory() as directory:

@@ -7,6 +7,8 @@ FastAPI, API и SSE, хранение метаданных приложения 
 - `config.py` — конфигурация приложения (`pydantic-settings`), чтение `.env`, безопасные дефолты, путь к хранилищу результатов `RESULTS_DATA_DIR` и явный dev allowlist для CORS (`BACKEND_CORS_ORIGINS`, по умолчанию `http://localhost:5173,http://127.0.0.1:5173`; пустая строка отключает доступ сторонним источникам, wildcard запрещен);
 - `app.py` — фабрика FastAPI-приложения `create_app()`, CORS, обработка ошибок, `GET /health`, полная схема OpenAPI со всеми контрактами и SSE (`GET /openapi.json`, `GET /api/openapi.json`) и реестр схем `GET /api/schemas`;
 - `api/` — роутеры с префиксом `/api` (`health`, `datasets`, `chats`, `results`, `dashboards`, `auth`);
+- `chat_service.py` — оркестрация хода чата: сохранение вопроса, запуск графа агента, преобразование блоков, сохранение результата и истории;
+- `sse.py` — кодирование событий агента в wire-формат `text/event-stream`;
 - `db/` — подсистема постоянного хранения приложения:
   - `base.py` — базовый декларативный класс `Base`;
   - `session.py` — фабрика сессий `get_db()`, создание движка `create_db_engine()` с поддержкой `PRAGMA foreign_keys = ON` для SQLite;

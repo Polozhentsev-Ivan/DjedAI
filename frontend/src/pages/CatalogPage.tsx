@@ -2,7 +2,7 @@ import { ArrowLeftRight, ArrowRight, LoaderCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
-import { useDataset } from '@/api/queries';
+import { useDataset, useProfilingProgress } from '@/api/queries';
 import { catalogSummary, columnNote, journal, missingCell, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
@@ -88,8 +88,9 @@ function CatalogSkeleton({ label }: { label: string }) {
 }
 
 function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
-  const [tableId, setTableId] = useState(catalog.tables[0]?.table_id ?? '');
-  const table = catalog.tables.find((t) => t.table_id === tableId) ?? catalog.tables[0];
+  const tables = catalog.tables ?? [];
+  const [tableId, setTableId] = useState(tables[0]?.table_id ?? '');
+  const table = tables.find((t) => t.table_id === tableId) ?? tables[0];
   const entries = journal(catalog);
   const warnings = entries.filter((j) => j.level === 'warning').length;
   const infos = entries.length - warnings;
@@ -98,7 +99,7 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
   return (
     <>
       <div role="tablist" aria-label="Таблицы датасета" className="flex flex-wrap gap-2">
-        {catalog.tables.map((t) => {
+        {tables.map((t) => {
           const on = t.table_id === table.table_id;
           return (
             <button
@@ -124,7 +125,7 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
           <h2 className={cardTitle}>Структура таблицы</h2>
           <span className="text-muted-foreground">{tableMeta(table)}</span>
         </div>
-        <DataTable label={`Структура таблицы ${table.table_id}`} columns={COLUMNS} rows={rowsOf(table, catalog.relations)} minWidth="820px" />
+        <DataTable label={`Структура таблицы ${table.table_id}`} columns={COLUMNS} rows={rowsOf(table, catalog.relations ?? [])} minWidth="820px" />
       </section>
 
       <div className={cn(twoColumns, 'items-start')}>
@@ -187,6 +188,8 @@ export function CatalogPage() {
   const dataset = useDataset(id);
   const toSources = () => { void navigate('/sources'); };
   const detail = dataset.data;
+  const [progressAttempt, setProgressAttempt] = useState(0);
+  const progress = useProfilingProgress(detail?.status === 'processing' ? detail.dataset_id : null, progressAttempt);
   useEffect(() => {
     if (datasetId && detail?.status === 'ready') setActiveDataset(detail.dataset_id);
   }, [datasetId, detail?.status, detail?.dataset_id, setActiveDataset]);
@@ -216,6 +219,7 @@ export function CatalogPage() {
           </div>
         )}
         {!empty && waiting && <CatalogSkeleton label={detail?.status === 'processing' ? 'Строим профиль таблиц…' : 'Загружаем каталог…'} />}
+        {progress.error && <ErrorState size="inline" title={progress.error.message} text={progress.error.suggestion ?? undefined} onAction={() => { setProgressAttempt((attempt) => attempt + 1); void dataset.refetch(); }} />}
         {!empty && dataset.isError && !notFound && (
           <div className="rounded-lg border border-border bg-card">
             <ErrorState title="Не удалось загрузить каталог" text={dataset.error.message} onAction={() => { void dataset.refetch(); }} secondaryLabel="К источникам" onSecondary={toSources} />

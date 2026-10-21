@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from djedai.contracts.catalog import DatasetCatalog, DatasetSource
+from djedai.contracts.tool_result import ToolError
 
 
 class HealthCheck(BaseModel):
@@ -22,9 +25,13 @@ class ErrorResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    code: str = Field(description="Символьный код ошибки")
-    message: str = Field(description="Понятное описание ошибки")
-    details: Any | None = Field(default=None, description="Дополнительные детали")
+    error: ToolError = Field(description="Код, понятное сообщение и рекомендация")
+
+
+class DatasetListSource(DatasetSource):
+    """Источник в списке UI; files — метаданные загрузки, не поле каталога."""
+
+    files: int | None = Field(default=None, ge=0)
 
 
 class DatasetSummary(BaseModel):
@@ -34,6 +41,22 @@ class DatasetSummary(BaseModel):
 
     dataset_id: str = Field(description="ID датасета")
     name: str = Field(description="Имя датасета")
-    source_kind: str = Field(description="Тип источника (csv_upload, postgres, clickhouse)")
-    status: str = Field(description="Статус (ready, profiling, error)")
+    source: DatasetListSource
+    status: Literal["processing", "ready", "error"]
+    table_count: int | None = Field(ge=0)
+    row_count: int | None = Field(ge=0)
     created_at: AwareDatetime = Field(description="Дата создания")
+
+
+class DatasetDetail(DatasetSummary):
+    catalog: DatasetCatalog | None
+    error: ToolError | None
+
+
+class DatasetUploadAccepted(BaseModel):
+    """Acknowledgement of a persisted upload queued for profiling."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dataset_id: str
+    status: Literal["processing"] = "processing"

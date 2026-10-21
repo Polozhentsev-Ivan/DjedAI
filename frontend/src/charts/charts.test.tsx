@@ -23,12 +23,12 @@ const revenue: Schemas['ResultData'] = {
   columns: [{ name: 'month', type: 'date' }, { name: 'revenue', type: 'money' }],
   rows: [['2026-01-01', 1800000], ['2026-07-01', 3400000]], row_count: 2, truncated: false,
 };
-const line: Schemas['ChartSpec'] = { type: 'line', title: 'Выручка', x: { field: 'month', kind: 'time' }, y: [money] };
+const line: Schemas['ChartSpec'] = { chart_id: 'chart_line', result_id: 'r_line', type: 'line', title: 'Выручка', x: { field: 'month', kind: 'time' }, y: [money] };
 const shares: Schemas['ResultData'] = {
   columns: [{ name: 'region', type: 'category' }, { name: 'share', type: 'percent' }],
   rows: [['Москва', 45], ['Казань', 12]], row_count: 2, truncated: false,
 };
-const pie: Schemas['ChartSpec'] = { type: 'pie', title: 'Регионы', x: { field: 'region' }, y: [{ field: 'share', format: 'percent' }] };
+const pie: Schemas['ChartSpec'] = { chart_id: 'chart_pie', result_id: 'r_pie', type: 'pie', title: 'Регионы', x: { field: 'region' }, y: [{ field: 'share', format: 'percent' }] };
 
 interface LineOption {
   xAxis: { data: string[] };

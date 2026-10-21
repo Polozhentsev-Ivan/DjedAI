@@ -10,10 +10,12 @@ from functools import lru_cache
 from typing import Any
 
 from pydantic import Field, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+
+from djedai.config import LimitSettings
 
 
-class Settings(BaseSettings):
+class Settings(LimitSettings):
     """Настройки сервиса Backend."""
 
     model_config = SettingsConfigDict(
@@ -27,20 +29,25 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     api_prefix: str = "/api"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
 
     # БД приложения (метаданные, пользователи, чаты, дашборды)
     app_database_url: str = Field(default="sqlite:///./var/app.db", alias="APP_DATABASE_URL")
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
+    datasets_data_dir: str = Field(default="./var/data/datasets", alias="DATASETS_DATA_DIR")
 
-    # Параметры инференса модели (vLLM / локальный endpoint)
-    model_base_url: str = Field(default="http://localhost:8000/v1", alias="MODEL_BASE_URL")
-    model_name: str = Field(default="Qwen/Qwen2.5-Coder-32B-Instruct", alias="MODEL_NAME")
+    # Explicit single-user CP1 mode; the normal authentication API is a later stage.
+    cp1_local_mode: bool = Field(default=False, alias="CP1_LOCAL_MODE")
+    cp1_local_user_id: str = Field(
+        default="cp1-local-user", min_length=1, alias="CP1_LOCAL_USER_ID"
+    )
+
+    # Согласованный управляемый профиль PL-1; совместимый endpoint можно переопределить.
+    model_base_url: str = Field(
+        default="https://api.deepinfra.com/v1/openai", alias="MODEL_BASE_URL"
+    )
+    model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
-
-    # Лимиты безопасности
-    sql_max_rows: int = Field(default=5000, alias="SQL_MAX_ROWS")
-    tool_timeout_seconds: float = Field(default=30.0, alias="TOOL_TIMEOUT_SECONDS")
 
     # Сетевая политика (исходящий трафик только по whitelist)
     allowed_outbound_hosts: str = Field(default="", alias="ALLOWED_OUTBOUND_HOSTS")
@@ -103,6 +110,9 @@ class Settings(BaseSettings):
         "log_level",
         "app_database_url",
         "results_data_dir",
+        "datasets_data_dir",
+        "cp1_local_mode",
+        "cp1_local_user_id",
         "model_base_url",
         "model_name",
         "model_revision",

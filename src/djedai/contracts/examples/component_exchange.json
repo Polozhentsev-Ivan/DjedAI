@@ -1,0 +1,407 @@
+{
+  "schema_version": 1,
+  "catalog": {
+    "schema_version": 1,
+    "dataset_id": "ds_0001",
+    "name": "missing_values.csv",
+    "created_at": "2026-10-20T12:00:00+03:00",
+    "source": {
+      "kind": "csv_upload"
+    },
+    "summary": null,
+    "tables": [
+      {
+        "table_id": "missing_values",
+        "raw_table": "raw_missing_values",
+        "original_name": "missing_values.csv",
+        "description": null,
+        "row_count": 3,
+        "source": {
+          "file": "missing_values.csv",
+          "encoding": "utf-8",
+          "delimiter": ",",
+          "header": true,
+          "relation": null
+        },
+        "primary_key_candidates": [
+          "id"
+        ],
+        "time_columns": [],
+        "duplicate_rows": 0,
+        "columns": [
+          {
+            "name": "id",
+            "original_name": "id",
+            "physical_type": "VARCHAR",
+            "semantic_type": "id",
+            "role": "id",
+            "null_ratio": 0.0,
+            "distinct_count": 3,
+            "is_unique": true,
+            "sample_values": [
+              "1",
+              "2",
+              "3"
+            ],
+            "top_values": [
+              {
+                "value": "1",
+                "count": 1
+              },
+              {
+                "value": "2",
+                "count": 1
+              },
+              {
+                "value": "3",
+                "count": 1
+              }
+            ],
+            "stats": {
+              "min": null,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "std": null,
+              "granularity": null
+            },
+            "parse": null,
+            "currency": null,
+            "description": null
+          },
+          {
+            "name": "empty_col",
+            "original_name": "empty_col",
+            "physical_type": "VARCHAR",
+            "semantic_type": "text",
+            "role": "text",
+            "null_ratio": 1.0,
+            "distinct_count": 0,
+            "is_unique": false,
+            "sample_values": [],
+            "top_values": [],
+            "stats": {
+              "min": null,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "std": null,
+              "granularity": null
+            },
+            "parse": null,
+            "currency": null,
+            "description": null
+          }
+        ]
+      }
+    ],
+    "relations": [],
+    "warnings": [],
+    "transformations": [
+      {
+        "table": "missing_values",
+        "column": "empty_col",
+        "action": "keep_text",
+        "detail": {
+          "reason": "empty_column"
+        }
+      }
+    ]
+  },
+  "success": {
+    "result_id": "r_count_1",
+    "status": "ok",
+    "data": {
+      "columns": [
+        "n"
+      ],
+      "rows": [
+        [
+          3
+        ]
+      ],
+      "row_count": 1,
+      "truncated": false
+    },
+    "data_ref": null,
+    "facts": [],
+    "chart_hint": null,
+    "error": null,
+    "tool": "run_sql",
+    "params": {
+      "sql": "SELECT COUNT(*) AS n FROM missing_values"
+    },
+    "sql": "SELECT COUNT(*) AS n FROM missing_values",
+    "source_result_id": null,
+    "duration_ms": null
+  },
+  "message": {
+    "message_id": "m_count",
+    "chat_id": "c_count",
+    "role": "assistant",
+    "created_at": "2026-10-20T14:00:00Z",
+    "blocks": [
+      {
+        "type": "text",
+        "markdown": "3"
+      },
+      {
+        "type": "chart",
+        "chart": {
+          "chart_id": "chart_count",
+          "result_id": "r_count_1",
+          "type": "kpi",
+          "title": "Число строк",
+          "subtitle": null,
+          "x": null,
+          "y": [
+            {
+              "field": "n",
+              "label": null,
+              "format": "int"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": 20,
+          "annotations": []
+        }
+      }
+    ],
+    "result_ids": [
+      "r_count_1"
+    ],
+    "trace": []
+  },
+  "tool_error": {
+    "result_id": "r_count_error",
+    "status": "error",
+    "data": null,
+    "data_ref": null,
+    "facts": [],
+    "chart_hint": null,
+    "error": {
+      "code": "timeout",
+      "message": "Источник не ответил вовремя",
+      "suggestion": "Повторите обновление"
+    },
+    "tool": "run_sql",
+    "params": {},
+    "sql": null,
+    "source_result_id": null,
+    "duration_ms": null
+  },
+  "http_error": {
+    "error": {
+      "code": "timeout",
+      "message": "Источник не ответил вовремя",
+      "suggestion": "Повторите обновление"
+    }
+  },
+  "dashboard": {
+    "dashboard_id": "d_count",
+    "dataset_id": "ds_0001",
+    "title": "Количество строк",
+    "description": null,
+    "source_chat_id": null,
+    "widgets": [
+      {
+        "widget_id": "w_count",
+        "tool_call": null,
+        "recipe": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "rows",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT id FROM missing_values"
+                }
+              },
+              "source_step_id": null
+            },
+            {
+              "step_id": "count",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT COUNT(*) AS n FROM source_result"
+                }
+              },
+              "source_step_id": "rows"
+            }
+          ],
+          "output_step_id": "count"
+        },
+        "chart": {
+          "chart_id": "chart_count",
+          "type": "kpi",
+          "title": "Число строк",
+          "subtitle": null,
+          "x": null,
+          "y": [
+            {
+              "field": "n",
+              "label": null,
+              "format": "int"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": 20,
+          "annotations": []
+        },
+        "caption": null,
+        "layout": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        }
+      }
+    ],
+    "created_at": "2026-10-20T14:00:00Z",
+    "refreshed_at": null
+  },
+  "partial_failure": {
+    "dashboard_id": "d_count",
+    "dataset_id": "ds_0001",
+    "title": "Количество строк",
+    "description": null,
+    "source_chat_id": null,
+    "widgets": [
+      {
+        "widget_id": "w_count",
+        "tool_call": null,
+        "recipe": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "rows",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT id FROM missing_values"
+                }
+              },
+              "source_step_id": null
+            },
+            {
+              "step_id": "count",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT COUNT(*) AS n FROM source_result"
+                }
+              },
+              "source_step_id": "rows"
+            }
+          ],
+          "output_step_id": "count"
+        },
+        "chart": {
+          "chart_id": "chart_count",
+          "type": "kpi",
+          "title": "Число строк",
+          "subtitle": null,
+          "x": null,
+          "y": [
+            {
+              "field": "n",
+              "label": null,
+              "format": "int"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": 20,
+          "annotations": []
+        },
+        "caption": null,
+        "layout": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "result_id": null,
+        "status": "error",
+        "error": {
+          "code": "timeout",
+          "message": "Источник не ответил вовремя",
+          "suggestion": "Повторите обновление"
+        }
+      },
+      {
+        "widget_id": "w_success",
+        "tool_call": null,
+        "recipe": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "rows",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT id FROM missing_values"
+                }
+              },
+              "source_step_id": null
+            },
+            {
+              "step_id": "count",
+              "call": {
+                "tool": "run_sql",
+                "params": {
+                  "sql": "SELECT COUNT(*) AS n FROM source_result"
+                }
+              },
+              "source_step_id": "rows"
+            }
+          ],
+          "output_step_id": "count"
+        },
+        "chart": {
+          "chart_id": "chart_count_success",
+          "result_id": "r_count_1",
+          "type": "kpi",
+          "title": "Число строк",
+          "subtitle": null,
+          "x": null,
+          "y": [
+            {
+              "field": "n",
+              "label": null,
+              "format": "int"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": 20,
+          "annotations": []
+        },
+        "caption": null,
+        "layout": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "result_id": "r_count_1",
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "created_at": "2026-10-20T14:00:00Z",
+    "refreshed_at": null
+  }
+}

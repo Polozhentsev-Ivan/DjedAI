@@ -24,7 +24,7 @@ it('uses string columns in KPI and calculation views as returned by run_sql', ()
   const data: Schemas['ResultData'] = { columns: ['amount'], rows: [[42]] };
   const result: Schemas['ToolResultMeta'] = { result_id: 'r', status: 'ok', data };
   expect(calculation(result).columns).toEqual([{ label: 'amount', name: 'amount' }]);
-  expect(kpiView({ type: 'kpi', title: 'Сумма', y: [{ field: 'amount' }] }, data, result)?.value).toBe('42');
+  expect(kpiView({ chart_id: 'chart_kpi', type: 'kpi', title: 'Сумма', y: [{ field: 'amount' }] }, data, result)?.value).toBe('42');
 });
 
 it('maps canonical stage/progress/message SSE payloads, including new stages and done', async () => {
@@ -50,4 +50,27 @@ it('maps canonical stage/progress/message SSE payloads, including new stages and
   emit('done', { dataset_id: 'ds_live' } satisfies Schemas['ProfilingDone']);
   await waitFor(() => { expect(result.current.phase).toBe('done'); });
   expect(result.current.steps.relations?.status).toBe('done');
+});
+
+it('reconnects progress explicitly and clears a previous stream error before the next event', async () => {
+  let calls = 0;
+  let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+  server.use(http.get('/api/datasets/ds_retry/events', () => {
+    calls += 1;
+    if (calls === 1) return new HttpResponse('event: progress\ndata: {"stage":"read","progress":0.5}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+    return new HttpResponse(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), { headers: { 'Content-Type': 'text/event-stream' } });
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(client, 'invalidateQueries');
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const { result, rerender } = renderHook(({ attempt }) => useProfilingProgress('ds_retry', attempt), { initialProps: { attempt: 0 }, wrapper });
+  await waitFor(() => { expect(result.current.error?.code).toBe('stream_interrupted'); });
+  rerender({ attempt: 1 });
+  expect(result.current).toMatchObject({ phase: 'running', error: null, steps: {} });
+  await waitFor(() => { expect(stream).toBeDefined(); });
+  act(() => { stream?.enqueue(new TextEncoder().encode('event: done\ndata: {"dataset_id":"ds_retry"}\n\n')); });
+  await waitFor(() => { expect(result.current.phase).toBe('done'); });
+  expect(result.current.error).toBeNull();
+  expect(calls).toBe(2);
+  await waitFor(() => { expect(invalidate).toHaveBeenCalledWith({ queryKey: ['datasets', 'ds_retry'] }); });
 });

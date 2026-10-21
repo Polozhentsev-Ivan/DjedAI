@@ -1,10 +1,81 @@
 # Вспомогательные команды
 
+## Минимальный сквозной прогон CP1 без UI
+
+Описание проверок и результат запуска на 500 000 записей — в
+[протоколе прогона](../docs/cp1-smoke-run.md).
+
+`smoke_cp1.py` требует код API чата из PR #139. Он вызывает `stream_chat_turn()`
+напрямую: CSV → типизация → профиль/каталог → LangGraph с реальной моделью →
+SQL по загруженным данным → SQLite/Parquet → проверка в новом процессе.
+HTTP-сервер, UI, Compose и регистрация не нужны; используется отдельный тестовый владелец.
+
+По умолчанию скачивается полный `08_Фоновые_задания.csv` (122 084 672 байта,
+500 000 записей) из [HK_Datasets](https://gitverse.ru/kban/HK_Datasets),
+ревизия `716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d`.
+Докачка идёт по HTTP Range, Git blob проверяется; исходник кэшируется в
+`artifacts/hk-datasets/`, SHA-256 записывается в отчёт. CSV и результаты не коммитятся.
+
+В окружении или локальном `.env` нужен `DEEPINFRA_API_KEY` либо `MODEL_API_KEY`.
+Секрет в командную строку передавать не требуется. Используются
+[DeepInfra Chat Completions](https://docs.deepinfra.com/chat/overview):
+`https://api.deepinfra.com/v1/openai`, модель
+[`Qwen/Qwen3.6-35B-A3B`](https://deepinfra.com/Qwen/Qwen3.6-35B-A3B) (35B суммарных параметров).
+Модель возвращает типизированные JSON-ответы; ключ безуспешным ответом заглушки не заменяется.
+Адрес и модель можно изменить через `--base-url` и `--model`; из `.env` скрипт берёт ключ,
+`MODEL_TIMEOUT_SECONDS` и `MODEL_MAX_OUTPUT_TOKENS`.
+
+Из корня репозитория:
+
+```sh
+uv run --locked python scripts/smoke_cp1.py
+```
+
+Каждый запуск создаёт отдельный каталог `artifacts/cp1-smoke/<UTC-время>-<суффикс>/`.
+Там находятся `report.json`, `catalog.json`, `model_calls.jsonl`, `events.jsonl`,
+`app.db`, `data.duckdb` и `results/*.parquet`. В отчёте — вопрос, ответ, SQL,
+`chat_id`, `message_id`, `result_ids`, источник и результаты повторного чтения.
+
+Успешный прогон завершается кодом 0 и `status: passed`. Он требует вызова `run_sql`
+с прямым `COUNT(*)` всей таблицы датасета без CTE, фильтров и JOIN, числа из
+независимого Python CSV-парсера, такого же числа в текстовом ответе и сохранности
+каталога, сообщений, результата и данных
+после открытия отдельным Python-процессом. Ошибка модели, пустой ответ,
+неверное число, SQL с одной константой или подменой таблицы через CTE дают код 1.
+
+Дополнительные режимы:
+
+```sh
+# Подготовить данные без вызова модели; status: prepared не является LLM-приёмкой.
+uv run --locked python scripts/smoke_cp1.py --prepare-only
+
+# Использовать свой CSV с заголовком или другой файл настроек.
+uv run --locked python scripts/smoke_cp1.py --csv /path/data.csv --env-file /path/.env
+
+# Повторить только проверку сохранённых данных, без API модели.
+uv run --locked python scripts/smoke_cp1.py --verify-only artifacts/cp1-smoke/<run>/report.json
+```
+
+Проверки CLI с локальным HTTP endpoint модели (без внешней сети и настоящего ключа):
+
+```sh
+uv run --locked pytest tests/integration/test_cp1_smoke.py -q
+```
+
+Этот сценарий подтверждает ядро CP1. Браузерный транспорт, proxy, Compose и полная
+приёмка #106 проверяются отдельно.
+
 Воспроизводимые команды генерации синтетики, подготовки демо-данных и другой вспомогательной работы по задачам проекта. Для каждой команды указываем назначение, вход, выход и способ запуска.
 
 Python-команды запускаем в среде проекта через uv. Серверная логика приложения остаётся в `src/djedai/`, браузерный интерфейс — в [frontend/](../frontend/README.md); отчёты и выгрузки — вне исходного кода. Текущие `check-repository.mjs` и его тесты проверяют структуру, UTF-8, локальные ссылки и запрет сгенерированных файлов. Frontend npm scripts и его CI появятся в B4-1 / #83 вместе с рабочим каркасом.
 
 ## Команды
+
+- `benchmark_model_profiles.py` — реальная серия Understand/Plan/Compose через API без пользовательских данных: отдельно считает валидность схем и корректность ответа/SQL, latency и prompt tokens. Ошибочный план записывает как неуспех, не обрывая серию. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
+  - Запуск: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --repeats 3 --context-lines 200`
+  - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
+  - Сравнение: повторить `--model` для каждого профиля. `--base-url`, `--timeout`, `--max-output-tokens`, `--context-lines` задают параметры замера. Ограничение проекта — открытые веса до 80B суммарных параметров.
+  - Результаты и ограничения выбранного профиля: [протокол PL-1](../docs/model-profile-pl1.md). Это минимальная диагностика, не полный eval #81.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
   - Запуск: `uv run python scripts/generate_synthetic_data.py`

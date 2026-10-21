@@ -30,16 +30,21 @@ function errorJson(status: number, error: Schemas['ErrorBody']) {
 type SseFrame = readonly [string, unknown];
 
 /** text/event-stream response that sends frames one by one with a pause. */
-function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal): HttpResponse<ReadableStream> {
+function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal, beforeSend?: (event: string) => void): HttpResponse<ReadableStream> {
+  let cancelled = false;
+  const stopped = () => signal.aborted || cancelled;
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       for (const [event, data] of frames) {
-        if (signal.aborted) break;
+        if (stopped()) break;
         if (tick > 0) await delay(tick);
+        if (stopped()) break;
+        beforeSend?.(event);
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       }
-      controller.close();
+      if (!cancelled) controller.close();
     },
+    cancel() { cancelled = true; },
   });
   return new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
 }
@@ -94,8 +99,8 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     const catalog = structuredClone(ordersCatalog);
     catalog.dataset_id = id;
     catalog.name = ready.name;
-    catalog.source = ready.source;
-    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables.length, row_count: 8940 });
+    catalog.source = { kind: ready.source.kind };
+    Object.assign(dataset, { status: 'ready', catalog, table_count: catalog.tables?.length ?? 0, row_count: 8940 });
   };
 
   return [
@@ -153,10 +158,10 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     http.get(api('/datasets/:id/events'), ({ params, request }) => {
       const id = String(params.id);
       const frames = profilingFrames(id);
-      const ok = frames.at(-1)?.[0] === 'done';
-      // The mock finishes the job when the stream is opened; a real backend would run it in the background.
-      setTimeout(() => { finishProfiling(id, ok); }, tick * frames.length);
-      return eventStream(frames, tick, request.signal);
+      // Persist the outcome before the terminal event causes the client to reload the list.
+      return eventStream(frames, tick, request.signal, (event) => {
+        if (event === 'done' || event === 'error') finishProfiling(id, event === 'done');
+      });
     }),
 
     http.get(api('/chats'), async ({ request }) => {
@@ -166,18 +171,47 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       return HttpResponse.json(chats.map(({ messages: _messages, ...chat }) => chat));
     }),
 
-    http.post(api('/chats/:id/messages'), ({ request }) => {
+    http.post(api('/chats'), async ({ request }) => {
+      const body = await request.json() as Schemas['ChatCreate'];
+      if (!db.datasets.some((dataset) => dataset.dataset_id === body.dataset_id)) return notFound('Датасет');
+      const chat: Schemas['ChatDetail'] = { chat_id: `c_${crypto.randomUUID()}`, dataset_id: body.dataset_id, title: 'Новый чат', created_at: new Date().toISOString(), messages: [] };
+      db.chats.unshift(chat);
+      return HttpResponse.json({ chat_id: chat.chat_id }, { status: 201 });
+    }),
+
+    http.get(api('/chats/:id'), async ({ params }) => {
+      await slow();
+      const chat = db.chats.find((item) => item.chat_id === params.id);
+      return chat ? HttpResponse.json(chat) : notFound('Чат');
+    }),
+
+    http.post(api('/chats/:id/messages'), async ({ params, request }) => {
+      const chat = db.chats.find((item) => item.chat_id === params.id);
+      if (!chat) return notFound('Чат');
+      const { text } = await request.json() as Schemas['SendMessageRequest'];
+      const messageId = `m_${crypto.randomUUID()}`;
+      chat.messages.push({ message_id: `u_${crypto.randomUUID()}`, role: 'user', created_at: new Date().toISOString(), text });
+      if (chat.title === 'Новый чат') chat.title = text.slice(0, 80);
+      const blocks: Schemas['Block'][] = [
+        { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' },
+        { type: 'chart', chart: { chart_id: 'chart_revenue', result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } },
+      ];
       const frames: SseFrame[] = [
         ['status', { node: 'understand', text: 'Определил колонки: «Сумма с НДС, руб», «Дата оплаты»' }],
         ['status', { node: 'execute', text: 'Анализирую данные…' }],
         ['tool_call', { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } }],
         ['tool_result', { result_id: 'r_rev', ok: true }],
-        ['block', { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' }],
-        ['block', { type: 'chart', chart: { result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } }],
-        ['done', { message_id: `m_${Date.now()}` }],
+        ...blocks.map((block) => ['block', block] as const),
+        ['done', { message_id: messageId }],
       ];
       const timeout: SseFrame = ['error', { message: 'Запрос превысил таймаут 30 сек.', detail: 'Попробуйте уточнить период.' }];
-      return eventStream(scenario() === 'error' ? [...frames.slice(0, 1), timeout] : frames, tick, request.signal);
+      let persisted = false;
+      return eventStream(scenario() === 'error' ? [...frames.slice(0, 1), timeout] : frames, tick, request.signal, (event) => {
+        if (event === 'block' && !persisted) {
+          persisted = true;
+          chat.messages.push({ message_id: messageId, role: 'assistant', created_at: new Date().toISOString(), blocks, result_ids: ['r_rev'] });
+        }
+      });
     }),
 
     http.get(api('/results/:id'), async ({ params }) => {
@@ -206,9 +240,12 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       if (scenario() !== 'error') return HttpResponse.json(dashboard);
       return HttpResponse.json({
         ...dashboard,
-        widgets: dashboard.widgets.map((w) => (w.widget_id === 'w_cat'
-          ? { ...w, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } }
-          : w)),
+        widgets: dashboard.widgets.map((w) => {
+          if (w.widget_id !== 'w_cat') return w;
+          const chart: Schemas['ChartTemplate'] & { result_id?: string } = { ...w.chart };
+          delete chart.result_id;
+          return { ...w, chart, status: 'error', result_id: null, error: { code: 'timeout', message: 'Ошибка обновления данных', suggestion: 'Источник не ответил за 30 сек.' } };
+        }),
       });
     }),
 
@@ -240,6 +277,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       }
       dashboard.widgets.push({
         widget_id: `w_${Date.now()}`, tool_call: { tool: result?.tool ?? 'unknown', params: result?.params ?? {} },
+        layout: { x: 0, y: 0, w: 6, h: 4 },
         chart: body.chart, caption: null, result_id: body.result_id, status: 'ok', error: null,
       });
       return HttpResponse.json(dashboard);

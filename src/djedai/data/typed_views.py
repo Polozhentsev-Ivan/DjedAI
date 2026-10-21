@@ -11,7 +11,7 @@
 и одно и то же выражение определяет тип, считает долю распознанных значений и
 попадает в представление: журнал не может разойтись с тем, что увидит запрос.
 
-Колонка получает тип, если распознано не менее ``THRESHOLD`` непустых значений;
+Колонка получает тип, если распознана доля ``TYPE_PARSE_THRESHOLD`` непустых значений;
 иначе она остаётся текстом. ID с ведущими нулями (``00123``) и колонки ``*_id``
 с целыми числами остаются текстом.
 """
@@ -25,11 +25,11 @@ from dataclasses import dataclass, field
 
 import duckdb
 
+from djedai.config import get_limits
 from djedai.data.csv_ingest import RawTable, read_sources, slugify
 
 COLUMNS_TABLE = "_djedai_columns"
 JOURNAL_TABLE = "_djedai_transformations"
-THRESHOLD = 0.95  # доля распознанных непустых значений; в спецификации помечена [TBD]
 EXAMPLES = 5
 MAX_SCALE = 8
 
@@ -412,7 +412,7 @@ def _infer_column(
             f"SELECT count(*) FILTER (WHERE {value} <> '' AND ({outcome.expr}) IS NOT NULL) "
             f"FROM {_ident(table)}"
         ).fetchone()[0]
-        if parsed < THRESHOLD * non_empty:
+        if parsed < get_limits().type_parse_threshold * non_empty:
             outcome = _Reject(
                 "below_threshold",
                 {"candidate": outcome.semantic_type, "success_ratio": _ratio(parsed, non_empty)},
@@ -474,7 +474,7 @@ def _rename_entries(original: str, name: str) -> tuple[tuple[str, dict], ...]:
 
 
 def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
-    if stats["bool"] < THRESHOLD * stats["ne"]:
+    if stats["bool"] < get_limits().type_parse_threshold * stats["ne"]:
         return None
     value = f"lower(trim({column}))"
     true_list = ", ".join(map(_lit, TRUE_WORDS))
@@ -487,7 +487,7 @@ def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
 
 
 def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject | None:
-    need = THRESHOLD * stats["ne"]
+    need = get_limits().type_parse_threshold * stats["ne"]
     fits = {d: stats[f"num{d}"] >= need for d in (",", ".")}
     if not any(fits.values()):
         return None
@@ -546,7 +546,7 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
 def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | None:
     counts = [(stats[f"fmt{i}"], i) for i in range(len(_TEMPORAL))]
     best = max(count for count, _ in counts)
-    if best < THRESHOLD * stats["ne"]:
+    if best < get_limits().type_parse_threshold * stats["ne"]:
         return None
     leaders = [i for count, i in counts if count == best]
     if len(leaders) > 1:

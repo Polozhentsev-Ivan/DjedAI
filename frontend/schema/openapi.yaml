@@ -1,16 +1,16 @@
 openapi: 3.1.0
 info:
   title: DjedAI API (snapshot)
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    Frontend API proposals (#83) plus canonical shared contracts, based on
+    Agreed PL-1 API snapshot plus canonical shared contracts, based on
     docs/specification.md: §3.4 DatasetCatalog, §4.3 ToolResult, §5.6 AssistantMessage,
     §6.2 ChartSpec, §7.2 Dashboard and §7.3 API. TypeScript types are generated from it
     with `npm run gen:types`. Shared definitions are referenced from contracts.json,
     exported from the current Python backend by scripts/export_frontend_contracts.py.
-    Endpoint proposals remain here until their implementation is agreed.
+    Implementations are tracked in the feature issues linked from the PL-1 decision record.
 
-    Items marked «x-proposal» are not in the specification yet and are proposed for #92.
+    PL-1 decisions and implementation boundaries are in docs/decisions/47-contracts-and-runtime.md.
 
     Server-sent events are described as schemas: every SSE frame is
     `event: <name>` + `data: <JSON of the matching schema>`.
@@ -84,7 +84,6 @@ paths:
     delete:
       operationId: deleteDataset
       summary: Delete a dataset
-      x-proposal: true
       responses:
         '204': { description: Deleted }
         default: { $ref: '#/components/responses/Error' }
@@ -120,21 +119,13 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [dataset_id]
-              properties:
-                dataset_id: { type: string }
+            schema: { $ref: '#/components/schemas/ChatCreate' }
       responses:
         '201':
           description: Created
           content:
             application/json:
-              schema:
-                type: object
-                required: [chat_id]
-                properties:
-                  chat_id: { type: string }
+              schema: { $ref: '#/components/schemas/ChatCreated' }
         default: { $ref: '#/components/responses/Error' }
   /chats/{chat_id}:
     parameters:
@@ -158,11 +149,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [text]
-              properties:
-                text: { type: string, minLength: 1 }
+            schema: { $ref: '#/components/schemas/SendMessageRequest' }
       responses:
         '200':
           description: Event stream; see AgentEvent
@@ -272,15 +259,20 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
+    UserRead:
+      $ref: './contracts.json#/components/schemas/UserRead'
+    TokenResponse:
+      $ref: './contracts.json#/components/schemas/TokenResponse'
+    AssistantMessage:
+      $ref: './contracts.json#/components/schemas/AssistantMessage'
+    DashboardDefinition:
+      $ref: './contracts.json#/components/schemas/Dashboard'
+
     ErrorBody:
       $ref: './contracts.json#/components/schemas/ToolError'
 
     ErrorResponse:
-      type: object
-      x-proposal: true
-      required: [error]
-      properties:
-        error: { $ref: '#/components/schemas/ErrorBody' }
+      $ref: './contracts.json#/components/schemas/ErrorResponse'
 
     SourceKind:
       type: string
@@ -289,43 +281,16 @@ components:
       type: string
       enum: [processing, ready, error]
     DatasetSource:
-      type: object
-      required: [kind]
-      properties:
-        kind: { $ref: '#/components/schemas/SourceKind' }
-        files: { type: integer, description: Number of uploaded CSV files, x-proposal: true }
+      $ref: './contracts.json#/components/schemas/DatasetListSource'
+
     DatasetSummary:
-      type: object
-      description: Row of the «Ваши датасеты» table (x-proposal; the specification lists only the storage fields)
-      required: [dataset_id, name, source, status, table_count, row_count, created_at]
-      properties:
-        dataset_id: { type: string }
-        name: { type: string }
-        source: { $ref: '#/components/schemas/DatasetSource' }
-        status: { $ref: '#/components/schemas/DatasetStatus' }
-        table_count: { type: [integer, 'null'] }
-        row_count: { type: [integer, 'null'] }
-        created_at: { type: string, format: date-time }
+      $ref: './contracts.json#/components/schemas/DatasetSummary'
+
     DatasetDetail:
-      allOf:
-        - $ref: '#/components/schemas/DatasetSummary'
-        - type: object
-          required: [catalog, error]
-          properties:
-            catalog:
-              oneOf:
-                - $ref: '#/components/schemas/DatasetCatalog'
-                - type: 'null'
-            error:
-              oneOf:
-                - $ref: '#/components/schemas/ErrorBody'
-                - type: 'null'
+      $ref: './contracts.json#/components/schemas/DatasetDetail'
+
     DatasetAccepted:
-      type: object
-      required: [dataset_id, status]
-      properties:
-        dataset_id: { type: string }
-        status: { $ref: '#/components/schemas/DatasetStatus' }
+      $ref: './contracts.json#/components/schemas/DatasetUploadAccepted'
     ConnectRequest:
       type: object
       required: [kind, dsn]
@@ -340,77 +305,22 @@ components:
       type: string
       enum: [id, integer, float, money, percent, datetime, date, category, text, bool]
     CatalogColumn:
-      type: object
-      required: [name, original_name, physical_type, semantic_type, null_ratio, distinct_count, is_unique]
-      properties:
-        name: { type: string }
-        original_name: { type: string }
-        physical_type: { type: string }
-        semantic_type: { $ref: '#/components/schemas/SemanticType' }
-        role: { type: string, enum: [id, measure, dimension, time, text] }
-        null_ratio: { type: number }
-        distinct_count: { type: integer }
-        is_unique: { type: boolean }
-        currency: { type: [string, 'null'], description: 'Currency sign of money columns, e.g. ₽', x-proposal: true }
-        parse:
-          type: object
-          properties:
-            format: { type: [string, 'null'] }
-            success_ratio: { type: number }
-        description: { type: [string, 'null'] }
+      $ref: './contracts.json#/components/schemas/Column'
+
     CatalogTable:
-      type: object
-      required: [table_id, original_name, row_count, columns]
-      properties:
-        table_id: { type: string }
-        raw_table: { type: string }
-        original_name: { type: string }
-        description: { type: [string, 'null'] }
-        row_count: { type: integer }
-        primary_key_candidates: { type: array, items: { type: string } }
-        time_columns: { type: array, items: { type: string } }
-        duplicate_rows: { type: integer }
-        columns:
-          type: array
-          items: { $ref: '#/components/schemas/CatalogColumn' }
+      $ref: './contracts.json#/components/schemas/Table'
+
     ColumnRef:
-      type: object
-      required: [table, column]
-      properties:
-        table: { type: string }
-        column: { type: string }
+      $ref: './contracts.json#/components/schemas/ColumnRef'
+
     Relation:
-      type: object
-      required: [from, to, overlap, cardinality, confidence]
-      properties:
-        from: { $ref: '#/components/schemas/ColumnRef' }
-        to: { $ref: '#/components/schemas/ColumnRef' }
-        overlap: { type: number, description: 'Share of matched keys, 0..1' }
-        jaccard: { type: number }
-        cardinality: { type: string, enum: ['1:1', 'N:1', '1:N', 'N:N'] }
-        confidence: { type: string, enum: [high, medium, low] }
+      $ref: './contracts.json#/components/schemas/Relation'
+
     Transformation:
       $ref: './contracts.json#/components/schemas/Transformation'
 
     DatasetCatalog:
-      type: object
-      required: [dataset_id, name, created_at, source, tables, relations, warnings, transformations]
-      properties:
-        dataset_id: { type: string }
-        name: { type: string }
-        created_at: { type: string, format: date-time }
-        source: { $ref: '#/components/schemas/DatasetSource' }
-        summary: { type: [string, 'null'] }
-        tables:
-          type: array
-          items: { $ref: '#/components/schemas/CatalogTable' }
-        relations:
-          type: array
-          items: { $ref: '#/components/schemas/Relation' }
-        warnings: { type: array, items: { type: string } }
-        transformations:
-          type: array
-          items: { $ref: '#/components/schemas/Transformation' }
+      $ref: './contracts.json#/components/schemas/DatasetCatalog'
 
     ProfilingStep:
       type: string
@@ -429,52 +339,16 @@ components:
         - $ref: '#/components/schemas/StreamError'
 
     ChartAxis:
-      type: object
-      required: [field]
-      properties:
-        field: { type: string }
-        label: { type: string }
-        kind: { type: string, enum: [time, category, number] }
+      $ref: './contracts.json#/components/schemas/XAxis'
+
     ChartMeasure:
-      type: object
-      required: [field]
-      properties:
-        field: { type: string }
-        label: { type: string }
-        format: { type: string, enum: [number, money, percent, int] }
+      $ref: './contracts.json#/components/schemas/YMeasure'
+
     ChartSpec:
-      type: object
-      required: [type, title]
-      properties:
-        chart_id: { type: string }
-        result_id: { type: string, description: 'Rows come from /results/{result_id}/data' }
-        type: { type: string, enum: [bar, line, area, scatter, pie, histogram, heatmap, box, table, kpi] }
-        title: { type: string }
-        subtitle: { type: [string, 'null'] }
-        x: { $ref: '#/components/schemas/ChartAxis' }
-        y:
-          type: array
-          items: { $ref: '#/components/schemas/ChartMeasure' }
-        color:
-          type: object
-          properties:
-            field: { type: string }
-            label: { type: string }
-        orientation: { type: string, enum: [vertical, horizontal] }
-        stacked: { type: boolean }
-        sort:
-          type: object
-          properties:
-            field: { type: string }
-            order: { type: string, enum: [asc, desc] }
-        limit: { type: integer }
-        annotations:
-          type: array
-          items:
-            type: object
-            properties:
-              x: { type: [string, number] }
-              text: { type: string }
+      $ref: './contracts.json#/components/schemas/ChartSpec'
+
+    ChartTemplate:
+      $ref: './contracts.json#/components/schemas/ChartTemplate'
 
     Fact:
       $ref: './contracts.json#/components/schemas/Fact'
@@ -489,91 +363,43 @@ components:
       $ref: './contracts.json#/components/schemas/ToolResult'
 
     TextBlock:
-      type: object
-      required: [type, markdown]
-      properties:
-        type: { const: text }
-        markdown: { type: string }
+      $ref: './contracts.json#/components/schemas/TextBlock'
+
     ChartBlock:
-      type: object
-      required: [type, chart]
-      properties:
-        type: { const: chart }
-        chart: { $ref: '#/components/schemas/ChartSpec' }
+      $ref: './contracts.json#/components/schemas/ChartBlock'
+
     TableBlock:
-      type: object
-      required: [type, result_id]
-      properties:
-        type: { const: table }
-        result_id: { type: string }
-        columns: { type: array, items: { type: string } }
-        limit: { type: integer }
+      $ref: './contracts.json#/components/schemas/TableBlock'
+
     ClarificationBlock:
-      type: object
-      required: [type, question, options]
-      properties:
-        type: { const: clarification }
-        question: { type: string }
-        options: { type: array, items: { type: string } }
+      $ref: './contracts.json#/components/schemas/ClarificationBlock'
+
     DashboardLinkBlock:
-      type: object
-      required: [type, dashboard_id, title]
-      properties:
-        type: { const: dashboard_link }
-        dashboard_id: { type: string }
-        title: { type: string }
+      $ref: './contracts.json#/components/schemas/DashboardLinkBlock'
+
     SuggestionsBlock:
-      type: object
-      required: [type, items]
-      properties:
-        type: { const: suggestions }
-        items: { type: array, items: { type: string } }
+      $ref: './contracts.json#/components/schemas/SuggestionsBlock'
+
     Block:
-      oneOf:
-        - $ref: '#/components/schemas/TextBlock'
-        - $ref: '#/components/schemas/ChartBlock'
-        - $ref: '#/components/schemas/TableBlock'
-        - $ref: '#/components/schemas/ClarificationBlock'
-        - $ref: '#/components/schemas/DashboardLinkBlock'
-        - $ref: '#/components/schemas/SuggestionsBlock'
-      discriminator:
-        propertyName: type
-        mapping:
-          text: '#/components/schemas/TextBlock'
-          chart: '#/components/schemas/ChartBlock'
-          table: '#/components/schemas/TableBlock'
-          clarification: '#/components/schemas/ClarificationBlock'
-          dashboard_link: '#/components/schemas/DashboardLinkBlock'
-          suggestions: '#/components/schemas/SuggestionsBlock'
+      $ref: './contracts.json#/components/schemas/MessageBlock'
+
     ChatSummary:
-      type: object
-      required: [chat_id, dataset_id, title, created_at]
-      properties:
-        chat_id: { type: string }
-        dataset_id: { type: string }
-        title: { type: string }
-        created_at: { type: string, format: date-time }
+      $ref: './contracts.json#/components/schemas/ChatSummary'
+
+    ChatCreate:
+      $ref: './contracts.json#/components/schemas/ChatCreate'
+
+    ChatCreated:
+      $ref: './contracts.json#/components/schemas/ChatCreated'
+
+    SendMessageRequest:
+      $ref: './contracts.json#/components/schemas/SendMessageRequest'
+
     ChatMessage:
-      type: object
-      required: [message_id, role, created_at]
-      properties:
-        message_id: { type: string }
-        role: { type: string, enum: [user, assistant] }
-        created_at: { type: string, format: date-time }
-        text: { type: string, description: User question }
-        blocks:
-          type: array
-          items: { $ref: '#/components/schemas/Block' }
-        result_ids: { type: array, items: { type: string } }
+      $ref: './contracts.json#/components/schemas/ChatMessage'
+
     ChatDetail:
-      allOf:
-        - $ref: '#/components/schemas/ChatSummary'
-        - type: object
-          required: [messages]
-          properties:
-            messages:
-              type: array
-              items: { $ref: '#/components/schemas/ChatMessage' }
+      $ref: './contracts.json#/components/schemas/ChatDetail'
 
     AgentStatus:
       $ref: './contracts.json#/components/schemas/SSEStatusData'
@@ -598,81 +424,25 @@ components:
         - $ref: '#/components/schemas/StreamError'
 
     ToolCall:
-      type: object
-      required: [tool, params]
-      properties:
-        tool: { type: string }
-        params: { type: object, additionalProperties: true }
+      $ref: './contracts.json#/components/schemas/WidgetToolCall'
+
     WidgetLayout:
-      type: object
-      required: [x, y, w, h]
-      properties:
-        x: { type: integer }
-        y: { type: integer }
-        w: { type: integer }
-        h: { type: integer }
+      $ref: './contracts.json#/components/schemas/WidgetLayout'
+
     Widget:
-      type: object
-      required: [widget_id, tool_call, chart, result_id, status]
-      properties:
-        widget_id: { type: string }
-        tool_call: { $ref: '#/components/schemas/ToolCall' }
-        chart: { $ref: '#/components/schemas/ChartSpec' }
-        caption: { type: [string, 'null'] }
-        layout: { $ref: '#/components/schemas/WidgetLayout' }
-        result_id:
-          type: [string, 'null']
-          description: Result of the latest run; null until the widget has run
-          x-proposal: true
-        status:
-          type: string
-          enum: [ok, error, empty]
-          description: Outcome of the latest run, so one failed widget does not fail the dashboard
-          x-proposal: true
-        error:
-          oneOf:
-            - $ref: '#/components/schemas/ErrorBody'
-            - type: 'null'
-          x-proposal: true
+      $ref: './contracts.json#/components/schemas/WidgetSnapshot'
+
     DashboardSummary:
-      type: object
-      required: [dashboard_id, dataset_id, title]
-      properties:
-        dashboard_id: { type: string }
-        dataset_id: { type: string }
-        title: { type: string }
-        refreshed_at: { type: [string, 'null'], format: date-time }
+      $ref: './contracts.json#/components/schemas/DashboardSummary'
+
     Dashboard:
-      type: object
-      required: [dashboard_id, dataset_id, title, widgets, created_at]
-      properties:
-        dashboard_id: { type: string }
-        dataset_id: { type: string }
-        title: { type: string }
-        description: { type: [string, 'null'] }
-        source_chat_id: { type: [string, 'null'] }
-        widgets:
-          type: array
-          items: { $ref: '#/components/schemas/Widget' }
-        created_at: { type: string, format: date-time }
-        refreshed_at: { type: [string, 'null'], format: date-time }
+      $ref: './contracts.json#/components/schemas/DashboardSnapshot'
+
     DashboardCreate:
-      type: object
-      required: [dataset_id, result_id, chart]
-      properties:
-        dataset_id: { type: string }
-        dashboard_id: { type: string, description: Existing dashboard to add to; a new one is created when omitted }
-        title: { type: string }
-        result_id: { type: string }
-        chart: { $ref: '#/components/schemas/ChartSpec' }
+      $ref: './contracts.json#/components/schemas/DashboardCreate'
+
     DashboardPatch:
-      type: object
-      properties:
-        title: { type: string }
-        remove_widget_ids: { type: array, items: { type: string } }
-        layout:
-          type: object
-          additionalProperties: { $ref: '#/components/schemas/WidgetLayout' }
+      $ref: './contracts.json#/components/schemas/DashboardPatch'
 
     StreamError:
       $ref: './contracts.json#/components/schemas/SSEErrorData'

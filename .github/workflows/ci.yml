@@ -63,6 +63,8 @@ jobs:
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Test auth migrations and persistence
         run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py
+      - name: Test CP1 CSV and runtime integration
+        run: uv run --locked pytest --strict-markers tests/integration/test_csv_dataset_service.py tests/integration/test_csv_dataset_api.py tests/integration/test_cp1_runtime.py
 
   frontend:
     name: frontend
@@ -101,9 +103,70 @@ jobs:
       - name: Build
         run: npm run build
 
+  browser:
+    name: browser
+    needs: repository
+    if: needs.repository.outputs.frontend-enabled == 'true' && needs.repository.outputs.python-enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - name: Install Python and locked dependencies
+        run: |
+          uv python install
+          uv sync --locked
+      - name: Install frontend and browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Test production UI against real backend and controlled model
+        working-directory: frontend
+        env:
+          DJEDAI_E2E_OUTPUT: ${{ runner.temp }}/djedai-playwright
+        run: npm run test:e2e
+      - name: Test Compose, nginx and persistent volumes with controlled model
+        run: |
+          cp .env.example .env
+          uv run --locked uvicorn --app-dir tests/e2e serve_cp1:model_app --factory --host 0.0.0.0 --port 18081 > "$RUNNER_TEMP/cp1-model.log" 2>&1 &
+          model_pid=$!
+          cleanup() {
+            docker compose -f compose.yaml -f infra/compose.test.yaml logs --no-color
+            docker compose -f compose.yaml -f infra/compose.test.yaml down
+            kill "$model_pid" || true
+          }
+          trap cleanup EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:18081/openapi.json > /dev/null
+          docker compose -f compose.yaml -f infra/compose.test.yaml up --build -d --wait --wait-timeout 180
+          npm --prefix frontend run smoke:cp1 -- --url http://127.0.0.1:8080 --output "$RUNNER_TEMP/cp1-compose"
+          docker compose -f compose.yaml -f infra/compose.test.yaml restart
+          docker compose -f compose.yaml -f infra/compose.test.yaml up -d --wait --wait-timeout 180
+          curl --fail http://127.0.0.1:8080/api/health
+          npm --prefix frontend run smoke:cp1 -- --url http://127.0.0.1:8080 --output "$RUNNER_TEMP/cp1-compose" --verify
+      - name: Save browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cp1-browser-evidence
+          path: |
+            ${{ runner.temp }}/cp1-compose
+            ${{ runner.temp }}/djedai-playwright
+            ${{ runner.temp }}/cp1-model.log
+          retention-days: 7
+          if-no-files-found: warn
+
   required:
     name: required
-    needs: [repository, python, frontend]
+    needs: [repository, python, frontend, browser]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -121,4 +184,11 @@ jobs:
           PYTHON_RESULT: ${{ needs.python.result }}
           FRONTEND_EXPECTED: ${{ needs.repository.outputs.frontend-enabled }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
-        run: node scripts/check-repository.mjs --required
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          node scripts/check-repository.mjs --required
+          if [ "$PYTHON_EXPECTED" = "true" ] && [ "$FRONTEND_EXPECTED" = "true" ]; then
+            test "$BROWSER_RESULT" = "success"
+          else
+            test "$BROWSER_RESULT" = "skipped"
+          fi

@@ -62,6 +62,12 @@ REQUIRED_SCHEMAS = [
     "DatasetStreamEvent",
     "DatasetSummary",
     "HealthCheck",
+    "ChatCreate",
+    "ChatCreated",
+    "ChatSummary",
+    "ChatMessage",
+    "ChatDetail",
+    "SendMessageRequest",
 ]
 
 TS_COMMAND_INFO = """

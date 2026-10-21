@@ -2,6 +2,7 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
+from djedai.contracts.chart import ChartSpec
 from djedai.contracts.tool_result import ToolResult
 
 
@@ -43,16 +44,19 @@ class PlannedCall(BaseModel):
     args: dict[str, Any]
 
 
-class ChartSpec(BaseModel):
-    title: str
-    type: str
-    data_ref: str
-
-
 class Block(BaseModel):
+    """Блок ответа агента до преобразования в контракт MessageBlock."""
+
     type: str
     markdown: str | None = None
     result_id: str | None = None
+    columns: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=1)
+    chart: dict[str, Any] | None = None
+    options: list[str] = Field(default_factory=list)
+    dashboard_id: str | None = None
+    title: str | None = None
+    items: list[str] = Field(default_factory=list)
 
 
 class AgentState(TypedDict, total=False):

@@ -5,6 +5,7 @@ import duckdb
 import sqlglot
 from sqlglot import exp
 
+from djedai.config import get_limits
 from djedai.contracts.tool_result import (
     ChartHint,
     Fact,
@@ -19,9 +20,23 @@ def _quote_id(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
+def run_sql(
+    sql: str,
+    max_rows: int | None = None,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> ToolResult:
     """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
+    con = None
     try:
+        limits = get_limits()
+        if max_rows is not None and (
+            not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 1
+        ):
+            raise ValueError("max_rows должен быть положительным целым числом")
+        max_rows = (
+            min(max_rows, limits.sql_max_rows) if max_rows is not None else limits.sql_max_rows
+        )
         # 1. ПАРСИМ SQL
         try:
             parsed = sqlglot.parse_one(sql, read="duckdb")
@@ -49,13 +64,14 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
             )
 
         # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
-        con = duckdb.connect(database=":memory:")
+        con = connection if connection is not None else duckdb.connect(database=":memory:")
         con.execute("SET enable_external_access = false;")
 
-        con.execute("CREATE TABLE test (id INT, name VARCHAR)")
-        con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
+        if connection is None:
+            con.execute("CREATE TABLE test (id INT, name VARCHAR)")
+            con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
 
-        timer = threading.Timer(30.0, con.interrupt)
+        timer = threading.Timer(limits.tool_timeout_seconds, con.interrupt)
         timer.start()
 
         try:
@@ -116,6 +132,9 @@ def run_sql(sql: str, max_rows: int = 5000) -> ToolResult:
                 suggestion=suggestion,
             ),
         )
+    finally:
+        if connection is None and con is not None:
+            con.close()
 
 
 # --- ОПИСАТЕЛЬНЫЕ ИНСТРУМЕНТЫ (B2-3) ---
@@ -133,9 +152,11 @@ def _get_mock_connection():
     return con
 
 
-def describe_dataset() -> ToolResult:
+def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
     try:
         tables = con.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
@@ -196,11 +217,19 @@ def describe_dataset() -> ToolResult:
             status="error",
             error=ToolError(code="db_error", message=str(e)),
         )
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
 
 
-def describe_column(table: str, column: str) -> ToolResult:
+def describe_column(
+    table: str, column: str, *, connection: duckdb.DuckDBPyConnection | None = None
+) -> ToolResult:
     """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
     try:
         # [P1] Проверка через параметры
         col_check = con.execute(
@@ -326,6 +355,10 @@ def describe_column(table: str, column: str) -> ToolResult:
             status="error",
             error=ToolError(code="db_error", message=str(e)),
         )
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
 
 
 def value_counts(
@@ -333,10 +366,15 @@ def value_counts(
     column: str,
     top_n: int = 10,
     filter: str | None = None,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
 ) -> ToolResult:
     """Возвращает топ-N самых частых значений в колонке."""
-    con = _get_mock_connection()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
     try:
+        con.execute("SET enable_external_access = false;")
         col_check = con.execute(
             "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
             [table, column],
@@ -434,3 +472,7 @@ def value_counts(
             status="error",
             error=ToolError(code="db_error", message=str(e)),
         )
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
