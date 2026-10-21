@@ -62,6 +62,9 @@ def model_app() -> FastAPI:
                 else f"Строк: {numbers[0]}; сумма: {numbers[1]}."
             )
             value = {"answer_blocks": [{"type": "text", "markdown": markdown}]}
+        elif name == "VerifyResponse":
+            draft = re.search(r"Drafted Response:\n(.*?)\n\nRules:", system, re.DOTALL).group(1)
+            value = {"is_valid": True, "issues": [], "corrected_markdown": draft}
         else:
             raise ValueError(f"Unexpected response schema: {name}")
         return {
