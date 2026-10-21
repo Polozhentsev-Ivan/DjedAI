@@ -37,6 +37,7 @@ from djedai.backend.db.repositories import (
     get_or_create_user,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
+from djedai.backend.local_user import local_owner_id
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
 from djedai.contracts.message import MessageBlock
@@ -103,6 +104,7 @@ def chat_api(
     get_settings.cache_clear()
 
     app = create_app(Settings(_env_file=None))
+    app.dependency_overrides[local_owner_id] = lambda: "u_chat"
 
     def override_db() -> Iterator[Session]:
         db = factory()
@@ -389,7 +391,8 @@ def test_thread_error_is_streamed_as_error_event(
     assert [name for name, _data in events] == ["status", "error"]
     error = events[-1][1]
     assert error["message"] == "Не удалось получить ответ агента"
-    assert "model connection lost" in error["detail"]
+    assert "model connection lost" not in error["detail"]
+    assert "повторите явно" in error["detail"]
 
     with factory() as db:
         messages = get_chat_messages(db, chat_id)
@@ -427,7 +430,9 @@ def test_agent_error_block_becomes_error_event(
 def test_send_message_rejects_blank_text(
     chat_api: tuple[TestClient, Any, Any],
 ) -> None:
-    client, _factory, _use_runtime = chat_api
+    client, _factory, use_runtime = chat_api
+    # Request validation is independent of a developer's local model credentials.
+    use_runtime(_runtime())
     chat_id = _create_chat(client)
 
     response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "   "})
@@ -517,6 +522,7 @@ async def test_stream_proxy_unbuffered_and_events(
     current_graph = graph1
 
     backend_app = create_app(Settings(_env_file=None))
+    backend_app.dependency_overrides[local_owner_id] = lambda: "u_live"
     backend_app.dependency_overrides[get_db] = lambda: factory()
     backend_app.dependency_overrides[get_session_factory] = lambda: factory
     backend_app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(graph=current_graph)
@@ -726,6 +732,7 @@ def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
     get_settings.cache_clear()
 
     app = create_app(Settings(_env_file=None))
+    app.dependency_overrides[local_owner_id] = lambda: "u_clean"
 
     open_sessions: set[Session] = set()
 
@@ -826,7 +833,22 @@ def test_stream_initial_save_failure_emits_error_event(
     name, data = events[0]
     assert name == "error"
     assert data["message"] == "Не удалось получить ответ агента"
-    assert "database is locked" in data["detail"]
+    assert "database is locked" not in data["detail"]
+
+
+def test_worker_session_factory_failure_terminates_stream(chat_api) -> None:
+    client, _factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(_runtime())
+
+    def broken_factory():
+        raise RuntimeError("private database connection details")
+
+    client.app.dependency_overrides[get_session_factory] = lambda: broken_factory
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
+    events = parse_sse(response.text)
+    assert [name for name, _ in events] == ["error"]
+    assert "private database" not in response.text
 
 
 @pytest.mark.anyio

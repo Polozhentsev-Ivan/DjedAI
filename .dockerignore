@@ -1,0 +1,27 @@
+# Only application/build inputs may enter either Docker build context.
+**
+!.python-version
+!.nvmrc
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!README.md
+!src/
+!src/**
+!prompts/
+!prompts/**
+!frontend/
+!frontend/**
+!infra/
+!infra/**
+
+# Re-exclude local values and generated files inside the allowed directories.
+**/.env
+**/.env.*
+**/.env_*
+**/node_modules
+**/dist
+**/coverage
+**/__pycache__
+**/*.pyc
+**/*.tsbuildinfo

@@ -112,6 +112,20 @@ def test_same_file_twice_gets_distinct_table_names(con):
     ]
 
 
+@pytest.mark.parametrize("view_name", ["raw_sales", "RAW_SALES"])
+def test_raw_table_name_avoids_existing_view(con, tmp_path, view_name):
+    con.execute(f'CREATE VIEW "{view_name}" AS SELECT 999 AS sentinel')
+    path = tmp_path / "sales.csv"
+    path.write_text("id,amount\n1,10\n2,20\n", encoding="utf-8")
+
+    table = load_raw_csv(con, path)
+
+    assert table.raw_table == "raw_sales_2"
+    assert rows(con, table.raw_table) == [("1", "10"), ("2", "20")]
+    assert con.execute(f'SELECT * FROM "{view_name}"').fetchall() == [(999,)]
+    assert read_sources(con) == [table]
+
+
 @pytest.mark.parametrize(
     ("file", "reason"),
     [("empty.csv", "файл пуст"), ("missing.csv", "файл недоступен")],

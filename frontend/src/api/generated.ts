@@ -421,10 +421,7 @@ export interface components {
             catalog: components["schemas"]["DatasetCatalog"] | null;
             error: components["schemas"]["ToolError"] | null;
         };
-        DatasetAccepted: {
-            dataset_id: string;
-            status: components["schemas"]["DatasetStatus"];
-        };
+        DatasetAccepted: components["schemas"]["DatasetUploadAccepted"];
         ConnectRequest: {
             /** @enum {string} */
             kind: "postgres" | "clickhouse";
@@ -836,6 +833,39 @@ export interface components {
             created_at: string;
         };
         /**
+         * ChatCreate
+         * @description Запрос на создание нового чата по датасету.
+         */
+        ChatCreate: {
+            /**
+             * Dataset Id
+             * @description ID датасета, к которому относится чат
+             */
+            dataset_id: string;
+        };
+        /**
+         * ChatCreated
+         * @description Ответ на создание чата.
+         */
+        ChatCreated: {
+            /**
+             * Chat Id
+             * @description ID созданного чата
+             */
+            chat_id: string;
+        };
+        /**
+         * SendMessageRequest
+         * @description Запрос на отправку вопроса в чат.
+         */
+        SendMessageRequest: {
+            /**
+             * Text
+             * @description Текст вопроса к данным
+             */
+            text: string;
+        };
+        /**
          * ChatMessage
          * @description Сообщение в истории чата: вопрос пользователя или ответ ассистента.
          */
@@ -1016,6 +1046,20 @@ export interface components {
              * @default null
              */
             files?: number | null;
+        };
+        /**
+         * DatasetUploadAccepted
+         * @description Acknowledgement of a persisted upload queued for profiling.
+         */
+        DatasetUploadAccepted: {
+            /** Dataset Id */
+            dataset_id: string;
+            /**
+             * Status
+             * @default processing
+             * @constant
+             */
+            status?: "processing";
         };
         /** DatasetSource */
         "schemas-DatasetSource": {
@@ -1815,7 +1859,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DatasetAccepted"];
+                    "application/json": components["schemas"]["DatasetUploadAccepted"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1840,7 +1884,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DatasetAccepted"];
+                    "application/json": components["schemas"]["DatasetUploadAccepted"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1944,9 +1988,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    dataset_id: string;
-                };
+                "application/json": components["schemas"]["ChatCreate"];
             };
         };
         responses: {
@@ -1956,9 +1998,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        chat_id: string;
-                    };
+                    "application/json": components["schemas"]["ChatCreated"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1998,9 +2038,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    text: string;
-                };
+                "application/json": components["schemas"]["SendMessageRequest"];
             };
         };
         responses: {

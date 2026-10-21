@@ -130,7 +130,18 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
     try:
         with Session(engine) as db:
             get_or_create_user(db, "legacy", "legacy-owner")  # Не умеет входить без пароля.
-            create_dataset(db, "dataset", "legacy", "CSV")
+            # Seed the historical revision using only columns it actually had.
+            # The current ORM also knows storage columns introduced after AUTH-1.
+            db.execute(
+                DatasetModel.__table__.insert().values(
+                    dataset_id="dataset",
+                    owner_id="legacy",
+                    name="CSV",
+                    source_kind="csv",
+                    status="ready",
+                )
+            )
+            db.commit()
             create_chat(db, "chat", "legacy", "dataset")
             create_dashboard(db, "dashboard", "legacy", "dataset", "Обзор")
             db.add(ToolResultModel(result_id="result", owner_id="legacy", status="empty"))
@@ -147,7 +158,10 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
         assert "sessions" not in inspect(engine).get_table_names()
         with Session(engine) as db:
             assert db.get(UserModel, "legacy").username == "legacy-owner"
-            assert db.get(DatasetModel, "dataset").owner_id == "legacy"
+            assert (
+                db.scalar(select(DatasetModel.owner_id).where(DatasetModel.dataset_id == "dataset"))
+                == "legacy"
+            )
         command.upgrade(cfg, "head")
     finally:
         engine.dispose()

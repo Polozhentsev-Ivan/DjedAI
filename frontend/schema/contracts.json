@@ -449,6 +449,39 @@
         "title": "ChartTemplate",
         "type": "object"
       },
+      "ChatCreate": {
+        "additionalProperties": false,
+        "description": "Запрос на создание нового чата по датасету.",
+        "properties": {
+          "dataset_id": {
+            "description": "ID датасета, к которому относится чат",
+            "minLength": 1,
+            "title": "Dataset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id"
+        ],
+        "title": "ChatCreate",
+        "type": "object"
+      },
+      "ChatCreated": {
+        "additionalProperties": false,
+        "description": "Ответ на создание чата.",
+        "properties": {
+          "chat_id": {
+            "description": "ID созданного чата",
+            "title": "Chat Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "title": "ChatCreated",
+        "type": "object"
+      },
       "ChatDetail": {
         "additionalProperties": false,
         "description": "Чат с полной историей сообщений.",
@@ -1670,6 +1703,27 @@
         "title": "DatasetSummary",
         "type": "object"
       },
+      "DatasetUploadAccepted": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "title": "Dataset Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "processing",
+            "title": "Status",
+            "default": "processing"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id"
+        ],
+        "title": "DatasetUploadAccepted",
+        "description": "Acknowledgement of a persisted upload queued for profiling."
+      },
       "ErrorResponse": {
         "additionalProperties": false,
         "description": "Стандартный формат ошибки API.",
@@ -1963,6 +2017,23 @@
           "ok"
         ],
         "title": "SSEToolResultData",
+        "type": "object"
+      },
+      "SendMessageRequest": {
+        "additionalProperties": false,
+        "description": "Запрос на отправку вопроса в чат.",
+        "properties": {
+          "text": {
+            "description": "Текст вопроса к данным",
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SendMessageRequest",
         "type": "object"
       },
       "SortSpec": {

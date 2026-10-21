@@ -1,183 +1,99 @@
 import { Square } from 'lucide-react';
-import { useEffect, useRef, useState, type SubmitEvent } from 'react';
+import { useEffect, useState, type SubmitEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { useFixtureState } from '@/app/useFixtureState';
-import { useChats, useSaveToDashboard } from '@/api/queries';
+import type { Schemas } from '@/api/client';
+import { useChatConversation } from '@/api/useChatConversation';
 import { useWorkspace } from '@/app/workspaceContext';
 import { ResultChart } from '@/charts/ResultChart';
-import { AgentSteps } from '@/components/AgentSteps';
 import { Button } from '@/components/Button';
-import { ChartCard } from '@/components/ChartCard';
 import { ChatMessage } from '@/components/ChatMessage';
-import { ClarifyBlock } from '@/components/ClarifyBlock';
-import { HowCalculated } from '@/components/HowCalculated';
 import { Icon } from '@/components/Icon';
-import { ErrorState } from '@/components/StateBlock';
-import { SuggestionChips } from '@/components/SuggestionChips';
-import { Toast } from '@/components/Toast';
-import { AGENT_STEPS, ANSWER, ANSWER_CHART, ANSWER_RESULT_ID, CALCULATION, CLARIFY_OPTIONS, FACTS, PARTIAL_ANSWER, QUESTION, STARTERS, SUGGESTIONS } from '@/fixtures/chat';
+import { SavedResult } from '@/components/SavedResult';
+import { EmptyState, ErrorState, LoadingState } from '@/components/StateBlock';
 import { cn } from '@/lib/cn';
 
-/** Dashboard the demo answer is already on (mock data); #86 takes it from a dashboard_link block. */
-const DASHBOARD = { id: 'd_q', title: 'Квартальная статистика продаж' };
-const TOAST_MS = 4500;
+function Blocks({ blocks }: { blocks: readonly Schemas['Block'][] }) {
+  return blocks.map((block, index) => {
+    if (block.type === 'text') return <div key={index} className="whitespace-pre-wrap">{block.markdown}</div>;
+    if (block.type === 'chart') return <section key={index}><h2 className="font-semibold">{block.chart.title}</h2><ResultChart resultId={block.chart.result_id} spec={block.chart} /></section>;
+    if (block.type === 'table') return <SavedResult key={index} id={block.result_id} />;
+    if (block.type === 'clarification') return <div key={index}>{block.question}<ul>{block.options.map((option) => <li key={option}>{option}</li>)}</ul></div>;
+    if (block.type === 'dashboard_link') return <Link key={index} to={`/dashboards/${encodeURIComponent(block.dashboard_id)}`}>{block.title}</Link>;
+    return null;
+  });
+}
 
-/**
- * Chat screen on fixtures. Streaming blocks from the SSE transport are wired in B4-4 (#86);
- * here sending only plays the prototype's loading phase.
- */
+function Answer({ blocks = [], resultIds = [] }: { blocks?: readonly Schemas['Block'][] | undefined; resultIds?: readonly string[] | undefined }) {
+  const embedded = new Set(blocks.filter((block) => block.type === 'table').map((block) => block.result_id));
+  return <ChatMessage role="assistant">
+    <Blocks blocks={blocks} />
+    {[...new Set(resultIds)].filter((id) => !embedded.has(id)).map((id) => <SavedResult key={id} id={id} />)}
+  </ChatMessage>;
+}
+
+function QuestionForm({ ready, streaming, onSend, onStop }: { ready: boolean; streaming: boolean; onSend: (text: string) => void; onStop: () => void }) {
+  const [text, setText] = useState('');
+  const submit = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!ready || streaming || !text.trim()) return;
+    onSend(text.trim());
+    setText('');
+  };
+  return <form onSubmit={submit} className="flex-none border-t border-border bg-background px-8 pb-4 pt-3.5">
+    <div className="mx-auto flex max-w-(--chat-max) items-center gap-2.5">
+      <input name="question" aria-label="Вопрос к данным" autoComplete="off" value={text} onChange={(event) => { setText(event.target.value); }}
+        disabled={streaming || !ready} placeholder={streaming ? 'Ассистент отвечает…' : 'Введите вопрос к данным'}
+        className="box-border h-(--size-control) min-w-0 flex-1 rounded-full border border-input bg-card px-5 text-base tracking-body text-foreground outline-none focus-visible:outline-(--focus-ring) disabled:opacity-70" />
+      {streaming ? <Button variant="inverse" className="h-(--size-control) flex-none gap-2 px-5" onClick={onStop}><Icon icon={Square} size="xs" />Остановить</Button>
+        : <Button type="submit" disabled={!ready || !text.trim()} className="h-(--size-control) flex-none px-5 text-base tracking-body">Отправить</Button>}
+    </div>
+  </form>;
+}
+
+/** CSV/text CP1 integration; the full interactive block renderer remains #86. */
 export function ChatPage() {
   const navigate = useNavigate();
   const { chatId } = useParams();
-  const fixture = useFixtureState();
-  const { user, activeDataset, datasets } = useWorkspace();
-  const chats = useChats(activeDataset);
-  const save = useSaveToDashboard();
-  const [text, setText] = useState('');
-  const [toast, setToast] = useState<{ id: string; title: string } | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => { clearTimeout(toastTimer.current); }, []);
-
-  const chat = chats.data?.find((c) => c.chat_id === chatId);
-  const state = chat ? fixture.state : 'empty';
-  const streaming = state === 'loading';
-  const dataset = datasets.find((d) => d.dataset_id === activeDataset)?.name ?? '—';
-
-  const send = () => {
-    setText('');
-    if (!chat) {
-      // Creating a chat and streaming the answer is #86; the fixture opens the latest chat.
-      const first = chats.data?.[0];
-      if (first) void navigate(`/chat/${first.chat_id}`);
-      return;
-    }
-    fixture.simulate('loading', 2600);
-  };
-  const submit = (event: SubmitEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!streaming && text.trim()) send();
-  };
-  const addToDashboard = () => {
-    if (!activeDataset) return;
-    save.mutate({ dataset_id: activeDataset, dashboard_id: DASHBOARD.id, result_id: ANSWER_RESULT_ID, chart: ANSWER_CHART }, {
-      onSuccess: (dashboard) => {
-        setToast({ id: dashboard.dashboard_id, title: dashboard.title });
-        clearTimeout(toastTimer.current);
-        toastTimer.current = setTimeout(() => { setToast(null); }, TOAST_MS);
-      },
-    });
-  };
-  const openDashboard = () => { if (toast) void navigate(`/dashboards/${toast.id}`); };
+  const { user, activeDataset, setActiveDataset, datasets } = useWorkspace();
+  const conversation = useChatConversation(chatId ?? null, activeDataset, (id) => { void navigate(`/chat/${encodeURIComponent(id)}`); });
+  const { history, turn } = conversation;
+  const detail = history.data;
+  const chatDataset = detail?.dataset_id;
+  useEffect(() => {
+    if (chatDataset) setActiveDataset(chatDataset);
+  }, [chatDataset, setActiveDataset]);
+  const streaming = turn?.running ?? false;
+  const dataset = datasets.find((item) => item.dataset_id === activeDataset)?.name ?? '—';
+  const messages = turn?.history ?? detail?.messages ?? [];
+  const ready = activeDataset !== null && (!chatId || history.isSuccess);
   const gutter = 'px-8';
 
   return (
     <div className="absolute inset-0 flex min-h-0 flex-col text-sm leading-normal tracking-sm text-foreground">
       <div className={cn('flex flex-none items-baseline gap-2.5 border-b border-border py-3.5', gutter)}>
-        <h1 className="text-base font-semibold tracking-body">{chat?.title ?? 'Новый чат'}</h1>
-        <span className="text-xs text-muted-foreground">
-          датасет <span className="font-mono">{dataset}</span>
-        </span>
+        <h1 className="text-base font-semibold tracking-body">{detail?.title ?? 'Новый чат'}</h1>
+        <span className="text-xs text-muted-foreground">датасет <span className="font-mono">{dataset}</span></span>
       </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto" aria-live="polite">
         <div className={cn('mx-auto box-content flex max-w-(--chat-max) flex-col gap-7 pb-10 pt-7', gutter)}>
-          {state === 'empty' && (
-            <>
-              <div className="flex flex-col items-center gap-2.5 px-0 pb-2 pt-8 text-center">
-                <div aria-hidden="true" className="flex size-(--size-avatar-lg) items-center justify-center rounded-full bg-inverse font-semibold text-inverse-foreground">D</div>
-                <div className="font-display text-xl font-semibold leading-tight tracking-display">Здравствуйте, {user}</div>
-                <div className="max-w-(--text-max) text-base tracking-body text-muted-foreground">
-                  Задайте вопрос к датасету {dataset} — ответ придёт с фактами, графиком и объяснением расчёта.
-                </div>
-              </div>
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(var(--grid-card-min),1fr))] gap-3">
-                {STARTERS.map((starter) => (
-                  <button
-                    key={starter.question}
-                    type="button"
-                    onClick={send}
-                    className="press flex flex-col items-start gap-1 rounded-lg border border-border bg-card p-4 text-left text-foreground hover:border-link"
-                  >
-                    <span className="text-sm font-semibold">{starter.question}</span>
-                    <span className="text-xs text-muted-foreground">{starter.columns}</span>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {(state === 'default' || streaming) && <ChatMessage role="user" text={QUESTION} />}
-
-          {state === 'default' && (
-            <ChatMessage role="assistant" parts={ANSWER} facts={FACTS}>
-              <ChartCard
-                title={ANSWER_CHART.title}
-                subtitle={ANSWER_CHART.subtitle ?? undefined}
-                primaryLabel={save.isPending ? 'Сохраняем…' : 'В дашборд'}
-                onPrimary={addToDashboard}
-                secondaryLabel="Экспорт"
-              >
-                <ResultChart resultId={ANSWER_RESULT_ID} spec={ANSWER_CHART} />
-              </ChartCard>
-              {save.isError && <ErrorState size="inline" title="Не удалось добавить график на дашборд" text={save.error.message} onAction={addToDashboard} />}
-              <HowCalculated defaultOpen summary="1 инструмент · 1 SQL-запрос · 0,8 сек" {...CALCULATION} />
-              <div className="text-sm tracking-sm text-secondary-foreground">
-                Этот график уже есть на дашборде <Link to={`/dashboards/${DASHBOARD.id}`}>«{DASHBOARD.title}» →</Link>
-              </div>
-              <SuggestionChips items={SUGGESTIONS} onSelect={send} />
-            </ChatMessage>
-          )}
-
-          {streaming && (
-            <ChatMessage role="assistant" parts={PARTIAL_ANSWER} streaming>
-              <AgentSteps title="Ассистент работает" steps={AGENT_STEPS} />
-            </ChatMessage>
-          )}
-
-          {state === 'error' && (
-            <>
-              <ChatMessage role="user" text="Покажи сумму заказов по регионам" />
-              <ChatMessage role="assistant">
-                <ClarifyBlock
-                  question="Какую сумму показать?"
-                  hint="В таблице orders две колонки с суммой — от выбора зависит результат."
-                  options={CLARIFY_OPTIONS}
-                  onSelect={send}
-                />
-              </ChatMessage>
-              <ChatMessage role="user" text="Покажи выручку по дням за 2019–2026" />
-              <ChatMessage role="assistant">
-                <ErrorState size="inline" title="Запрос превысил таймаут 30 сек." text="Попробуйте уточнить период — например, только 2026 год." onAction={send} />
-              </ChatMessage>
-            </>
-          )}
+          {!activeDataset && <EmptyState title="Датасет не выбран" text="Загрузите CSV или выберите готовый датасет, чтобы задать вопрос." actionLabel="К источникам" onAction={() => { void navigate('/sources'); }} />}
+          {chatId && history.isPending && !turn && <LoadingState size="compact" title="Загружаем историю чата…" />}
+          {chatId && history.isError && <ErrorState size="inline" title="Не удалось загрузить историю чата" text={history.error.message} onAction={() => { void history.refetch(); }} />}
+          {ready && messages.length === 0 && !turn?.question && <div className="flex flex-col items-center gap-2.5 pb-2 pt-8 text-center">
+            <div aria-hidden="true" className="flex size-(--size-avatar-lg) items-center justify-center rounded-full bg-inverse font-semibold text-inverse-foreground">D</div>
+            <div className="font-display text-xl font-semibold leading-tight tracking-display">Здравствуйте, {user}</div>
+            <div className="text-base text-muted-foreground">Задайте вопрос к датасету {dataset}. Сохранённые результаты расчётов появятся под ответом.</div>
+          </div>}
+          {messages.map((message) => message.role === 'user'
+            ? <ChatMessage key={message.message_id} role="user" text={message.text ?? ''} />
+            : <Answer key={message.message_id} blocks={message.blocks} resultIds={message.result_ids} />)}
+          {turn?.question && <ChatMessage role="user" text={turn.question} />}
+          {turn && (turn.blocks.length > 0 || turn.resultIds.length > 0) && <Answer blocks={turn.blocks} resultIds={turn.resultIds} />}
+          {streaming && <div role="status" className="text-muted-foreground">{turn?.status}</div>}
+          {turn?.error && <ErrorState size="inline" title={turn.error.message} text={turn.error.suggestion ?? undefined} actionLabel="" />}
         </div>
       </div>
-
-      <form onSubmit={submit} className={cn('flex-none border-t border-border bg-background pb-4 pt-3.5', gutter)}>
-        <div className="mx-auto flex max-w-(--chat-max) items-center gap-2.5">
-          <input
-            name="question"
-            aria-label="Вопрос к данным"
-            autoComplete="off"
-            value={text}
-            onChange={(e) => { setText(e.target.value); }}
-            disabled={streaming}
-            placeholder={streaming ? 'Ассистент отвечает…' : 'Введите вопрос к данным (например: «Где больше возвратов?»)'}
-            className="box-border h-(--size-control) min-w-0 flex-1 rounded-full border border-input bg-card px-5 text-base tracking-body text-foreground outline-none focus-visible:outline-(--focus-ring) disabled:opacity-70"
-          />
-          {streaming ? (
-            <Button variant="inverse" className="h-(--size-control) flex-none gap-2 px-5" onClick={() => { fixture.set('default'); }}>
-              <Icon icon={Square} size="xs" />
-              Остановить
-            </Button>
-          ) : (
-            <Button type="submit" className="h-(--size-control) flex-none px-5 text-base tracking-body">Отправить</Button>
-          )}
-        </div>
-      </form>
-
-      {toast && <Toast message={`График добавлен на дашборд «${toast.title}»`} actionLabel="Открыть →" onAction={openDashboard} />}
+      <QuestionForm key={`${chatId ?? 'new'}:${activeDataset ?? ''}`} ready={ready} streaming={streaming} onSend={(question) => { void conversation.send(question); }} onStop={conversation.stop} />
     </div>
   );
 }

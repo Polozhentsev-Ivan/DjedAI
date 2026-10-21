@@ -15,6 +15,7 @@ export const keys = {
   datasets: ['datasets'] as const,
   dataset: (id: string) => ['datasets', id] as const,
   chats: (datasetId: string) => ['chats', datasetId] as const,
+  chat: (id: string) => ['chat', id] as const,
   dashboards: (datasetId: string) => ['dashboards', datasetId] as const,
   dashboard: (id: string) => ['dashboard', id] as const,
   result: (id: string) => ['result', id] as const,
@@ -38,7 +39,11 @@ export function createQueryClient(): QueryClient {
 const enc = encodeURIComponent;
 
 export function useDatasets() {
-  return useQuery({ queryKey: keys.datasets, queryFn: ({ signal }) => request<Schemas['DatasetSummary'][]>('/datasets', { signal }) });
+  return useQuery({
+    queryKey: keys.datasets,
+    queryFn: ({ signal }) => request<Schemas['DatasetSummary'][]>('/datasets', { signal }),
+    refetchInterval: (query) => query.state.data?.some((dataset) => dataset.status === 'processing') ? 2000 : false,
+  });
 }
 
 export function useDataset(id: string | null) {
@@ -96,18 +101,18 @@ const RUNNING: ProfilingState = { ...IDLE, phase: 'running' };
  * Follows /datasets/{id}/events while `id` is set. Leaving the page or switching the id
  * aborts the stream; when profiling ends the dataset list and catalog are refetched.
  */
-export function useProfilingProgress(id: string | null): ProfilingState {
+export function useProfilingProgress(id: string | null, attempt: string | number = 0): ProfilingState {
   const client = useQueryClient();
-  const [state, setState] = useState<ProfilingState & { id: string | null }>({ ...IDLE, id: null });
+  const [state, setState] = useState<ProfilingState & { id: string | null; attempt: string | number }>({ ...IDLE, id: null, attempt: 0 });
 
   useEffect(() => {
     if (id === null) return;
     const controller = new AbortController();
-    // State of a previous id is dropped on the first event of the new stream.
+    // A new observation starts fresh, including retrying the same dataset after a disconnect.
     const update = (change: (s: ProfilingState) => Partial<ProfilingState>) => {
       if (controller.signal.aborted) return;
       setState((s) => {
-        const current = s.id === id ? s : { ...RUNNING, id };
+        const current = s.id === id && s.attempt === attempt ? s : { ...RUNNING, id, attempt };
         return { ...current, ...change(current) };
       });
     };
@@ -118,6 +123,7 @@ export function useProfilingProgress(id: string | null): ProfilingState {
         if (message.event === 'progress') {
           const { stage, progress, message: text } = message.data;
           update((s) => ({
+            phase: 'running', error: null,
             message: text ?? null,
             steps: {
               ...Object.fromEntries(Object.entries(s.steps).map(([key, step]) => [key, key === stage ? step : { status: 'done' as const, pct: 100 }])),
@@ -125,7 +131,7 @@ export function useProfilingProgress(id: string | null): ProfilingState {
             },
           }));
         } else if (message.event === 'done') {
-          update((s) => ({ phase: 'done', steps: Object.fromEntries(Object.keys(s.steps).map((key) => [key, { status: 'done' as const, pct: 100 }])) }));
+          update((s) => ({ phase: 'done', error: null, steps: Object.fromEntries(Object.keys(s.steps).map((key) => [key, { status: 'done' as const, pct: 100 }])) }));
         } else {
           fail(new ApiError(200, { code: 'profiling_failed', message: message.data.message, suggestion: message.data.detail ?? null }));
         }
@@ -139,10 +145,10 @@ export function useProfilingProgress(id: string | null): ProfilingState {
       })
       .catch((error: unknown) => { fail(error instanceof ApiError ? error : new ApiError(0, { code: 'unknown', message: String(error) })); });
     return () => { controller.abort(); };
-  }, [id, client]);
+  }, [id, attempt, client]);
 
   if (id === null) return IDLE;
-  return state.id === id ? state : RUNNING;
+  return state.id === id && state.attempt === attempt ? state : RUNNING;
 }
 
 export function useChats(datasetId: string | null) {
@@ -150,6 +156,16 @@ export function useChats(datasetId: string | null) {
     queryKey: keys.chats(datasetId ?? ''),
     queryFn: ({ signal }) => request<Schemas['ChatSummary'][]>(`/chats?dataset_id=${enc(datasetId ?? '')}`, { signal }),
     enabled: datasetId !== null,
+  });
+}
+
+export function useChat(id: string | null) {
+  return useQuery({
+    queryKey: keys.chat(id ?? ''),
+    queryFn: ({ signal }) => request<Schemas['ChatDetail']>(`/chats/${enc(id ?? '')}`, { signal }),
+    enabled: id !== null,
+    // A revisit recovers the saved history after a stopped or disconnected POST.
+    staleTime: 0,
   });
 }
 

@@ -12,8 +12,8 @@ import { initTheme } from './lib/theme';
 
 initTheme();
 
-// Until the backend (#92) is up, dev runs on the mock API; VITE_API_MOCKS=false talks to the real one.
-if (import.meta.env.DEV && import.meta.env.VITE_API_MOCKS !== 'false') {
+// Real backend by default. The prototype API is an explicit development option.
+if (import.meta.env.DEV && import.meta.env.VITE_API_MOCKS === 'true') {
   const { startMocks } = await import('./mocks/browser');
   await startMocks();
 }

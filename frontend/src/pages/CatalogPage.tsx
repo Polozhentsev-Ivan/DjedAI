@@ -2,7 +2,7 @@ import { ArrowLeftRight, ArrowRight, LoaderCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
-import { useDataset } from '@/api/queries';
+import { useDataset, useProfilingProgress } from '@/api/queries';
 import { catalogSummary, columnNote, journal, missingCell, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
@@ -188,6 +188,8 @@ export function CatalogPage() {
   const dataset = useDataset(id);
   const toSources = () => { void navigate('/sources'); };
   const detail = dataset.data;
+  const [progressAttempt, setProgressAttempt] = useState(0);
+  const progress = useProfilingProgress(detail?.status === 'processing' ? detail.dataset_id : null, progressAttempt);
   useEffect(() => {
     if (datasetId && detail?.status === 'ready') setActiveDataset(detail.dataset_id);
   }, [datasetId, detail?.status, detail?.dataset_id, setActiveDataset]);
@@ -217,6 +219,7 @@ export function CatalogPage() {
           </div>
         )}
         {!empty && waiting && <CatalogSkeleton label={detail?.status === 'processing' ? 'Строим профиль таблиц…' : 'Загружаем каталог…'} />}
+        {progress.error && <ErrorState size="inline" title={progress.error.message} text={progress.error.suggestion ?? undefined} onAction={() => { setProgressAttempt((attempt) => attempt + 1); void dataset.refetch(); }} />}
         {!empty && dataset.isError && !notFound && (
           <div className="rounded-lg border border-border bg-card">
             <ErrorState title="Не удалось загрузить каталог" text={dataset.error.message} onAction={() => { void dataset.refetch(); }} secondaryLabel="К источникам" onSecondary={toSources} />

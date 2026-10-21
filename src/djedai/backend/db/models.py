@@ -133,6 +133,10 @@ class DatasetModel(Base):
         String(64), default="ready", nullable=False
     )  # uploading, profiling, ready, error
     error_message = Column(Text, nullable=True)
+    # CSV adapter paths are relative to DATASETS_DATA_DIR, never client-controlled.
+    duckdb_path = Column(Text, nullable=True)
+    raw_files = Column(JSON, nullable=True)
+    progress = Column(JSON, nullable=True)
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
     updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
