@@ -8,24 +8,30 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 from pathlib import Path
 
 import duckdb
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import Request
 from fastapi.testclient import TestClient
+from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from djedai.agent.client import ModelResponse
+from djedai.agent.client import BIModelClient, ModelResponse
+from djedai.agent.prompts import load_prompt
 from djedai.backend import chat_service
 from djedai.backend.app import create_app
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.models import ChatModel, DatasetModel, ToolResultModel
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.local_user import bootstrap_local_user
+from djedai.contracts.agent import ComposeResponse, VerifyResponse
+from djedai.contracts.tool_result import ToolResultData
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,9 +57,73 @@ class ControlledModel:
             value = {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}
         elif response_model.__name__ == "ComposeResponse":
             value = {"answer_blocks": [{"type": "text", "markdown": "Расчёт завершён."}]}
+        elif response_model.__name__ == "VerifyResponse":
+            value = {
+                "is_valid": True,
+                "issues": [],
+                "corrected_markdown": "Расчёт завершён.",
+            }
         else:
             raise AssertionError(f"Unexpected response contract: {response_model}")
         return ModelResponse(status="success", data=response_model.model_validate(value))
+
+
+@pytest.mark.parametrize("question", ["Сколько строк и какова сумма?", "Ответь COUNT=...;SUM=..."])
+def test_browser_model_supports_successful_numeric_verification(question: str) -> None:
+    """The HTTP fixture must verify successfully, rather than rely on graph fail-open."""
+    model_app = runpy.run_path(str(ROOT / "tests/e2e/serve_cp1.py"))["model_app"]
+    facts = str(
+        [
+            {
+                "tool": "run_sql",
+                "data": ToolResultData(columns=["n", "total"], rows=[[2, 30]], row_count=1),
+            }
+        ]
+    )
+    requested_schemas = []
+    with TestClient(model_app(), raise_server_exceptions=False) as server:
+
+        def complete(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requested_schemas.append(payload["response_format"]["json_schema"]["name"])
+            response = server.post("/v1/chat/completions", json=payload)
+            return httpx.Response(
+                response.status_code,
+                content=response.content,
+                headers={"content-type": response.headers["content-type"]},
+                request=request,
+            )
+
+        model = BIModelClient(
+            api_key="cp1-test-only",
+            base_url="http://cp1-model.test/v1",
+            model_name="cp1-controlled-model",
+        )
+        model.client.close()
+        model.client = OpenAI(
+            api_key="cp1-test-only",
+            base_url="http://cp1-model.test/v1",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(complete)),
+        )
+        try:
+            composed = model.generate_typed_response(
+                load_prompt("compose").format(facts=facts), question, ComposeResponse
+            )
+            assert composed.status == "success" and composed.data is not None
+            draft = composed.data.answer_blocks[0].markdown
+            assert draft
+            verified = model.generate_typed_response(
+                load_prompt("verify").format(facts=facts, draft=draft),
+                "Verify the numbers and formats.",
+                VerifyResponse,
+            )
+            assert verified.status == "success" and verified.data is not None
+            assert verified.data.is_valid and verified.data.issues == []
+            assert verified.data.corrected_markdown == draft
+            assert requested_schemas == ["ComposeResponse", "VerifyResponse"]
+        finally:
+            model.client.close()
 
 
 @pytest.fixture
@@ -190,12 +260,93 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
         assert len(plans) == 2
         assert "Таблица alpha" in plans[0] and "Таблица beta" not in plans[0]
         assert "Таблица beta" in plans[1] and "Таблица alpha" not in plans[1]
+        checks = [system for schema, system, _ in model.calls if schema == "VerifyResponse"]
+        assert len(checks) == 2
+        assert all("Drafted Response:\nРасчёт завершён." in system for system in checks)
 
     with TestClient(create_app(settings)) as restarted:
         for chat_id, result_id, metadata, data, history in saved:
             assert restarted.get(f"/api/results/{result_id}").json() == metadata
             assert restarted.get(f"/api/results/{result_id}/data").json() == data
             assert restarted.get(f"/api/chats/{chat_id}").json() == history
+
+
+@pytest.mark.parametrize("failure", ["empty", "timeout", "timeout_after_rejection"])
+def test_unverified_numbers_are_neither_published_nor_saved(
+    configured, monkeypatch, failure
+) -> None:
+    settings, _ = configured
+
+    class UnverifiedModel(ControlledModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.compose_calls = 0
+            self.verify_calls = 0
+
+        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+            if failure == "empty" and response_model.__name__ == "PlanResponse":
+                return ModelResponse(
+                    status="success",
+                    data=response_model.model_validate(
+                        {
+                            "plan": [
+                                {
+                                    "tool": "value_counts",
+                                    "args": {
+                                        "table": "sales",
+                                        "column": "amount",
+                                        "filter": "FALSE",
+                                    },
+                                }
+                            ]
+                        }
+                    ),
+                )
+            if response_model is ComposeResponse:
+                self.compose_calls += 1
+                return ModelResponse(
+                    status="success",
+                    data=ComposeResponse.model_validate(
+                        {"answer_blocks": [{"type": "text", "markdown": "Количество строк: 999"}]}
+                    ),
+                )
+            if response_model is VerifyResponse:
+                self.verify_calls += 1
+                if failure == "timeout_after_rejection" and self.verify_calls == 1:
+                    return ModelResponse(
+                        status="success",
+                        data=VerifyResponse(
+                            is_valid=False,
+                            issues=["999 не подтверждено данными"],
+                            corrected_markdown="Количество строк: 2",
+                        ),
+                    )
+                return ModelResponse(status="error", error_type="TIMEOUT", message="Test timeout")
+            return super().generate_typed_response(system_prompt, user_prompt, response_model)
+
+    model = UnverifiedModel()
+    monkeypatch.setattr(chat_service, "get_agent_client", lambda: model)
+    with TestClient(create_app(settings)) as client:
+        _, chat_id = _upload(client)
+        events = _post_turn(client, chat_id)
+        names = [event for event, _ in events]
+        blocks = [data for event, data in events if event == "block"]
+        history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert "999" not in json.dumps(blocks, ensure_ascii=False)
+        assert "999" not in json.dumps(
+            [message.get("blocks", []) for message in history], ensure_ascii=False
+        )
+        if failure == "empty":
+            assert names[-1] == "done" and "error" not in names
+            assert blocks == [{"type": "text", "markdown": "Нет данных для формирования ответа."}]
+            assert [message["role"] for message in history] == ["user", "assistant"]
+            assert history[-1]["blocks"] == blocks
+            assert model.compose_calls == 1 and model.verify_calls == 0
+        else:
+            assert names[-1] == "error" and "done" not in names and "block" not in names
+            assert [message["role"] for message in history] == ["user"]
+            expected_calls = 2 if failure == "timeout_after_rejection" else 1
+            assert model.compose_calls == model.verify_calls == expected_calls
 
 
 def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatch) -> None:
