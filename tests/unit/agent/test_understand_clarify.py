@@ -50,7 +50,7 @@ def test_clarify_invalid_field():
     assert len(result["answer_blocks"]) == 1
 
     block = result["answer_blocks"][0]
-    assert block.type == "error"
+    assert block.type == "clarification"
     assert "не найдены в данных" in block.markdown
 
 
