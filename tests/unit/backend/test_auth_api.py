@@ -16,11 +16,14 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Message, Receive, Scope, Send
 
+from djedai.backend.api.routes import auth as auth_routes
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password, storage, verify_password
+from djedai.backend.auth import dependencies as auth_dependencies
 from djedai.backend.auth import passwords as password_tools
 from djedai.backend.auth import policy as auth_policy
 from djedai.backend.auth.dependencies import current_owner_id
@@ -632,3 +635,123 @@ def test_auth_rate_bucket_capacity_is_bounded_and_expiration_is_not_extended() -
     assert limiter.check("new-client", "/api/auth/login") is None
     assert len(limiter._buckets) == 1
     assert limiter.check("client-0", "/api/auth/login") is None
+
+
+@pytest.mark.parametrize(
+    "method,path,operation",
+    [
+        ("post", "/api/auth/register", "create_user"),
+        ("post", "/api/auth/login", "authenticate_user"),
+        ("post", "/api/auth/login", "create_session"),
+        ("get", "/api/auth/me", "get_session_user"),
+        ("post", "/api/auth/logout", "revoke_session"),
+    ],
+)
+def test_storage_errors_are_sanitized_503_and_do_not_change_auth_state(
+    auth_api: AuthAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    method: str,
+    path: str,
+    operation: str,
+) -> None:
+    client, factory, _ = auth_api
+    caplog.set_level(logging.DEBUG)
+    token = _token(factory) if path.endswith(("/me", "/logout")) else "private-token-param"
+    secret = "postgresql://private-database-password@db/auth"
+    failure = StatementError(
+        secret,
+        "UPDATE users SET password_hash=:password",
+        {"password": _PASSWORD, "access_token": token},
+        RuntimeError("private-storage-exception"),
+    )
+
+    def fail_storage(*_args: Any, **_kwargs: Any) -> None:
+        raise failure
+
+    with factory() as db:
+        before = (
+            db.execute(UserModel.__table__.select()).all(),
+            db.execute(SessionModel.__table__.select()).all(),
+        )
+    target = auth_dependencies if operation == "get_session_user" else auth_routes
+    with monkeypatch.context() as patch:
+        patch.setattr(target, operation, fail_storage)
+        kwargs: dict[str, Any] = {"headers": _bearer(token)}
+        if path.endswith(("/register", "/login")):
+            kwargs["json"] = {
+                "username": "new-user" if operation == "create_user" else "alice",
+                "password": _PASSWORD,
+            }
+        response = client.request(method, path, **kwargs)
+    _error(response, 503, "unavailable")
+    for sensitive in (secret, _PASSWORD, token, "private-storage-exception", "UPDATE users"):
+        assert sensitive not in response.text + caplog.text
+    assert "set-cookie" not in response.headers
+    with factory() as db:
+        after = (
+            db.execute(UserModel.__table__.select()).all(),
+            db.execute(SessionModel.__table__.select()).all(),
+        )
+    assert after == before
+    if path.endswith(("/me", "/logout")):
+        assert client.get("/api/auth/me", headers=_bearer(token)).status_code == 200
+
+
+def test_account_state_race_during_session_creation_is_generic_401(
+    auth_api: AuthAPI, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, factory, _ = auth_api
+    caplog.set_level(logging.DEBUG)
+    baseline = _unauthorized(
+        client.post("/api/auth/login", json={"username": "unknown", "password": _PASSWORD})
+    )
+
+    def fail_session(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("private-account-state-error")
+
+    monkeypatch.setattr(auth_routes, "create_session", fail_session)
+    response = client.post("/api/auth/login", json={"username": "alice", "password": _PASSWORD})
+    assert _unauthorized(response) == baseline
+    assert "private-account-state-error" not in response.text + caplog.text
+    assert _PASSWORD not in response.text + caplog.text
+    with factory() as db:
+        assert len(db.scalars(select(UserModel)).all()) == 1
+        assert db.scalars(select(SessionModel)).all() == []
+
+
+@pytest.mark.parametrize("lookup_fails", [False, True])
+def test_registration_integrity_error_is_503_without_confirmed_username_conflict(
+    auth_api: AuthAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lookup_fails: bool,
+) -> None:
+    client, factory, _ = auth_api
+    caplog.set_level(logging.DEBUG)
+    username = "alice" if lookup_fails else "new-user"
+    secret = "private-integrity-secret"
+
+    def fail_registration(*_args: Any, **_kwargs: Any) -> None:
+        raise IntegrityError(
+            "INSERT INTO users",
+            {"username": username, "password": _PASSWORD},
+            RuntimeError(secret),
+        )
+
+    def fail_lookup(*_args: Any, **_kwargs: Any) -> None:
+        raise StatementError(secret, "SELECT users", {"password": _PASSWORD}, RuntimeError(secret))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(auth_routes, "create_user", fail_registration)
+        if lookup_fails:
+            patch.setattr(Session, "scalar", fail_lookup)
+        response = client.post(
+            "/api/auth/register", json={"username": username, "password": _PASSWORD}
+        )
+    _error(response, 503, "unavailable")
+    for sensitive in (secret, _PASSWORD, "INSERT INTO users", "SELECT users"):
+        assert sensitive not in response.text + caplog.text
+    with factory() as db:
+        assert len(db.scalars(select(UserModel)).all()) == 1
+        assert db.scalars(select(SessionModel)).all() == []
