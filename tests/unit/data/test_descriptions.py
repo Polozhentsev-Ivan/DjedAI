@@ -404,3 +404,31 @@ def test_incomplete_table_answer_is_not_cached(con, broken):
     assert [p.get("table") for _, p, m in client.calls if m is TableDescriptions] == ["clients"]
     assert clients.description == "Строка таблицы clients"
     assert all(c.description == f"Смысл колонки {c.name}" for c in clients.columns)
+
+
+def test_cached_answer_for_other_missing_fields_is_not_reused(con):
+    """Ответ, полный для каталога с заполненными полями, не блокирует пустой каталог."""
+
+    def only_vip(payload, model):
+        if model is DatasetSummary:
+            return answer_all(payload, model)
+        columns = [{"name": "is_vip", "description": "Признак VIP-клиента"}]
+        return ModelResponse(
+            status="success", data=TableDescriptions(table="Customers", columns=columns)
+        )
+
+    data = only_clients().model_dump(mode="json", by_alias=True)
+    data["summary"] = "Клиенты магазина"
+    data["tables"][0]["description"] = "Клиенты"
+    data["tables"][0]["columns"][0]["description"] = "Идентификатор клиента"
+    partial = describe_catalog(con, DatasetCatalog.model_validate(data), FakeClient(only_vip))
+    assert partial.catalog.tables[0].columns[1].description == "Признак VIP-клиента"
+
+    blank = only_clients().model_copy(update={"summary": "Клиенты магазина"})
+    client = FakeClient()
+    (clients,) = describe_catalog(con, blank, client).catalog.tables
+    assert len(client.calls) == 1
+    assert clients.description == "Строка таблицы clients"
+    assert all(c.description == f"Смысл колонки {c.name}" for c in clients.columns)
+    # полный ответ заменил неполный: теперь оба каталога читаются из кэша
+    assert describe_catalog(con, blank, FakeClient()).model_calls == 0

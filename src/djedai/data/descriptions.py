@@ -104,7 +104,8 @@ class _Describer:
 
         В кэш попадает только ответ, для которого ``complete`` истинно: все нужные описания
         прошли проверку. Отвергнутый или неполный ответ не кэшируется, поэтому при
-        следующем вызове пустые поля можно получить заново.
+        следующем вызове пустые поля можно получить заново. Ответ из кэша тоже
+        проверяется ``complete`` для текущего вызова: неполный заменяется новым.
         """
         user = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         system = load_prompt(prompt)
@@ -116,7 +117,12 @@ class _Describer:
             f"SELECT payload FROM {DESCRIPTIONS_TABLE} WHERE key = ?", [key]
         ).fetchone()
         if cached:
-            return answer.model_validate_json(cached[0])
+            # Вход не содержит уже заполненных описаний, поэтому один ключ подходит
+            # каталогам с разным набором пустых полей. Ответ, сохранённый для другого
+            # набора, может не покрывать текущий — тогда спрашиваем модель снова.
+            found = answer.model_validate_json(cached[0])
+            if complete(found):
+                return found
         self.calls += 1
         try:
             response = self.client.generate_typed_response(system, user, answer)
