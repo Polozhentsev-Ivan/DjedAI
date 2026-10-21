@@ -1,7 +1,7 @@
 """LLM-описания каталога (B1-6): колонки, таблицы и краткое описание датасета.
 
 Модель получает компактный JSON по каждой таблице — имена, оригинальные заголовки, тип,
-роль, примеры и статистику (примеры и частые значения — только при ``share_values``) —
+роль, примеры и статистику (примеры и частые значения — только при ``ALLOW_DATA_SHARING``) —
 и одним вызовом описывает таблицу и её колонки (широкие
 таблицы делятся на части по ``MAX_COLUMNS_PER_CALL``). Затем одним вызовом пишется
 ``summary`` датасета по описаниям таблиц, периодам и связям. Заполняются только пустые
@@ -31,6 +31,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from djedai.agent.client import MODEL_UNAVAILABLE
+from djedai.agent.config import data_sharing_allowed
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import Column, DatasetCatalog, Table
 
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 DESCRIPTIONS_TABLE = "_djedai_descriptions"
 TABLE_PROMPT = "describe_table"
 DATASET_PROMPT = "describe_dataset"
-MAX_COLUMNS_PER_CALL = 40
+MAX_COLUMNS_PER_CALL = 20  # ~1000 токенов ответа: укладывается в таймаут локальной модели
 MAX_DESCRIPTION_CHARS = 200
 MAX_SUMMARY_CHARS = 400
 TOP_VALUES = 5
@@ -144,12 +145,14 @@ def describe_catalog(
 ) -> DescriptionReport:
     """Копия каталога с описаниями колонок, таблиц и ``summary``; сбой модели — в warnings.
 
-    ``share_values=False`` не передаёт модели значения ячеек (примеры и частые значения):
-    для внешней модели, которой нельзя показывать данные пользователя. Остаются имена,
-    типы и агрегаты; описания при этом обычно менее точны.
+    Значения ячеек (примеры и частые значения) уходят модели, только если администратор
+    разрешил это явно (``ALLOW_DATA_SHARING=true``, см. ``data_sharing_allowed``): по
+    умолчанию ``MODEL_BASE_URL`` считается внешним API. ``share_values=False`` запрещает
+    передачу и при разрешении, но разрешить её в обход настройки нельзя. Без значений
+    остаются имена, типы и агрегаты; описания при этом обычно менее точны.
     """
     _ensure_table(connection)
-    describer = _Describer(connection, client, share_values)
+    describer = _Describer(connection, client, share_values and data_sharing_allowed())
     warnings: list[str] = []
     tables = list(catalog.tables)
     summary = catalog.summary

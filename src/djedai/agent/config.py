@@ -1,6 +1,6 @@
 import os
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
 from djedai.agent.client import BIModelClient
@@ -11,6 +11,18 @@ class ModelConfig(BaseModel):
     base_url: str = Field(min_length=1)
     name: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
+
+
+def data_sharing_allowed() -> bool:
+    """Можно ли отправлять модели значения ячеек: только при ``ALLOW_DATA_SHARING=true``.
+
+    По умолчанию нельзя: ``MODEL_BASE_URL`` может указывать на внешний API. Значение
+    берётся из окружения, затем из ``.env``; окружение процесса не меняется.
+    """
+    value = os.environ.get("ALLOW_DATA_SHARING")
+    if value is None:
+        value = dotenv_values().get("ALLOW_DATA_SHARING")
+    return (value or "false").strip().lower() == "true"
 
 
 def get_agent_client() -> BIModelClient:

@@ -79,6 +79,18 @@ def only_clients() -> DatasetCatalog:
     return blank_catalog(tables=[clients], relations=[], transformations=[], warnings=[])
 
 
+@pytest.fixture(autouse=True)
+def no_data_sharing(monkeypatch):
+    """По умолчанию значения не передаются; локальный .env на тесты не влияет."""
+    monkeypatch.delenv("ALLOW_DATA_SHARING", raising=False)
+    monkeypatch.setattr("djedai.agent.config.dotenv_values", lambda *args, **kwargs: {})
+
+
+@pytest.fixture
+def share_data(monkeypatch):
+    monkeypatch.setenv("ALLOW_DATA_SHARING", "true")
+
+
 @pytest.fixture
 def db_path(tmp_path):
     return tmp_path / "dataset.duckdb"
@@ -115,7 +127,7 @@ def test_columns_tables_and_summary_are_described(con):
     assert "— Смысл колонки amount" in prompt and "Данные: orders, clients" in prompt
 
 
-def test_table_call_sends_names_samples_and_stats(con):
+def test_table_call_sends_names_samples_and_stats(con, share_data):
     client = FakeClient()
     describe_catalog(con, blank_catalog(), client)
 
@@ -153,7 +165,7 @@ def test_second_read_uses_cache(con, db_path):
     assert second.catalog == first.catalog
 
 
-def test_changed_table_is_described_again(con):
+def test_changed_table_is_described_again(con, share_data):
     describe_catalog(con, blank_catalog(), FakeClient())
     data = blank_catalog().model_dump(mode="json", by_alias=True)
     data["tables"][1]["columns"][1]["sample_values"] = [True]
@@ -293,7 +305,7 @@ def test_empty_catalog_needs_no_model(con):
     assert (report.model_calls, report.catalog.summary) == (0, None)
 
 
-def test_values_are_not_shared_when_disabled(con):
+def test_values_are_not_shared_when_disabled(con, share_data):
     client = FakeClient()
     report = describe_catalog(con, blank_catalog(), client, share_values=False)
 
