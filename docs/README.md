@@ -1,5 +1,7 @@
 # Документация
 
+- [AUTH-4 / #104](decisions/104-browser-auth.md) — формы входа/регистрации, guard, выход и очистка личного workspace.
+
 - [AUTH-3 / #103 и PostgreSQL / #60](decisions/103-owner-isolation.md) — проверка владельца, SSE, SQL/файлы, ключ источников и границы следующих задач.
 
 - [Решения PL-1 / #47](decisions/47-contracts-and-runtime.md) — общие форматы,

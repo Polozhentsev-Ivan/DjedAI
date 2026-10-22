@@ -1,10 +1,9 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useDatasets } from '@/api/queries';
 import { WorkspaceContext, type Workspace } from './workspaceContext';
+import { useAuth } from './authContext';
 
 const STORAGE_KEY = 'djedai.activeDataset';
-/** CP1 has one explicitly configured backend owner; authentication is a later task. */
-const USER = 'Локальный режим CP1';
 
 function stored(): string | null {
   try {
@@ -16,6 +15,7 @@ function stored(): string | null {
 
 /** Dataset list from the API and the dataset the user works with, remembered per browser. */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const query = useDatasets();
   const [chosen, setChosen] = useState<string | null>(stored);
   const setActiveDataset = useCallback((id: string) => {
@@ -31,12 +31,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const usable = (id: string | null) => datasets.some((d) => d.dataset_id === id && d.status === 'ready');
     const fallback = datasets.find((d) => d.status === 'ready')?.dataset_id ?? null;
     return {
-      user: USER,
+      user: user?.username ?? '',
       datasets,
       ready: query.isSuccess || query.isError,
       activeDataset: usable(chosen) ? chosen : fallback,
       setActiveDataset,
     };
-  }, [query.data, query.isSuccess, query.isError, chosen, setActiveDataset]);
+  }, [query.data, query.isSuccess, query.isError, chosen, setActiveDataset, user]);
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

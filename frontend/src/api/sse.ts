@@ -118,7 +118,7 @@ export async function streamEvents<M extends EventMap>(path: string, { onEvent, 
   }
   if (!response.ok) {
     const error = await errorFrom(response);
-    if (response.status === 401) clearSessionIfCurrent(session);
+    if (response.status === 401 || response.status === 403) clearSessionIfCurrent(session, response.status === 401 ? 'expired' : 'forbidden');
     throw error;
   }
   if (aborted()) return 'aborted';
@@ -149,7 +149,7 @@ export async function streamEvents<M extends EventMap>(path: string, { onEvent, 
         }
         onEvent({ event: message.event, data } as StreamEvent<M>);
         if (message.event === 'error' && typeof data === 'object' && data !== null
-            && 'code' in data && data.code === 'unauthorized') clearSessionIfCurrent(session);
+            && 'code' in data && (data.code === 'unauthorized' || data.code === 'forbidden')) clearSessionIfCurrent(session, data.code === 'unauthorized' ? 'expired' : 'forbidden');
         if (message.event === 'done' || message.event === 'error') return message.event;
       }
     }

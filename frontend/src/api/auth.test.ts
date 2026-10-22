@@ -77,6 +77,16 @@ describe('auth API', () => {
     expect(sessionSnapshot().accessToken).toBeNull();
   });
 
+  it('does not clear a newer session for a form submission already cancelled on unmount', async () => {
+    setAccessToken('new-session');
+    const controller = new AbortController();
+    controller.abort();
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    await expect(login(credentials, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(sessionSnapshot().accessToken).toBe('new-session');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('clears local credentials after logout failure', async () => {
     setAccessToken('current-session');
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network'));
@@ -88,7 +98,7 @@ describe('auth API', () => {
     setAccessToken('old-session');
     const response = pendingResponse();
     vi.spyOn(globalThis, 'fetch').mockReturnValue(response.promise);
-    const result = expect(logout()).rejects.toMatchObject({ name: 'AbortError' });
+    const result = expect(logout()).resolves.toBeUndefined();
     setAccessToken('new-session');
     response.resolve(new Response(null, { status: 204 }));
     await result;
