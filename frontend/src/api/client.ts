@@ -59,17 +59,19 @@ interface RequestOptions {
   headers?: Record<string, string>;
   /** Public register/login requests must not carry an existing credential. */
   authenticated?: boolean;
+  /** Logout revocation survives clearing the local session and its old streams. */
+  sessionBound?: boolean;
 }
 
 /** Sends a request and returns the raw response; network failures and non-2xx become ApiError. */
-export async function send(path: string, { method = 'GET', json, form, signal, headers = {}, authenticated = true }: RequestOptions = {}): Promise<Response> {
+export async function send(path: string, { method = 'GET', json, form, signal, headers = {}, authenticated = true, sessionBound = true }: RequestOptions = {}): Promise<Response> {
   const session = sessionSnapshot();
   // Authorization always comes from the current tab session, including when a caller
   // supplies headers with a different casing.
   const allHeaders: Record<string, string> = { Accept: 'application/json', ...Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'authorization')) };
   if (authenticated && session.accessToken) allHeaders.Authorization = `Bearer ${session.accessToken}`;
-  const combinedSignal = sessionSignal(session, signal);
-  const init: RequestInit = { method, headers: allHeaders, signal: combinedSignal };
+  const combinedSignal = sessionBound ? sessionSignal(session, signal) : signal;
+  const init: RequestInit = { method, headers: allHeaders, signal: combinedSignal ?? null };
   if (json !== undefined) {
     init.body = JSON.stringify(json);
     allHeaders['Content-Type'] = 'application/json';
@@ -80,16 +82,16 @@ export async function send(path: string, { method = 'GET', json, form, signal, h
   try {
     response = await fetch(apiUrl(path), init);
   } catch (error) {
-    if (combinedSignal.aborted) throw new DOMException('Request aborted', 'AbortError');
+    if (combinedSignal?.aborted) throw new DOMException('Request aborted', 'AbortError');
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError(0, NETWORK_ERROR);
   }
   if (!response.ok) {
     const error = await errorFrom(response);
-    if (response.status === 401 && authenticated) clearSessionIfCurrent(session);
+    if (authenticated && (response.status === 401 || response.status === 403)) clearSessionIfCurrent(session, response.status === 401 ? 'expired' : 'forbidden');
     throw error;
   }
-  if (combinedSignal.aborted) throw new DOMException('Request aborted', 'AbortError');
+  if (combinedSignal?.aborted) throw new DOMException('Request aborted', 'AbortError');
   return response;
 }
 

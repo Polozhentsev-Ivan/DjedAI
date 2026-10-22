@@ -13,7 +13,7 @@ describe('LoginPage', () => {
     const { router } = await renderRoute('/login');
     await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
     expect(screen.getByLabelText('Пароль')).toHaveAccessibleDescription('Введите пароль');
-    await userEvent.type(screen.getByLabelText('Имя пользователя / Email'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
     await userEvent.type(screen.getByLabelText('Пароль'), 'secret-123');
     await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/sources'); });
@@ -28,19 +28,20 @@ describe('LoginPage', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/login'); });
   });
 
-  it('shows loading and both errors', async () => {
-    await renderRoute('/login?state=loading');
-    expect(screen.getByRole('button', { name: 'Входим…' })).toBeDisabled();
-  });
-
   it('shows the login error', async () => {
-    await renderRoute('/login?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
+    await renderRoute('/login');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Пароль'), 'wrong-password');
+    await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Неверный логин или пароль');
   });
 
   it('shows the registration error', async () => {
-    await renderRoute('/register?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('Пользователь с таким именем уже существует');
+    await renderRoute('/register');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Пароль'), 'secret-123');
+    await userEvent.click(screen.getByRole('button', { name: 'Зарегистрироваться' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Пользователь с таким именем уже существует');
   });
 });
 
