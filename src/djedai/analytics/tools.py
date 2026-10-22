@@ -93,6 +93,25 @@ _NUMERIC_TYPES = (
     "TINYINT",
     "UBIGINT",
 )
+_STL_PERIOD_BY_FREQ = {
+    "minute": 60,
+    "hour": 24,
+    "day": 7,
+    "week": 52,
+    "month": 12,
+    "quarter": 4,
+    "year": 1,
+}
+
+
+def _to_python(v):
+    """numpy/pandas scalar → Python-native значение для JSON/Parquet."""
+    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+        try:
+            return v.item()
+        except (ValueError, AttributeError):
+            pass
+    return v
 
 
 def run_sql(
@@ -938,6 +957,13 @@ def find_duplicates(
             f"  HAVING COUNT(*) > 1"
             f")"
         ).fetchone()[0]
+        total_duplicate_groups = con.execute(
+            f"SELECT COUNT(*) FROM ("
+            f"  SELECT 1 FROM {safe_table} "
+            f"  WHERE 1=1{filter_sql} GROUP BY {group_by_cols} "
+            f"  HAVING COUNT(*) > 1"
+            f")"
+        ).fetchone()[0]
 
         out_columns = list(columns) + ["duplicate_count"] + other_cols
         out_rows = [list(r) for r in result]
@@ -963,25 +989,46 @@ def find_duplicates(
                 ),
                 facts=[
                     Fact(
-                        text=f"Дублей по колонкам {columns} не найдено "
-                        f"(проверено строк: {total_rows}).",
+                        text=(
+                            f"Проверено строк: {total_rows}, найдено групп дублей: "
+                            f"{int(total_duplicate_groups)}"
+                            + (
+                                f" (показано: {row_count})"
+                                if row_count < total_duplicate_groups
+                                else ""
+                            )
+                            + "."
+                        ),
                         kind="duplicate_summary",
-                        values={"total_rows": total_rows, "duplicate_groups": 0},
-                    )
+                        values={
+                            "total_rows": total_rows,
+                            "duplicate_groups": int(total_duplicate_groups),
+                            "shown_groups": row_count,
+                        },
+                    ),
                 ],
                 sql=query,
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
 
         max_group = max(r[len(columns)] for r in result)
-        extra_rows = int(dup_total) - row_count
+        extra_rows = int(dup_total) - int(total_duplicate_groups)
         pct = round(dup_total / total_rows * 100, 2) if total_rows else 0.0
 
         facts: list[Fact] = [
             Fact(
-                text=f"Проверено строк: {total_rows}, найдено групп дублей: {row_count}.",
+                text=(
+                    f"Проверено строк: {total_rows}, найдено групп дублей: "
+                    f"{int(total_duplicate_groups)}"
+                    + (f" (показано: {row_count})" if row_count < total_duplicate_groups else "")
+                    + "."
+                ),
                 kind="duplicate_summary",
-                values={"total_rows": total_rows, "duplicate_groups": row_count},
+                values={
+                    "total_rows": total_rows,
+                    "duplicate_groups": int(total_duplicate_groups),
+                    "shown_groups": row_count,
+                },
             ),
             Fact(
                 text=f"Всего строк в группах дублей: {dup_total} ({pct}%), "
@@ -1049,13 +1096,13 @@ def _detect_stl_residual_anomalies(
     group_by: list[str],
     filter_sql: str,
     limit: int,
-) -> tuple[list[dict], str]:
-    """Аномалии через STL-декомпозицию. Возвращает (anomalies, sql)."""
+) -> tuple[list[dict], bool, str]:
+    """Аномалии через STL-декомпозицию. Возвращает (anomalies, was_truncated, sql)."""
+    import numpy as np
     import pandas as pd
     from statsmodels.tsa.seasonal import STL
 
-    freq_period = {"day": 7, "week": 52, "month": 12, "quarter": 4, "year": 1}
-    period = freq_period.get(freq, 7)
+    period = _STL_PERIOD_BY_FREQ.get(freq, 7)
 
     safe_table = _quote_id(table)
     safe_time = _quote_id(time_col)
@@ -1079,7 +1126,7 @@ def _detect_stl_residual_anomalies(
 
     raw = con.execute(query).fetchall()
     if not raw:
-        return [], query
+        return [], False, query
 
     df = pd.DataFrame(raw, columns=["time_bucket", *group_by, "value"])
     df["value"] = df["value"].astype(float)
@@ -1091,12 +1138,18 @@ def _detect_stl_residual_anomalies(
             return
         try:
             series = sub["value"].to_numpy(dtype=float)
+            # постоянный ряд: STL-остатки — численный шум, не выбросы
+            if float(np.std(series)) < 1e-9:
+                return
             res = STL(series, period=period, robust=True).fit()
             resid = res.resid
             resid_s = pd.Series(resid)
             med = float(resid_s.median())
             mad = float((resid_s - med).abs().median())
             scale = 1.4826 * mad if mad > 0 else float(resid_s.std())
+            # пол по масштабу: численный шум не должен становиться аномалией
+            data_scale = float(np.mean(np.abs(series))) or 1.0
+            scale = max(scale, data_scale * 1e-9)
             if not scale:
                 return
             z = (resid - med) / scale
@@ -1104,14 +1157,14 @@ def _detect_stl_residual_anomalies(
                 if abs(zi) > threshold:
                     row = sub.iloc[i]
                     item = {
-                        "time_bucket": row["time_bucket"],
+                        "time_bucket": str(row["time_bucket"]),
                         "value": float(row["value"]),
                         "residual": float(resid[i]),
                         "z_score": float(zi),
                         "direction": "above" if zi > 0 else "below",
                     }
                     for g in group_by:
-                        item[g] = row[g]
+                        item[g] = _to_python(row[g])
                     anomalies.append(item)
         except Exception:
             return
@@ -1123,7 +1176,8 @@ def _detect_stl_residual_anomalies(
         _process(df)
 
     anomalies.sort(key=lambda a: abs(a["z_score"]), reverse=True)
-    return anomalies[:limit], query
+    was_truncated = len(anomalies) > limit
+    return anomalies[:limit], was_truncated, query
 
 
 def detect_anomalies(
@@ -1174,6 +1228,20 @@ def detect_anomalies(
                     code="invalid_parameter",
                     message=f"Недопустимая частота: '{freq}'.",
                     suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if method == "stl-residual" and _STL_PERIOD_BY_FREQ.get(freq, 7) < 2:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"STL не поддерживает freq='{freq}' "
+                        f"(период {_STL_PERIOD_BY_FREQ.get(freq, 7)} < 2)."
+                    ),
+                    suggestion=(
+                        "Для столь редких данных используйте freq='quarter' "
+                        "или точечные методы (iqr/zscore/mad)."
+                    ),
                 )
             )
         if threshold is None:
@@ -1239,7 +1307,7 @@ def detect_anomalies(
         # ==========================================================
         if method == "stl-residual":
             try:
-                anomalies, query = _detect_stl_residual_anomalies(
+                anomalies, was_truncated, query = _detect_stl_residual_anomalies(
                     con,
                     table,
                     time_col,
@@ -1347,7 +1415,7 @@ def detect_anomalies(
                     columns=out_columns,
                     rows=rows,
                     row_count=len(rows),
-                    truncated=len(anomalies) >= limit,
+                    truncated=was_truncated,
                 ),
                 facts=facts,
                 chart_hint=ChartHint(
@@ -1370,7 +1438,12 @@ def detect_anomalies(
         safe_id = _quote_id(id_column) if id_column else None
         group_list = ", ".join(safe_groups)
         group_list_prefix = f"{group_list}, " if group_by else ""
-        join_on = " AND ".join(f"t.{g} = s.{g}" for g in safe_groups) if group_by else None
+        # IS NOT DISTINCT FROM сохраняет группы с NULL в ключе
+        join_on = (
+            " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
+            if group_by
+            else None
+        )
 
         base_cols = ([safe_id] if safe_id else []) + [safe_col] + safe_groups
         seen: set[str] = set()
@@ -1426,15 +1499,21 @@ def detect_anomalies(
                 if group_by
                 else (f"med AS (SELECT MEDIAN({safe_col}) AS median FROM base)")
             )
-            join_med_in = f"JOIN med m ON {join_on}" if group_by else ", med m"
+            join_med_in = (
+                (
+                    "JOIN med m ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m.{g}" for g in safe_groups)
+                )
+                if group_by
+                else ", med m"
+            )
+            group_list_qualified = ", ".join(f"t.{g}" for g in safe_groups)
             mad_cte = (
                 (
-                    f"mad AS (SELECT {
-                        ', '.join('t.' + g for g in safe_groups) + ', ' if group_by else ''
-                    }"
+                    f"mad AS (SELECT {group_list_qualified}, "
                     f"MEDIAN(ABS(t.{safe_col} - m.median)) AS mad "
                     f"FROM base t {join_med_in} "
-                    f"GROUP BY {group_list or 'ALL'})"
+                    f"GROUP BY {group_list_qualified})"
                 )
                 if group_by
                 else (
@@ -1445,8 +1524,10 @@ def detect_anomalies(
             stats_cte = f"{med_cte}, {mad_cte}"
             join_stats = (
                 (
-                    f"JOIN med m2 ON {', '.join('t.' + g + ' = m2.' + g for g in safe_groups)} "
-                    f"JOIN mad s ON {', '.join('t.' + g + ' = s.' + g for g in safe_groups)}"
+                    "JOIN med m2 ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m2.{g}" for g in safe_groups)
+                    + " JOIN mad s ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
                 )
                 if group_by
                 else ", med m2, mad s"

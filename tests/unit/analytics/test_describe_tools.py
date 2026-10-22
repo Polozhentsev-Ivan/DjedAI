@@ -770,3 +770,123 @@ def test_chart_hint_set_when_id_column_provided(conn):
 def test_chart_hint_absent_without_id_column(conn):
     result = detect_anomalies("metrics", "value", method="iqr", connection=conn)
     assert result.chart_hint is None
+
+
+def test_mad_grouped_no_alias_error():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE m (id INT, city VARCHAR, value DOUBLE)")
+    rows = [(i, "A", v) for i, v in enumerate([10, 11, 12, 100])] + [
+        (i + 10, "B", v) for i, v in enumerate([10, 11, 12, 100])
+    ]
+    con.executemany("INSERT INTO m VALUES (?, ?, ?)", rows)
+    result = detect_anomalies(
+        "m",
+        "value",
+        method="mad",
+        group_by=["city"],
+        id_column="id",
+        connection=con,
+    )
+    assert result.status == "ok", result.error
+    assert result.data.row_count == 2
+
+
+def test_iqr_grouped_keeps_null_group():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE m (value DOUBLE, city VARCHAR)")
+    con.executemany(
+        "INSERT INTO m VALUES (?, ?)",
+        [(v, None) for v in [10, 11, 12, 10, 11, 12, 100]],
+    )
+    result = detect_anomalies("m", "value", method="iqr", group_by=["city"], connection=con)
+    assert result.status == "ok"
+    # NULL-группа должна дать выброс 100, а не «аномалий нет»
+    assert any(row[0] == 100.0 for row in result.data.rows)
+
+
+def test_stl_constant_series_returns_empty():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (ts TIMESTAMP, v DOUBLE)")
+    rows = []
+    for m in range(1, 4):
+        for d in range(1, 29):
+            rows.append((f"2024-{m:02d}-{d:02d} 00:00:00", 100.0))
+    con.executemany("INSERT INTO t VALUES (?, ?)", rows)
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="day",
+        connection=con,
+    )
+    assert result.status == "empty"
+
+
+def test_stl_year_freq_returns_error():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (ts TIMESTAMP, v DOUBLE)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?)",
+        [(f"{y}-01-01 00:00:00", 100.0 + (y - 2000)) for y in range(2000, 2024)],
+    )
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="year",
+        connection=con,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_stl_numpy_keys_are_json_serializable():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (ts TIMESTAMP, g INT, v DOUBLE)")
+    rows = []
+    for m in range(1, 4):
+        for d in range(1, 29):
+            v = 100.0 + (1000.0 if (m, d) == (2, 15) else 0.0)
+            rows.append((f"2024-{m:02d}-{d:02d} 00:00:00", 7, v))
+    con.executemany("INSERT INTO t VALUES (?, ?, ?)", rows)
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="day",
+        group_by=["g"],
+        connection=con,
+    )
+    assert result.status in {"ok", "empty"}
+    # сериализация не должна падать на numpy.int64
+    result.model_dump(mode="json")
+    if result.status == "ok":
+        # все ключи группы — Python int
+        for row in result.data.rows:
+            assert type(row[1]) is int
+
+
+def test_extra_rows_independent_of_limit():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (a INT, b INT)")
+    con.execute("INSERT INTO t VALUES (1, 1), (1, 1), (2, 2), (2, 2)")
+    full = find_duplicates("t", ["a", "b"], connection=con)
+    limited = find_duplicates("t", ["a", "b"], limit=1, connection=con)
+    full_extra = next(f for f in full.facts if f.kind == "duplicate_volume").values["extra_rows"]
+    lim_extra = next(f for f in limited.facts if f.kind == "duplicate_volume").values["extra_rows"]
+    assert full_extra == 2 and lim_extra == 2
