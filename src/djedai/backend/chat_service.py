@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,6 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-import duckdb
 from fastapi import HTTPException, Request
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
@@ -20,12 +20,13 @@ from djedai.agent.config import get_agent_client
 from djedai.agent.graph import build_agent_graph
 from djedai.analytics.registry import execute_tool
 from djedai.backend.dataset_service import DatasetContext
-from djedai.backend.db.models import ChatModel, MessageModel
+from djedai.backend.db.models import ChatModel, DashboardModel, DatasetModel, MessageModel
 from djedai.backend.db.repositories import (
     get_chat as get_chat_record,
 )
 from djedai.backend.db.repositories import (
     get_chat_messages,
+    get_owned_tool_result,
     save_assistant_message,
     save_message,
     save_tool_result,
@@ -217,16 +218,23 @@ def stream_chat_turn(
     text: str,
     runtime: AgentRuntime,
     is_cancelled: Callable[[], bool] | None = None,
+    *,
+    owner_id: str,
 ) -> Iterator[AgentStreamEvent]:
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
-    connection: duckdb.DuckDBPyConnection | None = None
+    resources = ExitStack()
     try:
-        chat_model = (
-            get_chat_record(db, chat)
-            if isinstance(chat, str)
-            else (get_chat_record(db, chat.chat_id) or chat)
-        )
-        if chat_model is None:
+        if is_cancelled and is_cancelled():
+            return
+        chat_model = get_chat_record(db, chat if isinstance(chat, str) else chat.chat_id)
+        dataset = db.get(DatasetModel, chat_model.dataset_id) if chat_model else None
+        if (
+            not owner_id
+            or chat_model is None
+            or chat_model.owner_id != owner_id
+            or dataset is None
+            or dataset.owner_id != owner_id
+        ):
             yield SSEErrorEvent(
                 data=SSEErrorData(
                     message="Не удалось получить ответ агента",
@@ -236,14 +244,20 @@ def stream_chat_turn(
             return
 
         if runtime.dataset_context is not None:
-            context = runtime.dataset_context(chat_model.owner_id, chat_model.dataset_id)
-            connection = duckdb.connect(str(context.duckdb_path), read_only=True)
-            connection.execute("SET enable_external_access = false")
+            if is_cancelled and is_cancelled():
+                return
+            context = runtime.dataset_context(owner_id, chat_model.dataset_id)
+            if context.catalog.dataset_id != chat_model.dataset_id:
+                raise ValueError("Каталог не относится к датасету чата")
+            connection = resources.enter_context(context.open_connection())
+            allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
 
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                return execute_tool(tool, params, connection=connection)
+                return execute_tool(
+                    tool, params, connection=connection, allowed_tables=allowed_tables
+                )
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:
@@ -317,7 +331,7 @@ def stream_chat_turn(
                             db,
                             result,
                             chat_id=chat_model.chat_id,
-                            owner_id=chat_model.owner_id,
+                            owner_id=owner_id,
                             storage_dir=runtime.results_storage_dir,
                         )
                         yield SSEToolCallEvent(
@@ -353,6 +367,34 @@ def stream_chat_turn(
             return
 
         message_blocks = [_block_to_message_block(block) for block in answer_blocks]
+        for block in message_blocks:
+            referenced_result = (
+                block.result_id
+                if isinstance(block, TableBlock)
+                else block.chart.result_id
+                if isinstance(block, ChartBlock)
+                else None
+            )
+            if (
+                referenced_result
+                and get_owned_tool_result(
+                    db,
+                    referenced_result,
+                    owner_id,
+                    chat_id=chat_model.chat_id,
+                    dataset_id=chat_model.dataset_id,
+                )
+                is None
+            ):
+                raise ValueError("Блок ответа ссылается на результат другого контекста")
+            if isinstance(block, DashboardLinkBlock):
+                dashboard = db.get(DashboardModel, block.dashboard_id)
+                if (
+                    dashboard is None
+                    or dashboard.owner_id != owner_id
+                    or dashboard.dataset_id != chat_model.dataset_id
+                ):
+                    raise ValueError("Блок ответа ссылается на дашборд другого контекста")
         result_ids = list(
             dict.fromkeys(result.result_id for result in results if result.status != "error")
         )
@@ -383,5 +425,4 @@ def stream_chat_turn(
             )
         )
     finally:
-        if connection is not None:
-            connection.close()
+        resources.close()

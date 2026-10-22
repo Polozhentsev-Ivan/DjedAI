@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
+    "test:e2e:auth": "playwright test --config playwright.auth.config.ts",
     "smoke:cp1": "node scripts/smoke-cp1.mjs",
     "gen:types": "openapi-typescript schema/openapi.yaml --default-non-nullable false -o src/api/generated.ts"
   },

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any, Literal, TypedDict
 
 import duckdb
@@ -13,7 +13,7 @@ from djedai.analytics.tools import (
     time_aggregate,
     value_counts,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.tool_result import ToolError, ToolResult
 
 
 class RunSqlParams(BaseModel):
@@ -289,17 +289,41 @@ def execute_tool(
     params: dict[str, Any],
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Валидирует параметры и выполняет инструмент из реестр."""
     definition = next((tool for tool in TOOLS_REGISTRY if tool.name == tool_name), None)
     if definition is None:
         raise ValueError(f"Инструмент '{tool_name}' не зарегистрирован")
+    if params.get("source_result_id") is not None:
+        raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
 
     validated = definition.parameters_model.model_validate(params)
     arguments = validated.model_dump(exclude_none=True)
     # source_result_id относится к будущей работе поверх сохранённого результата,
     # а run_sql принимает только SQL и лимит строк.
     arguments.pop("source_result_id", None)
+    if allowed_tables is not None:
+        table = arguments.get("table")
+        if table is not None and table not in allowed_tables:
+            raise ValueError("Таблица не относится к выбранному датасету")
+        arguments["allowed_tables"] = allowed_tables
     if connection is not None:
         arguments["connection"] = connection
-    return TOOL_FUNCTIONS[tool_name](**arguments)
+    result = TOOL_FUNCTIONS[tool_name](**arguments)
+    if (
+        allowed_tables is not None
+        and result.error
+        and result.error.code in {"database_error", "db_error", "sql_parse_error"}
+    ):
+        # Driver errors may include attached server names, paths or credentials.
+        result = result.model_copy(
+            update={
+                "error": ToolError(
+                    code=result.error.code,
+                    message="Не удалось выполнить запрос к выбранному датасету.",
+                    suggestion="Проверьте поля и запрос по каталогу датасета.",
+                )
+            }
+        )
+    return result

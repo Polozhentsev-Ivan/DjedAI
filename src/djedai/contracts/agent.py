@@ -73,6 +73,8 @@ class AgentState(TypedDict, total=False):
     charts: list[ChartSpec]
     answer_blocks: list[Block]
     retries: int
+    compose_retries: int
+    is_verified: bool
 
 
 class PlanResponse(BaseModel):
@@ -82,3 +84,9 @@ class PlanResponse(BaseModel):
 
 class ComposeResponse(BaseModel):
     answer_blocks: list[Block]
+
+
+class VerifyResponse(BaseModel):
+    is_valid: bool
+    issues: list[str] = Field(default_factory=list)
+    corrected_markdown: str

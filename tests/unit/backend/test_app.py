@@ -163,24 +163,23 @@ def test_api_subroutes_stubs() -> None:
     app = create_app()
     client = TestClient(app)
 
-    # CP1 routes require an explicitly enabled local-user adapter.
+    # Resource endpoints require a verified Bearer session.
     res_ds = client.get("/api/datasets")
-    assert res_ds.status_code == 503
+    assert res_ds.status_code == 401
 
     res_chats = client.get("/api/chats")
-    assert res_chats.status_code == 503
+    assert res_chats.status_code == 401
 
     # Results
     res_res = client.get("/api/results/r_test")
-    assert res_res.status_code == 503
+    assert res_res.status_code == 401
 
     # Dashboards
-    assert client.get("/api/dashboards").status_code == 422
+    assert client.get("/api/dashboards").status_code == 401
     res_dash = client.get("/api/dashboards", params={"dataset_id": "ds_test"})
-    assert res_dash.status_code == 200
-    assert res_dash.json() == []
+    assert res_dash.status_code == 401
 
     # Auth
     res_auth = client.get("/api/auth/me")
-    assert res_auth.status_code == 200
-    assert "username" in res_auth.json()
+    assert res_auth.status_code == 401
+    assert res_auth.json()["error"]["code"] == "unauthorized"

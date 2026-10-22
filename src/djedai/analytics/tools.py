@@ -1,11 +1,13 @@
 import threading
 import time
 import uuid
+from collections.abc import Collection
 
 import duckdb
 import sqlglot
 from sqlglot import exp
 
+from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
 from djedai.config import get_limits
 from djedai.contracts.tool_result import (
     ChartHint,
@@ -119,6 +121,7 @@ def run_sql(
     max_rows: int | None = None,
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
     con = None
@@ -133,7 +136,13 @@ def run_sql(
         )
         # 1. ПАРСИМ SQL
         try:
-            parsed = sqlglot.parse_one(sql, read="duckdb")
+            parsed = parse_read_query(sql)
+        except DatasetScopeError:
+            return ToolResult(
+                result_id=str(uuid.uuid4()),
+                status="error",
+                error=ToolError(code="forbidden_operation", message="Разрешён один запрос SELECT."),
+            )
         except Exception as e:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -156,6 +165,19 @@ def run_sql(
                     suggestion="Уберите команды изменения данных (INSERT, UPDATE, DROP и т.д.).",
                 ),
             )
+
+        if allowed_tables is not None:
+            try:
+                validate_dataset_query(parsed, allowed_tables)
+            except (DatasetScopeError, sqlglot.errors.OptimizeError):
+                return ToolResult(
+                    result_id=str(uuid.uuid4()),
+                    status="error",
+                    error=ToolError(
+                        code="dataset_scope_violation",
+                        message="Запрос выходит за область выбранного датасета.",
+                    ),
+                )
 
         # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = connection if connection is not None else duckdb.connect(database=":memory:")
@@ -182,7 +204,7 @@ def run_sql(
         row_count = len(rows)
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="run_sql",
             sql=sql,
@@ -258,16 +280,23 @@ def _get_mock_connection():
     return con
 
 
-def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> ToolResult:
+def describe_dataset(
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
     con = connection if connection is not None else _get_mock_connection()
     timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
-        tables = con.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()
-        table_names = [t[0] for t in tables]
+        if allowed_tables is None:
+            tables = con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+            table_names = [t[0] for t in tables]
+        else:
+            table_names = sorted(allowed_tables)
 
         rows: list[list] = []
         facts: list[Fact] = [
@@ -281,11 +310,7 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
         for t_name in table_names:
             row_count = con.execute(f"SELECT COUNT(*) FROM {_quote_id(t_name)}").fetchone()[0]
 
-            cols = con.execute(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = ?",
-                [t_name],
-            ).fetchall()
+            cols = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(t_name)}").fetchall()
             col_names = [c[0] for c in cols]
             col_types = {c[0]: c[1] for c in cols}
 
@@ -306,7 +331,7 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_dataset",
             params={},
@@ -330,25 +355,25 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
 
 
 def describe_column(
-    table: str, column: str, *, connection: duckdb.DuckDBPyConnection | None = None
+    table: str,
+    column: str,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
     con = connection if connection is not None else _get_mock_connection()
     timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        if allowed_tables is not None and table not in allowed_tables:
+            raise DatasetScopeError("Таблица не относится к выбранному датасету")
         # [P1] Проверка через параметры
-        col_check = con.execute(
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name = ? AND column_name = ?",
-            [table, column],
-        ).fetchone()
+        schema = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(table)}").fetchall()
+        col_check = next(([item[1]] for item in schema if item[0] == column), None)
 
         if not col_check:
-            available = con.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
-                [table],
-            ).fetchall()
+            available = schema
             avail_str = ", ".join([c[0] for c in available]) if available else "Таблица не найдена"
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -443,7 +468,7 @@ def describe_column(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_column",
             params={"table": table, "column": column},
@@ -474,17 +499,18 @@ def value_counts(
     filter: str | None = None,
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Возвращает топ-N самых частых значений в колонке."""
     con = connection if connection is not None else _get_mock_connection()
     timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        if allowed_tables is not None and table not in allowed_tables:
+            raise DatasetScopeError("Таблица не относится к выбранному датасету")
         con.execute("SET enable_external_access = false;")
-        col_check = con.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
-            [table, column],
-        ).fetchone()
+        schema = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(table)}").fetchall()
+        col_check = next((item for item in schema if item[0] == column), None)
         if not col_check:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -522,11 +548,14 @@ def value_counts(
 
         query += f" GROUP BY {safe_col} ORDER BY cnt DESC LIMIT {top_n}"
 
+        if allowed_tables is not None:
+            validate_dataset_query(parse_read_query(query), allowed_tables)
+
         result = con.execute(query).fetchall()
 
         if not result:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="value_counts",
                 params={
@@ -555,7 +584,7 @@ def value_counts(
         ]
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="value_counts",
             params={

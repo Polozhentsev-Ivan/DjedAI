@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import SettingsConfigDict
 
 from djedai.config import LimitSettings
@@ -35,11 +35,17 @@ class Settings(LimitSettings):
     app_database_url: str = Field(default="sqlite:///./var/app.db", alias="APP_DATABASE_URL")
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
     datasets_data_dir: str = Field(default="./var/data/datasets", alias="DATASETS_DATA_DIR")
+    source_encryption_key: SecretStr | None = Field(default=None, alias="SOURCE_ENCRYPTION_KEY")
 
-    # Explicit single-user CP1 mode; the normal authentication API is a later stage.
+    # Legacy bootstrap utility only; HTTP resource APIs always require verified sessions.
     cp1_local_mode: bool = Field(default=False, alias="CP1_LOCAL_MODE")
     cp1_local_user_id: str = Field(
         default="cp1-local-user", min_length=1, alias="CP1_LOCAL_USER_ID"
+    )
+
+    auth_rate_limit_requests: int = Field(default=10, ge=1, alias="AUTH_RATE_LIMIT_REQUESTS")
+    auth_rate_limit_window_seconds: int = Field(
+        default=300, ge=1, alias="AUTH_RATE_LIMIT_WINDOW_SECONDS"
     )
 
     # Согласованный управляемый профиль PL-1; совместимый endpoint можно переопределить.
@@ -111,8 +117,11 @@ class Settings(LimitSettings):
         "app_database_url",
         "results_data_dir",
         "datasets_data_dir",
+        "source_encryption_key",
         "cp1_local_mode",
         "cp1_local_user_id",
+        "auth_rate_limit_requests",
+        "auth_rate_limit_window_seconds",
         "model_base_url",
         "model_name",
         "model_revision",

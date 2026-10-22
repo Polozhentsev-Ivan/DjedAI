@@ -151,7 +151,9 @@ def test_versioned_suite_has_usable_scenario_and_clarification_contracts(suite):
     normal = Counter(case["scenario"] for case in cases if case["expect"]["outcome"] == "answer")
     assert normal[1] >= 5 and normal[2] >= 5
     assert len({case["id"] for case in cases}) == len(cases)
-    assert {case["expect"]["intent"] for case in cases if case["scenario"] == "edge"} == {
+    assert {
+        case["expect"]["intent"] for case in cases if case["expect"]["outcome"] == "clarify"
+    } == {
         "ambiguous",
         "invalid",
     }
@@ -169,10 +171,14 @@ def test_versioned_suite_has_usable_scenario_and_clarification_contracts(suite):
             assert len(block.options) >= 2
             assert not expect.get("facts")
             assert not set(expect.get("tools_forbidden", [])) & set(expect["tools_any"])
-        else:
+        elif expect["outcome"] == "answer":
             assert expect["population"] in manifest["populations"]
             assert expect["facts"]
             assert all(fact["unit"].strip() for fact in expect["facts"])
+        else:
+            assert expect["outcome"] in {"reject", "input_error"}
+            assert not expect["tools_any"]
+            assert not expect.get("facts")
 
 
 def test_binding_covers_actual_normalized_columns_and_registry_parameters(suite):

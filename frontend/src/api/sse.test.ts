@@ -1,5 +1,6 @@
 import { ApiError } from './client';
 import { SseParser, streamEvents, type AgentEventMap, type StreamEvent } from './sse';
+import { clearSession, sessionSnapshot, SESSION_TOKEN_KEY, setAccessToken } from './session';
 
 const encoder = new TextEncoder();
 
@@ -51,7 +52,8 @@ describe('SseParser', () => {
 });
 
 describe('streamEvents', () => {
-  afterEach(() => { vi.restoreAllMocks(); });
+  beforeEach(() => { clearSession(); });
+  afterEach(() => { clearSession(); vi.restoreAllMocks(); });
 
   it('delivers events until done and closes the stream', async () => {
     const { response, wasCancelled } = streamResponse([
@@ -79,12 +81,57 @@ describe('streamEvents', () => {
     expect(onEvent).toHaveBeenCalledWith({ event: 'error', data: { code: 'timeout', message: 'Таймаут' } });
   });
 
+  it.each(['GET', 'POST'] as const)('authorizes %s SSE with the tab Bearer', async (method) => {
+    setAccessToken('stream-secret');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse(['event: done\ndata: {}\n\n']).response);
+    await expect(streamEvents('/protected/events', { method, ...(method === 'POST' ? { json: { text: '?' } } : {}), onEvent: vi.fn() })).resolves.toBe('done');
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(init?.headers).toHaveProperty('Authorization', 'Bearer stream-secret');
+    expect(init?.headers).toHaveProperty('Accept', 'text/event-stream');
+    expect(url).not.toContain('stream-secret');
+    expect(init?.body ?? '').not.toContain('stream-secret');
+  });
+
+  it.each(['clear', 'replace'] as const)('aborts active streams when credentials %s', async (change) => {
+    setAccessToken('old-session');
+    const { response, wasCancelled } = streamResponse(['event: progress\ndata: {}\n\n'], { hang: true });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    const onEvent = vi.fn(() => { if (change === 'clear') clearSession(); else setAccessToken('new-session'); });
+    await expect(streamEvents('/datasets/d/events', { onEvent })).resolves.toBe('aborted');
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(wasCancelled()).toBe(true);
+  });
+
+  it('invalidates an expired session on SSE 401 before any event is delivered', async () => {
+    setAccessToken('expired-session');
+    const session = sessionSnapshot();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ error: { code: 'unauthorized', message: 'Expired' } }, { status: 401 }));
+    const onEvent = vi.fn();
+    await expect(streamEvents('/datasets/d/events', { onEvent })).rejects.toMatchObject({ status: 401, code: 'unauthorized' });
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(session.signal.aborted).toBe(true);
+    expect(window.sessionStorage.getItem(SESSION_TOKEN_KEY)).toBeNull();
+  });
+
   it('reports an interrupted stream without sending the request again', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse(['event: status\ndata: {"node":"plan","text":"…"}\n\n']).response);
     const error = await streamEvents('/chats/c_1/messages', { method: 'POST', json: { text: '?' }, onEvent: vi.fn() }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).code).toBe('stream_interrupted');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears only the current session after revocation in an already open stream', async () => {
+    setAccessToken('revoked-session');
+    const session = sessionSnapshot();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse([
+      'event: error\ndata: {"code":"unauthorized","message":"Сессия недействительна"}\n\n',
+    ]).response);
+    const onEvent = vi.fn();
+    await expect(streamEvents('/chats/c/messages', { onEvent })).resolves.toBe('error');
+    expect(onEvent).toHaveBeenCalledOnce();
+    expect(session.signal.aborted).toBe(true);
+    expect(window.sessionStorage.getItem(SESSION_TOKEN_KEY)).toBeNull();
   });
 
   it('treats a broken read as an interruption', async () => {

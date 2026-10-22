@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from argon2.low_level import Type
 
 # 64 MiB памяти и три прохода; соль генерируется отдельно для каждого пароля.
@@ -16,6 +16,16 @@ _password_hasher = PasswordHasher(
     type=Type.ID,
 )
 _MAX_PASSWORD_LENGTH = 1_024
+# A missing/disabled account must still perform password verification work.
+# This hash is never stored on an account and cannot authenticate anyone.
+_DUMMY_HASH = _password_hasher.hash("authentication-timing-placeholder")
+
+
+def _dummy_verify(password: str) -> None:
+    try:
+        _password_hasher.verify(_DUMMY_HASH, password)
+    except (VerifyMismatchError, UnicodeError):
+        pass
 
 
 def hash_password(password: str) -> str:
@@ -31,14 +41,15 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, password_hash: str | None) -> bool:
     """Проверяет пароль; пустой, повреждённый или неподходящий хеш даёт False."""
-    if (
-        not isinstance(password, str)
-        or len(password) > _MAX_PASSWORD_LENGTH
-        or not isinstance(password_hash, str)
-        or not password_hash
-    ):
+    if not isinstance(password, str) or len(password) > _MAX_PASSWORD_LENGTH:
+        return False
+    if not isinstance(password_hash, str) or not password_hash:
+        _dummy_verify(password)
         return False
     try:
         return _password_hasher.verify(password_hash, password)
+    except VerifyMismatchError:
+        return False
     except (InvalidHashError, VerificationError, UnicodeError):
+        _dummy_verify(password)
         return False
