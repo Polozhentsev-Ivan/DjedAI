@@ -65,6 +65,10 @@ jobs:
         run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py
       - name: Test CP1 CSV and runtime integration
         run: uv run --locked pytest --strict-markers tests/integration/test_csv_dataset_service.py tests/integration/test_csv_dataset_api.py tests/integration/test_cp1_runtime.py
+      - name: Test owned read-only PostgreSQL sources against a real server
+        run: uv run --locked python scripts/test_postgres_isolation.py --output "$RUNNER_TEMP/postgres-isolation.json"
+      - name: Test HTTP owner isolation and session revocation
+        run: uv run --locked pytest --strict-markers tests/integration/test_owner_isolation.py
 
   frontend:
     name: frontend
@@ -108,7 +112,8 @@ jobs:
     needs: repository
     if: needs.repository.outputs.frontend-enabled == 'true' && needs.repository.outputs.python-enabled == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Include cold Playwright system dependencies and both production image builds.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -142,6 +147,9 @@ jobs:
       - name: Test Compose, nginx and persistent volumes with controlled model
         run: |
           cp .env.example .env
+          export DJEDAI_SMOKE_USERNAME="ci-smoke-${GITHUB_RUN_ID}"
+          export DJEDAI_SMOKE_PASSWORD="$(uv run --locked python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          echo "::add-mask::$DJEDAI_SMOKE_PASSWORD"
           uv run --locked uvicorn --app-dir tests/e2e serve_cp1:model_app --factory --host 0.0.0.0 --port 18081 > "$RUNNER_TEMP/cp1-model.log" 2>&1 &
           model_pid=$!
           cleanup() {

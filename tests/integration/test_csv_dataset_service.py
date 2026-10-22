@@ -240,8 +240,8 @@ def test_public_progress_is_monotonic_when_recovery_repeats_stages(storage) -> N
     factory, directory = storage
     service = DatasetService(factory, directory)
     dataset_id = service._persist_upload("owner", [upload("rows.csv", b"n\n1\n")])
-    service._update_progress(dataset_id, "profile", 0.8, "Профилирование")
-    service._update_progress(dataset_id, "read", 0.0, "Повторное чтение")
+    service._update_progress("owner", dataset_id, "profile", 0.8, "Профилирование")
+    service._update_progress("owner", dataset_id, "read", 0.0, "Повторное чтение")
     with factory() as db:
         assert db.get(DatasetModel, dataset_id).progress["progress"] == 0.8
 
@@ -249,7 +249,7 @@ def test_public_progress_is_monotonic_when_recovery_repeats_stages(storage) -> N
         events = service.events("owner", dataset_id)
         try:
             first = await anext(events)
-            service._update_progress(dataset_id, "types", 0.9, "Типизация")
+            service._update_progress("owner", dataset_id, "types", 0.9, "Типизация")
             second = await anext(events)
             return first, second
         finally:
@@ -359,3 +359,95 @@ def test_python_csv_facade_snapshots_paths_checks_owner_and_survives_restart(
         assert connection.execute(
             "SELECT order_id, amount FROM orders ORDER BY order_id"
         ).fetchall() == [("001", 10), ("002", 20)]
+
+
+def test_database_reference_cannot_point_to_another_owned_directory(storage) -> None:
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+
+    async def run():
+        first = await service.ingest_uploads("owner", [upload("a.csv", b"amount\n10\n")])
+        second = await service.ingest_uploads("other", [upload("b.csv", b"amount\n999\n")])
+        await service.close()
+        return first.dataset_id, second.dataset_id
+
+    first, second = asyncio.run(run())
+    with factory() as db:
+        db.get(DatasetModel, first).duckdb_path = f"{second}/dataset.duckdb"
+        db.commit()
+    with pytest.raises(HTTPException) as denied:
+        service.get_context("owner", first)
+    assert denied.value.status_code == 409
+    with service.get_context("other", second).open_connection() as connection:
+        assert connection.execute("SELECT amount FROM b").fetchone() == (999,)
+
+
+def test_recovery_rejects_cross_dataset_raw_reference_and_wrong_owner(storage) -> None:
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+    first = service._persist_upload("owner", [upload("a.csv", b"amount\n10\n")])
+    second = service._persist_upload("other", [upload("b.csv", b"amount\n999\n")])
+    with factory() as db:
+        db.get(DatasetModel, first).raw_files = [
+            {"name": "a.csv", "path": f"{second}/raw/0000.csv"}
+        ]
+        db.commit()
+    service._process("owner", second)
+    service._update_progress("owner", second, "ready", 1.0, "Wrong owner")
+    assert service.get_detail("other", second).status == "processing"
+    with factory() as db:
+        assert db.get(DatasetModel, second).progress["stage"] == "queued"
+
+    async def run():
+        await service.recover_interrupted()
+        await service.close()
+
+    asyncio.run(run())
+    assert service.get_detail("owner", first).status == "error"
+    assert service.get_detail("other", second).status == "ready"
+
+
+def test_symbolic_database_reference_is_rejected_at_lookup_and_open(storage) -> None:
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+
+    async def run():
+        first = await service.ingest_uploads("owner", [upload("a.csv", b"n\n1\n")])
+        second = await service.ingest_uploads("other", [upload("b.csv", b"n\n2\n")])
+        await service.close()
+        return first.dataset_id, second.dataset_id
+
+    first, second = asyncio.run(run())
+    context = service.get_context("owner", first)
+    path = context.duckdb_path
+    path.unlink()
+    try:
+        path.symlink_to(directory / second / "dataset.duckdb")
+    except OSError:
+        pytest.skip("Creating symbolic links is not permitted on this host")
+    with pytest.raises(HTTPException) as lookup:
+        service.get_context("owner", first)
+    assert lookup.value.status_code == 409
+    with pytest.raises(HTTPException) as opened, context.open_connection():
+        pytest.fail("A replaced path must not open")
+    assert opened.value.status_code == 409
+
+
+def test_csv_owned_context_disables_external_files_and_database_writes(storage, tmp_path) -> None:
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+
+    async def run():
+        accepted = await service.ingest_uploads("owner", [upload("a.csv", b"amount\n10\n")])
+        await service.close()
+        return accepted.dataset_id
+
+    dataset_id = asyncio.run(run())
+    outside = tmp_path / "private.csv"
+    outside.write_text("secret\nprivate\n", encoding="utf-8")
+    with service.get_context("owner", dataset_id).open_connection() as connection:
+        assert connection.execute("SELECT amount FROM a").fetchone() == (10,)
+        with pytest.raises(duckdb.Error):
+            connection.execute("CREATE TABLE injected (n INTEGER)")
+        with pytest.raises(duckdb.Error):
+            connection.execute("SELECT * FROM read_csv(?)", [str(outside)])

@@ -22,22 +22,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from djedai.backend.app import create_app
+from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.models import ToolResultModel
 from djedai.backend.db.repositories import (
     create_chat,
+    create_dashboard,
     create_dataset,
     get_chat_messages,
     get_or_create_user,
+    save_tool_result,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
-from djedai.backend.local_user import local_owner_id
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
 from djedai.contracts.message import MessageBlock
@@ -45,6 +45,11 @@ from djedai.contracts.sse import AgentStreamEvent, SSEBlockEvent
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "chat" / "blocks.json"
+
+
+@pytest.fixture(scope="module")
+def account_password_hash() -> str:
+    return hash_password("test-chat-password")
 
 
 class FakeGraph:
@@ -90,7 +95,7 @@ def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
 
 @pytest.fixture
 def chat_api(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account_password_hash: str
 ) -> Iterator[tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]]]:
     engine = create_db_engine(f"sqlite:///{tmp_path / 'app.db'}")
     init_db(engine)
@@ -98,13 +103,16 @@ def chat_api(
 
     with factory() as db:
         user = get_or_create_user(db, "u_chat", "chat_owner")
+        user.password_hash = account_password_hash
+        db.commit()
         create_dataset(db, "ds_chat", user.id, "Чат-датасет")
+        token = create_session(db, user.id)
 
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results"))
     get_settings.cache_clear()
 
     app = create_app(Settings(_env_file=None))
-    app.dependency_overrides[local_owner_id] = lambda: "u_chat"
+    app.state.session_factory = factory
 
     def override_db() -> Iterator[Session]:
         db = factory()
@@ -119,7 +127,7 @@ def chat_api(
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_session_factory] = lambda: factory
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
             yield client, factory, use_runtime
     finally:
         get_settings.cache_clear()
@@ -259,7 +267,7 @@ def test_send_message_streams_events_and_saves_history(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["cache-control"] == "no-store"
     events = parse_sse(response.text)
     names = [name for name, _data in events]
 
@@ -321,10 +329,24 @@ def test_send_message_streams_events_and_saves_history(
 def test_send_message_streams_all_prepared_block_types(
     chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
 ) -> None:
-    client, _factory, use_runtime = chat_api
+    client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
     fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))
     prepared_blocks = _agent_blocks(fixture["blocks"])
+    with factory() as db:
+        save_tool_result(
+            db,
+            ToolResult(
+                result_id="r_fixture",
+                status="ok",
+                tool="run_sql",
+                data=ToolResultData(columns=["month", "revenue"], rows=[["2026-01", 120]]),
+            ),
+            chat_id=chat_id,
+            owner_id="u_chat",
+            persist_data=False,
+        )
+        create_dashboard(db, "d_fixture", "u_chat", "ds_chat", "Квартальная статистика")
     use_runtime(_runtime({"compose": {"answer_blocks": prepared_blocks}}))
 
     response = client.post(
@@ -490,22 +512,24 @@ def _free_port() -> int:
 
 @pytest.mark.anyio
 async def test_stream_proxy_unbuffered_and_events(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account_password_hash: str
 ) -> None:
     """Проверяет unbuffered-поток, неблокирующий event loop, ранний обрыв и AbortController."""
     backend_port = _free_port()
     proxy_port = _free_port()
 
-    engine = create_engine(
-        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+    engine = create_db_engine(f"sqlite:///{tmp_path / 'live.db'}")
     init_db(engine)
     factory = sessionmaker(bind=engine)
 
     with factory() as db:
         user = get_or_create_user(db, "u_live", "live_owner")
+        user.password_hash = account_password_hash
+        db.commit()
         create_dataset(db, "ds_live", user.id, "Live DS")
         chat = create_chat(db, "c_live", user.id, "ds_live")
+        token = create_session(db, user.id)
+        db.refresh(chat)
 
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results_live"))
     get_settings.cache_clear()
@@ -522,8 +546,13 @@ async def test_stream_proxy_unbuffered_and_events(
     current_graph = graph1
 
     backend_app = create_app(Settings(_env_file=None))
-    backend_app.dependency_overrides[local_owner_id] = lambda: "u_live"
-    backend_app.dependency_overrides[get_db] = lambda: factory()
+    backend_app.state.session_factory = factory
+
+    def live_db() -> Iterator[Session]:
+        with factory() as db:
+            yield db
+
+    backend_app.dependency_overrides[get_db] = live_db
     backend_app.dependency_overrides[get_session_factory] = lambda: factory
     backend_app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(graph=current_graph)
 
@@ -566,7 +595,9 @@ async def test_stream_proxy_unbuffered_and_events(
     try:
         # 1. Потоковое чтение через живой TCP proxy без буферизации + параллельный /api/health
         async with httpx.AsyncClient(
-            base_url=f"http://127.0.0.1:{proxy_port}", trust_env=False
+            base_url=f"http://127.0.0.1:{proxy_port}",
+            trust_env=False,
+            headers={"Authorization": f"Bearer {token}"},
         ) as client:
             async with client.stream(
                 "POST",
@@ -575,7 +606,7 @@ async def test_stream_proxy_unbuffered_and_events(
             ) as response:
                 assert response.status_code == 200
                 assert response.headers["content-type"].startswith("text/event-stream")
-                assert response.headers["cache-control"] == "no-cache"
+                assert response.headers["cache-control"] == "no-store"
                 assert response.headers.get("x-accel-buffering") == "no"
 
                 raw_chunks: list[str] = []
@@ -615,7 +646,7 @@ async def test_stream_proxy_unbuffered_and_events(
             line.removeprefix("event:").strip() for line in raw_chunks if line.startswith("event:")
         ]
         assert events[0] == "status"
-        assert events[-1] == "done"
+        assert events[-1] == "done", raw_chunks
         assert graph1.completed.is_set(), "Граф должен штатно завершиться после снятия барьера"
 
         # 2. Реальный обрыв сокета клиентом через proxy ДО завершения агента
@@ -640,6 +671,7 @@ async def test_stream_proxy_unbuffered_and_events(
                 f"POST /api/chats/{chat.chat_id}/messages HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{proxy_port}\r\n"
                 f"Content-Type: application/json\r\n"
+                f"Authorization: Bearer {token}\r\n"
                 f"Content-Length: {len(req_body)}\r\n\r\n"
             ).encode() + req_body
             sock.sendall(req)
@@ -684,7 +716,7 @@ async def test_stream_proxy_unbuffered_and_events(
             const controller = new AbortController();
             const resp = await fetch('{url}', {{
                 method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
+                headers: {{ 'Content-Type': 'application/json', Authorization: 'Bearer {token}' }},
                 body: JSON.stringify({{ text: 'Fetch с отменой на барьере' }}),
                 signal: controller.signal
             }});
@@ -716,7 +748,7 @@ async def test_stream_proxy_unbuffered_and_events(
 
 
 def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account_password_hash: str
 ) -> None:
     """Проверяет, что сессии и соединения закрываются после завершения и отмены (дефект [P2])."""
     engine = create_db_engine(f"sqlite:///{tmp_path / 'cleanup.db'}")
@@ -725,14 +757,18 @@ def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
 
     with base_factory() as db:
         user = get_or_create_user(db, "u_clean", "clean_owner")
+        user.password_hash = account_password_hash
+        db.commit()
         create_dataset(db, "ds_clean", user.id, "Датасет очистки")
         chat = create_chat(db, "c_clean", user.id, "ds_clean")
+        token = create_session(db, user.id)
+        db.refresh(chat)
 
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "results_clean"))
     get_settings.cache_clear()
 
     app = create_app(Settings(_env_file=None))
-    app.dependency_overrides[local_owner_id] = lambda: "u_clean"
+    app.state.session_factory = base_factory
 
     open_sessions: set[Session] = set()
 
@@ -762,7 +798,7 @@ def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
     )
 
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
             # 1. Четыре успешных запроса
             for i in range(4):
                 res = client.post(
@@ -787,7 +823,11 @@ def test_stream_cleans_up_session_and_connections_on_complete_and_abort(
 
             async def test_abort() -> None:
                 transport = httpx.ASGITransport(app=app)
-                async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://test",
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as c:
                     for i in range(2):
                         async with c.stream(
                             "POST",
@@ -837,12 +877,14 @@ def test_stream_initial_save_failure_emits_error_event(
 
 
 def test_worker_session_factory_failure_terminates_stream(chat_api) -> None:
-    client, _factory, use_runtime = chat_api
+    client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
     use_runtime(_runtime())
 
     def broken_factory():
-        raise RuntimeError("private database connection details")
+        if threading.current_thread().name.startswith("chat-agent-"):
+            raise RuntimeError("private database connection details")
+        return factory()
 
     client.app.dependency_overrides[get_session_factory] = lambda: broken_factory
     response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
@@ -863,7 +905,9 @@ async def test_stream_network_error_vs_event_error_distinguishable(
     # Случай 1: Ошибка приложения формирует валидное событие event: error
     use_runtime(_runtime(error=ValueError("Ошибка вычислений")))
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=test_client.headers
+    ) as client:
         async with client.stream(
             "POST", f"/api/chats/{chat_id}/messages", json={"text": "Тест ошибки"}
         ) as resp:
@@ -875,7 +919,9 @@ async def test_stream_network_error_vs_event_error_distinguishable(
 
     # Случай 2: Сетевой обрыв (клиент закрывает сокет до получения done/error)
     use_runtime(_runtime({"plan": {}}, {"execute": {}}, {"compose": {}}))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=test_client.headers
+    ) as client:
         async with client.stream(
             "POST", f"/api/chats/{chat_id}/messages", json={"text": "Тест обрыва"}
         ) as resp:

@@ -312,7 +312,9 @@ def run_smoke(args: argparse.Namespace) -> Path:
                 )
                 events = []
                 with (directory / "events.jsonl").open("w", encoding="utf-8") as stream:
-                    for event in stream_chat_turn(db, chat, question, runtime):
+                    # This trusted CLI creates its own account and resources locally;
+                    # unlike HTTP, it passes that persisted owner's ID explicitly.
+                    for event in stream_chat_turn(db, chat, question, runtime, owner_id=user.id):
                         events.append(event)
                         serialized = event.model_dump_json().replace(
                             client.client.api_key, "[REDACTED]"

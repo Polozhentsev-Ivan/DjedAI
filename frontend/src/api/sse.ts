@@ -148,6 +148,8 @@ export async function streamEvents<M extends EventMap>(path: string, { onEvent, 
           throw new ApiError(response.status, { code: 'bad_event', message: `Сервер прислал повреждённое событие «${message.event}»` });
         }
         onEvent({ event: message.event, data } as StreamEvent<M>);
+        if (message.event === 'error' && typeof data === 'object' && data !== null
+            && 'code' in data && data.code === 'unauthorized') clearSessionIfCurrent(session);
         if (message.event === 'done' || message.event === 'error') return message.event;
       }
     }

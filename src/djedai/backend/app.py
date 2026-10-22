@@ -87,10 +87,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from djedai.backend.dataset_service import DatasetService
 
     cfg = app.state.settings
-    app.state.dataset_service = DatasetService(app.state.session_factory, cfg.datasets_data_dir)
+    app.state.dataset_service = DatasetService(
+        app.state.session_factory,
+        cfg.datasets_data_dir,
+        source_encryption_key=cfg.source_encryption_key.get_secret_value()
+        if cfg.source_encryption_key
+        else None,
+    )
     try:
-        if cfg.cp1_local_mode:
-            await app.state.dataset_service.recover_interrupted()
+        await app.state.dataset_service.recover_interrupted()
         yield
     finally:
         await app.state.dataset_service.close()
@@ -227,7 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload.model_dump(mode="json"),
             status_code=500,
             headers=AUTH_CACHE_HEADERS
-            if _request.url.path.startswith(cfg.api_prefix + "/auth/")
+            if _request.url.path.startswith(cfg.api_prefix + "/")
             else None,
         )
 

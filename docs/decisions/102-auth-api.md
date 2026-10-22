@@ -66,9 +66,9 @@ sessionStorage не защищает от XSS — ограничение сог�
 до восстановления личного workspace. Формы и очистка UI/QueryClient — #104.
 
 После миграций auth API работает и при `CP1_LOCAL_MODE=false`; entrypoint
-пропускает CP1-bootstrap в этом режиме. Ресурсные API сохраняют прежний CP1
-контекст. Защита всех ресурсов, SQL, файлов и SSE — #103; полный сценарий двух
-пользователей — #105 после #103/#104. Их готовность здесь не заявляется.
+пропускает CP1-bootstrap в этом режиме. Защита ресурсов, SQL, файлов и SSE
+реализована в [AUTH-3 / #103](103-owner-isolation.md). Полный сценарий двух
+пользователей с формами и очисткой интерфейса — #105 после #104.
 
 Проверки: `uv run --locked pytest tests/unit/backend/test_auth_api.py`,
 `uv run --locked pytest tests/integration/test_auth_migrations.py`; из frontend —

@@ -15,6 +15,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Receive, Scope, Send
 
+from djedai.backend.auth.access import SessionAccess, get_session_access, guard_stream
+from djedai.backend.auth.dependencies import current_owner_id
 from djedai.backend.chat_service import (
     AgentRuntime,
     chat_summary,
@@ -36,7 +38,6 @@ from djedai.backend.db.repositories import (
     list_chats as list_chat_records,
 )
 from djedai.backend.db.session import get_db, get_session_factory
-from djedai.backend.local_user import local_owner_id
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.chat import (
     ChatCreate,
@@ -53,7 +54,8 @@ logger = logging.getLogger(__name__)
 DbSession = Annotated[Session, Depends(get_db)]
 DbSessionFactory = Annotated[sessionmaker[Session], Depends(get_session_factory)]
 AgentRuntimeDep = Annotated[AgentRuntime, Depends(get_agent_runtime)]
-LocalOwner = Annotated[str, Depends(local_owner_id)]
+LocalOwner = Annotated[str, Depends(current_owner_id)]
+SessionAccessDep = Annotated[SessionAccess, Depends(get_session_access)]
 
 
 @router.get("", response_model=list[ChatSummary])
@@ -91,6 +93,9 @@ def get_chat(chat_id: str, db: DbSession, owner_id: LocalOwner) -> ChatDetail:
     chat = get_chat_record(db, chat_id)
     if chat is None or chat.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Чат не найден")
+    dataset = get_dataset(db, chat.dataset_id)
+    if dataset is None or dataset.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Чат не найден")
     summary = chat_summary(chat)
     messages = [message_to_chat_message(item) for item in get_chat_messages(db, chat_id)]
     return ChatDetail(**summary.model_dump(), messages=messages)
@@ -127,6 +132,9 @@ def _require_chat(chat_id: str, db: DbSession, owner_id: LocalOwner) -> None:
     chat = get_chat_record(db, chat_id)
     if chat is None or chat.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Чат не найден")
+    dataset = get_dataset(db, chat.dataset_id)
+    if dataset is None or dataset.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Чат не найден")
 
 
 @router.post(
@@ -151,8 +159,11 @@ async def send_chat_message(
     request: Request,
     session_factory: DbSessionFactory,
     runtime: AgentRuntimeDep,
+    owner_id: LocalOwner,
+    access: SessionAccessDep,
 ) -> StreamingResponse:
     """Сохраняет вопрос и отдаёт ответ агента потоком SSE вне event loop."""
+    await asyncio.to_thread(access.require)
     cancel_event = threading.Event()
     queue: asyncio.Queue[str | object] = asyncio.Queue()
     done_sentinel = object()
@@ -170,7 +181,12 @@ async def send_chat_message(
         try:
             session = session_factory()
             for event in stream_chat_turn(
-                session, chat_id, payload.text, runtime, is_cancelled=cancel_event.is_set
+                session,
+                chat_id,
+                payload.text,
+                runtime,
+                is_cancelled=lambda: cancel_event.is_set() or not access.valid(),
+                owner_id=owner_id,
             ):
                 if cancel_event.is_set():
                     break
@@ -211,12 +227,24 @@ async def send_chat_message(
             cancel_event.set()
 
     return ClosableStreamingResponse(
-        frames(),
+        guard_stream(
+            frames(),
+            access,
+            encode_sse_event(
+                SSEErrorEvent(
+                    data=SSEErrorData(
+                        code="unauthorized",
+                        message="Сессия недействительна",
+                        detail="Войдите снова, чтобы продолжить",
+                    )
+                )
+            ),
+        ),
         cancel_event=cancel_event,
         worker_thread=worker_thread,
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

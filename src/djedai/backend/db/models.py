@@ -128,6 +128,7 @@ class DatasetModel(Base):
     name = Column(String(255), nullable=False)
     source_kind = Column(String(64), nullable=False)  # csv, postgres, clickhouse
     connection = Column(Text, nullable=True)  # зашифрованная строка подключения
+    source_secret = Column(Text, nullable=True)  # authenticated owner-bound Fernet payload
     catalog = Column(JSON, nullable=True)  # сериализованный DatasetCatalog
     status = Column(
         String(64), default="ready", nullable=False

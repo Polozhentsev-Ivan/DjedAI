@@ -121,6 +121,19 @@ describe('streamEvents', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('clears only the current session after revocation in an already open stream', async () => {
+    setAccessToken('revoked-session');
+    const session = sessionSnapshot();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse([
+      'event: error\ndata: {"code":"unauthorized","message":"Сессия недействительна"}\n\n',
+    ]).response);
+    const onEvent = vi.fn();
+    await expect(streamEvents('/chats/c/messages', { onEvent })).resolves.toBe('error');
+    expect(onEvent).toHaveBeenCalledOnce();
+    expect(session.signal.aborted).toBe(true);
+    expect(window.sessionStorage.getItem(SESSION_TOKEN_KEY)).toBeNull();
+  });
+
   it('treats a broken read as an interruption', async () => {
     const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new TypeError('network')); } });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body));
