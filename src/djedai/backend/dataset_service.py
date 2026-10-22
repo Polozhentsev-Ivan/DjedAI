@@ -33,6 +33,7 @@ from djedai.contracts.tool_result import ToolError
 from djedai.data.csv_ingest import CsvReadError
 from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
 from djedai.data.service import CsvSource, connect_postgres_dataset, ingest_csv_dataset
+from djedai.data.typed_views import _lit
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,18 @@ class DatasetContext:
             or self.duckdb_path.resolve() != self.duckdb_path
         ):
             raise HTTPException(status_code=409, detail="Файл датасета недоступен")
-        with duckdb.connect(str(self.duckdb_path), read_only=True) as connection:
+        postgres = self._source_secret is not None
+        # Connections opened directly on one DuckDB file share its database instance,
+        # including ATTACHes and configuration. A private memory instance keeps each
+        # PostgreSQL attachment/secret independent while sharing only read-only storage.
+        with duckdb.connect(
+            ":memory:" if postgres else str(self.duckdb_path), read_only=not postgres
+        ) as connection:
+            if postgres:
+                connection.execute(
+                    f"ATTACH {_lit(str(self.duckdb_path))} AS owned_dataset (READ_ONLY)"
+                )
+                connection.execute("USE owned_dataset")
             if self._source_secret is not None:
                 try:
                     if self._secrets is None:

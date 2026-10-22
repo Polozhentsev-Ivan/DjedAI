@@ -110,7 +110,7 @@ def run_sql(
         row_count = len(rows)
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="run_sql",
             sql=sql,
@@ -225,7 +225,7 @@ def describe_dataset(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_dataset",
             params={},
@@ -362,7 +362,7 @@ def describe_column(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_column",
             params={"table": table, "column": column},
@@ -449,7 +449,7 @@ def value_counts(
 
         if not result:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="value_counts",
                 params={
@@ -478,7 +478,7 @@ def value_counts(
         ]
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="value_counts",
             params={

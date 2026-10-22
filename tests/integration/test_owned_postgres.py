@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import duckdb
@@ -22,6 +24,7 @@ from fastapi import HTTPException
 from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker
 
+from djedai.analytics.tools import run_sql
 from djedai.backend.dataset_service import DatasetService
 from djedai.backend.db.models import DatasetModel
 from djedai.backend.db.session import create_db_engine, init_db
@@ -240,17 +243,101 @@ def test_real_interrupted_postgres_source_recovers_for_its_original_owner(storag
 
 
 @live_postgres
+def test_nested_postgres_contexts_keep_their_attachments_and_security_boundaries(
+    storage, tmp_path
+) -> None:
+    service = make_service(storage)
+    dataset_id = connect(service, "alice", DSN, ["stores"])
+    context = service.get_context("alice", dataset_id)
+    expected = context.catalog.tables[0].row_count
+    before = context.duckdb_path.read_bytes()
+    private_file = tmp_path / "private.csv"
+    private_file.write_text("secret\nprivate\n", encoding="utf-8")
+
+    with context.open_connection() as first:
+        assert first.execute("SELECT COUNT(*) FROM stores").fetchone() == (expected,)
+        with context.open_connection() as second:
+            assert second.execute("SELECT COUNT(*) FROM main.stores").fetchone() == (expected,)
+            # Opening and configuring another context must not detach the first source.
+            assert first.execute("SELECT COUNT(*) FROM stores").fetchone() == (expected,)
+            for connection in (first, second):
+                assert connection.execute(
+                    "SELECT current_setting('enable_external_access')"
+                ).fetchone() == (False,)
+                with pytest.raises(duckdb.Error):
+                    connection.execute("CREATE TABLE injected(n INTEGER)")
+                with pytest.raises(duckdb.Error):
+                    connection.execute("SELECT * FROM read_csv(?)", [str(private_file)])
+                allowed = {table.table_id for table in context.catalog.tables}
+                result = run_sql(
+                    "SELECT COUNT(*) AS n FROM main.stores",
+                    connection=connection,
+                    allowed_tables=allowed,
+                )
+                assert result.status == "ok"
+                assert result.data.rows == [[expected]]
+                for forbidden in (
+                    "SELECT COUNT(*) FROM pg_src.public.stores",
+                    "SELECT COUNT(*) FROM _djedai_db_sources",
+                    "SELECT * FROM postgres_query('pg_src', 'SELECT 1')",
+                    "CREATE TABLE memory.main.injected(n INTEGER)",
+                ):
+                    assert (
+                        run_sql(forbidden, connection=connection, allowed_tables=allowed).status
+                        == "error"
+                    )
+        # Closing another context must not invalidate this one or drop its secret.
+        assert first.execute("SELECT COUNT(*) FROM stores").fetchone() == (expected,)
+    assert context.duckdb_path.read_bytes() == before
+    assert parse_dsn(DSN).password.encode() not in before
+
+
+@live_postgres
+def test_postgres_contexts_for_one_dataset_can_open_and_query_from_parallel_threads(
+    storage,
+) -> None:
+    service = make_service(storage)
+    dataset_id = connect(service, "alice", DSN, ["stores"])
+    context = service.get_context("alice", dataset_id)
+    both_open = Barrier(2)
+
+    def query() -> int:
+        try:
+            with context.open_connection() as connection:
+                both_open.wait(timeout=15)
+                return connection.execute("SELECT COUNT(*) FROM stores").fetchone()[0]
+        except BaseException:
+            both_open.abort()
+            raise
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        counts = list(workers.map(lambda _: query(), range(2)))
+    assert counts == [context.catalog.tables[0].row_count] * 2
+
+
+@live_postgres
 @pytest.mark.skipif(not OTHER_DSN, reason="DJEDAI_TEST_PG_OTHER_DSN is not configured")
 def test_same_named_tables_are_queried_from_each_owners_exact_source(storage) -> None:
     service = make_service(storage)
     first = connect(service, "alice", DSN, ["stores"])
     second = connect(service, "bob", OTHER_DSN, ["stores"])
     restarted = make_service(storage)
-    counts = []
-    for owner, dataset_id in (("alice", first), ("bob", second)):
-        with restarted.get_context(owner, dataset_id).open_connection() as connection:
-            counts.append(connection.execute("SELECT COUNT(*) FROM stores").fetchone()[0])
-    assert counts[0] > counts[1] >= 1
+    first_context = restarted.get_context("alice", first)
+    other_context = restarted.get_context("bob", second)
+    with first_context.open_connection() as alice:
+        first_count = alice.execute("SELECT COUNT(*) FROM stores").fetchone()[0]
+        with other_context.open_connection() as bob:
+            other_count = bob.execute("SELECT COUNT(*) FROM stores").fetchone()[0]
+            with first_context.open_connection() as another_alice:
+                assert another_alice.execute("SELECT COUNT(*) FROM stores").fetchone() == (
+                    first_count,
+                )
+                assert bob.execute("SELECT COUNT(*) FROM stores").fetchone() == (other_count,)
+                assert alice.execute("SELECT COUNT(*) FROM stores").fetchone() == (first_count,)
+            assert alice.execute("SELECT COUNT(*) FROM stores").fetchone() == (first_count,)
+            assert bob.execute("SELECT COUNT(*) FROM stores").fetchone() == (other_count,)
+        assert alice.execute("SELECT COUNT(*) FROM stores").fetchone() == (first_count,)
+    assert first_count > other_count >= 1
 
 
 @live_postgres

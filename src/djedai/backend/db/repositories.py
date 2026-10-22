@@ -20,6 +20,7 @@ from typing import Any
 
 import duckdb
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from djedai.backend.config import get_settings
@@ -215,7 +216,7 @@ def write_parquet(
     """
     path = Path(file_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp_{uuid.uuid4().hex[:8]}")
+    tmp_path = path.with_name(f".{path.name}.tmp_{uuid.uuid4().hex}")
     duck_path = tmp_path.as_posix()
 
     con = duckdb.connect()
@@ -503,6 +504,7 @@ def save_tool_result(
     if data_ref is not None:
         _resolve_data_ref_path(data_ref, target_storage, tool_result.result_id)
     data_preview: dict[str, Any] | None = None
+    pending_parquet = None
 
     if tool_result.data is not None:
         columns = _normalize_columns(tool_result.data.columns)
@@ -514,12 +516,7 @@ def save_tool_result(
             parquet_path = _resolve_data_ref_path(
                 f"parquet://{file_name}", target_storage, tool_result.result_id
             )
-            write_parquet(
-                parquet_path,
-                columns,
-                rows,
-                columns_meta=tool_result.data.columns,
-            )
+            pending_parquet = (parquet_path, columns, rows, tool_result.data.columns)
             data_ref = f"parquet://{file_name}"
 
         preview_rows = rows[:50] if rows is not None else []
@@ -537,6 +534,15 @@ def save_tool_result(
         }
         # Санитизируем для JSON (Decimal -> str, date/datetime -> isoformat)
         data_preview = _sanitize_for_json(raw_preview)
+
+    if (
+        data_ref is not None
+        and pending_parquet is None
+        and (record is None or data_ref != record.data_ref)
+    ):
+        # A failed transaction or process crash may leave an unclaimed file.
+        # Only a new materialization can bind it to a new result/owner.
+        raise ValueError("Нельзя присвоить файл без сохранённого результата владельца")
 
     facts_data = (
         _sanitize_for_json([f.model_dump() for f in tool_result.facts])
@@ -590,7 +596,20 @@ def save_tool_result(
         record.source_result_id = tool_result.source_result_id
         record.duration_ms = tool_result.duration_ms
 
-    db.commit()
+    try:
+        # The unique DB key claims this ID/owner before any shared file is touched.
+        # A concurrent INSERT waits here and loses without replacing the winner's
+        # Parquet. Keep the claim uncommitted until its atomic file write succeeds.
+        db.flush()
+        if pending_parquet is not None:
+            write_parquet(*pending_parquet)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ValueError("Не удалось сохранить результат: конфликт записей") from None
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(record)
     return record
 
