@@ -37,7 +37,13 @@ from djedai.contracts.chat import (
     ChatSummary,
     SendMessageRequest,
 )
-from djedai.contracts.common import DatasetDetail, DatasetSummary, ErrorResponse, HealthCheck
+from djedai.contracts.common import (
+    ConnectRequest,
+    DatasetDetail,
+    DatasetSummary,
+    ErrorResponse,
+    HealthCheck,
+)
 from djedai.contracts.dashboard import (
     Dashboard,
     DashboardCreate,
@@ -92,6 +98,7 @@ from djedai.contracts.tool_result import (
 )
 
 __all__ = [
+    "ConnectRequest",
     # Каталог
     "Column",
     "ColumnStats",

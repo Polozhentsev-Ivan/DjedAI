@@ -20,12 +20,9 @@ import uvicorn  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
-from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from djedai.backend.app import create_app  # noqa: E402
 from djedai.backend.config import Settings  # noqa: E402
-from djedai.backend.db.session import create_db_engine  # noqa: E402
-from djedai.backend.local_user import bootstrap_local_user  # noqa: E402
 
 
 def model_app() -> FastAPI:
@@ -98,7 +95,7 @@ def main() -> None:
     settings = Settings(
         _env_file=None,
         app_env="test",
-        cp1_local_mode=True,
+        cp1_local_mode=False,
         app_database_url=f"sqlite:///{directory / 'app.db'}",
         datasets_data_dir=str(directory / "datasets"),
         results_data_dir=str(directory / "results"),
@@ -117,9 +114,6 @@ def main() -> None:
     migration.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
     migration.set_main_option("sqlalchemy.url", settings.app_database_url)
     command.upgrade(migration, "head")
-    engine = create_db_engine(settings.app_database_url)
-    bootstrap_local_user(sessionmaker(bind=engine), settings.cp1_local_user_id)
-    engine.dispose()
     model = uvicorn.Server(uvicorn.Config(model_app(), host="127.0.0.1", port=args.model_port))
     worker = threading.Thread(target=model.run, daemon=True)
     worker.start()

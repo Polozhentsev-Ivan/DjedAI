@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 import runpy
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -26,8 +28,9 @@ from djedai.agent.client import BIModelClient, ModelResponse
 from djedai.agent.prompts import load_prompt
 from djedai.backend import chat_service
 from djedai.backend.app import create_app
+from djedai.backend.auth import hash_password
 from djedai.backend.config import Settings, get_settings
-from djedai.backend.db.models import ChatModel, DatasetModel, ToolResultModel
+from djedai.backend.db.models import ChatModel, DatasetModel, ToolResultModel, UserModel
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.local_user import bootstrap_local_user
 from djedai.contracts.agent import ComposeResponse, VerifyResponse
@@ -35,6 +38,21 @@ from djedai.contracts.tool_result import ToolResultData
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+PASSWORD = "test-runtime-password"
+
+
+@pytest.fixture(scope="module")
+def account_password_hash() -> str:
+    return hash_password(PASSWORD)
+
+
+@contextmanager
+def _client(settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/auth/login", json={"username": "local", "password": PASSWORD})
+        assert login.status_code == 200, login.text
+        client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+        yield client
 
 
 class ControlledModel:
@@ -127,7 +145,7 @@ def test_browser_model_supports_successful_numeric_verification(question: str) -
 
 
 @pytest.fixture
-def configured(tmp_path: Path, monkeypatch):
+def configured(tmp_path: Path, monkeypatch, account_password_hash: str):
     url = f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
     migration = Config(str(ROOT / "alembic.ini"))
     migration.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
@@ -135,15 +153,18 @@ def configured(tmp_path: Path, monkeypatch):
     command.upgrade(migration, "head")
     engine = create_db_engine(url)
     factory = sessionmaker(bind=engine)
-    bootstrap_local_user(factory, "runtime-local")
+    bootstrap_local_user(factory, "runtime-local", username="local")
     bootstrap_local_user(factory, "runtime-other", username="runtime-other")
+    with factory() as db:
+        for user_id in ("runtime-local", "runtime-other"):
+            db.get(UserModel, user_id).password_hash = account_password_hash
+        db.commit()
     # Explicit app settings must win over process-global defaults for result writes/reads.
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "wrong-global-results"))
     get_settings.cache_clear()
     settings = Settings(
         _env_file=None,
-        cp1_local_mode=True,
-        cp1_local_user_id="runtime-local",
+        cp1_local_mode=False,
         app_database_url=url,
         datasets_data_dir=str(tmp_path / "datasets"),
         RESULTS_DATA_DIR=str(tmp_path / "app-specific-results"),
@@ -211,7 +232,7 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
     settings, factory = configured
     model = _model(monkeypatch)
     saved = []
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         for name, values, expected in (
             ("alpha", (10, 20), [2, 30]),
             ("beta", (3, 5, 7, 11), [4, 26]),
@@ -264,7 +285,7 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
         assert len(checks) == 2
         assert all("Drafted Response:\nРасчёт завершён." in system for system in checks)
 
-    with TestClient(create_app(settings)) as restarted:
+    with _client(settings) as restarted:
         for chat_id, result_id, metadata, data, history in saved:
             assert restarted.get(f"/api/results/{result_id}").json() == metadata
             assert restarted.get(f"/api/results/{result_id}/data").json() == data
@@ -326,7 +347,7 @@ def test_unverified_numbers_are_neither_published_nor_saved(
 
     model = UnverifiedModel()
     monkeypatch.setattr(chat_service, "get_agent_client", lambda: model)
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         _, chat_id = _upload(client)
         events = _post_turn(client, chat_id)
         names = [event for event, _ in events]
@@ -378,7 +399,7 @@ def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatc
             ]
         )
         db.commit()
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         for result_id in ("missing-result", "foreign-result", "unowned-result"):
             for suffix in ("", "/data"):
                 response = client.get(f"/api/results/{result_id}{suffix}")
@@ -400,7 +421,7 @@ def test_missing_model_configuration_returns_503_without_synthetic_answer(
     settings, factory = configured
     for field in ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY"):
         monkeypatch.setenv(field, "")
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         _, chat_id = _upload(client)
         response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько строк?"})
         assert response.status_code == 503
@@ -416,7 +437,7 @@ def test_dataset_connection_closes_for_failed_and_interrupted_turns(
 ) -> None:
     settings, factory = configured
     _model(monkeypatch, fail=ending == "model_error")
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         dataset_id, chat_id = _upload(client)
         context = client.app.state.dataset_service.get_context("runtime-local", dataset_id)
         runtime = chat_service.get_agent_runtime(Request({"type": "http", "app": client.app}))
@@ -424,7 +445,12 @@ def test_dataset_connection_closes_for_failed_and_interrupted_turns(
         cancelled = False
         with factory() as db:
             stream = chat_service.stream_chat_turn(
-                db, chat_id, "Сколько строк?", runtime, is_cancelled=lambda: cancelled
+                db,
+                chat_id,
+                "Сколько строк?",
+                runtime,
+                is_cancelled=lambda: cancelled,
+                owner_id="runtime-local",
             )
             if ending == "model_error":
                 events = list(stream)
@@ -458,7 +484,7 @@ def test_bound_runtime_rejects_writes_external_reads_and_other_datasets(
         "other_dataset": "SELECT * FROM only_other_dataset",
     }
     model = _model(monkeypatch, sql=statements[operation])
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         _upload(client, "only_other_dataset", (99,))
         dataset_id, chat_id = _upload(client)
         events = _post_turn(client, chat_id)
@@ -471,10 +497,8 @@ def test_bound_runtime_rejects_writes_external_reads_and_other_datasets(
             assert metadata["data"] is metadata["data_ref"] is None
             if operation == "write":
                 assert metadata["error"]["code"] == "forbidden_operation"
-            elif operation in ("file", "network"):
-                assert "disabled" in metadata["error"]["message"].lower()
             else:
-                assert "does not exist" in metadata["error"]["message"].lower()
+                assert metadata["error"]["code"] == "dataset_scope_violation"
         assert model.calls
         context = client.app.state.dataset_service.get_context("runtime-local", dataset_id)
         _assert_database_released(context.duckdb_path)

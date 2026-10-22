@@ -62,12 +62,16 @@ class AuthPolicyMiddleware:
     def __init__(self, app: ASGIApp, *, prefix: str, limiter: AuthRateLimiter) -> None:
         self.app = app
         self.prefix = prefix.rstrip("/") + "/auth"
+        self.private_prefixes = tuple(
+            prefix.rstrip("/") + "/" + resource
+            for resource in ("auth", "datasets", "chats", "results", "dashboards")
+        )
         self.limiter = limiter
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = scope.get("path", "")
-        if scope["type"] != "http" or not (
-            path == self.prefix or path.startswith(self.prefix + "/")
+        if scope["type"] != "http" or not any(
+            path == prefix or path.startswith(prefix + "/") for prefix in self.private_prefixes
         ):
             await self.app(scope, receive, send)
             return

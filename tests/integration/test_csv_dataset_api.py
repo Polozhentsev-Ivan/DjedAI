@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -14,17 +16,33 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker
 
 from djedai.backend.app import create_app
+from djedai.backend.auth import hash_password
 from djedai.backend.config import Settings
-from djedai.backend.db.models import DatasetModel
+from djedai.backend.db.models import DatasetModel, UserModel
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.local_user import bootstrap_local_user
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+PASSWORD = "test-csv-password"
+
+
+@pytest.fixture(scope="module")
+def account_password_hash() -> str:
+    return hash_password(PASSWORD)
+
+
+@contextmanager
+def _client(settings: Settings, username: str = "local") -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+        assert login.status_code == 200, login.text
+        client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+        yield client
 
 
 @pytest.fixture
-def configured(tmp_path: Path):
+def configured(tmp_path: Path, account_password_hash: str):
     url = f"sqlite:///{(tmp_path / 'api.db').as_posix()}"
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", url)
@@ -32,12 +50,15 @@ def configured(tmp_path: Path):
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)
     factory = sessionmaker(bind=engine)
-    bootstrap_local_user(factory, "local")
+    bootstrap_local_user(factory, "local", username="local")
     bootstrap_local_user(factory, "other", username="other")
+    with factory() as db:
+        for user_id in ("local", "other"):
+            db.get(UserModel, user_id).password_hash = account_password_hash
+        db.commit()
     settings = Settings(
         _env_file=None,
-        cp1_local_mode=True,
-        cp1_local_user_id="local",
+        cp1_local_mode=False,
         app_database_url=url,
         datasets_data_dir=str(tmp_path / "datasets"),
     )
@@ -47,7 +68,7 @@ def configured(tmp_path: Path):
 
 def test_public_upload_catalog_list_and_terminal_sse_survive_restart(configured) -> None:
     settings, _ = configured
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         response = client.post(
             "/api/datasets/upload",
             files=[
@@ -72,15 +93,14 @@ def test_public_upload_catalog_list_and_terminal_sse_survive_restart(configured)
         assert client.get(f"/api/datasets/{dataset_id}/catalog").json() == detail["catalog"]
         assert client.get("/api/datasets").json()[0]["dataset_id"] == dataset_id
 
-    with TestClient(create_app(settings)) as restarted:
+    with _client(settings) as restarted:
         assert restarted.get(f"/api/datasets/{dataset_id}").json() == detail
         assert "event: done\n" in restarted.get(f"/api/datasets/{dataset_id}/events").text
         context = restarted.app.state.dataset_service.get_context("local", dataset_id)
         with duckdb.connect(str(context.duckdb_path), read_only=True) as connection:
             assert connection.execute("SELECT SUM(amount) FROM sales").fetchone() == (30,)
 
-    settings.cp1_local_user_id = "other"
-    with TestClient(create_app(settings)) as other:
+    with _client(settings, "other") as other:
         assert other.get("/api/datasets").json() == []
         for path in ("", "/catalog", "/events"):
             response = other.get(f"/api/datasets/{dataset_id}{path}")
@@ -99,7 +119,7 @@ def test_raw_prefix_filenames_upload_in_either_order_and_survive_restart(
         "raw_sales.csv": [(1, 10), (2, 20)],
         "sales.csv": [(3, 40), (4, 50)],
     }
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         response = client.post(
             "/api/datasets/upload",
             files=[
@@ -128,7 +148,7 @@ def test_raw_prefix_filenames_upload_in_either_order_and_survive_restart(
         assert len({table["table_id"] for table in tables}) == 2
         assert len({table["raw_table"] for table in tables}) == 2
 
-    with TestClient(create_app(settings)) as restarted:
+    with _client(settings) as restarted:
         assert restarted.get(f"/api/datasets/{dataset_id}").json() == detail
         assert restarted.get(f"/api/datasets/{dataset_id}/catalog").json() == detail["catalog"]
         context = restarted.app.state.dataset_service.get_context("local", dataset_id)
@@ -145,7 +165,7 @@ def test_raw_prefix_filenames_upload_in_either_order_and_survive_restart(
 
 def test_api_error_is_persisted_and_stream_ends_without_done(configured) -> None:
     settings, _ = configured
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         response = client.post("/api/datasets/upload", files={"files": ("bad.csv", b"")})
         dataset_id = response.json()["dataset_id"]
         events = client.get(f"/api/datasets/{dataset_id}/events")
@@ -156,7 +176,7 @@ def test_api_error_is_persisted_and_stream_ends_without_done(configured) -> None
         assert detail["status"] == "error"
         assert detail["error"]["code"] == "dataset_processing_failed"
         assert client.get(f"/api/datasets/{dataset_id}/catalog").status_code == 409
-    with TestClient(create_app(settings)) as restarted:
+    with _client(settings) as restarted:
         assert restarted.get(f"/api/datasets/{dataset_id}").json() == detail
 
 
@@ -173,7 +193,7 @@ def test_processing_does_not_block_http_event_loop(configured, monkeypatch) -> N
         return original(*args, **kwargs)
 
     monkeypatch.setattr(dataset_service, "ingest_csv_dataset", held_pipeline)
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         try:
             response = client.post(
                 "/api/datasets/upload", files={"files": ("slow.csv", b"amount\n10\n")}
@@ -189,20 +209,19 @@ def test_processing_does_not_block_http_event_loop(configured, monkeypatch) -> N
             release.set()
 
 
-def test_mode_and_bootstrapped_owner_are_required(configured) -> None:
+@pytest.mark.parametrize("local_mode", [False, True])
+def test_local_mode_never_grants_anonymous_access(configured, local_mode: bool) -> None:
     settings, _ = configured
-    settings.cp1_local_mode = False
+    settings.cp1_local_mode = local_mode
     with TestClient(create_app(settings)) as client:
-        assert client.get("/api/datasets").status_code == 503
-    settings.cp1_local_mode = True
-    settings.cp1_local_user_id = "unprepared"
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/api/datasets").status_code == 503
+        response = client.get("/api/datasets")
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthorized"
 
 
 def test_invalid_upload_and_missing_id_use_standard_error(configured) -> None:
     settings, _ = configured
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         assert client.post("/api/datasets/upload").status_code == 422
         response = client.post("/api/datasets/upload", files={"files": ("bad.exe", b"x")})
         assert response.status_code == 422

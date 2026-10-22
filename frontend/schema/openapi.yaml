@@ -350,14 +350,7 @@ components:
     DatasetAccepted:
       $ref: './contracts.json#/components/schemas/DatasetUploadAccepted'
     ConnectRequest:
-      type: object
-      required: [kind, dsn]
-      properties:
-        kind: { type: string, enum: [postgres, clickhouse] }
-        dsn: { type: string }
-        tables:
-          type: array
-          items: { type: string }
+      $ref: './contracts.json#/components/schemas/ConnectRequest'
 
     SemanticType:
       type: string

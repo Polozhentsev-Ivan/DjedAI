@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
 
 from djedai.contracts.catalog import DatasetCatalog, DatasetSource
 from djedai.contracts.tool_result import ToolError
@@ -60,3 +60,13 @@ class DatasetUploadAccepted(BaseModel):
 
     dataset_id: str
     status: Literal["processing"] = "processing"
+
+
+class ConnectRequest(BaseModel):
+    """Owned database source; credentials are write-only and never part of its catalog."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["postgres", "clickhouse"]
+    dsn: SecretStr = Field(min_length=1, max_length=8192)
+    tables: list[str] | None = Field(default=None, max_length=100)

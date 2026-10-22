@@ -340,7 +340,10 @@ def _resolve_data_ref_path(
             )
 
     base = Path(base_dir or get_settings().results_data_dir).resolve()
-    candidate = (base / ref).resolve()
+    original = base / ref
+    if original.is_symlink():
+        raise ValueError("Security error: symbolic data_ref links are not allowed")
+    candidate = original.resolve()
 
     if not candidate.is_relative_to(base):
         raise ValueError(
@@ -353,6 +356,49 @@ def _resolve_data_ref_path(
 # ============================================================================
 # Репозиторий вычислений и результатов (ToolResult & data_ref)
 # ============================================================================
+
+
+def get_owned_tool_result(
+    db: Session,
+    result_id: str,
+    owner_id: str,
+    *,
+    chat_id: str | None = None,
+    dataset_id: str | None = None,
+) -> ToolResultModel | None:
+    """Validate stored ownership and the full provenance chain before any file read."""
+    record = db.get(ToolResultModel, result_id)
+    current = record
+    seen: set[str] = set()
+    expected_chat = chat_id if chat_id is not None else (record.chat_id if record else None)
+    while current is not None:
+        if current.owner_id != owner_id or current.result_id in seen:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", current.result_id) or (
+            current.data_ref is not None
+            and current.data_ref != f"parquet://{current.result_id}.parquet"
+        ):
+            return None
+        seen.add(current.result_id)
+        if expected_chat is not None and current.chat_id != expected_chat:
+            return None
+        if current.chat_id is not None:
+            chat = db.get(ChatModel, current.chat_id)
+            dataset = db.get(DatasetModel, chat.dataset_id) if chat else None
+            if (
+                chat is None
+                or chat.owner_id != owner_id
+                or dataset is None
+                or dataset.owner_id != owner_id
+                or (dataset_id is not None and dataset.dataset_id != dataset_id)
+            ):
+                return None
+        elif dataset_id is not None:
+            return None
+        if not current.source_result_id:
+            return record
+        current = db.get(ToolResultModel, current.source_result_id)
+    return None
 
 
 def save_tool_result(
@@ -373,12 +419,19 @@ def save_tool_result(
     target_storage = Path(storage_dir or settings.results_data_dir).resolve()
 
     record = db.query(ToolResultModel).filter_by(result_id=tool_result.result_id).first()
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", tool_result.result_id):
+        raise ValueError("Некорректный идентификатор результата")
 
     # Разрешаем owner_id из чата, если не передан явно, и проверяем согласованность
     effective_owner_id = owner_id
     if chat_id is not None:
         chat = db.query(ChatModel).filter_by(chat_id=chat_id).first()
+        if chat is None:
+            raise ValueError("Чат результата не найден")
         if chat is not None:
+            dataset = db.get(DatasetModel, chat.dataset_id)
+            if dataset is None or dataset.owner_id != chat.owner_id:
+                raise ValueError("Конфликт владельцев чата и датасета")
             if owner_id is not None and chat.owner_id is not None and owner_id != chat.owner_id:
                 raise ValueError(
                     f"Конфликт владельцев: переданный owner_id='{owner_id}' "
@@ -389,6 +442,10 @@ def save_tool_result(
 
     # При upsert проверяем согласованность с уже сохранёнными связями
     if record is not None:
+        if owner_id is not None and record.owner_id != effective_owner_id:
+            raise ValueError("Конфликт владельцев: присвоение существующего результата запрещено")
+        if chat_id is not None and record.chat_id != chat_id:
+            raise ValueError("Конфликт владельцев: смена чата результата запрещена")
         # Проверяем владельца относительно уже сохранённого чата
         if record.chat_id is not None:
             saved_chat = db.query(ChatModel).filter_by(chat_id=record.chat_id).first()
@@ -422,7 +479,29 @@ def save_tool_result(
             if effective_owner_id is None:
                 effective_owner_id = record.owner_id
 
+    effective_chat_id = chat_id or (record.chat_id if record else None)
+    if tool_result.source_result_id and effective_owner_id is not None:
+        if (
+            tool_result.source_result_id == tool_result.result_id
+            or get_owned_tool_result(
+                db, tool_result.source_result_id, effective_owner_id, chat_id=effective_chat_id
+            )
+            is None
+        ):
+            raise ValueError("Источник результата не относится к владельцу и чату")
+        parent = db.get(ToolResultModel, tool_result.source_result_id)
+        while parent is not None:
+            if parent.result_id == tool_result.result_id:
+                raise ValueError("Циклическое происхождение результата запрещено")
+            parent = (
+                db.get(ToolResultModel, parent.source_result_id)
+                if parent.source_result_id
+                else None
+            )
+
     data_ref = tool_result.data_ref
+    if data_ref is not None:
+        _resolve_data_ref_path(data_ref, target_storage, tool_result.result_id)
     data_preview: dict[str, Any] | None = None
 
     if tool_result.data is not None:
@@ -432,7 +511,9 @@ def save_tool_result(
         # Сохраняем в Parquet только если есть колонки и persist_data=True
         if persist_data and rows is not None and len(columns) > 0:
             file_name = f"{tool_result.result_id}.parquet"
-            parquet_path = (target_storage / file_name).resolve()
+            parquet_path = _resolve_data_ref_path(
+                f"parquet://{file_name}", target_storage, tool_result.result_id
+            )
             write_parquet(
                 parquet_path,
                 columns,
@@ -519,9 +600,17 @@ def load_tool_result(
     result_id: str,
     load_data: bool = True,
     storage_dir: Path | str | None = None,
+    *,
+    owner_id: str | None = None,
+    chat_id: str | None = None,
+    dataset_id: str | None = None,
 ) -> ToolResult | None:
     """Восстанавливает контракт ToolResult из БД и Parquet по ссылке data_ref."""
-    record = db.query(ToolResultModel).filter_by(result_id=result_id).first()
+    record = (
+        get_owned_tool_result(db, result_id, owner_id, chat_id=chat_id, dataset_id=dataset_id)
+        if owner_id is not None
+        else db.get(ToolResultModel, result_id)
+    )
     if record is None:
         return None
 
@@ -587,6 +676,8 @@ def load_tool_result(
                         truncated=truncated or (eff_rc > len(p_rows)),
                     )
             except ValueError as exc:
+                if owner_id is not None:
+                    return None
                 logger.warning(
                     "Некорректный data_ref '%s' для результата %s: %s",
                     record.data_ref,

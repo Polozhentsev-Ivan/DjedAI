@@ -978,6 +978,49 @@
         "title": "ColumnStats",
         "type": "object"
       },
+      "ConnectRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "postgres",
+              "clickhouse"
+            ],
+            "title": "Kind"
+          },
+          "dsn": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "format": "password",
+            "title": "Dsn",
+            "writeOnly": true
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "dsn"
+        ],
+        "title": "ConnectRequest",
+        "description": "Owned database source; credentials are write-only and never part of its catalog."
+      },
       "Dashboard": {
         "additionalProperties": false,
         "description": "Сущность дашборда, сохраняемая в БД приложения и доступная для обновления.",
@@ -1932,6 +1975,19 @@
             "default": null,
             "description": "Технические детали ошибки",
             "title": "Detail"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Код ошибки, в том числе unauthorized",
+            "title": "Code"
           }
         },
         "required": [

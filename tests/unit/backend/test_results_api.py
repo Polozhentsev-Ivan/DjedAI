@@ -7,7 +7,7 @@
 - Обработку отсутствующих результатов (404 not_found);
 - Контроль доступа: изоляция чужих результатов и без владельца (404, no data leakage);
 - Обработку результатов со статусами error и empty;
-- Защиту от отключенного локального режима (503).
+- Обязательную Bearer-сессию независимо от локального режима.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.app import create_app
+from djedai.backend.auth import create_session, hash_password
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.models import ToolResultModel, UserModel
 from djedai.backend.db.repositories import save_tool_result
@@ -37,7 +38,7 @@ from djedai.contracts.tool_result import (
 
 @pytest.fixture
 def results_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account_password_hash: str
 ) -> Iterator[tuple[TestClient, sessionmaker[Session], Settings]]:
     db_path = tmp_path / "app.db"
     results_dir = tmp_path / "results_storage"
@@ -50,32 +51,37 @@ def results_env(
 
     # Создаём тестовых пользователей: alice (текущий в сессии) и bob (чужой)
     with factory() as db:
-        alice = UserModel(id="u_alice", username="alice", is_active=True)
+        alice = UserModel(
+            id="u_alice", username="alice", password_hash=account_password_hash, is_active=True
+        )
         bob = UserModel(id="u_bob", username="bob", is_active=True)
         db.add_all([alice, bob])
         db.commit()
+        token = create_session(db, alice.id)
 
     monkeypatch.setenv("APP_DATABASE_URL", db_url)
     monkeypatch.setenv("RESULTS_DATA_DIR", str(results_dir))
-    monkeypatch.setenv("CP1_LOCAL_MODE", "true")
-    monkeypatch.setenv("CP1_LOCAL_USER_ID", "u_alice")
     get_settings.cache_clear()
 
     settings = Settings(
         _env_file=None,
         app_database_url=db_url,
         results_data_dir=str(results_dir),
-        cp1_local_mode=True,
-        cp1_local_user_id="u_alice",
+        cp1_local_mode=False,
     )
 
     app = create_app(settings)
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
             yield client, factory, settings
     finally:
         get_settings.cache_clear()
         engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def account_password_hash() -> str:
+    return hash_password("test-results-password")
 
 
 def test_get_small_result_metadata_and_data(
@@ -215,6 +221,18 @@ def test_provenance_and_calculation_origin(
     )
 
     with factory() as db:
+        save_tool_result(
+            db,
+            ToolResult(
+                result_id="res_parent_source_42",
+                status="ok",
+                tool="run_sql",
+                data=ToolResultData(columns=["amount"], rows=[[99000]], row_count=1),
+            ),
+            owner_id="u_alice",
+            persist_data=False,
+            storage_dir=settings.results_data_dir,
+        )
         save_tool_result(
             db,
             tool_res,
@@ -392,20 +410,22 @@ def test_empty_status_result_metadata_and_data(
     assert data["rows"] == []
 
 
-def test_disabled_local_mode_returns_503(tmp_path: Path) -> None:
-    """При выключенном CP1_LOCAL_MODE доступ блокируется со статусом 503."""
+@pytest.mark.parametrize("local_mode", [False, True])
+def test_missing_bearer_returns_401_in_every_mode(tmp_path: Path, local_mode: bool) -> None:
+    """Локальный режим не открывает анонимный доступ к результатам."""
     db_url = f"sqlite:///{tmp_path / 'disabled.db'}"
     settings = Settings(
         _env_file=None,
         app_database_url=db_url,
-        cp1_local_mode=False,
+        cp1_local_mode=local_mode,
     )
     app = create_app(settings)
+    init_db(app.state.engine)
     with TestClient(app) as client:
         res = client.get("/api/results/res_any")
-        assert res.status_code == 503
+        assert res.status_code == 401
         err = ErrorResponse.model_validate(res.json())
-        assert err.error.code == "unavailable"
+        assert err.error.code == "unauthorized"
 
 
 def test_corrupted_parquet_graceful_fallback(

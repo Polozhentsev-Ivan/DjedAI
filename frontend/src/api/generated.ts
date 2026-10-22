@@ -526,11 +526,23 @@ export interface components {
             error: components["schemas"]["ToolError"] | null;
         };
         DatasetAccepted: components["schemas"]["DatasetUploadAccepted"];
+        /**
+         * ConnectRequest
+         * @description Owned database source; credentials are write-only and never part of its catalog.
+         */
         ConnectRequest: {
-            /** @enum {string} */
+            /**
+             * Kind
+             * @enum {string}
+             */
             kind: "postgres" | "clickhouse";
+            /**
+             * Dsn
+             * Format: password
+             */
             dsn: string;
-            tables?: string[];
+            /** Tables */
+            tables?: string[] | null;
         };
         /** @enum {string} */
         SemanticType: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
@@ -1372,6 +1384,12 @@ export interface components {
              * @default null
              */
             detail?: string | null;
+            /**
+             * Code
+             * @description Код ошибки, в том числе unauthorized
+             * @default null
+             */
+            code?: string | null;
         };
         /**
          * XAxis

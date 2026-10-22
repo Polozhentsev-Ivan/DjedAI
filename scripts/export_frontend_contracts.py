@@ -15,6 +15,7 @@ CONTRACTS = {
     "DatasetSummary",
     "DatasetDetail",
     "DatasetUploadAccepted",
+    "ConnectRequest",
     "ChartSpec",
     "AssistantMessage",
     "ChatSummary",
