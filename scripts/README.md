@@ -71,7 +71,7 @@ Python-команды запускаем в среде проекта через
 
 ## Команды
 
-- `verify_golden.py` — проверка набора [golden v1](../eval/README.md) для сценариев 1–2 (#79). Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает факты средствами `csv`, `Counter`, `Decimal` и `datetime`.
+- `verify_golden.py` — проверка [golden-набора](../eval/README.md) для сценариев 1–10 и edge cases (#79/#80). Проверяет минимумы всех групп, контекст, рубрики графиков/дашбордов и отдельно ошибки ввода. Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает группировки, корреляции, лаги и условные прогнозы средствами стандартной библиотеки Python.
   - Только структура, без сети и CSV: `uv run --locked python scripts/verify_golden.py --validate-only`.
   - Проверка полного файла: `uv run --locked python scripts/verify_golden.py --data-file "../artifacts/golden-v1/08_Фоновые_задания.csv" --download --output ../artifacts/golden-v1/reference-report.json`.
   - `--download` скачивает закреплённую версию только при отсутствии файла; существующий кэш проверяется и не заменяется. Для локального файла флаг можно опустить.
