@@ -19,6 +19,7 @@ dependencies = [
     "sqlglot>=30.23.0",
     "uvicorn==0.34.0",
     "python-multipart==0.0.32",
+    "statsmodels>=0.15.0",
 ]
 
 [dependency-groups]
