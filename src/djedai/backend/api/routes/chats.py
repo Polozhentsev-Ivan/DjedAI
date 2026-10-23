@@ -193,7 +193,7 @@ async def send_chat_message(
                 frame = encode_sse_event(event)
                 enqueue(frame)
         except Exception:
-            logger.exception("Chat worker failed")
+            logger.error("Chat worker failed")
             err_event = SSEErrorEvent(
                 data=SSEErrorData(
                     message="Не удалось получить ответ агента",

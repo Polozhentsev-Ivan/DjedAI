@@ -1,5 +1,7 @@
 import json
 import uuid
+from collections.abc import Callable
+from contextlib import nullcontext
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -342,14 +344,22 @@ def route_after_verify(state: AgentState) -> str:
 def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("load_ctx", load_ctx)
-    workflow.add_node("understand", understand)
-    workflow.add_node("plan", plan)
-    workflow.add_node("execute", execute)
-    workflow.add_node("visualize", visualize)
-    workflow.add_node("compose", compose)
-    workflow.add_node("verify", verify)
-    workflow.add_node("clarify", clarify)
+    def observed(name: str, function: Callable, *, state_only: bool = False) -> Callable:
+        def node(state: AgentState, config: RunnableConfig) -> dict:
+            diagnostics = config.get("configurable", {}).get("diagnostics")
+            with diagnostics.stage(name) if diagnostics else nullcontext():
+                return function(state) if state_only else function(state, config)
+
+        return node
+
+    workflow.add_node("load_ctx", observed("load_ctx", load_ctx))
+    workflow.add_node("understand", observed("understand", understand))
+    workflow.add_node("plan", observed("plan", plan))
+    workflow.add_node("execute", observed("execute", execute))
+    workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
+    workflow.add_node("compose", observed("compose", compose))
+    workflow.add_node("verify", observed("verify", verify))
+    workflow.add_node("clarify", observed("clarify", clarify, state_only=True))
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")
