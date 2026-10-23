@@ -1,0 +1,86 @@
+# Python-интерфейс блока данных — B1-10 / #62
+
+Дата: 24.10.2026. Документ фиксирует уже работающий фасад как согласованный
+интерфейс B1 для backend. Фасад реализован в #144 (CSV) и #103/#60 (PostgreSQL).
+Формат каталога — `DatasetCatalog` из #59. Новых функций документ не добавляет.
+
+## Фасад
+
+Единая точка входа — `djedai.backend.dataset_service.DatasetService(session_factory,
+data_dir, *, source_encryption_key=None)`. В приложении это `app.state.dataset_service`.
+В спецификации операции названы `ingest_csv(files)`, `connect_db(dsn)` и
+`get_catalog(dataset_id)`. В коде у каждой операции первым аргументом идёт владелец,
+а методы приёма асинхронные: источник сохраняется, сборка ставится в очередь.
+
+| Метод | Вход | Результат |
+| --- | --- | --- |
+| `await ingest_csv(owner_id, sources)` | `Sequence[CsvSource(path, original_name)]`, без HTTP | `DatasetUploadAccepted(dataset_id, status="processing")` |
+| `await ingest_uploads(owner_id, files)` | `Sequence[UploadFile]` (multipart-адаптер) | то же |
+| `await connect_db(owner_id, dsn, tables=None, *, kind="postgresql", name=None)` | DSN и необязательный список таблиц | то же |
+| `get_catalog(owner_id, dataset_id)` | — | `DatasetCatalog` готового датасета |
+| `get_detail(owner_id, dataset_id)` / `list_for_owner(owner_id)` | — | `DatasetDetail` / `list[DatasetSummary]` |
+| `get_context(owner_id, dataset_id)` | — | `DatasetContext`: каталог и `open_connection()` для аналитики |
+| `events(owner_id, dataset_id)` | — | async-поток `progress`, затем одно `done` или `error` |
+| `recover_interrupted()` / `close()` | — | перезапуск незавершённых сборок / ожидание фоновых задач |
+
+Методы приёма вызываются в event loop приложения: фоновая сборка привязана к нему.
+До возврата `ingest_csv` копирует файлы в собственное хранилище, поэтому вызывающий
+код может сразу удалить исходники. Сохранённые CSV и зашифрованный DSN позволяют
+пересобрать датасет после перезапуска (`recover_interrupted`).
+
+## Статусы
+
+`processing → ready | error`. Каталог публикуется только после сборки всех таблиц:
+частичного каталога не бывает. Ошибка любого файла или таблицы переводит весь
+датасет в `error`. Повторно запрашивать статус можно через `get_detail`/`events` или
+HTTP `GET /api/datasets/{id}` и `/events`; формат событий — `contracts.sse`.
+
+## Ошибки
+
+Фасад бросает `fastapi.HTTPException`. Python-вызывающий видит код и `detail`,
+HTTP-клиент получает `ErrorResponse{error: ToolError}` из обработчика в
+`backend/app.py`. Начиная с 500 HTTP-ответ заменяет текст на «Сервис временно
+недоступен», а в Python остаётся исходный `detail`.
+
+| Условие | Код | `ToolError.code` |
+| --- | --- | --- |
+| Неизвестный или чужой `dataset_id` (любой метод чтения, SSE) | 404 | `not_found` |
+| Каталог или контекст ещё не готов, файл датасета недоступен | 409 | `conflict` |
+| Нет файлов, не `.csv`, некорректный DSN, пустой список таблиц, плохое имя | 422 | `http_422` |
+| `kind` не поддерживается (сейчас `clickhouse`) | 501 | `http_501` |
+| Не задан `SOURCE_ENCRYPTION_KEY`, сохранённый источник PostgreSQL недоступен | 503 | `unavailable` |
+| Сборка завершилась ошибкой | статус `error` | `dataset_processing_failed` в `DatasetDetail.error` и SSE `error` |
+
+Текст ошибки сборки — сообщение `CsvReadError` для CSV или общая фраза. DSN,
+пути, SQL и трассировки драйвера не попадают в ответы, SSE, каталог и логи.
+
+## Контекст владельца
+
+`owner_id` — это `users.id` из проверенной сессии (`current_owner_id`). Клиентский
+`user_id` и текст модели владельца не задают. Каждый метод проверяет пару
+`(owner_id, dataset_id)`, поэтому чужой и несуществующий датасет неразличимы (404).
+Фоновая сборка сохраняет владельца, с которым была принята. Подробности —
+[AUTH-3](103-owner-isolation.md).
+
+## Этапы #62
+
+- [x] Заглушка для BE: не понадобилась, сразу сделана рабочая реализация (#144).
+- [x] CP1: `ingest_csv` + `get_catalog` для CSV (#53, #56, #59, #144).
+- [x] CP2: `connect_db` для PostgreSQL (#60, #103).
+- [ ] FINAL: ClickHouse (#61).
+
+`ConnectRequest.kind` уже принимает `clickhouse`, поэтому менять HTTP-формат не
+придётся. Для #61 нужно:
+
+1. Добавить ветку `kind="clickhouse"` в `connect_db` с проверкой DSN и шифрованием
+   через `SourceSecrets`, сохранять `source_kind="clickhouse"`.
+2. В `_process` собирать каталог по метаданным и серверным профилям ClickHouse,
+   `source.kind="clickhouse"`.
+3. По [§7 решения PL-1](47-contracts-and-runtime.md#7-доступ-к-clickhouse-и-внешние-данные)
+   запросы выполняются в ClickHouse в его диалекте. Сейчас `DatasetContext.open_connection()`
+   возвращает DuckDB-соединение, поэтому контекст для CH нужно расширить вместе с
+   владельцами `run_sql` и агента.
+
+Проверка сверки Python ↔ HTTP по ID, каталогу и ошибкам —
+`tests/integration/test_data_interface.py`. PostgreSQL-часть запускается в
+`scripts/test_postgres_isolation.py`.
