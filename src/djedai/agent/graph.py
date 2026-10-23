@@ -20,6 +20,7 @@ from djedai.contracts.agent import (
     VerifyResponse,
 )
 from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 
 def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
@@ -116,6 +117,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
 
     for step in plan_steps:
         try:
+            if budget := current_budget():
+                budget.check()
             if dispatcher:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
@@ -139,6 +142,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             res = res.model_copy(update={"tool": step.tool, "params": step.args})
             new_results.append(res)
 
+        except (TurnTimeout, TurnCancelled):
+            raise
         except Exception as e:
             new_results.append(
                 ToolResult(
@@ -347,8 +352,10 @@ def build_agent_graph() -> StateGraph:
     def observed(name: str, function: Callable, *, state_only: bool = False) -> Callable:
         def node(state: AgentState, config: RunnableConfig) -> dict:
             diagnostics = config.get("configurable", {}).get("diagnostics")
+            budget = config.get("configurable", {}).get("budget")
             with diagnostics.stage(name) if diagnostics else nullcontext():
-                return function(state) if state_only else function(state, config)
+                with budget.activate() if budget else nullcontext():
+                    return function(state) if state_only else function(state, config)
 
         return node
 

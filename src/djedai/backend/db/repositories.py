@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -32,6 +33,7 @@ from djedai.backend.db.models import (
     ToolResultModel,
     UserModel,
 )
+from djedai.backend.db.session import budgeted_write
 from djedai.contracts.message import AssistantMessage
 from djedai.contracts.tool_result import (
     ChartHint,
@@ -41,6 +43,7 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.execution import ExecutionBudget
 
 logger = logging.getLogger(__name__)
 
@@ -859,6 +862,7 @@ def save_message(
     result_ids: list[str] | None = None,
     trace: list[dict[str, Any]] | None = None,
     created_at: datetime | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> MessageModel:
     """Сохраняет сообщение в чате со структурированными блоками и аудитом."""
     effective_created_at = created_at
@@ -881,26 +885,41 @@ def save_message(
         created_at=effective_created_at,
     )
     db.add(msg)
-    db.commit()
-    db.refresh(msg)
+    try:
+        if before_commit is not None:
+            db.flush()
+            before_commit()
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    if before_commit is None:
+        db.refresh(msg)
     return msg
 
 
-def save_assistant_message(db: Session, message: AssistantMessage) -> MessageModel:
+def save_assistant_message(
+    db: Session, message: AssistantMessage, *, budget: ExecutionBudget | None = None
+) -> MessageModel:
     """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at."""
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
-    return save_message(
-        db=db,
-        message_id=message.message_id,
-        chat_id=message.chat_id,
-        role=message.role,
-        content=None,
-        blocks=blocks_data,
-        result_ids=message.result_ids,
-        trace=trace_data,
-        created_at=message.created_at,
-    )
+
+    def write(session: Session) -> MessageModel:
+        return save_message(
+            db=session,
+            message_id=message.message_id,
+            chat_id=message.chat_id,
+            role=message.role,
+            content=None,
+            blocks=blocks_data,
+            result_ids=message.result_ids,
+            trace=trace_data,
+            created_at=message.created_at,
+            before_commit=budget.check if budget is not None else None,
+        )
+
+    return budgeted_write(db, budget, write) if budget is not None else write(db)
 
 
 def to_assistant_message(message_model: MessageModel) -> AssistantMessage:

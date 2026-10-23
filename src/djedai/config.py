@@ -27,7 +27,14 @@ class LimitSettings(BaseSettings):
     sql_max_rows: int = Field(default=5000, ge=1, alias="SQL_MAX_ROWS")
     tool_timeout_seconds: float = Field(default=30, gt=0, alias="TOOL_TIMEOUT_SECONDS")
     dashboard_max_tool_calls: int = Field(default=20, ge=1, alias="DASHBOARD_MAX_TOOL_CALLS")
-    model_timeout_seconds: float = Field(default=60, gt=0, alias="MODEL_TIMEOUT_SECONDS")
+    model_timeout_seconds: float = Field(default=60, gt=0, le=600, alias="MODEL_TIMEOUT_SECONDS")
+    agent_turn_timeout_seconds: float = Field(
+        default=120, gt=0, le=600, alias="AGENT_TURN_TIMEOUT_SECONDS"
+    )
+    model_max_retries: int = Field(default=1, ge=0, le=3, alias="MODEL_MAX_RETRIES")
+    model_retry_delay_seconds: float = Field(
+        default=0.5, ge=0, le=10, alias="MODEL_RETRY_DELAY_SECONDS"
+    )
     model_max_output_tokens: int = Field(default=2048, ge=1, alias="MODEL_MAX_OUTPUT_TOKENS")
     model_context_tokens: int = Field(default=8192, ge=1, alias="MODEL_CONTEXT_TOKENS")
 

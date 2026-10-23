@@ -12,7 +12,8 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from openai import DefaultHttpxClient
+from djedai.agent.transport import CancellableHttpClient
+from djedai.execution import TurnCancelled, TurnTimeout
 
 NODES = frozenset(
     {"load_ctx", "understand", "plan", "execute", "visualize", "compose", "verify", "clarify"}
@@ -94,7 +95,13 @@ class RunDiagnostics:
         try:
             yield
         except Exception as exc:
-            error = "STAGE_EXCEPTION"
+            error = (
+                "TIMEOUT"
+                if isinstance(exc, TurnTimeout)
+                else "CANCELLED"
+                if isinstance(exc, TurnCancelled)
+                else "STAGE_EXCEPTION"
+            )
             exception_type = type(exc).__name__
             self.last_error = error
             self.error_node = self.node
@@ -199,7 +206,7 @@ def capture_usage(usage: Any) -> None:
         call.capture_usage(usage)
 
 
-class DiagnosticHttpClient(DefaultHttpxClient):
+class DiagnosticHttpClient(CancellableHttpClient):
     """Observe SDK attempts including full response reads, without copying requests."""
 
     def __del__(self) -> None:
@@ -228,7 +235,13 @@ class DiagnosticHttpClient(DefaultHttpxClient):
         except Exception as exc:
             exception_type = type(exc).__name__
             cause_type = type(exc.__cause__).__name__ if exc.__cause__ else None
-            error = "TIMEOUT" if "Timeout" in type(exc).__name__ else "CONNECTION_ERROR"
+            error = (
+                "CANCELLED"
+                if isinstance(exc, TurnCancelled)
+                else "TIMEOUT"
+                if isinstance(exc, TurnTimeout) or "Timeout" in type(exc).__name__
+                else "CONNECTION_ERROR"
+            )
             raise
         finally:
             call.emit(

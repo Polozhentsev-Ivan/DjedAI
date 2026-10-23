@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from openai import DefaultAsyncHttpxClient
 from sqlalchemy.orm import sessionmaker
 
 from djedai.agent.client import BIModelClient
@@ -105,9 +106,15 @@ def model_server(
             base_url=f"http://127.0.0.1:{server.server_port}/v1",
             model_name="test-model",
             timeout=timeout,
+            max_retries=2,
+            retry_delay=0.01,
         )
     try:
-        yield client, calls
+        with patch(
+            "djedai.agent.transport.DefaultAsyncHttpxClient",
+            lambda: DefaultAsyncHttpxClient(trust_env=False),
+        ):
+            yield client, calls
     finally:
         client.client.close()
         server.shutdown()
@@ -126,7 +133,7 @@ def recording(directory: Path, owner: str = "owner") -> RunDiagnostics:
     )
 
 
-def test_sdk_retries_are_individually_recorded_without_contents(tmp_path: Path) -> None:
+def test_model_retries_are_individually_recorded_without_contents(tmp_path: Path) -> None:
     def answer(number: int, _payload: dict[str, Any]) -> tuple[int, dict[str, Any], float]:
         if number < 3:
             return (429 if number == 1 else 503), {"error": {"message": SECRET}}, 0

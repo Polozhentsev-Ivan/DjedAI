@@ -23,6 +23,7 @@ from djedai.backend.chat_service import (
     get_agent_runtime,
     message_to_chat_message,
     stream_chat_turn,
+    turn_timeout_event,
 )
 from djedai.backend.db.repositories import (
     create_chat as create_chat_record,
@@ -47,6 +48,7 @@ from djedai.contracts.chat import (
     SendMessageRequest,
 )
 from djedai.contracts.sse import SSEErrorData, SSEErrorEvent
+from djedai.execution import TurnCancelled
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 logger = logging.getLogger(__name__)
@@ -165,11 +167,12 @@ async def send_chat_message(
     """Сохраняет вопрос и отдаёт ответ агента потоком SSE вне event loop."""
     await asyncio.to_thread(access.require)
     cancel_event = threading.Event()
-    queue: asyncio.Queue[str | object] = asyncio.Queue()
+    budget = runtime.budget(cancel_event.is_set)
+    queue: asyncio.Queue[object] = asyncio.Queue()
     done_sentinel = object()
     loop = asyncio.get_running_loop()
 
-    def enqueue(item: str | object) -> None:
+    def enqueue(item: object) -> None:
         try:
             loop.call_soon_threadsafe(queue.put_nowait, item)
         except RuntimeError:
@@ -187,11 +190,12 @@ async def send_chat_message(
                 runtime,
                 is_cancelled=lambda: cancel_event.is_set() or not access.valid(),
                 owner_id=owner_id,
+                budget=budget,
             ):
                 if cancel_event.is_set():
                     break
                 frame = encode_sse_event(event)
-                enqueue(frame)
+                enqueue((frame, event.event in {"done", "error"}))
         except Exception:
             logger.error("Chat worker failed")
             err_event = SSEErrorEvent(
@@ -200,7 +204,7 @@ async def send_chat_message(
                     detail="Не удалось завершить запрос. Повторите его явно.",
                 )
             )
-            enqueue(encode_sse_event(err_event))
+            enqueue((encode_sse_event(err_event), True))
         finally:
             try:
                 if session is not None:
@@ -218,11 +222,24 @@ async def send_chat_message(
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
-                item = await queue.get()
+                try:
+                    budget.check()
+                    item = await asyncio.wait_for(queue.get(), timeout=min(0.1, budget.remaining))
+                    budget.check()
+                except TimeoutError:
+                    if budget.remaining > 0:
+                        continue
+                    cancel_event.set()
+                    yield encode_sse_event(turn_timeout_event())
+                    return
+                except TurnCancelled:
+                    return
                 if item is done_sentinel:
                     break
-                if isinstance(item, str):
-                    yield item
+                if isinstance(item, tuple):
+                    yield item[0]
+                    if item[1]:
+                        return
         finally:
             cancel_event.set()
 
