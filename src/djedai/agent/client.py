@@ -1,8 +1,20 @@
 import json
+import math
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
+
+from djedai.agent.transport import CancellableHttpClient, attempt_lease
+from djedai.execution import (
+    ExecutionBudget,
+    TurnCancelled,
+    TurnTimeout,
+    current_budget,
+)
 
 # Типы ошибок — общий контракт: по ним потребители решают, повторять ли вызов.
 # INVALID_JSON / SCHEMA_MISMATCH / OUTPUT_LIMIT — модель ответила, но ответ не принят;
@@ -32,10 +44,74 @@ class BIModelClient:
         model_name: str,
         timeout: float = 15.0,
         max_output_tokens: int | None = None,
+        max_retries: int = 1,
+        retry_delay: float = 0.5,
     ):
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=2)
+        endpoint = urlsplit(base_url)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+            raise ValueError("MODEL_BASE_URL должен быть полным HTTP(S)-адресом")
+        if not api_key.strip() or any(character in api_key for character in "\r\n"):
+            raise ValueError("MODEL_API_KEY не должен быть пустым или содержать переносы строк")
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=0,
+            http_client=CancellableHttpClient(),
+        )
         self.model = model_name
         self.max_output_tokens = max_output_tokens
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    def _request(self, **kwargs: Any) -> Any:
+        budget = current_budget() or ExecutionBudget(
+            self.timeout * (self.max_retries + 1) + self.retry_delay * (2**self.max_retries)
+        )
+        # Keep one retry policy even when a test/integration supplies its own SDK client.
+        self.client.max_retries = 0
+        for attempt in range(self.max_retries + 1):
+            budget.check()
+            try:
+                with attempt_lease(budget, self.timeout):
+                    response = self.client.chat.completions.create(**kwargs)
+                budget.check()
+                return response
+            except (APIError, APIConnectionError, APITimeoutError) as exc:
+                budget.check()
+                timed_out = isinstance(exc, APITimeoutError)
+                status = getattr(exc, "status_code", None)
+                transient = (
+                    timed_out
+                    or isinstance(exc, APIConnectionError)
+                    or status in {408, 429, 500, 502, 503, 504}
+                )
+                if attempt >= self.max_retries or not transient:
+                    if timed_out:
+                        raise APITimeoutError(request=exc.request) from exc
+                    raise
+                delay = self.retry_delay * 2**attempt
+                headers = getattr(getattr(exc, "response", None), "headers", {})
+                retry_after = headers.get("retry-after")
+                try:
+                    if headers.get("retry-after-ms"):
+                        delay = float(headers["retry-after-ms"]) / 1000
+                    elif retry_after is not None:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            date = parsedate_to_datetime(retry_after)
+                            delay = max(0.0, (date - datetime.now(UTC)).total_seconds())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+                if math.isnan(delay) or delay < 0:
+                    delay = self.retry_delay * 2**attempt
+                if delay >= budget.remaining:
+                    # Honour the server's delay by not attempting an early retry.
+                    raise
+                budget.wait(delay)
+        raise RuntimeError("Unreachable model retry state")
 
     def generate_typed_response[T: BaseModel](
         self, system_prompt: str, user_prompt: str, response_model: type[T]
@@ -48,7 +124,7 @@ class BIModelClient:
         }
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._request(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -84,6 +160,8 @@ class BIModelClient:
                 finish_reason=response.choices[0].finish_reason,
             )
 
+        except (TurnTimeout, TurnCancelled):
+            raise
         except json.JSONDecodeError as e:
             return ModelResponse(
                 status="error",
@@ -102,7 +180,7 @@ class BIModelClient:
             return ModelResponse(
                 status="error",
                 error_type="TIMEOUT",
-                message="Model server timed out.",
+                message="Модель не ответила за отведённое время.",
             )
         except (APIError, APIConnectionError, RateLimitError) as e:
             return ModelResponse(

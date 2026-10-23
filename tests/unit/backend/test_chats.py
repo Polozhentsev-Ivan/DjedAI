@@ -24,6 +24,8 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 from sqlalchemy.orm import Session, sessionmaker
 
+from djedai.agent.client import BIModelClient
+from djedai.agent.graph import build_agent_graph
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
@@ -508,6 +510,141 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def test_chat_deadline_is_terminal_and_next_question_recovers(chat_api) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    graph = BarrierFakeGraph(barrier=threading.Event())
+    use_runtime(AgentRuntime(graph=graph, turn_timeout_seconds=0.2))
+    started = time.monotonic()
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "slow"})
+    assert time.monotonic() - started < 1.5
+    events = parse_sse(response.text)
+    assert [name for name, _ in events].count("error") == 1
+    assert events[-1][1]["code"] == "turn_timeout"
+    assert not any(name in {"done", "block"} for name, _ in events)
+    with factory() as db:
+        assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+    use_runtime(_runtime({"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}))
+    next_response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "next"})
+    assert parse_sse(next_response.text)[-1][0] == "done"
+
+
+def _network_runtime(endpoint: Any, seconds: float) -> AgentRuntime:
+    return AgentRuntime(
+        graph=build_agent_graph(),
+        client=BIModelClient(
+            "fixture-key", endpoint.base_url, "fixture-model", timeout=5, max_retries=1
+        ),
+        tool_dispatcher=lambda *_: ToolResult(
+            result_id="network-fixture",
+            tool="run_sql",
+            status="ok",
+            data=ToolResultData(columns=["n"], rows=[[1]]),
+            facts=[Fact(text="1 строка", values={"n": 1})],
+        ),
+        turn_timeout_seconds=seconds,
+    )
+
+
+def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpoint) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+
+    def reply(_number, payload):
+        schema = payload["response_format"]["json_schema"]["name"]
+        return {"mode": "stall"} if schema == "VerifyResponse" else {}
+
+    with model_endpoint(reply) as endpoint:
+        runtime = _network_runtime(endpoint, 1)
+        use_runtime(runtime)
+        try:
+            started = time.monotonic()
+            response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
+            assert time.monotonic() - started < 2.5
+            events = parse_sse(response.text)
+            assert [data["code"] for name, data in events if name == "error"] == ["turn_timeout"]
+            assert all(name not in {"done", "block"} for name, _ in events)
+            assert len(endpoint.calls) == 4  # understand, plan, compose, verify
+            assert endpoint.peer_closed.wait(1)
+            with factory() as db:
+                assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+        finally:
+            runtime.client.client.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("logout", [False, True])
+async def test_live_disconnect_or_logout_closes_model_request(
+    chat_api, model_endpoint, logout: bool
+) -> None:
+    test_client, factory, use_runtime = chat_api
+    chat_id = _create_chat(test_client)
+    port = _free_port()
+
+    with model_endpoint(lambda n, _: {"mode": "stall"} if n == 1 else {}) as endpoint:
+        runtime = _network_runtime(endpoint, 5)
+        use_runtime(runtime)
+        server = uvicorn.Server(
+            uvicorn.Config(test_client.app, host="127.0.0.1", port=port, log_level="error")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        try:
+            with anyio.fail_after(3):
+                while not server.started:
+                    await anyio.sleep(0.01)
+            async with httpx.AsyncClient(
+                base_url=f"http://127.0.0.1:{port}",
+                headers=test_client.headers,
+                trust_env=False,
+            ) as client:
+                async with client.stream(
+                    "POST", f"/api/chats/{chat_id}/messages", json={"text": "stop"}
+                ) as response:
+                    lines = response.aiter_lines()
+                    with anyio.fail_after(3):
+                        async for line in lines:
+                            if line == "event: status":
+                                break
+                        while not endpoint.started.is_set():
+                            await anyio.sleep(0.01)
+                    started = time.monotonic()
+                    if logout:
+                        assert (await client.post("/api/auth/logout")).status_code == 204
+                        tail = "\n".join([line async for line in lines])
+                        assert '"code":"unauthorized"' in tail.replace(" ", "")
+                        assert "event: done" not in tail
+                    # Exiting the stream closes TCP, as fetch AbortController does.
+                with anyio.fail_after(2):
+                    while not endpoint.peer_closed.is_set():
+                        await anyio.sleep(0.01)
+                assert time.monotonic() - started < 2
+                assert len(endpoint.calls) == 1
+                with factory() as db:
+                    assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+                if logout:
+                    login = await client.post(
+                        "/api/auth/login",
+                        json={"username": "chat_owner", "password": "test-chat-password"},
+                    )
+                    assert login.status_code == 200
+                    client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+                # An explicit new question runs all stages, including verify, successfully.
+                runtime.client.client.close()
+                runtime = _network_runtime(endpoint, 5)
+                use_runtime(runtime)
+                next_response = await client.post(
+                    f"/api/chats/{chat_id}/messages", json={"text": "next"}
+                )
+                events = parse_sse(next_response.text)
+                assert events[-1][0] == "done"
+                assert len(endpoint.calls) == 5
+        finally:
+            server.should_exit = True
+            await anyio.to_thread.run_sync(thread.join, 3)
+            runtime.client.client.close()
 
 
 @pytest.mark.anyio

@@ -1,4 +1,3 @@
-import threading
 import uuid
 from collections.abc import Collection
 
@@ -15,6 +14,7 @@ from djedai.contracts.tool_result import (
     ToolResult,
     ToolResultData,
 )
+from djedai.execution import query_timer
 
 
 def _quote_id(identifier: str) -> str:
@@ -93,7 +93,7 @@ def run_sql(
             con.execute("CREATE TABLE test (id INT, name VARCHAR)")
             con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
 
-        timer = threading.Timer(limits.tool_timeout_seconds, con.interrupt)
+        timer = query_timer(limits.tool_timeout_seconds, con.interrupt)
         timer.start()
 
         try:
@@ -181,7 +181,7 @@ def describe_dataset(
 ) -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
         if allowed_tables is None:
@@ -257,7 +257,7 @@ def describe_column(
 ) -> ToolResult:
     """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
         if allowed_tables is not None and table not in allowed_tables:
@@ -397,7 +397,7 @@ def value_counts(
 ) -> ToolResult:
     """Возвращает топ-N самых частых значений в колонке."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
         if allowed_tables is not None and table not in allowed_tables:

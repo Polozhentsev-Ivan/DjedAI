@@ -1,5 +1,7 @@
 import json
 import uuid
+from collections.abc import Callable
+from contextlib import nullcontext
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -18,6 +20,7 @@ from djedai.contracts.agent import (
     VerifyResponse,
 )
 from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 
 def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
@@ -114,6 +117,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
 
     for step in plan_steps:
         try:
+            if budget := current_budget():
+                budget.check()
             if dispatcher:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
@@ -137,6 +142,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             res = res.model_copy(update={"tool": step.tool, "params": step.args})
             new_results.append(res)
 
+        except (TurnTimeout, TurnCancelled):
+            raise
         except Exception as e:
             new_results.append(
                 ToolResult(
@@ -342,14 +349,22 @@ def route_after_verify(state: AgentState) -> str:
 def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("load_ctx", load_ctx)
-    workflow.add_node("understand", understand)
-    workflow.add_node("plan", plan)
-    workflow.add_node("execute", execute)
-    workflow.add_node("visualize", visualize)
-    workflow.add_node("compose", compose)
-    workflow.add_node("verify", verify)
-    workflow.add_node("clarify", clarify)
+    def bounded(function: Callable, *, state_only: bool = False) -> Callable:
+        def node(state: AgentState, config: RunnableConfig) -> dict:
+            budget = config.get("configurable", {}).get("budget")
+            with budget.activate() if budget else nullcontext():
+                return function(state) if state_only else function(state, config)
+
+        return node
+
+    workflow.add_node("load_ctx", bounded(load_ctx))
+    workflow.add_node("understand", bounded(understand))
+    workflow.add_node("plan", bounded(plan))
+    workflow.add_node("execute", bounded(execute))
+    workflow.add_node("visualize", bounded(visualize, state_only=True))
+    workflow.add_node("compose", bounded(compose))
+    workflow.add_node("verify", bounded(verify))
+    workflow.add_node("clarify", bounded(clarify, state_only=True))
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")
