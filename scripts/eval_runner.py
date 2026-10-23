@@ -56,7 +56,9 @@ INPUT_ERROR_REASON = "Input validation happens in the UI/API before the agent gr
 # Spaces are accepted as thousand separators, so "500 000" is one number.
 NUMBER_RE = re.compile(
     r"(?<![\w.,-])-?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?"
-    r"(?=$|[^\w.,]|[.,](?!\d))"
+    r"(?:\s*(?:тыс|млн|млрд)\b\.?)?"
+    r"(?=$|[^0-9.,]|[.,](?!\d))",
+    re.IGNORECASE,
 )
 DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
 # Dates and years refer to calendar positions, not to measured numbers.
@@ -69,7 +71,7 @@ DATE_ONLY_RE = re.compile(
     r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"
     rf"|\b\d{{1,2}}\s+{RU_MONTH}\s+\d{{4}}\b"
     rf"|\b{RU_MONTH}\s+\d{{4}}\b"
-    r"|\b(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\s*(?:г\.|год[ауе]?)\b"
 )
 
 
@@ -127,14 +129,30 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _text_numbers(text: str) -> Iterator[Decimal]:
     # Datetimes share digits with ordinary numbers; exclude them before parsing.
-    for raw in NUMBER_RE.findall(DATETIME_RE.sub(" ", text)):
-        number = Decimal(re.sub(r"[ \u00a0\u202f]", "", raw).replace(",", "."))
-        if number.is_finite():
-            yield number
+    for match in NUMBER_RE.finditer(DATETIME_RE.sub(" ", text)):
+        raw = match.group(0)
+
+        scale = 1
+        lower_raw = raw.lower()
+        if "тыс" in lower_raw:
+            scale = 1000
+        elif "млн" in lower_raw:
+            scale = 1_000_000
+        elif "млрд" in lower_raw:
+            scale = 1_000_000_000
+
+        clean = re.sub(r"[^\d.,+-]", "", raw).replace(",", ".").rstrip(".")
+        try:
+            number = Decimal(clean) * scale
+            if number.is_finite():
+                yield number
+        except InvalidOperation:
+            continue
 
 
 def _claim_numbers(text: str) -> list[Decimal]:
-    """Numbers the answer states about the data, without dates and years."""
+    """Numbers the answer states about the data, without dates, years, and list item numbers."""
+    text = re.sub(r"(?m)^\s*\d+[.)]\s+", " ", text)
     return list(_text_numbers(DATE_ONLY_RE.sub(" ", text)))
 
 
@@ -289,57 +307,66 @@ def _tolerance(fact: dict) -> Decimal:
     return Decimal(str(fact["abs_tolerance"]))
 
 
-def _backing_values(results: Sequence[Any]) -> list[Decimal]:
-    """Tool numbers plus the rounded, scaled and derived forms an answer may quote."""
-    numbers = _available_numbers(results)
-    pool = list(numbers)
-    for number in numbers:
-        pool.extend((number / 1000, number * 1000, number / 1_000_000, number * 1_000_000))
-    for left in numbers:
-        for right in numbers:
-            if right == 0:
-                continue
-            pool.extend((left / right, left / right * 100, (left - right) / right * 100))
-    return pool
-
-
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     """Numbers in the answer must originate in tool results; user constants are exempt."""
     expect = case.get("expect") or {}
     if not (expect.get("answer_contains_value") or {}).get("from_result"):
         return []
 
-    available = set(_available_numbers(results))
-    pool = _backing_values(results)
+    numbers = _available_numbers(results)
+    # Unique values, preserving order (summary facts usually at the end)
+    uniq = list(dict.fromkeys(numbers))
+
     constants = set(_claim_numbers(case.get("question") or ""))
     claims = list(dict.fromkeys(_claim_numbers(text)))
-    exponents = {
-        claim.as_tuple().exponent
-        if isinstance(claim.as_tuple().exponent, int) and claim.as_tuple().exponent <= 0
-        else 0
-        for claim in claims
-    }
-    rounded: dict[int, set[Decimal]] = {}
-    for exponent in exponents:
-        quantum = Decimal(1).scaleb(exponent)
-        values: set[Decimal] = set()
-        for number in pool:
-            try:
-                values.add(number.quantize(quantum, rounding=ROUND_HALF_UP))
-            except InvalidOperation:
-                continue
-        rounded[exponent] = values
 
     issues = []
     for claim in claims:
-        if claim in constants or claim in available:
+        if claim in constants or claim in uniq:
             continue
+
         exponent = claim.as_tuple().exponent
         if not isinstance(exponent, int) or exponent > 0:
             exponent = 0
-        if claim in rounded[exponent]:
+        quantum = Decimal(1).scaleb(exponent)
+
+        def _matches(val: Decimal, claim=claim, quantum=quantum) -> bool:
+            try:
+                return claim == val.quantize(quantum, rounding=ROUND_HALF_UP)
+            except InvalidOperation:
+                return False
+
+        # Direct rounding check
+        found = False
+        for n in uniq:
+            if _matches(n):
+                found = True
+                break
+
+        if found:
             continue
-        issues.append(f"Number {format(claim, 'f')} in the answer is not backed by tool results")
+
+        # Check derived pairs (limit to 500 to avoid CPU spin/OOM)
+        # Ratios usually come from aggregate counts/sums which are added at the end (summary facts)
+        subset = uniq if len(uniq) <= 500 else (uniq[:300] + uniq[-200:])
+        for right in subset:
+            if right == 0:
+                continue
+            for left in subset:
+                if (
+                    _matches(left / right)
+                    or _matches(left / right * 100)
+                    or _matches((left - right) / right * 100)
+                ):
+                    found = True
+                    break
+            if found:
+                break
+
+        if not found:
+            claim_str = format(claim, "f")
+            issues.append(f"Number {claim_str} in the answer is not backed by tool results")
+
     return issues
 
 
