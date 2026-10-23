@@ -4,6 +4,8 @@ from typing import Any, Literal
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
+from djedai.agent.diagnostics import DiagnosticHttpClient, capture_usage, model_call
+
 # Типы ошибок — общий контракт: по ним потребители решают, повторять ли вызов.
 # INVALID_JSON / SCHEMA_MISMATCH / OUTPUT_LIMIT — модель ответила, но ответ не принят;
 # TIMEOUT / SERVER_ERROR — модель недоступна; UNKNOWN_ERROR — прочие исключения.
@@ -33,11 +35,31 @@ class BIModelClient:
         timeout: float = 15.0,
         max_output_tokens: int | None = None,
     ):
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=2)
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=2,
+            http_client=DiagnosticHttpClient(),
+        )
         self.model = model_name
         self.max_output_tokens = max_output_tokens
 
     def generate_typed_response[T: BaseModel](
+        self, system_prompt: str, user_prompt: str, response_model: type[T]
+    ) -> ModelResponse[T]:
+        with model_call(self.model, response_model.__name__) as call:
+            try:
+                result = self._generate_typed_response(system_prompt, user_prompt, response_model)
+            except Exception:
+                if call:
+                    call.finish("UNKNOWN_ERROR")
+                raise
+            if call:
+                call.finish(result.error_type)
+            return result
+
+    def _generate_typed_response[T: BaseModel](
         self, system_prompt: str, user_prompt: str, response_model: type[T]
     ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
@@ -58,6 +80,8 @@ class BIModelClient:
                 temperature=0.1,
                 **({"max_tokens": self.max_output_tokens} if self.max_output_tokens else {}),
             )
+
+            capture_usage(response.usage)
 
             if response.choices[0].finish_reason == "length":
                 return ModelResponse(
