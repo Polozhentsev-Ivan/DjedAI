@@ -20,6 +20,7 @@ from djedai.backend.api.router import api_router
 from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
+from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -164,6 +165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+    app.state.diagnostics = DiagnosticJournal(
+        cfg.diagnostics_dir, cfg.diagnostics_max_bytes, cfg.diagnostics_backups
+    )
     app.state.engine = create_db_engine(cfg.app_database_url)
     app.state.session_factory = sessionmaker(
         bind=app.state.engine, autocommit=False, autoflush=False

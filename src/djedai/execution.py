@@ -27,10 +27,10 @@ class ExecutionBudget:
         return max(0.0, self.deadline - monotonic())
 
     def check(self) -> None:
-        if self.is_cancelled():
-            raise TurnCancelled()
         if self.remaining <= 0:
             raise TurnTimeout()
+        if self.is_cancelled():
+            raise TurnCancelled()
 
     def wait(self, seconds: float) -> None:
         until = monotonic() + seconds

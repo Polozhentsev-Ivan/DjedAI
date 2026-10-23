@@ -9,6 +9,7 @@ FastAPI, API и SSE, хранение метаданных приложения 
 - `api/` — роутеры с префиксом `/api` (`health`, `datasets`, `chats`, `results`, `dashboards`, `auth`);
 - `chat_service.py` — оркестрация хода чата: сохранение вопроса, запуск графа агента, преобразование блоков, сохранение результата и истории;
 - `sse.py` — кодирование событий агента в wire-формат `text/event-stream`;
+- `diagnostics.py` — постоянный операторский JSONL-журнал с ротацией и CLI чтения; [формат и команды](../../../docs/agent-diagnostics.md).
 - `db/` — подсистема постоянного хранения приложения:
   - `base.py` — базовый декларативный класс `Base`;
   - `session.py` — фабрика сессий `get_db()`, создание движка `create_db_engine()` с поддержкой `PRAGMA foreign_keys = ON` для SQLite;

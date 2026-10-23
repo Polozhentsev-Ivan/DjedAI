@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -40,6 +41,7 @@ from djedai.backend.db.repositories import (
     save_tool_result,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
+from djedai.backend.diagnostics import DiagnosticJournal, read_events
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
 from djedai.contracts.message import MessageBlock
@@ -572,6 +574,91 @@ def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpo
                 assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
         finally:
             runtime.client.client.close()
+
+
+@pytest.mark.parametrize("lock_kind", ["writer", "reader"])
+def test_sqlite_contention_never_saves_a_late_assistant(
+    chat_api, model_endpoint, tmp_path, lock_kind: str
+) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with factory() as db:
+        engine = db.get_bind()
+    blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
+    locked, finished = threading.Event(), threading.Event()
+
+    def reply(_number, payload):
+        if payload["response_format"]["json_schema"]["name"] == "VerifyResponse":
+            if not locked.is_set():
+                if lock_kind == "writer":
+                    blocker.execute("BEGIN IMMEDIATE")
+                else:
+                    blocker.execute("BEGIN")
+                    blocker.execute("SELECT * FROM messages").fetchall()
+                locked.set()
+        return {}
+
+    def tracked_factory():
+        session = factory()
+        close = session.close
+
+        def tracked_close():
+            close()
+            if threading.current_thread().name.startswith("chat-agent-"):
+                finished.set()
+
+        session.close = tracked_close
+        return session
+
+    client.app.dependency_overrides[get_session_factory] = lambda: tracked_factory
+    directory = tmp_path / "deadline-journal"
+    try:
+        with model_endpoint(reply) as endpoint:
+            runtime = replace(
+                _network_runtime(endpoint, 2),
+                diagnostics=DiagnosticJournal(directory, 1_000_000, 2),
+            )
+            use_runtime(runtime)
+            try:
+                started = time.monotonic()
+                response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
+                assert time.monotonic() - started < 3.5
+                events = parse_sse(response.text)
+                assert locked.is_set()
+                assert [data["code"] for name, data in events if name == "error"] == [
+                    "turn_timeout"
+                ]
+                assert all(name not in {"block", "done"} for name, _ in events)
+                # The worker must close while the database lock is still held.
+                assert finished.wait(0.5)
+                blocker.rollback()
+                with factory() as db:
+                    assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+                recorded = read_events(directory)
+                assert recorded[-1]["status"] == "timeout"
+                assert not any(
+                    e.get("status") == "success" for e in recorded if e["event"] == "run_finished"
+                )
+            finally:
+                runtime.client.client.close()
+
+            # Releasing the lock cannot revive the old write, and a new question works.
+            runtime = _network_runtime(endpoint, 5)
+            use_runtime(runtime)
+            try:
+                next_response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "next"})
+                assert parse_sse(next_response.text)[-1][0] == "done"
+                with factory() as db:
+                    assert [m.role for m in get_chat_messages(db, chat_id)] == [
+                        "user",
+                        "user",
+                        "assistant",
+                    ]
+            finally:
+                runtime.client.client.close()
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 @pytest.mark.anyio

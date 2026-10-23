@@ -57,6 +57,43 @@ def test_permanent_errors_do_not_retry(model_endpoint, status: int) -> None:
             client.client.close()
 
 
+@pytest.mark.parametrize("status", [401, 403, 429])
+def test_slow_error_body_does_not_hide_status_or_retry_after(model_endpoint, status) -> None:
+    with model_endpoint(
+        lambda *_: {"status": status, "headers": {"Retry-After": "600"}, "mode": "drip"}
+    ) as endpoint:
+        client = client_for(endpoint, timeout=0.25, max_retries=3)
+        try:
+            started = monotonic()
+            with ExecutionBudget(3).activate():
+                response = client.generate_typed_response("sys", "question", Understanding)
+            assert response.status == "error"
+            assert response.error_type == "SERVER_ERROR"
+            assert len(endpoint.calls) == 1
+            assert monotonic() - started < 1
+            assert endpoint.peer_closed.wait(1)
+        finally:
+            client.client.close()
+
+
+def test_slow_transient_error_body_still_honours_short_retry_after(model_endpoint) -> None:
+    with model_endpoint(
+        lambda n, _: (
+            {"status": 503, "headers": {"Retry-After": "0.1"}, "mode": "drip"} if n == 1 else {}
+        )
+    ) as endpoint:
+        client = client_for(endpoint, timeout=0.25, max_retries=1)
+        try:
+            started = monotonic()
+            with ExecutionBudget(3).activate():
+                response = client.generate_typed_response("sys", "question", Understanding)
+            assert response.status == "success", response
+            assert len(endpoint.calls) == 2
+            assert monotonic() - started >= 0.1
+        finally:
+            client.client.close()
+
+
 @pytest.mark.parametrize("retry_after", ["600", "1e999", "Thu, 01 Jan 2099 00:00:00 GMT"])
 def test_retry_after_that_exceeds_remaining_budget_is_not_ignored(
     model_endpoint, retry_after: str
@@ -280,3 +317,10 @@ def test_invalid_endpoint_is_rejected_before_any_attempt(base_url) -> None:
 def test_invalid_key_is_rejected_before_any_attempt(key) -> None:
     with pytest.raises(ValueError, match="MODEL_API_KEY"):
         BIModelClient(key, "http://localhost:8000/v1", "fixture-model")
+
+
+def test_deadline_is_not_relabelled_as_cancelled_by_stream_cleanup() -> None:
+    budget = ExecutionBudget(1, lambda: True)
+    budget.deadline = monotonic() - 1
+    with pytest.raises(TurnTimeout):
+        budget.check()

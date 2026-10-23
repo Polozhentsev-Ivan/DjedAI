@@ -8,7 +8,8 @@ from urllib.parse import urlsplit
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
-from djedai.agent.transport import CancellableHttpClient, attempt_lease
+from djedai.agent.diagnostics import DiagnosticHttpClient, capture_usage, model_call
+from djedai.agent.transport import attempt_lease
 from djedai.execution import (
     ExecutionBudget,
     TurnCancelled,
@@ -57,7 +58,7 @@ class BIModelClient:
             base_url=base_url,
             timeout=timeout,
             max_retries=0,
-            http_client=CancellableHttpClient(),
+            http_client=DiagnosticHttpClient(),
         )
         self.model = model_name
         self.max_output_tokens = max_output_tokens
@@ -116,6 +117,24 @@ class BIModelClient:
     def generate_typed_response[T: BaseModel](
         self, system_prompt: str, user_prompt: str, response_model: type[T]
     ) -> ModelResponse[T]:
+        with model_call(self.model, response_model.__name__) as call:
+            try:
+                result = self._generate_typed_response(system_prompt, user_prompt, response_model)
+            except (TurnTimeout, TurnCancelled) as exc:
+                if call:
+                    call.finish("TIMEOUT" if isinstance(exc, TurnTimeout) else "CANCELLED")
+                raise
+            except Exception:
+                if call:
+                    call.finish("UNKNOWN_ERROR")
+                raise
+            if call:
+                call.finish(result.error_type)
+            return result
+
+    def _generate_typed_response[T: BaseModel](
+        self, system_prompt: str, user_prompt: str, response_model: type[T]
+    ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
 
         structured_format = {
@@ -134,6 +153,8 @@ class BIModelClient:
                 temperature=0.1,
                 **({"max_tokens": self.max_output_tokens} if self.max_output_tokens else {}),
             )
+
+            capture_usage(response.usage)
 
             if response.choices[0].finish_reason == "length":
                 return ModelResponse(

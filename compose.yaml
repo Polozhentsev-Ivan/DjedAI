@@ -12,6 +12,7 @@ services:
       APP_DATABASE_URL: sqlite:////app/var/app.db
       DATASETS_DATA_DIR: /app/var/data/datasets
       RESULTS_DATA_DIR: /app/var/data/results
+      DIAGNOSTICS_DIR: /app/var/diagnostics
       CP1_LOCAL_MODE: "false"
       BACKEND_CORS_ORIGINS: ""
     volumes:

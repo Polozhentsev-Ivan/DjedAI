@@ -76,7 +76,27 @@ class CancellableHttpClient(DefaultHttpxClient):
                 check_attempt()
                 async with DefaultAsyncHttpxClient() as client:
                     check_attempt()
-                    return await client.send(request, **kwargs)
+                    response = await client.send(request, **{**kwargs, "stream": True})
+                    try:
+                        if response.status_code >= 400:
+                            # Retry policy needs status/headers, not an unbounded error
+                            # body. A closed buffered response prevents SDK reads too.
+                            headers = {
+                                key: value
+                                for key, value in response.headers.items()
+                                if key.lower()
+                                not in {"content-length", "content-encoding", "transfer-encoding"}
+                            }
+                            return type(response)(
+                                response.status_code,
+                                headers=headers,
+                                content=b"",
+                                request=request,
+                            )
+                        await response.aread()
+                        return response
+                    finally:
+                        await response.aclose()
             finally:
                 closed.set()
 

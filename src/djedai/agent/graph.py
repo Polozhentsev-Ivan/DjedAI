@@ -349,22 +349,24 @@ def route_after_verify(state: AgentState) -> str:
 def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    def bounded(function: Callable, *, state_only: bool = False) -> Callable:
+    def observed(name: str, function: Callable, *, state_only: bool = False) -> Callable:
         def node(state: AgentState, config: RunnableConfig) -> dict:
+            diagnostics = config.get("configurable", {}).get("diagnostics")
             budget = config.get("configurable", {}).get("budget")
-            with budget.activate() if budget else nullcontext():
-                return function(state) if state_only else function(state, config)
+            with diagnostics.stage(name) if diagnostics else nullcontext():
+                with budget.activate() if budget else nullcontext():
+                    return function(state) if state_only else function(state, config)
 
         return node
 
-    workflow.add_node("load_ctx", bounded(load_ctx))
-    workflow.add_node("understand", bounded(understand))
-    workflow.add_node("plan", bounded(plan))
-    workflow.add_node("execute", bounded(execute))
-    workflow.add_node("visualize", bounded(visualize, state_only=True))
-    workflow.add_node("compose", bounded(compose))
-    workflow.add_node("verify", bounded(verify))
-    workflow.add_node("clarify", bounded(clarify, state_only=True))
+    workflow.add_node("load_ctx", observed("load_ctx", load_ctx))
+    workflow.add_node("understand", observed("understand", understand))
+    workflow.add_node("plan", observed("plan", plan))
+    workflow.add_node("execute", observed("execute", execute))
+    workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
+    workflow.add_node("compose", observed("compose", compose))
+    workflow.add_node("verify", observed("verify", verify))
+    workflow.add_node("clarify", observed("clarify", clarify, state_only=True))
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")

@@ -17,6 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
 from djedai.agent.config import get_agent_client
+from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.analytics.registry import execute_tool
 from djedai.backend.dataset_service import DatasetContext
@@ -31,6 +32,7 @@ from djedai.backend.db.repositories import (
     save_message,
     save_tool_result,
 )
+from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -99,6 +101,8 @@ class AgentRuntime:
     dataset_context: Callable[[str, str], DatasetContext] | None = None
     results_storage_dir: Path | str | None = None
     turn_timeout_seconds: float | None = None
+    diagnostics: DiagnosticJournal | None = None
+    tariff: Tariff | None = None
 
     def budget(self, is_cancelled: Callable[[], bool] | None = None) -> ExecutionBudget:
         seconds = (
@@ -125,11 +129,23 @@ def build_agent_runtime() -> AgentRuntime:
 
 def get_agent_runtime(request: Request) -> AgentRuntime:
     """Привязывает каждый HTTP-ход к постоянному хранилищу приложения."""
+    settings = request.app.state.settings
+    tariff = (
+        Tariff(
+            settings.model_input_price_usd,
+            settings.model_output_price_usd,
+            settings.model_price_reference,
+        )
+        if settings.model_input_price_usd is not None
+        else None
+    )
     return replace(
         build_agent_runtime(),
         dataset_context=request.app.state.dataset_service.get_context,
         results_storage_dir=request.app.state.settings.results_data_dir,
         turn_timeout_seconds=request.app.state.settings.agent_turn_timeout_seconds,
+        diagnostics=request.app.state.diagnostics,
+        tariff=tariff,
     )
 
 
@@ -247,6 +263,7 @@ def stream_chat_turn(
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
     resources = ExitStack()
     budget = budget or runtime.budget(is_cancelled)
+    diagnostics: RunDiagnostics | None = None
     try:
         budget.check()
         if is_cancelled and is_cancelled():
@@ -267,6 +284,17 @@ def stream_chat_turn(
                 )
             )
             return
+
+        user_message_id = _new_id("m")
+        if runtime.diagnostics is not None:
+            diagnostics = RunDiagnostics(
+                runtime.diagnostics,
+                owner_id=owner_id,
+                chat_id=chat_model.chat_id,
+                dataset_id=chat_model.dataset_id,
+                user_message_id=user_message_id,
+                tariff=runtime.tariff,
+            )
 
         if runtime.dataset_context is not None:
             budget.check()
@@ -295,7 +323,6 @@ def stream_chat_turn(
         if is_cancelled and is_cancelled():
             return
         budget.check()
-        user_message_id = _new_id("m")
         save_message(
             db,
             message_id=user_message_id,
@@ -313,6 +340,8 @@ def stream_chat_turn(
         }
 
         configurable: dict[str, Any] = {"thread_id": chat_model.chat_id, "budget": budget}
+        if diagnostics is not None:
+            configurable["diagnostics"] = diagnostics
         if runtime.client is not None:
             configurable["client"] = runtime.client
         if runtime.tool_dispatcher is not None:
@@ -385,6 +414,9 @@ def stream_chat_turn(
         budget.check()
         error_detail = _agent_error(answer_blocks)
         if error_detail is not None:
+            if diagnostics is not None:
+                error_type = diagnostics.last_error or "AGENT_ERROR"
+                diagnostics.finish("timeout" if error_type == "TIMEOUT" else "error", error_type)
             yield SSEErrorEvent(
                 data=SSEErrorData(
                     message="Не удалось получить ответ агента",
@@ -438,7 +470,9 @@ def stream_chat_turn(
             trace=trace,
         )
         budget.check()
-        save_assistant_message(db, assistant)
+        save_assistant_message(db, assistant, budget=budget)
+        if diagnostics is not None:
+            diagnostics.finish("success")
 
         for block in message_blocks:
             budget.check()
@@ -446,11 +480,17 @@ def stream_chat_turn(
         budget.check()
         yield SSEDoneEvent(data=SSEDoneData(message_id=assistant.message_id))
     except TurnTimeout:
+        if diagnostics is not None:
+            diagnostics.finish("timeout", "TIMEOUT")
         yield turn_timeout_event()
     except TurnCancelled:
+        if diagnostics is not None:
+            diagnostics.finish("cancelled", "CANCELLED")
         return
     except Exception:  # The stream must end with an event, not a broken connection.
-        logger.exception("Chat turn failed")
+        if diagnostics is not None:
+            diagnostics.finish("error", diagnostics.last_error or "TURN_EXCEPTION")
+        logger.error("Chat turn failed (run_id=%s)", diagnostics.run_id if diagnostics else None)
         try:
             db.rollback()
         except Exception:
@@ -462,4 +502,6 @@ def stream_chat_turn(
             )
         )
     finally:
+        if diagnostics is not None and not diagnostics.finished:
+            diagnostics.finish("cancelled", "CANCELLED")
         resources.close()
