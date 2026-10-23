@@ -31,8 +31,14 @@ from djedai.contracts.sse import (
 )
 from djedai.contracts.tool_result import ToolError
 from djedai.data.csv_ingest import CsvReadError
+from djedai.data.descriptions import ModelClient
 from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
-from djedai.data.service import CsvSource, connect_postgres_dataset, ingest_csv_dataset
+from djedai.data.service import (
+    CsvSource,
+    connect_postgres_dataset,
+    describe_dataset,
+    ingest_csv_dataset,
+)
 from djedai.data.typed_views import _lit
 
 logger = logging.getLogger(__name__)
@@ -91,11 +97,14 @@ class DatasetService:
         data_dir: str | Path,
         *,
         source_encryption_key: str | None = None,
+        description_client: Callable[[], ModelClient] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.data_dir = Path(data_dir).resolve()
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._secrets = SourceSecrets(source_encryption_key)
+        # None disables LLM descriptions; the factory is called once per build.
+        self._description_client = description_client
 
     def _path(self, relative: str) -> Path:
         path = (self.data_dir / relative).resolve()
@@ -443,6 +452,14 @@ class DatasetService:
                 )
             else:
                 raise ValueError("Неподдерживаемый источник")
+            if self._description_client is not None:
+                # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
+                progress(
+                    "relations" if source_kind == "postgres" else "profile",
+                    0.0,
+                    "Описание данных",
+                )
+                catalog = self._describe(dataset_id, working, catalog)
             working.replace(target)
             with self.session_factory() as db:
                 model = db.scalar(
@@ -476,6 +493,19 @@ class DatasetService:
                     model.error_message = message
                     model.catalog = None
                     db.commit()
+
+    def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
+        """Descriptions are optional: any failure publishes the statistical catalog."""
+        try:
+            return describe_dataset(database, catalog, self._description_client())
+        except Exception:
+            # Model client errors can echo endpoint or key details; log no traceback.
+            logger.warning("Catalog descriptions failed for owned dataset %s", dataset_id)
+            warning = (
+                "Описания данных не сгенерированы: модель не настроена или недоступна; "
+                "структура и статистика каталога доступны"
+            )
+            return catalog.model_copy(update={"warnings": [*catalog.warnings, warning]})
 
     async def recover_interrupted(self) -> None:
         def pending() -> list[tuple[str, str]]:

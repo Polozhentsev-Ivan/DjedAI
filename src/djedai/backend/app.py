@@ -16,6 +16,7 @@ from pydantic.json_schema import models_json_schema
 from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
+from djedai.agent.config import get_agent_client
 from djedai.backend.api.router import api_router
 from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         source_encryption_key=cfg.source_encryption_key.get_secret_value()
         if cfg.source_encryption_key
         else None,
+        description_client=get_agent_client if cfg.catalog_descriptions else None,
     )
     try:
         await app.state.dataset_service.recover_interrupted()
