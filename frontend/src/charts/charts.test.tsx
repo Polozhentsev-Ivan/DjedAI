@@ -96,14 +96,14 @@ describe('specOption', () => {
     expect(specOption(pie, shares, theme)).not.toHaveProperty('legend');
     expect(pieLegend(pie, shares).map((i) => i.value)).toEqual(['45%', '12%']);
     const absolute = { ...pie, y: [{ field: 'share' }] };
-    expect(pieLegend(absolute, shares).map((i) => i.value)).toEqual(['78,9%', '21,1%']);
+    expect(pieLegend(absolute, shares).map((i) => i.value)).toEqual(['45', '12']);
   });
 
   it('formats measures by kind', () => {
     expect(measureLabel(12.5, { field: 'p', format: 'percent' }, 0)).toBe('12,5%');
     expect(plain(measureLabel(4820, money, 4820))).toBe('4 820 ₽');
     expect(plain(measureLabel(2573, { field: 'n', format: 'int' }, 0))).toBe('2 573');
-    expect(isSupported('heatmap')).toBe(false);
+    expect(isSupported('heatmap')).toBe(true);
   });
 });
 
@@ -119,9 +119,9 @@ describe('SpecChart', () => {
     expect(screen.getByRole('img', { name: 'Выручка. по месяцам' })).toBeInTheDocument();
   });
 
-  it('explains unsupported types and empty data', () => {
+  it('explains incompatible data and empty data', () => {
     const { rerender } = render(<SpecChart spec={{ ...line, type: 'heatmap' }} data={revenue} />);
-    expect(screen.getByText('Этот тип графика пока не отображается')).toBeInTheDocument();
+    expect(screen.getByText('Не удалось построить визуализацию')).toBeInTheDocument();
     rerender(<SpecChart spec={line} data={{ ...revenue, rows: [] }} />);
     expect(screen.getByText('Нет данных для графика')).toBeInTheDocument();
   });
