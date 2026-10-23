@@ -69,6 +69,9 @@ class AgentState(TypedDict, total=False):
     understanding: Understanding | None
     plan: list[PlannedCall]
     results: list[ToolResult]
+    # Results saved by previous turns; kept aside so a view change can reuse them
+    # without recalculating and without polluting the current turn's facts.
+    history_results: list[ToolResult]
     focus_result_ids: list[str]
     charts: list[ChartSpec]
     answer_blocks: list[Block]
@@ -90,3 +93,7 @@ class VerifyResponse(BaseModel):
     is_valid: bool
     issues: list[str] = Field(default_factory=list)
     corrected_markdown: str
+
+
+class VisualizeResponse(BaseModel):
+    charts: list[ChartSpec] = Field(default_factory=list)

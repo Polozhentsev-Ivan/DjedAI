@@ -18,7 +18,9 @@ from djedai.contracts.agent import (
     PlanResponse,
     Understanding,
     VerifyResponse,
+    VisualizeResponse,
 )
+from djedai.contracts.chart import ChartSpec
 from djedai.contracts.tool_result import ToolError, ToolResult
 
 
@@ -30,8 +32,17 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         if catalog_loader is not None
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
+    # Results already in the state belong to earlier turns: keep them as history
+    # before the per-turn results are cleared.
+    history_results = list(state.get("history_results", []))
+    known_ids = {result.result_id for result in history_results}
+    for result in state.get("results", []):
+        if result.result_id not in known_ids:
+            history_results.append(result)
+            known_ids.add(result.result_id)
     return {
         "catalog_prompt": catalog_prompt,
+        "history_results": history_results,
         "results": [],
         "charts": [],
         "answer_blocks": [],
@@ -153,7 +164,122 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     return {"results": existing_results + new_results}
 
 
-def visualize(state: AgentState) -> dict:
+CHART_INTENTS = {"visualize", "modify_previous", "dashboard"}
+
+# Signals that the user explicitly asked for a visualisation, even when the
+# intent was classified as a plain data question.
+CHART_REQUEST_WORDS = (
+    "chart",
+    "graph",
+    "plot",
+    "histogram",
+    "heatmap",
+    "scatter",
+    "pie",
+    "kpi",
+    "график",
+    "диаграмм",
+    "визуализ",
+    "гистограмм",
+    "теплов",
+    "столбчат",
+    "кругов",
+    "точечн",
+)
+
+
+def wants_visualization(state: AgentState) -> bool:
+    """Решает, нужно ли вообще тратить вызов модели на подбор графика."""
+    understanding = state.get("understanding")
+    if understanding is not None and understanding.intent in CHART_INTENTS:
+        return True
+    messages = state.get("messages", [])
+    text = messages[-1].content.lower() if messages and messages[-1].content else ""
+    return any(word in text for word in CHART_REQUEST_WORDS)
+
+
+def chart_source_results(state: AgentState) -> list[ToolResult]:
+    """Возвращает уже посчитанные результаты, по которым можно построить график.
+
+    Новый расчёт не запускается: берём результаты текущего плана, а при его
+    отсутствии — сохранённые результаты, на которые сослался пользователь.
+    """
+    current_results = state.get("results", [])
+    history_results = state.get("history_results", [])
+    plan_len = len(state.get("plan", []))
+    if plan_len > 0:
+        candidates = current_results[-plan_len:]
+    else:
+        understanding = state.get("understanding")
+        references = understanding.references if understanding else []
+        if references:
+            saved = {r.result_id: r for r in history_results + current_results}
+            candidates = [saved[ref] for ref in references if ref in saved]
+        else:
+            candidates = (current_results or history_results)[-1:]
+    return [r for r in candidates if r.status == "ok"]
+
+
+def describe_result_for_chart(result: ToolResult) -> dict:
+    """Краткое описание результата для модели: поля, подсказка и пример строк."""
+    columns = []
+    for column in result.data.columns if result.data else []:
+        columns.append(column.model_dump(mode="json") if hasattr(column, "model_dump") else column)
+    rows = result.data.rows[:5] if result.data else []
+    return {
+        "result_id": result.result_id,
+        "tool": result.tool,
+        "columns": columns,
+        "sample_rows": rows,
+        "chart_hint": result.chart_hint.model_dump(mode="json") if result.chart_hint else None,
+        "facts": [fact.text for fact in result.facts],
+    }
+
+
+def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
+    """Оставляет только графики, ссылающиеся на реальные сохранённые результаты."""
+    result_ids = {r.result_id for r in results}
+    sanitized = []
+    seen_ids: set[str] = set()
+    for chart in charts:
+        if chart.result_id not in result_ids:
+            continue
+        chart_id = chart.chart_id
+        if not chart_id or chart_id == "string" or chart_id in seen_ids:
+            chart_id = f"ch_{uuid.uuid4().hex[:8]}"
+        seen_ids.add(chart_id)
+        sanitized.append(chart.model_copy(update={"chart_id": chart_id}))
+    return sanitized
+
+
+def visualize(state: AgentState, config: RunnableConfig) -> dict:
+    if not wants_visualization(state):
+        return {"charts": []}
+
+    valid_results = chart_source_results(state)
+    if not valid_results:
+        return {"charts": []}
+
+    results_summary = [describe_result_for_chart(result) for result in valid_results]
+
+    messages = state.get("messages", [])
+    last_msg = messages[-1].content if messages else ""
+    understanding = state.get("understanding")
+    user_prompt = understanding.resolved_question if understanding else None
+    user_prompt = user_prompt or last_msg or "Create appropriate visualizations."
+
+    sys_prompt = load_prompt("visualize").format(
+        query=user_prompt,
+        # Dates and decimals are not JSON-native but are valid tool result values.
+        results_summary=json.dumps(results_summary, ensure_ascii=False, indent=2, default=str),
+    )
+
+    client = config.get("configurable", {}).get("client")
+    if client:
+        response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
+        if response.status == "success" and response.data:
+            return {"charts": sanitize_charts(response.data.charts, valid_results)}
+
     return {"charts": []}
 
 
@@ -201,6 +327,11 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             blocks = [Block(type="error", markdown=f"API Error: {response.message}")]
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
+
+    charts = state.get("charts", [])
+    if charts:
+        for c in charts:
+            blocks.append(Block(type="chart", chart=c.model_dump(mode="json")))
 
     return {"answer_blocks": blocks, "compose_retries": state.get("compose_retries", 0) + 1}
 
@@ -347,8 +478,10 @@ def build_agent_graph() -> StateGraph:
     def observed(name: str, function: Callable, *, state_only: bool = False) -> Callable:
         def node(state: AgentState, config: RunnableConfig) -> dict:
             diagnostics = config.get("configurable", {}).get("diagnostics")
+            budget = config.get("configurable", {}).get("budget")
             with diagnostics.stage(name) if diagnostics else nullcontext():
-                return function(state) if state_only else function(state, config)
+                with budget.activate() if budget else nullcontext():
+                    return function(state) if state_only else function(state, config)
 
         return node
 
@@ -356,7 +489,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("understand", observed("understand", understand))
     workflow.add_node("plan", observed("plan", plan))
     workflow.add_node("execute", observed("execute", execute))
-    workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
+    workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
     workflow.add_node("clarify", observed("clarify", clarify, state_only=True))

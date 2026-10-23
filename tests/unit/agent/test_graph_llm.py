@@ -11,6 +11,7 @@ from djedai.contracts.agent import (
     PlanResponse,
     Understanding,
     VerifyResponse,
+    VisualizeResponse,
 )
 from djedai.contracts.tool_result import ToolResult
 
@@ -28,6 +29,10 @@ def test_graph_live_client_branches():
         ModelResponse(
             status="success",
             data=PlanResponse(plan=[PlannedCall(tool="describe_dataset", args={})]),
+        ),
+        ModelResponse(
+            status="success",
+            data=VisualizeResponse(charts=[]),
         ),
         ModelResponse(
             status="success",
