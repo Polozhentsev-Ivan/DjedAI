@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -53,8 +53,24 @@ SUPPORTED_TOOLS = {"describe_dataset", "describe_column", "value_counts", "run_s
 TERMINAL_ERROR_MARKERS = ("API Error:", "Ошибка проверки ответа")
 INPUT_ERROR_REASON = "Input validation happens in the UI/API before the agent graph"
 
-NUMBER_RE = re.compile(r"(?<![\w.,-])-?\d+(?:[.,]\d+)?(?![\w.,])")
+# Spaces are accepted as thousand separators, so "500 000" is one number.
+NUMBER_RE = re.compile(
+    r"(?<![\w.,-])-?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?"
+    r"(?=$|[^\w.,]|[.,](?!\d))"
+)
 DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+# Dates and years refer to calendar positions, not to measured numbers.
+RU_MONTH = r"(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*"
+DATE_ONLY_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|\d{4}-\d{2}"
+    r"|\d{1,2}[./]\d{1,2}[./]\d{2,4}"
+    r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"
+    rf"|\b\d{{1,2}}\s+{RU_MONTH}\s+\d{{4}}\b"
+    rf"|\b{RU_MONTH}\s+\d{{4}}\b"
+    r"|\b(?:19|20)\d{2}\b"
+)
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -112,9 +128,14 @@ def _decimal(value: Any) -> Decimal | None:
 def _text_numbers(text: str) -> Iterator[Decimal]:
     # Datetimes share digits with ordinary numbers; exclude them before parsing.
     for raw in NUMBER_RE.findall(DATETIME_RE.sub(" ", text)):
-        number = Decimal(raw.replace(",", "."))
+        number = Decimal(re.sub(r"[ \u00a0\u202f]", "", raw).replace(",", "."))
         if number.is_finite():
             yield number
+
+
+def _claim_numbers(text: str) -> list[Decimal]:
+    """Numbers the answer states about the data, without dates and years."""
+    return list(_text_numbers(DATE_ONLY_RE.sub(" ", text)))
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -132,13 +153,6 @@ def _same_instant(left: datetime, right: datetime) -> bool:
     if (left.tzinfo is None) != (right.tzinfo is None):
         return left.replace(tzinfo=None) == right.replace(tzinfo=None)
     return left == right
-
-
-def _text_datetimes(text: str) -> Iterator[datetime]:
-    for raw in DATETIME_RE.findall(text):
-        parsed = _parse_datetime(raw)
-        if parsed is not None:
-            yield parsed
 
 
 def _ok_results(results: Sequence[Any]) -> Iterator[Any]:
@@ -162,7 +176,18 @@ def _structured_scalars(results: Sequence[Any]) -> Iterator[Any]:
             for row in _field(data, "rows") or []:
                 yield from _walk(row)
         for values in _data_facts(result):
+            for value in values.values():
+                # A tool that reports a list of 15 columns also reports the count 15.
+                if isinstance(value, list):
+                    yield len(value)
             yield from _walk(values)
+
+
+def _numbers_in(value: Any) -> Iterator[Decimal]:
+    for item in _walk(value):
+        number = _decimal(item)
+        if number is not None:
+            yield number
 
 
 def _structured_numbers(results: Sequence[Any]) -> Iterator[Decimal]:
@@ -170,6 +195,16 @@ def _structured_numbers(results: Sequence[Any]) -> Iterator[Decimal]:
         number = _decimal(value)
         if number is not None:
             yield number
+
+
+def _available_numbers(results: Sequence[Any]) -> list[Decimal]:
+    """Every number a tool reported, including execution summaries such as row counts."""
+    numbers = list(_structured_numbers(results))
+    for result in _ok_results(results):
+        for fact in _field(result, "facts") or []:
+            if _field(fact, "kind") == "summary":
+                numbers.extend(_numbers_in(_field(fact, "values") or {}))
+    return numbers
 
 
 def _structured_groups(results: Sequence[Any]) -> Iterator[list[Any]]:
@@ -202,45 +237,114 @@ def _scalar_matches(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
-def _text_matches(expected: Any, text: str) -> bool:
-    expected_number = _decimal(expected)
-    if expected_number is not None:
-        return any(number == expected_number for number in _text_numbers(text))
-    if isinstance(expected, str):
-        expected_datetime = _parse_datetime(expected)
-        if expected_datetime is not None:
-            return any(_same_instant(expected_datetime, actual) for actual in _text_datetimes(text))
-        return expected in text
-    return False
+def _value_key(value: Any) -> Any:
+    """Cell key that treats numerically equal values (454882 and 454882.0) as equal."""
+    number = _decimal(value)
+    if number is not None:
+        return ("number", number)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if value is None:
+        return ("none",)
+    if isinstance(value, str):
+        return ("text", value)
+    if isinstance(value, (list, tuple)):
+        return ("row", tuple(_value_key(item) for item in value))
+    if isinstance(value, dict):
+        return (
+            "dict",
+            tuple(sorted((str(key), _value_key(item)) for key, item in value.items())),
+        )
+    return ("other", _canonical(value))
 
 
 def _list_matches(expected: list[Any], results: Sequence[Any], *, unordered: bool) -> bool:
     """Match a reference list against whole tool collections, keeping tuple pairing."""
     scalar_items = all(not isinstance(item, (list, tuple, dict)) for item in expected)
     if scalar_items:
-        expected_counts = Counter(map(_canonical, expected))
+        expected_order = [_value_key(item) for item in expected]
+        expected_counts = Counter(expected_order)
         for group in _structured_groups(results):
-            flat = list(_walk(group))
-            if unordered and Counter(map(_canonical, flat)) == expected_counts:
+            keys = [_value_key(item) for item in _walk(group)]
+            if unordered and Counter(keys) == expected_counts:
                 return True
-            if not unordered and [_canonical(item) for item in flat] == [
-                _canonical(item) for item in expected
-            ]:
+            if not unordered and keys == expected_order:
                 return True
         return False
 
-    expected_rows = [_canonical(item) for item in expected]
+    expected_rows = [_value_key(item) for item in expected]
+    expected_counts = Counter(expected_rows)
     for group in _structured_groups(results):
-        rows = [_canonical(row) for row in group]
-        if unordered and Counter(rows) == Counter(expected_rows):
+        rows = [_value_key(row) for row in group]
+        if unordered and Counter(rows) == expected_counts:
             return True
         if not unordered and rows == expected_rows:
             return True
     return False
 
 
-def check_fact(fact: dict, answer_text: str, results: Sequence[Any]) -> bool:
-    """Check one reference fact with its comparison rule, never by substring search."""
+def _tolerance(fact: dict) -> Decimal:
+    if fact["comparison"] != "approx":
+        return Decimal(0)
+    return Decimal(str(fact["abs_tolerance"]))
+
+
+def _backing_values(results: Sequence[Any]) -> list[Decimal]:
+    """Tool numbers plus the rounded, scaled and derived forms an answer may quote."""
+    numbers = _available_numbers(results)
+    pool = list(numbers)
+    for number in numbers:
+        pool.extend((number / 1000, number * 1000, number / 1_000_000, number * 1_000_000))
+    for left in numbers:
+        for right in numbers:
+            if right == 0:
+                continue
+            pool.extend((left / right, left / right * 100, (left - right) / right * 100))
+    return pool
+
+
+def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
+    """Numbers in the answer must originate in tool results; user constants are exempt."""
+    expect = case.get("expect") or {}
+    if not (expect.get("answer_contains_value") or {}).get("from_result"):
+        return []
+
+    available = set(_available_numbers(results))
+    pool = _backing_values(results)
+    constants = set(_claim_numbers(case.get("question") or ""))
+    claims = list(dict.fromkeys(_claim_numbers(text)))
+    exponents = {
+        claim.as_tuple().exponent
+        if isinstance(claim.as_tuple().exponent, int) and claim.as_tuple().exponent <= 0
+        else 0
+        for claim in claims
+    }
+    rounded: dict[int, set[Decimal]] = {}
+    for exponent in exponents:
+        quantum = Decimal(1).scaleb(exponent)
+        values: set[Decimal] = set()
+        for number in pool:
+            try:
+                values.add(number.quantize(quantum, rounding=ROUND_HALF_UP))
+            except InvalidOperation:
+                continue
+        rounded[exponent] = values
+
+    issues = []
+    for claim in claims:
+        if claim in constants or claim in available:
+            continue
+        exponent = claim.as_tuple().exponent
+        if not isinstance(exponent, int) or exponent > 0:
+            exponent = 0
+        if claim in rounded[exponent]:
+            continue
+        issues.append(f"Number {format(claim, 'f')} in the answer is not backed by tool results")
+    return issues
+
+
+def check_fact(fact: dict, results: Sequence[Any]) -> bool:
+    """Check one reference fact against tool results only; prose is not evidence."""
     expected = fact["value"]
     comparison = fact["comparison"]
 
@@ -248,30 +352,17 @@ def check_fact(fact: dict, answer_text: str, results: Sequence[Any]) -> bool:
         target = _decimal(expected)
         if target is None:
             return False
-        tolerance = Decimal(str(fact["abs_tolerance"]))
-        return any(
-            abs(number - target) <= tolerance
-            for number in (*_structured_numbers(results), *_text_numbers(answer_text))
-        )
+        tolerance = _tolerance(fact)
+        return any(abs(number - target) <= tolerance for number in _structured_numbers(results))
 
     if isinstance(expected, list):
         if comparison == "exact_unordered":
-            if _list_matches(expected, results, unordered=True):
-                return True
-            # A collection of non-numeric names (e.g. columns) may be listed in prose.
-            scalar_items = all(not isinstance(item, (list, tuple, dict)) for item in expected)
-            return (
-                scalar_items
-                and all(_decimal(item) is None for item in expected)
-                and all(str(item) in answer_text for item in expected)
-            )
+            return _list_matches(expected, results, unordered=True)
         return _list_matches(expected, results, unordered=False)
 
     if comparison == "exact_unordered":
         return False
-    return any(
-        _scalar_matches(expected, value) for value in _structured_scalars(results)
-    ) or _text_matches(expected, answer_text)
+    return any(_scalar_matches(expected, value) for value in _structured_scalars(results))
 
 
 def _terminal_issues(
@@ -338,17 +429,23 @@ def evaluate_case(case: dict, result: dict) -> tuple[str, list[str], dict[str, A
             issues.append("The answer contains no text block")
 
         for fact in expect.get("facts") or []:
-            passed = check_fact(fact, text, results)
+            result_ok = check_fact(fact, results)
             details["fact_checks"].append(
                 {
                     "key": fact["key"],
                     "comparison": fact["comparison"],
                     "expected": fact["value"],
-                    "passed": passed,
+                    "result": result_ok,
+                    "passed": result_ok,
                 }
             )
-            if not passed:
-                issues.append(f"Fact '{fact['key']}' (value: {fact['value']}) not confirmed")
+            if not result_ok:
+                issues.append(
+                    f"Fact '{fact['key']}' (value: {fact['value']}) "
+                    "is not confirmed by tool results"
+                )
+        # The answer is checked separately: every number it states must come from the tools.
+        issues.extend(_answer_issues(case, text, results))
 
     elif outcome == "clarify":
         intent = _intent(result)

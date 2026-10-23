@@ -75,17 +75,16 @@ def answer_case(case_id: str, **expect) -> dict:
     }
 
 
-def test_check_fact_exact_does_not_accept_substrings():
+def test_check_fact_requires_tool_results_not_answer_text():
     fact = {"key": "dataset.row_count", "comparison": "exact", "value": 500000}
 
     wrong = tool_result(rows=[[1500000]])
-    assert check_fact(fact, "Всего 1500000 строк", [wrong]) is False
-    assert check_fact(fact, "", [wrong]) is False
+    assert check_fact(fact, [wrong]) is False
 
     right = tool_result(rows=[[500000]])
-    assert check_fact(fact, "Всего 500000 строк", [right]) is True
-    assert check_fact(fact, "", [right]) is True
-    assert check_fact(fact, "500000", []) is True
+    assert check_fact(fact, [right]) is True
+    # A number that only appears in prose is not evidence about the data.
+    assert check_fact(fact, []) is False
 
 
 def test_check_fact_approx_applies_tolerance():
@@ -96,10 +95,10 @@ def test_check_fact_approx_applies_tolerance():
         "abs_tolerance": 0.005,
     }
 
-    assert check_fact(fact, "среднее 66782.04", [tool_result(rows=[[66782.04]])]) is True
-    assert check_fact(fact, "", [tool_result(rows=[[66782.05]])]) is False
-    assert check_fact(fact, "среднее 66782.05", []) is False
-    assert check_fact(fact, "среднее 70000", [tool_result(rows=[[70000]])]) is False
+    assert check_fact(fact, [tool_result(rows=[[66782.04]])]) is True
+    assert check_fact(fact, [tool_result(rows=[[66782.05]])]) is False
+    assert check_fact(fact, []) is False
+    assert check_fact(fact, [tool_result(rows=[[70000]])]) is False
 
 
 def test_check_fact_exact_unordered_keeps_category_value_pairs():
@@ -110,21 +109,44 @@ def test_check_fact_exact_unordered_keeps_category_value_pairs():
     }
 
     correct = tool_result(rows=[["Успешно", 454882], ["Ошибка", 40414], ["Отменено", 4704]])
-    assert check_fact(fact, "", [correct]) is True
+    assert check_fact(fact, [correct]) is True
 
     reordered = tool_result(rows=[["Отменено", 4704], ["Успешно", 454882], ["Ошибка", 40414]])
-    assert check_fact(fact, "", [reordered]) is True
+    assert check_fact(fact, [reordered]) is True
 
     swapped = tool_result(rows=[["Успешно", 40414], ["Ошибка", 454882], ["Отменено", 4704]])
-    assert check_fact(fact, "", [swapped]) is False
-    assert check_fact(fact, "Успешно 40414, Ошибка 454882, Отменено 4704", []) is False
+    assert check_fact(fact, [swapped]) is False
+    assert check_fact(fact, []) is False
+
+
+def test_check_fact_exact_unordered_compares_numeric_cells_by_value():
+    fact = {
+        "key": "status.counts",
+        "comparison": "exact_unordered",
+        "value": [["Успешно", 454882], ["Ошибка", 40414], ["Отменено", 4704]],
+    }
+    as_double = tool_result(rows=[["Отменено", 4704.0], ["Успешно", 454882.0], ["Ошибка", 40414.0]])
+    assert check_fact(fact, [as_double]) is True
+
+    duplicates = tool_result(rows=[["Успешно", 454882.0], ["Ошибка", 40414.0]])
+    assert check_fact(fact, [duplicates]) is False
+
+    ordered = {
+        "key": "july.counts",
+        "comparison": "exact",
+        "value": [["2025-07", 21377], ["2026-07", 21375]],
+    }
+    as_double = tool_result(rows=[["2025-07", 21377.0], ["2026-07", 21375.0]])
+    assert check_fact(ordered, [as_double]) is True
+    reordered = tool_result(rows=[["2026-07", 21375.0], ["2025-07", 21377.0]])
+    assert check_fact(ordered, [reordered]) is False
 
 
 def test_check_fact_exact_unordered_accepts_column_list_from_fact_values():
     columns = ["Код запуска", "Код ошибки", "Статус"]
     fact = {"key": "dataset.columns", "comparison": "exact_unordered", "value": columns}
     result = tool_result(facts=[Fact(text="columns", values={"columns": list(reversed(columns))})])
-    assert check_fact(fact, "", [result]) is True
+    assert check_fact(fact, [result]) is True
 
 
 def test_check_fact_compares_timestamps_by_instant():
@@ -133,8 +155,113 @@ def test_check_fact_compares_timestamps_by_instant():
         "comparison": "exact",
         "value": "2024-10-01T00:00:57+03:00",
     }
-    assert check_fact(fact, "Начало: 2024-10-01 00:00:57", []) is True
-    assert check_fact(fact, "Начало: 2024-10-01 00:00:58", []) is False
+    same = tool_result(rows=[["2024-10-01 00:00:57"]])
+    other = tool_result(rows=[["2024-10-01 00:00:58"]])
+    assert check_fact(fact, [same]) is True
+    assert check_fact(fact, [other]) is False
+
+
+def test_correct_tool_result_does_not_hide_wrong_answer_number():
+    case = answer_case(
+        "s1_overview_01",
+        facts=[{"key": "dataset.row_count", "comparison": "exact", "value": 500000}],
+        answer_contains_value={"from_result": True},
+    )
+    result = {
+        "results": [tool_result(rows=[[500000]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Всего 1500000 строк")],
+    }
+
+    status, issues, details = evaluate_case(case, result)
+
+    assert status == "failed"
+    # The reference itself is correct, but the hallucinated answer number is rejected.
+    assert details["fact_checks"][0]["result"] is True
+    assert any("1500000" in issue and "not backed" in issue for issue in issues)
+
+
+def test_answer_number_is_not_enough_when_tool_result_differs():
+    case = answer_case(
+        "s1_overview_01",
+        facts=[{"key": "dataset.row_count", "comparison": "exact", "value": 500000}],
+        answer_contains_value={"from_result": True},
+    )
+    result = {
+        "results": [tool_result(rows=[[2]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Всего 500000 строк")],
+    }
+
+    status, issues, details = evaluate_case(case, result)
+
+    assert status == "failed"
+    assert details["fact_checks"][0]["result"] is False
+    assert any("not confirmed by tool results" in issue for issue in issues)
+
+
+def test_answer_number_must_be_backed_by_tool_results():
+    case = answer_case(
+        "s1_overview_01",
+        facts=[{"key": "dataset.row_count", "comparison": "exact", "value": 500000}],
+        answer_contains_value={"from_result": True},
+    )
+    result = {
+        "results": [tool_result(rows=[[500000]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Всего 500 000 строк, средняя обработка 12345")],
+    }
+
+    status, issues, details = evaluate_case(case, result)
+
+    assert status == "failed"
+    assert details["fact_checks"][0]["passed"] is True
+    assert any("12345" in issue and "not backed" in issue for issue in issues)
+
+
+def test_answer_rounding_and_user_constants_are_allowed():
+    case = {
+        "id": "s3_duration_extremes_01",
+        "question": "Порог задан мной: считай попытки строго дольше 3600 секунд.",
+        "expect": {
+            "outcome": "answer",
+            "tools_any": ["run_sql"],
+            "answer_contains_value": {"from_result": True},
+            "facts": [
+                {
+                    "key": "duration.max_seconds",
+                    "comparison": "approx",
+                    "value": 66782.03742,
+                    "abs_tolerance": 0.005,
+                }
+            ],
+        },
+    }
+    result = {
+        "results": [tool_result(rows=[[66782.03742]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Порог 3600 секунд; максимум 66 782,04 секунды.")],
+    }
+
+    status, issues, _ = evaluate_case(case, result)
+
+    assert status == "passed", issues
+
+
+def test_answer_may_derive_share_from_tool_counts():
+    case = answer_case("s2_status_01", answer_contains_value={"from_result": True})
+    result = {
+        "results": [
+            tool_result(rows=[["Успешно", 454882], ["Ошибка", 40414]]),
+            tool_result(rows=[[500000]]),
+        ],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Успешно 454882 из 500000, это 90,98 %")],
+    }
+
+    status, issues, _ = evaluate_case(case, result)
+
+    assert status == "passed", issues
 
 
 def test_terminal_api_error_is_failed_before_facts():
