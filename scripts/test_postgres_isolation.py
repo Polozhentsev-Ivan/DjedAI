@@ -139,8 +139,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         deadline = time.monotonic() + 90
         while True:
+            # По TCP: временный сервер инициализации образа слушает только сокет и затем
+            # перезапускается; проверка через сокет ловит его и psql попадает в перезапуск.
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "--username", "postgres"],
+                [
+                    "docker",
+                    "exec",
+                    name,
+                    "pg_isready",
+                    "--host",
+                    "127.0.0.1",
+                    "--username",
+                    "postgres",
+                ],
                 env=environment,
                 capture_output=True,
                 timeout=10,
