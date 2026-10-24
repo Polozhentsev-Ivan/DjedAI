@@ -68,6 +68,16 @@ from djedai.contracts.message import (
     TextBlock,
     TraceStep,
 )
+from djedai.contracts.metrics import (
+    JoinCheck,
+    MetricConfirmation,
+    MetricDefinition,
+    MetricFilter,
+    MetricGrain,
+    MetricProvenance,
+    MetricSpec,
+    MetricVersionRef,
+)
 from djedai.contracts.sse import (
     AgentStreamEvent,
     DatasetDoneData,
@@ -110,6 +120,15 @@ __all__ = [
     "TableSource",
     "TopValue",
     "Transformation",
+    # Определения бизнес-метрик
+    "JoinCheck",
+    "MetricConfirmation",
+    "MetricDefinition",
+    "MetricFilter",
+    "MetricGrain",
+    "MetricProvenance",
+    "MetricSpec",
+    "MetricVersionRef",
     # Результаты инструментов
     "ChartHint",
     "Fact",

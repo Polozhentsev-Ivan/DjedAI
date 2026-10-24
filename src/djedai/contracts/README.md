@@ -5,6 +5,7 @@
 ## Модели пакета
 
 - `catalog.py` — `DatasetCatalog`, `Table`, `Column`, `Relation`, `Transformation` (§3.4);
+- `metrics.py` — `MetricSpec` (кандидат без версии и подтверждения), `MetricDefinition`, `MetricProvenance`, `JoinCheck` — подтверждённые определения бизнес-метрик и происхождение расчёта (B2-9, [#166](../../../docs/decisions/166-metric-semantics.md));
 - `tool_result.py` — `ToolResult`, `Fact`, `ChartHint`, `ToolError`, `ToolResultData` (§4.3);
 - `chart.py` — `ChartSpec`, `XAxis`, `YMeasure`, `ColorField` (§6.2);
 - `message.py` — `AssistantMessage`, `TextBlock`, `ChartBlock`, `TableBlock`, `ClarificationBlock`, `DashboardLinkBlock`, `SuggestionsBlock` (§5.6);

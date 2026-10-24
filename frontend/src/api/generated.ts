@@ -1726,6 +1726,106 @@ export interface components {
             color?: string | null;
         };
         /**
+         * MetricGrain
+         * @description Одна строка метрики — одна строка ``table`` с уникальным ``key``.
+         */
+        MetricGrain: {
+            /** Table */
+            table: string;
+            /** Key */
+            key: string;
+        };
+        /**
+         * MetricFilter
+         * @description Условие популяции; колонка — из таблицы grain или из таблицы по связи N:1 от неё.
+         */
+        MetricFilter: {
+            column: components["schemas"]["ColumnRef"];
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "eq" | "ne" | "in" | "not_in" | "gt" | "gte" | "lt" | "lte" | "is_null" | "not_null";
+            /**
+             * Value
+             * @default null
+             */
+            value?: boolean | number | string | (boolean | number | string)[] | null;
+        };
+        /** MetricVersionRef */
+        MetricVersionRef: {
+            /** Metric Id */
+            metric_id: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * JoinCheck
+         * @description Проверка JOIN grain-таблицы с измерением на данных: размножение и потери строк.
+         */
+        JoinCheck: {
+            from: components["schemas"]["ColumnRef"];
+            to: components["schemas"]["ColumnRef"];
+            /** Rows Before */
+            rows_before: number;
+            /** Rows After */
+            rows_after: number;
+            /** Max Fanout */
+            max_fanout: number;
+            /** Null Key Rows */
+            null_key_rows: number;
+            /** Unmatched Rows */
+            unmatched_rows: number;
+        };
+        /**
+         * MetricProvenance
+         * @description Происхождение расчёта: версия определения и применённые ограничения.
+         */
+        MetricProvenance: {
+            /** Metric Id */
+            metric_id: string;
+            /** Version */
+            version: number;
+            /** Title */
+            title: string;
+            /** Formula */
+            formula: string;
+            grain: components["schemas"]["MetricGrain"];
+            /**
+             * Additivity
+             * @enum {string}
+             */
+            additivity: "additive" | "recompute";
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "money" | "count" | "ratio" | "number";
+            /**
+             * Currency
+             * @default null
+             */
+            currency?: string | null;
+            /** Filters */
+            filters?: components["schemas"]["MetricFilter"][];
+            /**
+             * Period Start
+             * @default null
+             */
+            period_start?: string | null;
+            /**
+             * Period End
+             * @default null
+             */
+            period_end?: string | null;
+            /** Group By */
+            group_by?: components["schemas"]["ColumnRef"][];
+            /** Components */
+            components?: components["schemas"]["MetricVersionRef"][];
+            /** Checks */
+            checks?: components["schemas"]["JoinCheck"][];
+        };
+        /**
          * ToolResult
          * @description Единый результат выполнения любого инструмента (B2, §4.3).
          */
@@ -1798,6 +1898,11 @@ export interface components {
              * @default null
              */
             duration_ms?: number | null;
+            /**
+             * @description Версия определения метрики и применённые ограничения (B2-9)
+             * @default null
+             */
+            metric?: components["schemas"]["MetricProvenance"] | null;
         };
         /**
          * WidgetToolCall

@@ -3,6 +3,7 @@ from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, Field
 
 from djedai.contracts.chart import ChartSpec
+from djedai.contracts.metrics import MetricDefinition, MetricSpec
 from djedai.contracts.tool_result import ToolResult
 
 
@@ -14,6 +15,8 @@ class Entities(BaseModel):
 class Clarification(BaseModel):
     question: str
     options: list[str]
+    # Кандидаты определений по порядку options: выбор варианта подтверждает определение (B2-9)
+    metric_candidates: list[MetricSpec] = Field(default_factory=list)
 
 
 class Understanding(BaseModel):
