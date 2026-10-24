@@ -187,7 +187,9 @@ def test_visualize_reuses_result_from_previous_turn_in_the_same_chat():
         ),
         ModelResponse(status="success", data=VisualizeResponse(charts=[_chart("bar")])),
         ModelResponse(status="success", data=ComposeResponse(answer_blocks=[])),
-        # No text block is composed, so verification has nothing to check and stays silent.
+        # Верификатор теперь читает заголовки (Title) графиков, поэтому его нужно замокать:
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+        # --- Second turn starts here ---
         ModelResponse(
             status="success",
             data=Understanding(intent="modify_previous", references=["r_1"]),
@@ -248,4 +250,5 @@ def test_visualize_drops_charts_referencing_unknown_results():
     )
 
     assert [chart.chart_id for chart in result["charts"]] == ["ch_ok"]
+
     assert all(block.chart["result_id"] == "r_1" for block in result["answer_blocks"])

@@ -198,11 +198,11 @@ def wants_visualization(state: AgentState) -> bool:
     return any(word in text for word in CHART_REQUEST_WORDS)
 
 
-def chart_source_results(state: AgentState) -> list[ToolResult]:
-    """Возвращает уже посчитанные результаты, по которым можно построить график.
+def active_results(state: AgentState) -> list[ToolResult]:
+    """Возвращает актуальные результаты для визуализации, текста и верификации.
 
-    Новый расчёт не запускается: берём результаты текущего плана, а при его
-    отсутствии — сохранённые результаты, на которые сослался пользователь.
+    Берем результаты текущего плана, а при его отсутствии (modify_previous) —
+    сохранённые результаты, на которые сослался пользователь.
     """
     current_results = state.get("results", [])
     history_results = state.get("history_results", [])
@@ -237,13 +237,40 @@ def describe_result_for_chart(result: ToolResult) -> dict:
 
 
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
-    """Оставляет только графики, ссылающиеся на реальные сохранённые результаты."""
-    result_ids = {r.result_id for r in results}
+    """Оставляет только графики с реальными результатами и существующими колонками."""
+    results_by_id = {r.result_id: r for r in results}
     sanitized = []
     seen_ids: set[str] = set()
     for chart in charts:
-        if chart.result_id not in result_ids:
+        if chart.result_id not in results_by_id:
             continue
+
+        res = results_by_id[chart.result_id]
+        if not res.data:
+            continue
+
+        valid_cols = set()
+        for c in res.data.columns:
+            if isinstance(c, str):
+                valid_cols.add(c)
+            elif hasattr(c, "name"):
+                valid_cols.add(c.name)
+            elif isinstance(c, dict) and "name" in c:
+                valid_cols.add(c["name"])
+
+        fields_to_check = []
+        if chart.x:
+            fields_to_check.append(chart.x.field)
+        for y in chart.y or []:
+            fields_to_check.append(y.field)
+        if chart.color:
+            fields_to_check.append(chart.color.field)
+        if chart.sort:
+            fields_to_check.append(chart.sort.field)
+
+        if not all(f in valid_cols for f in fields_to_check):
+            continue
+
         chart_id = chart.chart_id
         if not chart_id or chart_id == "string" or chart_id in seen_ids:
             chart_id = f"ch_{uuid.uuid4().hex[:8]}"
@@ -256,7 +283,7 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
     if not wants_visualization(state):
         return {"charts": []}
 
-    valid_results = chart_source_results(state)
+    valid_results = active_results(state)
     if not valid_results:
         return {"charts": []}
 
@@ -291,14 +318,13 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         return {"answer_blocks": existing_blocks}
 
     facts_and_data = []
-    for r in state.get("results", []):
-        if r.status == "ok":
-            entry = {"tool": r.tool}
-            if r.facts:
-                entry["facts"] = r.facts
-            if r.data:
-                entry["data"] = r.data
-            facts_and_data.append(entry)
+    for r in active_results(state):
+        entry = {"tool": r.tool}
+        if r.facts:
+            entry["facts"] = r.facts
+        if r.data:
+            entry["data"] = r.data
+        facts_and_data.append(entry)
 
     sys_prompt = load_prompt("compose").format(facts=str(facts_and_data))
 
@@ -337,28 +363,39 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:
-    """Final check of numbers in text vs data."""
+    """Final check of numbers in text and chart metadata vs data."""
     client = config.get("configurable", {}).get("client")
     blocks = state.get("answer_blocks", [])
 
-    text_blocks = [b for b in blocks if b.type == "text"]
-    if not text_blocks:
+    draft_parts = []
+    for b in blocks:
+        if b.type == "text" and b.markdown:
+            draft_parts.append(b.markdown)
+        elif b.type == "chart" and b.chart:
+            c = b.chart if isinstance(b.chart, dict) else b.chart.model_dump()
+            if c.get("title"):
+                draft_parts.append(c["title"])
+            if c.get("subtitle"):
+                draft_parts.append(c["subtitle"])
+            if c.get("caption"):
+                draft_parts.append(c["caption"])
+
+    if not draft_parts:
         return {"is_verified": True}
 
-    draft = "\n\n".join(b.markdown for b in text_blocks if b.markdown)
+    draft = "\n\n".join(draft_parts)
 
     facts_and_data = []
-    for r in state.get("results", []):
-        if r.status == "ok":
-            entry = {"tool": r.tool}
-            if r.facts:
-                entry["facts"] = r.facts
-            if r.data:
-                entry["data"] = r.data
-            facts_and_data.append(entry)
+    for r in active_results(state):
+        entry = {"tool": r.tool}
+        if r.facts:
+            entry["facts"] = r.facts
+        if r.data:
+            entry["data"] = r.data
+        facts_and_data.append(entry)
 
     if not facts_and_data:
-        new_blocks = [b for b in blocks if b.type != "text"]
+        new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
         new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
         return {"is_verified": True, "answer_blocks": new_blocks}
 
@@ -375,7 +412,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
             else:
                 # If we've reached max retries, accept the corrected/stripped markdown
                 if state.get("compose_retries", 0) >= 2:
-                    new_blocks = [b for b in blocks if b.type != "text"]
+                    new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
                     new_blocks.append(Block(type="text", markdown=v_data.corrected_markdown))
                     return {"is_verified": True, "answer_blocks": new_blocks}
                 else:
@@ -384,7 +421,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         else:
             # The API failed (timeout, 500, etc.).
             # We do not allow the publication of an unvalidated draft.
-            new_blocks = [b for b in blocks if b.type != "text"]
+            new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
             new_blocks.append(
                 Block(
                     type="error",

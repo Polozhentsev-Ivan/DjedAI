@@ -28,6 +28,7 @@ from djedai.backend.db.repositories import (
 from djedai.backend.db.repositories import (
     get_chat_messages,
     get_owned_tool_result,
+    load_tool_result,
     save_assistant_message,
     save_message,
     save_tool_result,
@@ -303,13 +304,25 @@ def stream_chat_turn(
             role="user",
             content=text,
         )
-        history = [
-            _history_message(message) for message in get_chat_messages(db, chat_model.chat_id)[-10:]
-        ]
+        history_messages = get_chat_messages(db, chat_model.chat_id)[-10:]
+        history = [_history_message(message) for message in history_messages]
+
+        history_results: list[ToolResult] = []
+        seen_result_ids = set()
+
+        for msg in history_messages:
+            for rid in msg.result_ids or []:
+                if rid not in seen_result_ids:
+                    seen_result_ids.add(rid)
+                    res = load_tool_result(db, rid, storage_dir=runtime.results_storage_dir)
+                    if res is not None:
+                        history_results.append(res)
+
         state: dict[str, Any] = {
             "chat_id": chat_model.chat_id,
             "dataset_id": chat_model.dataset_id,
             "messages": history,
+            "history_results": history_results,
         }
 
         configurable: dict[str, Any] = {"thread_id": chat_model.chat_id}
