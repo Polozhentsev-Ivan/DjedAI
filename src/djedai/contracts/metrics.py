@@ -277,3 +277,52 @@ class MetricProvenance(_Model):
     group_by: list[ColumnRef] = Field(default_factory=list)
     components: list[MetricVersionRef] = Field(default_factory=list)  # числитель, знаменатель
     checks: list[JoinCheck] = Field(default_factory=list)
+
+
+def metrics_prompt(metrics: Mapping[str, MetricDefinition]) -> str:
+    """Раздел «Метрики» для агента: подтверждённые определения и явное «не определено»."""
+    lines = ["Метрики (определения подтвердил пользователь; считать их только compute_metric):"]
+    confirmed = [m for m in metrics.values() if m.status == "confirmed"]
+    if not confirmed:
+        lines.append("- подтверждённых определений нет.")
+    for metric in sorted(confirmed, key=lambda m: m.metric_id):
+        lines.append(f"- {metric.metric_id} v{metric.version} «{metric.title}»: {_formula(metric)}")
+    lines.append(
+        "Бизнес-метрики вне этого списка (выручка, средний чек, конверсия и т. п.) не "
+        "определены: имя колонки, описание в каталоге и уверенность связи их не задают."
+    )
+    return "\n".join(lines)
+
+
+def _formula(metric: MetricDefinition) -> str:
+    if metric.kind == "ratio":
+        parts = [f"{metric.numerator} / {metric.denominator}"]
+    else:
+        target = (
+            metric.grain.table
+            if metric.measure is None
+            else f"{metric.measure.table}.{metric.measure.column}"
+        )
+        parts = [f"{metric.kind.upper()}({target})"]
+        if metric.filters:
+            parts.append(
+                "где "
+                + " и ".join(
+                    f"{f.column.table}.{f.column.column} {f.op}"
+                    + ("" if f.value is None else f" {f.value}")
+                    for f in metric.filters
+                )
+            )
+    parts.append(f"grain {metric.grain.table}.{metric.grain.key}")
+    if metric.currency:
+        parts.append(f"валюта {metric.currency}")
+    if metric.currency_column:
+        parts.append(f"валюта в {metric.currency_column.table}.{metric.currency_column.column}")
+    if metric.time_column:
+        parts.append(f"календарь {metric.time_column.table}.{metric.time_column.column}")
+    parts.append(
+        "суммируется по группам и периодам"
+        if metric.additivity == "additive"
+        else "не суммируется: пересчитывать по группам и периодам"
+    )
+    return "; ".join(parts)

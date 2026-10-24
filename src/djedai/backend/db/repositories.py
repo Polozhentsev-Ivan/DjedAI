@@ -916,8 +916,12 @@ def save_assistant_message(
     budget: ExecutionBudget | None = None,
     question_id: str | None = None,
     completed_turn: ChatTurnState | None = None,
+    also: Callable[[Session], None] | None = None,
 ) -> MessageModel:
-    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at."""
+    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at.
+
+    ``also`` добавляет связанные записи (например, кандидатов метрик) в ту же транзакцию.
+    """
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
 
@@ -926,6 +930,13 @@ def save_assistant_message(
             if not apply_turn(session, question_id, completed_turn):
                 session.rollback()
                 raise TurnCancelled
+
+        def before_commit() -> None:
+            if also is not None:
+                also(session)
+            if budget is not None:
+                budget.check()
+
         return save_message(
             db=session,
             message_id=message.message_id,
@@ -936,7 +947,7 @@ def save_assistant_message(
             result_ids=message.result_ids,
             trace=trace_data,
             created_at=message.created_at,
-            before_commit=budget.check if budget is not None else None,
+            before_commit=before_commit if also is not None or budget is not None else None,
         )
 
     return budgeted_write(db, budget, write) if budget is not None else write(db)

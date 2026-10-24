@@ -60,6 +60,8 @@ class Block(BaseModel):
     dashboard_id: str | None = None
     title: str | None = None
     items: list[str] = Field(default_factory=list)
+    # clarification: проверенный кандидат определения для варианта с тем же индексом (B2-9)
+    metric_candidates: list[MetricDefinition | None] = Field(default_factory=list)
 
 
 class AgentState(TypedDict, total=False):

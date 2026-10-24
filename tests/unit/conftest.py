@@ -1,17 +1,27 @@
-"""Controlled model endpoint shared by transport and live chat deadline tests."""
+"""Controlled model endpoint shared by transport and live chat deadline tests.
+
+Also the orders/items/payments dataset shared by metric semantics tests (B2-9).
+"""
 
 import json
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import duckdb
 import pytest
 from openai import DefaultAsyncHttpxClient
+
+from djedai.data.service import CsvSource, ingest_csv_dataset
+
+METRIC_FIXTURES = Path(__file__).parents[1] / "fixtures" / "metrics"
 
 
 @pytest.fixture
@@ -109,3 +119,18 @@ def model_endpoint() -> Callable:
             thread.join()
 
     return serve
+
+
+@pytest.fixture(scope="session")
+def metrics_dataset(tmp_path_factory):
+    """orders/items/payments из ``tests/fixtures/metrics``: соединение и каталог (B2-9)."""
+    path = tmp_path_factory.mktemp("metrics") / "dataset.duckdb"
+    catalog = ingest_csv_dataset(
+        [CsvSource(p, p.name) for p in sorted(METRIC_FIXTURES.glob("*.csv"))],
+        path,
+        dataset_id="ds_metrics",
+        name="metrics",
+        created_at=datetime.now(UTC),
+    )
+    with duckdb.connect(str(path), read_only=True) as connection:
+        yield connection, catalog

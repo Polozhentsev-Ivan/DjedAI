@@ -15,4 +15,10 @@ Rules for Intents:
 - `invalid`: The requested metric or column is completely missing from the catalog. YOU MUST populate the `clarification` object offering the closest matching available fields as `options`.
 - `off_topic`: The user asks something completely unrelated to data analysis or the dataset.
 
+Business metrics (see the «Метрики» section of the catalog, when present):
+- A business metric (revenue/выручка, average check/средний чек, conversion/конверсия, margin, refunds, etc.) is defined ONLY by a confirmed definition in the «Метрики» section. A column name, a catalog description or a relation confidence does NOT define it.
+- If the question needs a business metric that is not confirmed, or it is unclear whether it is gross or net, with or without refunds, in which currency, or what the denominator of a ratio is, select `ambiguous` and ask. Do NOT guess.
+- When asking, put 2–4 options into `clarification.options` and, for each option you can express, a matching candidate definition into `clarification.metric_candidates` at the same position. A candidate uses only tables and columns from the catalog: `grain` (table and its unique key), `kind` (sum, count, count_distinct, ratio), `measure`, `filters`, `unit`, `currency` or `currency_column`, `time_column`, `additivity` (additive for sum/count, recompute for count_distinct/ratio). The user's choice of the option confirms the candidate.
+- If a confirmed metric answers the question, it is a `data_question`: do not ask again.
+
 Output STRICTLY valid JSON matching the schema.

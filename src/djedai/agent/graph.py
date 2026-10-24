@@ -13,12 +13,14 @@ from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     AgentState,
     Block,
+    Clarification,
     ComposeResponse,
     Entities,
     PlanResponse,
     Understanding,
     VerifyResponse,
 )
+from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
@@ -31,6 +33,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         if catalog_loader is not None
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
+    metrics_loader = config.get("configurable", {}).get("metrics_loader")
+    if metrics_loader is not None:
+        catalog_prompt += "\n\n" + metrics_prompt(metrics_loader(state["dataset_id"]))
     return {
         "catalog_prompt": catalog_prompt,
         "results": [],
@@ -273,7 +278,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     return {"is_verified": True}
 
 
-def clarify(state: AgentState) -> dict:
+def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
     existing = state.get("answer_blocks", [])
     # Do not suppress API errors if they are already present in the response blocks
     if any(b.type == "error" for b in existing):
@@ -292,6 +297,9 @@ def clarify(state: AgentState) -> dict:
                     type="clarification",
                     markdown=understanding.clarification.question,
                     options=understanding.clarification.options,
+                    metric_candidates=_checked_candidates(
+                        understanding.clarification, state, config
+                    ),
                 )
             )
         else:
@@ -316,6 +324,11 @@ def clarify(state: AgentState) -> dict:
         )
         blocks.append(Block(type="error", markdown=msg))
 
+    elif (error := _metric_decision(state)) is not None:
+        # Расчёт метрики упёрся в решение пользователя: определение, валюту, период, JOIN.
+        text = error.message if not error.suggestion else f"{error.message}\n\n{error.suggestion}"
+        blocks.append(Block(type="clarification", markdown=text))
+
     else:
         blocks.append(Block(type="clarification", markdown="Пожалуйста, уточните ваш запрос."))
 
@@ -323,6 +336,74 @@ def clarify(state: AgentState) -> dict:
         "plan": [],
         "answer_blocks": blocks,
     }
+
+
+# Ошибки compute_metric, которые решает только пользователь (B2-9): повторный план их не
+# исправит. Те же коды от run_sql сначала дают перепланирование на compute_metric.
+METRIC_DECISIONS = {
+    "metric_undefined",
+    "metric_definition_stale",
+    "metric_mixed_currency",
+    "metric_period_unsupported",
+    "metric_grain_violation",
+    "metric_rows_lost",
+}
+
+
+def _recent_results(state: AgentState) -> list[ToolResult]:
+    plan_len = len(state.get("plan", []))
+    return state.get("results", [])[-plan_len:] if plan_len > 0 else []
+
+
+def _metric_decision(state: AgentState) -> ToolError | None:
+    for result in reversed(state.get("results", [])):
+        if result.status == "error" and result.error and result.error.code in METRIC_DECISIONS:
+            return result.error
+    return None
+
+
+def _checked_candidates(
+    clarification: Clarification, state: AgentState, config: RunnableConfig | None
+) -> list[MetricDefinition | None]:
+    """Кандидаты определений, совместимые с каталогом; несовместимый вариант — ``None``.
+
+    Кандидат от модели — только предложение: подтверждает его выбор пользователя.
+    Без каталога проверить нечего, и вариант не подтверждает определение.
+    """
+    configurable = (config or {}).get("configurable", {})
+    catalog_loader = configurable.get("catalog_loader")
+    candidates = clarification.metric_candidates[: len(clarification.options)]
+    if catalog_loader is None or not candidates:
+        return []
+    catalog = catalog_loader(state["dataset_id"])
+    metrics_loader = configurable.get("metrics_loader")
+    metrics = metrics_loader(state["dataset_id"]) if metrics_loader is not None else {}
+    checked: list[MetricDefinition | None] = []
+    for candidate in candidates:
+        proposal = MetricDefinition.model_validate(candidate.model_dump())  # status=proposed
+        try:
+            proposal.validate_against(catalog, metrics)
+        except ValueError:
+            checked.append(None)
+        else:
+            checked.append(proposal)
+    return checked
+
+
+def cite_metrics(state: AgentState) -> dict:
+    """Добавляет к проверенному ответу версии определений метрик и их ограничения."""
+    blocks = state.get("answer_blocks", [])
+    if any(b.type == "error" for b in blocks):
+        return {}
+    lines = []
+    for result in state.get("results", []):
+        if result.status == "error" or result.metric is None:
+            continue
+        lines += [f.text for f in result.facts if f.kind == "metric_definition"]
+    if not lines:
+        return {}
+    text = "**Как посчитано.** " + " ".join(f"{line}." for line in dict.fromkeys(lines))
+    return {"answer_blocks": [*blocks, Block(type="text", markdown=text)]}
 
 
 def route_after_understand(state: AgentState) -> str:
@@ -334,21 +415,28 @@ def route_after_understand(state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
-    plan_len = len(state.get("plan", []))
-    recent_results = state.get("results", [])[-plan_len:] if plan_len > 0 else []
+    recent_results = _recent_results(state)
     has_errors = any(r.status == "error" for r in recent_results)
-
+    metric_errors = [
+        r
+        for r in recent_results
+        if r.status == "error" and r.error and r.error.code in METRIC_DECISIONS
+    ]
+    if any(r.tool == "compute_metric" for r in metric_errors):
+        return "clarify"
     if has_errors and state.get("retries", 0) <= 2:
         return "plan"
+    if metric_errors:
+        return "clarify"
     return "visualize"
 
 
 def route_after_verify(state: AgentState) -> str:
     if state.get("is_verified", True):
-        return END
+        return "cite_metrics"
     if state.get("compose_retries", 0) < 2:
         return "compose"
-    return END
+    return "cite_metrics"
 
 
 def build_agent_graph() -> StateGraph:
@@ -371,7 +459,9 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
-    workflow.add_node("clarify", observed("clarify", clarify, state_only=True))
+    workflow.add_node("clarify", observed("clarify", clarify))
+    # Без модели и данных: не отдельный этап хода для статусов и диагностики.
+    workflow.add_node("cite_metrics", cite_metrics)
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")
@@ -384,14 +474,21 @@ def build_agent_graph() -> StateGraph:
 
     # Dynamic loop for error correction
     workflow.add_conditional_edges(
-        "execute", route_after_execute, {"plan": "plan", "visualize": "visualize"}
+        "execute",
+        route_after_execute,
+        {"plan": "plan", "visualize": "visualize", "clarify": "clarify"},
     )
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")
 
     # Conditional edge to handle regeneration
-    workflow.add_conditional_edges("verify", route_after_verify, {"compose": "compose", END: END})
+    workflow.add_conditional_edges(
+        "verify",
+        route_after_verify,
+        {"compose": "compose", "cite_metrics": "cite_metrics"},
+    )
+    workflow.add_edge("cite_metrics", END)
 
     workflow.add_edge("clarify", END)
 
