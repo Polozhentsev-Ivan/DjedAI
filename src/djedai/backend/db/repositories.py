@@ -820,6 +820,7 @@ def create_chat(
     dataset_id: str,
     title: str = "Новый чат",
     summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
 ) -> ChatModel:
     """Создает новый чат диалога, привязанный к пользователю и датасету."""
     chat = ChatModel(
@@ -828,6 +829,7 @@ def create_chat(
         dataset_id=dataset_id,
         title=title,
         summary=summary,
+        focus_result_ids=focus_result_ids or [],
     )
     db.add(chat)
     db.commit()
@@ -838,6 +840,28 @@ def create_chat(
 def get_chat(db: Session, chat_id: str) -> ChatModel | None:
     """Возвращает чат по его идентификатору."""
     return db.query(ChatModel).filter_by(chat_id=chat_id).first()
+
+
+def update_chat_memory(
+    db: Session,
+    chat_id: str,
+    *,
+    summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
+) -> ChatModel | None:
+    """Сохраняет summary и текущий фокус разговора, не меняя соседние чаты."""
+    chat = get_chat(db, chat_id)
+    if chat is None:
+        return None
+    if summary is not None:
+        chat.summary = summary
+    if focus_result_ids is not None:
+        chat.focus_result_ids = list(
+            dict.fromkeys(result_id for result_id in focus_result_ids if result_id)
+        )
+    db.commit()
+    db.refresh(chat)
+    return chat
 
 
 def list_chats(

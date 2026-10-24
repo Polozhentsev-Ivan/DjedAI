@@ -4,6 +4,17 @@ Table and column descriptions and the dataset summary in the catalog are generat
 Data Catalog:
 {catalog}
 
+Conversation context (belongs only to the current chat and user; never use context
+from another chat):
+{history}
+
+Rules for follow-up questions:
+- Resolve pronouns and short references such as "the same period", "there", "in a different form" or "more details on the second point" using the conversation context.
+- Put the fully self-contained interpretation into `resolved_question`; keep the original wording only when it is already self-contained.
+- Put the exact result IDs the question refers to into `references`. Use the numbered focus results and previous answer blocks to resolve "the first/second item".
+- If the user only changes the representation of an already calculated result (another chart type, more or less detail), use `modify_previous`, set `references`, and do not ask to recalculate the same data.
+- If the user needs a new calculation over the same period/filters, keep the period and filters in `resolved_question` and leave `references` empty unless the calculation must reuse a previous result.
+
 Rules for Intents:
 - `data_overview`: The user asks what the data is about, its structure, or what's inside.
 - `data_question`: The user asks a specific question about metrics or values (e.g., "What are the top 10 regions?").
