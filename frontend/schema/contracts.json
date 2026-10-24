@@ -608,6 +608,18 @@
             },
             "title": "Result Ids",
             "type": "array"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTurnState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Состояние хода этого вопроса; у прежних сообщений отсутствует"
           }
         },
         "required": [
@@ -651,6 +663,118 @@
           "created_at"
         ],
         "title": "ChatSummary",
+        "type": "object"
+      },
+      "ChatTurnState": {
+        "additionalProperties": false,
+        "description": "Owner-visible outcome of the turn started by one user message.",
+        "properties": {
+          "run_id": {
+            "description": "Идентификатор хода в диагностике",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "success",
+              "error",
+              "timeout",
+              "cancelled",
+              "interrupted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "node": {
+            "description": "Последний начатый этап агента",
+            "title": "Node",
+            "type": "string"
+          },
+          "phase": {
+            "default": "stage",
+            "enum": [
+              "stage",
+              "retry"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "message": {
+            "description": "Понятный русский статус или причина завершения",
+            "title": "Message",
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Нормализованный код завершения",
+            "title": "Code"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suggestion"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "deadline_at": {
+            "format": "date-time",
+            "title": "Deadline At",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "assistant_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assistant Message Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "node",
+          "message",
+          "started_at",
+          "deadline_at"
+        ],
+        "title": "ChatTurnState",
         "type": "object"
       },
       "ClarificationBlock": {
@@ -2009,6 +2133,41 @@
             "description": "Человекочитаемый статус текущего действия на русском языке",
             "title": "Text",
             "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID сохранённого вопроса пользователя",
+            "title": "Message Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID хода для диагностики",
+            "title": "Run Id"
+          },
+          "phase": {
+            "default": "stage",
+            "enum": [
+              "stage",
+              "retry"
+            ],
+            "title": "Phase",
+            "type": "string"
           }
         },
         "required": [
@@ -2084,6 +2243,20 @@
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "format": "uuid4",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "UUID явной отправки для связи вопроса с локальным состоянием",
+            "title": "Request Id"
           }
         },
         "required": [

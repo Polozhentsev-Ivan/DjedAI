@@ -16,6 +16,9 @@ class SSEStatusData(BaseModel):
 
     node: str = Field(description="Узел графа агента (understand, plan, execute, compose, verify)")
     text: str = Field(description="Человекочитаемый статус текущего действия на русском языке")
+    message_id: str | None = Field(default=None, description="ID сохранённого вопроса пользователя")
+    run_id: str | None = Field(default=None, description="ID хода для диагностики")
+    phase: Literal["stage", "retry"] = "stage"
 
 
 class SSEToolCallData(BaseModel):

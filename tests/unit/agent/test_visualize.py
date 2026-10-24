@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph
 from djedai.contracts.agent import (
+    Block,
     ComposeResponse,
     Message,
     PlannedCall,
@@ -13,7 +14,7 @@ from djedai.contracts.agent import (
     VisualizeResponse,
 )
 from djedai.contracts.chart import ChartSpec, ChartType, XAxis, YMeasure
-from djedai.contracts.tool_result import ChartHint, ToolResult, ToolResultData
+from djedai.contracts.tool_result import ChartHint, Fact, ToolError, ToolResult, ToolResultData
 
 
 def _saved_result() -> ToolResult:
@@ -252,3 +253,100 @@ def test_visualize_drops_charts_referencing_unknown_results():
     assert [chart.chart_id for chart in result["charts"]] == ["ch_ok"]
 
     assert all(block.chart["result_id"] == "r_1" for block in result["answer_blocks"])
+
+
+def test_visualize_rejects_string_column_on_numeric_axis():
+    """Категориальную колонку нельзя откладывать по числовой оси Y."""
+    mixed = ChartSpec(
+        chart_id="ch_mixed",
+        result_id="r_1",
+        type="bar",
+        title="Сумма по категории",
+        x=XAxis(field="value"),
+        y=[YMeasure(field="category")],
+    )
+
+    result = _run_modify("test_vis_string_axis", VisualizeResponse(charts=[mixed]))
+
+    assert result["charts"] == []
+    assert result["answer_blocks"] == []
+
+
+def test_partial_plan_rerun_keeps_successful_results_for_compose_and_verify():
+    """Повторный план после сбоя не теряет уже успешный расчёт."""
+    graph = build_agent_graph()
+    client = MagicMock()
+    count_calls = {"total": 0}
+
+    def dispatcher(tool: str, args: dict) -> ToolResult:
+        if tool == "sum_amount":
+            return ToolResult(
+                result_id="r_sum",
+                status="ok",
+                tool=tool,
+                facts=[Fact(text="SUM(amount) = 30")],
+            )
+        count_calls["total"] += 1
+        if count_calls["total"] == 1:
+            return ToolResult(
+                result_id="r_count_failed",
+                status="error",
+                tool=tool,
+                error=ToolError(code="timeout", message="Запрос не выполнен"),
+            )
+        return ToolResult(
+            result_id="r_count",
+            status="ok",
+            tool=tool,
+            facts=[Fact(text="COUNT(*) = 2")],
+        )
+
+    client.generate_typed_response.side_effect = [
+        ModelResponse(status="success", data=Understanding(intent="data_question")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(
+                plan=[
+                    PlannedCall(tool="sum_amount", args={}),
+                    PlannedCall(tool="count_rows", args={}),
+                ]
+            ),
+        ),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(plan=[PlannedCall(tool="count_rows", args={})]),
+        ),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Сумма 30, строк 2")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    result = graph.invoke(
+        {
+            "chat_id": "c1",
+            "dataset_id": "ds_1",
+            "messages": [Message(role="user", content="Сумма и количество строк")],
+        },
+        config={
+            "configurable": {
+                "thread_id": "test_partial_rerun",
+                "client": client,
+                "tool_dispatcher": dispatcher,
+            }
+        },
+    )
+
+    assert [tool_result.result_id for tool_result in result["results"]] == [
+        "r_sum",
+        "r_count_failed",
+        "r_count",
+    ]
+
+    calls = client.generate_typed_response.call_args_list
+    compose_prompt = calls[3].args[0]
+    verify_prompt = calls[4].args[0]
+    for prompt in (compose_prompt, verify_prompt):
+        assert "SUM(amount) = 30" in prompt
+        assert "COUNT(*) = 2" in prompt

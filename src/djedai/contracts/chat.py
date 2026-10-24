@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import UUID4, AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from djedai.contracts.message import MessageBlock
 
@@ -36,6 +36,24 @@ class ChatSummary(BaseModel):
     created_at: AwareDatetime = Field(description="Дата создания чата")
 
 
+class ChatTurnState(BaseModel):
+    """Owner-visible outcome of the turn started by one user message."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str = Field(description="Идентификатор хода в диагностике")
+    status: Literal["running", "success", "error", "timeout", "cancelled", "interrupted"]
+    node: str = Field(description="Последний начатый этап агента")
+    phase: Literal["stage", "retry"] = "stage"
+    message: str = Field(description="Понятный русский статус или причина завершения")
+    code: str | None = Field(default=None, description="Нормализованный код завершения")
+    suggestion: str | None = None
+    started_at: AwareDatetime
+    deadline_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
+    assistant_message_id: str | None = None
+
+
 class ChatMessage(BaseModel):
     """Сообщение в истории чата: вопрос пользователя или ответ ассистента."""
 
@@ -51,6 +69,9 @@ class ChatMessage(BaseModel):
     result_ids: list[str] = Field(
         default_factory=list, description="ID результатов вычислений, на которые опирается ответ"
     )
+    turn: ChatTurnState | None = Field(
+        default=None, description="Состояние хода этого вопроса; у прежних сообщений отсутствует"
+    )
 
 
 class ChatDetail(ChatSummary):
@@ -65,6 +86,9 @@ class SendMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     text: str = Field(min_length=1, description="Текст вопроса к данным")
+    request_id: UUID4 | None = Field(
+        default=None, description="UUID явной отправки для связи вопроса с локальным состоянием"
+    )
 
     @field_validator("text")
     @classmethod

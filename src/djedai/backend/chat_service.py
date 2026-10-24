@@ -6,13 +6,14 @@ import logging
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
+from langgraph.config import get_stream_writer
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from djedai.agent.config import get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.analytics.registry import execute_tool
+from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dataset_service import DatasetContext
 from djedai.backend.db.models import ChatModel, DashboardModel, DatasetModel, MessageModel
 from djedai.backend.db.repositories import (
@@ -33,12 +35,13 @@ from djedai.backend.db.repositories import (
     save_message,
     save_tool_result,
 )
+from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.chart import ChartSpec
-from djedai.contracts.chat import ChatMessage, ChatSummary
+from djedai.contracts.chat import ChatMessage, ChatSummary, ChatTurnState
 from djedai.contracts.message import (
     AssistantMessage,
     ChartBlock,
@@ -70,16 +73,6 @@ from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 _BLOCK_ADAPTER: TypeAdapter[MessageBlock] = TypeAdapter(MessageBlock)
 logger = logging.getLogger(__name__)
 
-_STATUS_TEXT = {
-    "load_ctx": "Загружаю контекст чата…",
-    "plan": "Строю план анализа…",
-    "execute": "Выполняю расчёты…",
-    "visualize": "Подбираю визуализацию…",
-    "compose": "Формулирую ответ…",
-    "verify": "Проверяю числа в ответе…",
-    "clarify": "Нужно уточнить вопрос…",
-}
-
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
@@ -104,6 +97,7 @@ class AgentRuntime:
     turn_timeout_seconds: float | None = None
     diagnostics: DiagnosticJournal | None = None
     tariff: Tariff | None = None
+    unavailable: bool = False
 
     def budget(self, is_cancelled: Callable[[], bool] | None = None) -> ExecutionBudget:
         seconds = (
@@ -140,8 +134,14 @@ def get_agent_runtime(request: Request) -> AgentRuntime:
         if settings.model_input_price_usd is not None
         else None
     )
+    try:
+        runtime = build_agent_runtime()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        runtime = AgentRuntime(graph=None, unavailable=True)
     return replace(
-        build_agent_runtime(),
+        runtime,
         dataset_context=request.app.state.dataset_service.get_context,
         results_storage_dir=request.app.state.settings.results_data_dir,
         turn_timeout_seconds=request.app.state.settings.agent_turn_timeout_seconds,
@@ -177,6 +177,7 @@ def message_to_chat_message(message: MessageModel) -> ChatMessage:
         text=message.content if role == "user" else None,
         blocks=blocks,
         result_ids=message.result_ids or [],
+        turn=ChatTurnState.model_validate(message.turn) if message.turn else None,
     )
 
 
@@ -190,6 +191,25 @@ def _history_message(message: MessageModel) -> Message:
         )
     role = "user" if message.role == "user" else "assistant"
     return Message(role=role, content=content)
+
+
+def _message_result_ids(message: MessageModel) -> list[str]:
+    """Возвращает результаты, на которые ссылается сохранённое сообщение.
+
+    Помимо явно сохранённых result_ids учитываем блоки ответа: график или
+    таблица ссылаются на результат, даже если старый ответ его не сохранил.
+    """
+    result_ids = list(message.result_ids or [])
+    for block in message.blocks or []:
+        if not isinstance(block, dict):
+            continue
+        referenced = block.get("result_id")
+        chart = block.get("chart")
+        if not referenced and isinstance(chart, dict):
+            referenced = chart.get("result_id")
+        if referenced:
+            result_ids.append(referenced)
+    return result_ids
 
 
 def _block_to_message_block(block: Block) -> MessageBlock:
@@ -232,21 +252,28 @@ def _agent_error(blocks: list[Block]) -> str | None:
     return None
 
 
-def _status_event(node: str) -> SSEStatusEvent:
+def _status_event(state: ChatTurnState, message_id: str) -> SSEStatusEvent:
     return SSEStatusEvent(
         data=SSEStatusData(
-            node=node,
-            text=_STATUS_TEXT.get(node, "Обрабатываю запрос…"),
+            node=state.node,
+            text=state.message,
+            phase=state.phase,
+            message_id=message_id,
+            run_id=state.run_id,
         )
     )
 
 
 def turn_timeout_event() -> SSEErrorEvent:
+    return _error_event("turn_timeout")
+
+
+def _error_event(code: str) -> SSEErrorEvent:
     return SSEErrorEvent(
         data=SSEErrorData(
-            code="turn_timeout",
-            message="Время ожидания ответа истекло",
-            detail="Общий лимит времени исчерпан. Повторите запрос явно или уточните вопрос.",
+            code=code,
+            message=ERRORS[code][1],
+            detail="Запрос не повторяется автоматически; повторите явно, если нужно.",
         )
     )
 
@@ -260,11 +287,16 @@ def stream_chat_turn(
     *,
     owner_id: str,
     budget: ExecutionBudget | None = None,
+    question_id: str | None = None,
+    run_id: str | None = None,
+    cancellation_code: Callable[[], str] | None = None,
 ) -> Iterator[AgentStreamEvent]:
     """Сохраняет вопрос, выполняет граф агента и отдаёт события по мере готовности."""
     resources = ExitStack()
     budget = budget or runtime.budget(is_cancelled)
     diagnostics: RunDiagnostics | None = None
+    user_message_id = question_id or _new_id("m")
+    run_id = run_id or f"run_{uuid4().hex}"
     try:
         budget.check()
         if is_cancelled and is_cancelled():
@@ -286,16 +318,59 @@ def stream_chat_turn(
             )
             return
 
-        user_message_id = _new_id("m")
-        if runtime.diagnostics is not None:
-            diagnostics = RunDiagnostics(
-                runtime.diagnostics,
-                owner_id=owner_id,
+        def observe(event: dict[str, Any]) -> None:
+            if runtime.diagnostics is not None:
+                runtime.diagnostics(event)
+            kind = event["event"]
+            if kind in {"stage_started", "model_retry_wait", "model_retry_started"}:
+                try:
+                    get_stream_writer()(
+                        {
+                            "node": event["node"],
+                            "phase": "retry" if kind == "model_retry_wait" else "stage",
+                        }
+                    )
+                except RuntimeError:
+                    # Direct graph adapters used in tests may have no LangGraph writer.
+                    pass
+
+        diagnostics = RunDiagnostics(
+            observe,
+            owner_id=owner_id,
+            chat_id=chat_model.chat_id,
+            dataset_id=chat_model.dataset_id,
+            user_message_id=user_message_id,
+            tariff=runtime.tariff,
+            run_id=run_id,
+        )
+        started_at = datetime.now(UTC)
+        turn = ChatTurnState(
+            run_id=run_id,
+            status="running",
+            node="load_ctx",
+            message=STATUS_TEXT["load_ctx"],
+            started_at=started_at,
+            deadline_at=started_at + timedelta(seconds=budget.remaining),
+        )
+
+        def accept(writer: Session) -> MessageModel:
+            return save_message(
+                writer,
+                message_id=user_message_id,
                 chat_id=chat_model.chat_id,
-                dataset_id=chat_model.dataset_id,
-                user_message_id=user_message_id,
-                tariff=runtime.tariff,
+                role="user",
+                content=text,
+                turn=turn.model_dump(mode="json"),
+                before_commit=budget.check,
             )
+
+        budgeted_write(db, budget, accept)
+        yield _status_event(turn, user_message_id)
+        if runtime.unavailable:
+            finish_error(db, user_message_id, run_id, "model_unavailable")
+            diagnostics.finish("error", "CONFIGURATION_ERROR")
+            yield _error_event("model_unavailable")
+            return
 
         if runtime.dataset_context is not None:
             budget.check()
@@ -324,13 +399,6 @@ def stream_chat_turn(
         if is_cancelled and is_cancelled():
             return
         budget.check()
-        save_message(
-            db,
-            message_id=user_message_id,
-            chat_id=chat_model.chat_id,
-            role="user",
-            content=text,
-        )
         history_messages = get_chat_messages(db, chat_model.chat_id)[-10:]
         history = [_history_message(message) for message in history_messages]
 
@@ -338,7 +406,7 @@ def stream_chat_turn(
         seen_result_ids = set()
 
         for msg in history_messages:
-            for rid in msg.result_ids or []:
+            for rid in _message_result_ids(msg):
                 if rid not in seen_result_ids:
                     seen_result_ids.add(rid)
                     res = load_tool_result(db, rid, storage_dir=runtime.results_storage_dir)
@@ -371,24 +439,39 @@ def stream_chat_turn(
         started = perf_counter()
         previous = started
 
-        yield _status_event("understand")
-
-        for update in runtime.graph.stream(
+        for item in runtime.graph.stream(
             state,
             config={"configurable": configurable},
-            stream_mode="updates",
+            stream_mode=["custom", "updates"],
         ):
             budget.check()
             if is_cancelled and is_cancelled():
                 return
+            mode, update = item if isinstance(item, tuple) else ("updates", item)
+            if mode == "custom":
+                node = update.get("node")
+                if node not in STATUS_TEXT:
+                    continue
+                phase = update.get("phase", "stage")
+                turn = turn.model_copy(
+                    update={
+                        "node": node,
+                        "phase": phase,
+                        "message": "Ожидаю повторного запроса к модели…"
+                        if phase == "retry"
+                        else STATUS_TEXT[node],
+                    }
+                )
+                if not write_turn(db, user_message_id, turn, budget):
+                    raise TurnCancelled
+                yield _status_event(turn, user_message_id)
+                continue
             now = perf_counter()
             for node, data in update.items():
                 trace.append(TraceStep(node=node, ms=int((now - previous) * 1000)))
                 previous = now
                 if node in ("understand", "load_ctx"):
                     continue
-                if node in _STATUS_TEXT:
-                    yield _status_event(node)
 
                 if node == "execute":
                     execute_update = data if isinstance(data, dict) else {}
@@ -427,21 +510,26 @@ def stream_chat_turn(
         budget.check()
         error_detail = _agent_error(answer_blocks)
         if error_detail is not None:
-            if diagnostics is not None:
-                error_type = diagnostics.last_error or "AGENT_ERROR"
-                diagnostics.finish("timeout" if error_type == "TIMEOUT" else "error", error_type)
-            yield SSEErrorEvent(
-                data=SSEErrorData(
-                    message="Не удалось получить ответ агента",
-                    detail=error_detail,
-                )
+            error_type = diagnostics.last_error or "AGENT_ERROR"
+            code = (
+                "model_timeout"
+                if error_type == "TIMEOUT"
+                else "model_unavailable"
+                if error_type == "SERVER_ERROR"
+                else "model_response_invalid"
+                if error_type in {"INVALID_JSON", "SCHEMA_MISMATCH", "OUTPUT_LIMIT"}
+                else "agent_error"
             )
+            finish_error(db, user_message_id, run_id, code)
+            diagnostics.finish("timeout" if code == "model_timeout" else "error", error_type)
+            yield _error_event(code)
             return
 
         if is_cancelled and is_cancelled():
             return
 
         message_blocks = [_block_to_message_block(block) for block in answer_blocks]
+        referenced_result_ids = []
         for block in message_blocks:
             referenced_result = (
                 block.result_id
@@ -450,18 +538,20 @@ def stream_chat_turn(
                 if isinstance(block, ChartBlock)
                 else None
             )
-            if (
-                referenced_result
-                and get_owned_tool_result(
-                    db,
-                    referenced_result,
-                    owner_id,
-                    chat_id=chat_model.chat_id,
-                    dataset_id=chat_model.dataset_id,
-                )
-                is None
-            ):
-                raise ValueError("Блок ответа ссылается на результат другого контекста")
+            if referenced_result:
+                referenced_result_ids.append(referenced_result)
+                if (
+                    get_owned_tool_result(
+                        db,
+                        referenced_result,
+                        owner_id,
+                        chat_id=chat_model.chat_id,
+                        dataset_id=chat_model.dataset_id,
+                    )
+                    is None
+                ):
+                    raise ValueError("Блок ответа ссылается на результат другого контекста")
+
             if isinstance(block, DashboardLinkBlock):
                 dashboard = db.get(DashboardModel, block.dashboard_id)
                 if (
@@ -471,7 +561,10 @@ def stream_chat_turn(
                 ):
                     raise ValueError("Блок ответа ссылается на дашборд другого контекста")
         result_ids = list(
-            dict.fromkeys(result.result_id for result in results if result.status != "error")
+            dict.fromkeys(
+                [result.result_id for result in results if result.status != "error"]
+                + referenced_result_ids
+            )
         )
         assistant = AssistantMessage(
             message_id=_new_id("m"),
@@ -483,7 +576,22 @@ def stream_chat_turn(
             trace=trace,
         )
         budget.check()
-        save_assistant_message(db, assistant, budget=budget)
+        completed_turn = turn.model_copy(
+            update={
+                "status": "success",
+                "message": "Ответ готов",
+                "finished_at": datetime.now(UTC),
+                "assistant_message_id": assistant.message_id,
+                "phase": "stage",
+            }
+        )
+        save_assistant_message(
+            db,
+            assistant,
+            budget=budget,
+            question_id=user_message_id,
+            completed_turn=completed_turn,
+        )
         if diagnostics is not None:
             diagnostics.finish("success")
 
@@ -493,10 +601,14 @@ def stream_chat_turn(
         budget.check()
         yield SSEDoneEvent(data=SSEDoneData(message_id=assistant.message_id))
     except TurnTimeout:
+        finish_error(db, user_message_id, run_id, "turn_timeout")
         if diagnostics is not None:
             diagnostics.finish("timeout", "TIMEOUT")
         yield turn_timeout_event()
     except TurnCancelled:
+        finish_error(
+            db, user_message_id, run_id, cancellation_code() if cancellation_code else "cancelled"
+        )
         if diagnostics is not None:
             diagnostics.finish("cancelled", "CANCELLED")
         return
@@ -508,13 +620,15 @@ def stream_chat_turn(
             db.rollback()
         except Exception:
             pass
-        yield SSEErrorEvent(
-            data=SSEErrorData(
-                message="Не удалось получить ответ агента",
-                detail="Не удалось завершить запрос. Проверьте конфигурацию и повторите явно.",
-            )
-        )
+        finish_error(db, user_message_id, run_id, "agent_error")
+        yield _error_event("agent_error")
     finally:
+        finish_error(
+            db,
+            user_message_id,
+            run_id,
+            cancellation_code() if cancellation_code else "stream_interrupted",
+        )
         if diagnostics is not None and not diagnostics.finished:
             diagnostics.finish("cancelled", "CANCELLED")
         resources.close()

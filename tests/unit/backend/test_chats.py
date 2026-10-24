@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -25,26 +26,30 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 from sqlalchemy.orm import Session, sessionmaker
 
-from djedai.agent.client import BIModelClient
+import djedai.agent.graph as agent_graph
+from djedai.agent.client import BIModelClient, ModelResponse
 from djedai.agent.graph import build_agent_graph
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
-from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
+from djedai.backend.chat_service import AgentRuntime, get_agent_runtime, stream_chat_turn
 from djedai.backend.config import Settings, get_settings
-from djedai.backend.db.models import ToolResultModel
+from djedai.backend.db.models import MessageModel, ToolResultModel
 from djedai.backend.db.repositories import (
     create_chat,
     create_dashboard,
     create_dataset,
     get_chat_messages,
     get_or_create_user,
+    save_assistant_message,
     save_tool_result,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
 from djedai.backend.diagnostics import DiagnosticJournal, read_events
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
-from djedai.contracts.message import MessageBlock
+from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
+from djedai.contracts.chat import ChatTurnState
+from djedai.contracts.message import AssistantMessage, ChartBlock, MessageBlock
 from djedai.contracts.sse import AgentStreamEvent, SSEBlockEvent
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
 
@@ -66,18 +71,24 @@ class FakeGraph:
     ) -> None:
         self.updates = updates or []
         self.error = error
-        self.calls: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+        self.calls: list[tuple[dict[str, Any], dict[str, Any], str | list[str]]] = []
 
     def stream(
         self,
         state: dict[str, Any],
         config: dict[str, Any],
-        stream_mode: str,
-    ) -> Iterator[dict[str, Any]]:
+        stream_mode: str | list[str],
+    ) -> Iterator[Any]:
         self.calls.append((state, config, stream_mode))
         if self.error is not None:
             raise self.error
-        yield from self.updates
+        for update in self.updates:
+            if isinstance(stream_mode, list):
+                for node in update:
+                    yield "custom", {"node": node, "phase": "stage"}
+                yield "updates", update
+            else:
+                yield update
 
 
 def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -283,6 +294,8 @@ def test_send_message_streams_events_and_saves_history(
 
     statuses = [data for name, data in events if name == "status"]
     assert [status["node"] for status in statuses] == [
+        "load_ctx",
+        "load_ctx",
         "understand",
         "plan",
         "execute",
@@ -307,7 +320,7 @@ def test_send_message_streams_events_and_saves_history(
 
     # У графа был отдельный thread на чат и сохранённый вопрос в истории.
     assert graph.calls[0][1]["configurable"]["thread_id"] == chat_id
-    assert graph.calls[0][2] == "updates"
+    assert graph.calls[0][2] == ["custom", "updates"]
     assert [message.content for message in graph.calls[0][0]["messages"]] == ["Покажи выручку"]
 
     with factory() as db:
@@ -328,6 +341,99 @@ def test_send_message_streams_events_and_saves_history(
     assert detail["messages"][0]["text"] == "Покажи выручку"
     assert detail["messages"][1]["blocks"] == [{"type": "text", "markdown": "Готово"}]
     assert detail["messages"][1]["result_ids"] == ["r_chat_ok"]
+
+
+def _reused_chart() -> ChartSpec:
+    return ChartSpec(
+        chart_id="ch_reused",
+        result_id="r_reused",
+        type="bar",
+        title="Категории",
+        x=XAxis(field="category"),
+        y=[YMeasure(field="value")],
+    )
+
+
+def test_chart_change_reuses_result_after_it_leaves_the_history_window(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Смена вида не теряет расчёт, когда исходный ответ ушёл из последних 10 сообщений."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    saved = ToolResult(
+        result_id="r_reused",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["category", "value"], rows=[["A", 10], ["B", 20]]),
+    )
+    chart = _reused_chart()
+    with factory() as db:
+        save_tool_result(db, saved, chat_id=chat_id, owner_id="u_chat", persist_data=False)
+
+    first = FakeGraph(
+        [
+            {"execute": {"results": [saved]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=first))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи категории"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    # Шесть смен вида без пересчёта: исходный ответ выходит за границу истории.
+    for _ in range(6):
+        graph = FakeGraph(
+            [{"compose": {"answer_blocks": [Block(type="chart", chart=chart.model_dump())]}}]
+        )
+        use_runtime(AgentRuntime(graph=graph))
+        response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи линейным"})
+        assert parse_sse(response.text)[-1][0] == "done"
+        assert [result.result_id for result in graph.calls[0][0]["history_results"]] == ["r_reused"]
+
+    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert messages[-1]["result_ids"] == ["r_reused"]
+    assert messages[-1]["blocks"][0]["chart"]["result_id"] == "r_reused"
+
+
+def test_history_loads_result_referenced_by_saved_chart_block(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Сохранённый график без result_ids всё равно приносит свой результат в следующий ход."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    chart = _reused_chart()
+    with factory() as db:
+        save_tool_result(
+            db,
+            ToolResult(
+                result_id="r_reused",
+                status="ok",
+                tool="run_sql",
+                data=ToolResultData(columns=["category", "value"], rows=[["A", 10], ["B", 20]]),
+            ),
+            chat_id=chat_id,
+            owner_id="u_chat",
+            persist_data=False,
+        )
+        save_assistant_message(
+            db,
+            AssistantMessage(
+                message_id="m_legacy_chart",
+                chat_id=chat_id,
+                created_at=datetime.now(UTC),
+                blocks=[ChartBlock(chart=chart)],
+                result_ids=[],
+            ),
+        )
+
+    graph = FakeGraph(
+        [{"compose": {"answer_blocks": [Block(type="chart", chart=chart.model_dump())]}}]
+    )
+    use_runtime(AgentRuntime(graph=graph))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи линейным"})
+
+    assert parse_sse(response.text)[-1][0] == "done"
+    assert [result.result_id for result in graph.calls[0][0]["history_results"]] == ["r_reused"]
 
 
 def test_send_message_streams_all_prepared_block_types(
@@ -450,7 +556,8 @@ def test_agent_error_block_becomes_error_event(
     events = parse_sse(response.text)
     assert [name for name, _data in events] == ["status", "status", "error"]
     assert events[1][1]["node"] == "compose"
-    assert "Модель не ответила" in events[-1][1]["detail"]
+    assert events[-1][1]["code"] == "agent_error"
+    assert "15 секунд" not in events[-1][1]["detail"]
 
 
 def test_send_message_rejects_blank_text(
@@ -604,7 +711,7 @@ def test_sqlite_contention_never_saves_a_late_assistant(
 
         def tracked_close():
             close()
-            if threading.current_thread().name.startswith("chat-agent-"):
+            if session.info.get("chat_turn_worker"):
                 finished.set()
 
         session.close = tracked_close
@@ -647,7 +754,7 @@ def test_sqlite_contention_never_saves_a_late_assistant(
             use_runtime(runtime)
             try:
                 next_response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "next"})
-                assert parse_sse(next_response.text)[-1][0] == "done"
+                assert parse_sse(next_response.text)[-1][0] == "done", next_response.text
                 with factory() as db:
                     assert [m.role for m in get_chat_messages(db, chat_id)] == [
                         "user",
@@ -710,7 +817,11 @@ async def test_live_disconnect_or_logout_closes_model_request(
                 assert time.monotonic() - started < 2
                 assert len(endpoint.calls) == 1
                 with factory() as db:
-                    assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+                    messages = get_chat_messages(db, chat_id)
+                    assert [m.role for m in messages] == ["user"]
+                    assert messages[0].turn["code"] == (
+                        "unauthorized" if logout else "stream_interrupted"
+                    )
                 if logout:
                     login = await client.post(
                         "/api/auth/login",
@@ -1158,3 +1269,271 @@ async def test_stream_network_error_vs_event_error_distinguishable(
             await resp.aclose()
             assert "done" not in received_events
             assert "error" not in received_events
+
+
+def test_failed_questions_keep_distinct_durable_outcomes(chat_api):
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(_runtime(error=RuntimeError("private-provider-response")))
+    ids = []
+    from uuid import uuid4
+
+    for _ in range(3):
+        request_id = uuid4()
+        ids.append(f"m_{request_id.hex}")
+        response = client.post(
+            f"/api/chats/{chat_id}/messages",
+            json={"text": "Одинаковый вопрос", "request_id": str(request_id)},
+        )
+        events = parse_sse(response.text)
+        assert events[0][1]["message_id"] == ids[-1]
+        assert events[-1][1]["code"] == "agent_error"
+        assert "private-provider-response" not in response.text
+    # A fresh HTTP read restores every outcome without creating an assistant.
+    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert [m["message_id"] for m in messages] == ids
+    assert all(m["role"] == "user" and m["turn"]["status"] == "error" for m in messages)
+    assert len({m["turn"]["run_id"] for m in messages}) == 3
+    assert all(m["turn"]["finished_at"] for m in messages)
+    with factory() as db:
+        assert len(get_chat_messages(db, chat_id)) == 3
+
+
+@pytest.mark.parametrize(
+    "node",
+    ["load_ctx", "understand", "plan", "execute", "visualize", "compose", "verify", "clarify"],
+)
+def test_status_arrives_before_a_blocked_stage_finishes(chat_api, monkeypatch, node):
+    client, factory, _ = chat_api
+    chat_id = _create_chat(client)
+    release, completed = threading.Event(), threading.Event()
+    original = getattr(agent_graph, node)
+
+    def held(*args):
+        assert release.wait(5)
+        result = original(*args)
+        completed.set()
+        return result
+
+    monkeypatch.setattr(agent_graph, node, held)
+
+    class HeldClient:
+        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+            if response_model.__name__ == "Understanding":
+                data = {"intent": "ambiguous" if node == "clarify" else "data_question"}
+            elif response_model.__name__ == "PlanResponse":
+                data = {"plan": []}
+            elif response_model.__name__ == "ComposeResponse":
+                data = {"answer_blocks": [{"type": "text", "markdown": "Готово"}]}
+            else:
+                data = {"is_valid": True, "corrected_markdown": ""}
+            return ModelResponse(status="success", data=response_model.model_validate(data))
+
+    runtime = AgentRuntime(graph=build_agent_graph(), client=HeldClient())
+    with factory() as db:
+        stream = stream_chat_turn(db, chat_id, "Вопрос", runtime, owner_id="u_chat")
+        try:
+            assert next(stream).data.node == "load_ctx"  # Acceptance precedes graph execution.
+            events = []
+            for event in stream:
+                events.append(event)
+                if event.event == "status" and event.data.node == node:
+                    break
+            assert events[-1].data.node == node
+            assert not completed.is_set()
+            question = client.get(f"/api/chats/{chat_id}").json()["messages"][0]
+            assert question["turn"]["node"] == node
+            assert question["turn"]["status"] == "running"
+            release.set()
+            assert list(stream)[-1].event == "done"
+        finally:
+            release.set()
+            stream.close()
+
+
+@pytest.mark.parametrize(
+    "mode,code,status",
+    [
+        ("stall", "model_timeout", "timeout"),
+        ("unavailable", "model_unavailable", "error"),
+    ],
+)
+def test_model_failures_have_normalized_persisted_reasons(
+    chat_api, model_endpoint, mode, code, status
+):
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with model_endpoint(
+        lambda *_: {"mode": "stall"} if mode == "stall" else {"status": 503}
+    ) as endpoint:
+        runtime = _network_runtime(endpoint, 10)
+        runtime.client.timeout = 0.15
+        runtime.client.max_retries = 0
+        use_runtime(runtime)
+        try:
+            events = parse_sse(
+                client.post(f"/api/chats/{chat_id}/messages", json={"text": "Вопрос"}).text
+            )
+            assert events[-1][1]["code"] == code
+            assert not any(name in {"done", "block"} for name, _ in events)
+            saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+            assert len(saved) == 1
+            assert saved[0]["turn"]["code"] == code
+            assert saved[0]["turn"]["status"] == status
+        finally:
+            runtime.client.client.close()
+
+
+def test_retry_pause_and_resumed_stage_are_streamed_in_order(chat_api, model_endpoint):
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with model_endpoint(lambda n, _: {"status": 503} if n == 1 else {}) as endpoint:
+        runtime = _network_runtime(endpoint, 5)
+        runtime.client.retry_delay = 0.05
+        use_runtime(runtime)
+        try:
+            events = parse_sse(
+                client.post(f"/api/chats/{chat_id}/messages", json={"text": "Вопрос"}).text
+            )
+            stages = [data for name, data in events if name == "status"]
+            retry = next(i for i, data in enumerate(stages) if data["phase"] == "retry")
+            assert stages[retry]["node"] == "understand"
+            assert stages[retry + 1]["node"] == "understand"
+            assert stages[retry + 1]["phase"] == "stage"
+            assert events[-1][0] == "done"
+        finally:
+            runtime.client.client.close()
+
+
+def test_explicit_cancellation_is_durable_and_suppresses_late_success(chat_api):
+    client, factory, _ = chat_api
+    chat_id = _create_chat(client)
+    runtime = _runtime(
+        {"compose": {"answer_blocks": [Block(type="text", markdown="Поздний ответ")]}}
+    )
+    with factory() as db:
+        stream = stream_chat_turn(db, chat_id, "Останови", runtime, owner_id="u_chat")
+        accepted = next(stream)
+        message_id = accepted.data.message_id
+        cancelled = client.post(f"/api/chats/{chat_id}/messages/{message_id}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        assert list(stream) == []
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert len(saved) == 1 and saved[0]["turn"]["code"] == "cancelled"
+    assert (
+        client.post(f"/api/chats/{chat_id}/messages/{message_id}/cancel").json()["status"]
+        == "cancelled"
+    )
+
+
+def test_duplicate_request_does_not_run_graph_or_overwrite_success(chat_api):
+    from uuid import uuid4
+
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    runtime = _runtime({"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}})
+    use_runtime(runtime)
+    request_id = uuid4()
+    body = {"text": "Вопрос", "request_id": str(request_id)}
+    assert parse_sse(client.post(f"/api/chats/{chat_id}/messages", json=body).text)[-1][0] == "done"
+    assert client.post(f"/api/chats/{chat_id}/messages", json=body).status_code == 409
+    assert len(runtime.graph.calls) == 1
+    state = client.post(f"/api/chats/{chat_id}/messages/m_{request_id.hex}/cancel").json()
+    assert state["status"] == "success"
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert saved[0]["turn"]["assistant_message_id"] == saved[1]["message_id"]
+
+
+def test_unconfigured_runtime_keeps_a_failed_question(chat_api):
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(AgentRuntime(graph=None, unavailable=True))
+    events = parse_sse(client.post(f"/api/chats/{chat_id}/messages", json={"text": "Вопрос"}).text)
+    assert events[-1][1]["code"] == "model_unavailable"
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert len(saved) == 1 and saved[0]["turn"]["code"] == "model_unavailable"
+
+
+def test_get_expires_orphaned_turn_but_preserves_legacy_messages(chat_api):
+    client, factory, _ = chat_api
+    chat_id = _create_chat(client)
+    now = datetime.now(UTC)
+    state = ChatTurnState(
+        run_id="run_orphan",
+        status="running",
+        node="plan",
+        message="Строю план анализа…",
+        started_at=now - timedelta(seconds=60),
+        deadline_at=now - timedelta(seconds=1),
+    )
+    with factory() as db:
+        db.add_all(
+            [
+                MessageModel(
+                    message_id="m_legacy", chat_id=chat_id, role="user", content="Старый вопрос"
+                ),
+                MessageModel(
+                    message_id="m_orphan",
+                    chat_id=chat_id,
+                    role="user",
+                    content="Новый вопрос",
+                    turn=state.model_dump(mode="json"),
+                ),
+            ]
+        )
+        db.commit()
+    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert messages[0]["turn"] is None
+    assert messages[1]["turn"]["status"] == "timeout"
+    assert messages[1]["turn"]["code"] == "turn_timeout"
+    assert client.get(f"/api/chats/{chat_id}").json()["messages"] == messages
+
+
+def test_cancel_requires_owned_chat_and_matching_question(chat_api, account_password_hash):
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(_runtime(error=RuntimeError("failure")))
+    client.post(f"/api/chats/{chat_id}/messages", json={"text": "Вопрос"})
+    question = client.get(f"/api/chats/{chat_id}").json()["messages"][0]
+    other_chat = _create_chat(client)
+    assert (
+        client.post(f"/api/chats/{other_chat}/messages/{question['message_id']}/cancel").status_code
+        == 404
+    )
+    with factory() as db:
+        user = get_or_create_user(db, "u_other_cancel", "other_cancel")
+        user.password_hash = account_password_hash
+        db.commit()
+        token = create_session(db, user.id)
+    assert (
+        client.post(
+            f"/api/chats/{chat_id}/messages/{question['message_id']}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+        ).status_code
+        == 404
+    )
+    assert client.get(f"/api/chats/{chat_id}").json()["messages"][0] == question
+
+
+def test_stage_persistence_uses_turn_budget_during_short_sqlite_contention(chat_api):
+    client, factory, _ = chat_api
+    chat_id = _create_chat(client)
+    runtime = _runtime({"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}})
+    with factory() as db:
+        stream = stream_chat_turn(db, chat_id, "Вопрос", runtime, owner_id="u_chat")
+        assert next(stream).event == "status"
+        blocker = sqlite3.connect(db.get_bind().url.database, check_same_thread=False)
+        blocker.execute("BEGIN IMMEDIATE")
+        release = threading.Timer(0.35, blocker.rollback)
+        release.start()
+        try:
+            events = list(stream)
+            assert events[-1].event == "done"
+            assert not any(event.event == "error" for event in events)
+        finally:
+            release.join()
+            blocker.close()
+            stream.close()
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert saved[0]["turn"]["status"] == "success"
