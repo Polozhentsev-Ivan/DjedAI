@@ -1209,8 +1209,8 @@ def _detect_stl_residual_anomalies(
     filter_sql: str,
     limit: int,
     allowed_tables: Collection[str] | None = None,
-) -> tuple[list[dict], bool, str]:
-    """Аномалии через STL-декомпозицию. Возвращает (anomalies, was_truncated, sql)."""
+) -> tuple[list[dict], bool, str] | ToolError:
+    """STL anomalies and truncation, or an explicit error for an unusable series."""
     import numpy as np
     import pandas as pd
     from statsmodels.tsa.seasonal import STL
@@ -1244,6 +1244,16 @@ def _detect_stl_residual_anomalies(
 
     df = pd.DataFrame(raw, columns=["time_bucket", *group_by, "value"])
     df["value"] = df["value"].astype(float)
+    # Check every group before fitting: one unknown bucket invalidates a claim
+    # about the full result, even if other groups have usable observations.
+    if df["value"].isna().any():
+        return ToolError(
+            code="missing_data",
+            message="В ряду есть неизвестные значения. Для STL нужен полный числовой ряд.",
+            suggestion="Проверьте пропуски или выберите непрерывный период.",
+        )
+    if not np.isfinite(df["value"].to_numpy()).all():
+        return ToolError(code="invalid_data", message="Ряд содержит бесконечные значения.")
 
     anomalies: list[dict] = []
 
@@ -1432,7 +1442,7 @@ def detect_anomalies(
         # ==========================================================
         if method == "stl-residual":
             try:
-                anomalies, was_truncated, query = _detect_stl_residual_anomalies(
+                stl_result = _detect_stl_residual_anomalies(
                     con,
                     table,
                     time_col,
@@ -1453,6 +1463,9 @@ def detect_anomalies(
                     )
                 )
 
+            if isinstance(stl_result, ToolError):
+                return _err(error=stl_result)
+            anomalies, was_truncated, query = stl_result
             out_columns = ["time_bucket", *group_by, "value", "residual", "z_score", "direction"]
             params_dict = {
                 "table": table,
