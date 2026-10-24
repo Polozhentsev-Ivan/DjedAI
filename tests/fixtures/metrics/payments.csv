@@ -1,0 +1,10 @@
+platezh_id,zakaz_id,summa,valyuta,tip,data_platezha
+1,101,1000.00,RUB,payment,2023-01-05
+2,102,1500.00,RUB,payment,2023-02-10
+3,102,1000.00,RUB,payment,2023-02-11
+4,104,7000.00,RUB,payment,2023-06-01
+5,104,-1000.00,RUB,refund,2023-06-20
+6,105,1200.00,RUB,payment,2023-12-31
+7,,50.00,RUB,payment,2023-03-03
+8,107,4.00,USD,payment,2023-07-07
+9,106,800.00,RUB,payment,2024-01-01
