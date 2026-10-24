@@ -74,9 +74,21 @@
 
 `catalog_builder.build_db_catalog` собирает каталог одной таблицы: `raw_table = None`, `original_name` и `source.relation` — `схема.таблица`, `parse` не заполняется (типы заданы БД), журнал — переименования и приведения типов. Роли колонок вычисляются так же, как у CSV.
 
+## ClickHouse
+
+`clickhouse` (B1-9, [решение #61](../../../docs/decisions/61-clickhouse.md)): выбранные таблицы **копируются** в файл DuckDB датасета, если их суммарный объём не больше порога; дальше общий конвейер, как у PostgreSQL.
+
+- строка подключения: `http(s)://user:password@host:port/database` или `clickhouse://…` (`?secure=1` — HTTPS), порт по умолчанию 8123/8443, база по умолчанию `default`; из параметров — только `secure` и `connect_timeout`;
+- `open_session` отправляет каждый запрос с `readonly=2` и лимитами `max_result_rows/bytes`, `max_rows/bytes_to_read`, `max_execution_time` (`*_overflow_mode=throw`) и проверяет `getSetting('readonly')`; пользователю с `readonly=1` настройки не передаются;
+- `list_tables`/`select_tables` — таблицы базы подключения (`имя` или `база.имя`), `measure` + `check_volume` — порог до чтения строк (`SourceTooLargeError`);
+- `materialize_table` выгружает `SELECT … FORMAT Parquet` во временный файл каталога датасета, создаёт «сырую» таблицу `ch_<база>_<таблица>` и типизированное представление `<таблица>`, пишет реестр и `_djedai_db_sources` (`source_kind = "clickhouse"`). `Int128/256` и `IPv4/6` переводятся в текст на сервере, остальные типы — как у PostgreSQL (`_convert`);
+- `service.connect_clickhouse_dataset(...)` возвращает `DatasetCatalog` с `source.kind = "clickhouse"`; этапы `progress` — `connect`, `profile`, `relations`.
+
+Пароль передаётся только в заголовке `Authorization`; в URL, `repr`, ошибках и файле DuckDB его нет. Тот же HTTP-клиент (`ClickHouseHttp`) используют `scripts/seed_demo_clickhouse.py` и `verify_demo_db.py`.
+
 ## Датасеты владельца и API
 
-`backend.dataset_service.DatasetService` связывает файловый конвейер с постоянным хранилищем приложения. `ingest_uploads(owner_id, files)` и `ingest_csv(owner_id, sources)` сохраняют исходные CSV; `connect_db(owner_id, dsn, tables=None, kind="postgresql", name=None)` сохраняет настройки PostgreSQL и ставит обработку в очередь. Методы асинхронные и возвращают `DatasetUploadAccepted` со статусом `processing`. Публикуется только полностью построенный датасет: представления, профили и каталог должны быть готовы для всех выбранных таблиц.
+`backend.dataset_service.DatasetService` связывает файловый конвейер с постоянным хранилищем приложения. `ingest_uploads(owner_id, files)` и `ingest_csv(owner_id, sources)` сохраняют исходные CSV; `connect_db(owner_id, dsn, tables=None, kind="postgresql", name=None)` сохраняет настройки PostgreSQL или ClickHouse (`kind="clickhouse"`) и ставит обработку в очередь. Методы асинхронные и возвращают `DatasetUploadAccepted` со статусом `processing`. Публикуется только полностью построенный датасет: представления, профили и каталог должны быть готовы для всех выбранных таблиц.
 
 HTTP-подключение использует действующую Bearer-сессию:
 
@@ -88,7 +100,7 @@ Content-Type: application/json
 {"kind":"postgres","dsn":"postgresql://reader:<password>@db:5432/business","tables":["public.sales"]}
 ```
 
-Ответ `202` содержит `dataset_id` и `status: processing`. Прогресс доступен в `GET /api/datasets/{dataset_id}/events`: поток заканчивается `done` либо `error`. После `done` каталог читается через `GET /api/datasets/{dataset_id}/catalog`, сводка и статус — через `GET /api/datasets/{dataset_id}`. Список `GET /api/datasets` содержит только датасеты текущего пользователя. `owner_id` берётся из сессии и в запросе подключения не принимается. Чужой или неизвестный ID даёт одинаковый `404` для сводки, каталога и SSE. ClickHouse пока возвращает `501`.
+Ответ `202` содержит `dataset_id` и `status: processing`. Прогресс доступен в `GET /api/datasets/{dataset_id}/events`: поток заканчивается `done` либо `error`. После `done` каталог читается через `GET /api/datasets/{dataset_id}/catalog`, сводка и статус — через `GET /api/datasets/{dataset_id}`. Список `GET /api/datasets` содержит только датасеты текущего пользователя. `owner_id` берётся из сессии и в запросе подключения не принимается. Чужой или неизвестный ID даёт одинаковый `404` для сводки, каталога и SSE. ClickHouse подключается так же с `"kind":"clickhouse"` (см. выше).
 
 Для PostgreSQL нужен серверный `SOURCE_ENCRYPTION_KEY` — ключ Fernet. `source_secret` в БД приложения содержит только шифротекст; аутентифицированная полезная нагрузка включает DSN, выбранные таблицы, владельца и ID датасета. Подмена шифротекста между датасетами или владельцами отклоняется. Исходный DSN не попадает в каталог, JSON/SSE-ответы, аналитический файл или сообщения драйвера в логах сервиса. Ключ должен сохраняться между перезапусками: без него новые подключения получают `503`, ранее подключённый источник недоступен для запросов. Для CSV этот ключ не требуется. Некорректная строка подключения возвращает безопасный `422`; сбой доступного по формату источника сохраняется как терминальный `error` без раскрытия настроек.
 
