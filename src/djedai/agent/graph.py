@@ -286,9 +286,14 @@ def clarify(state: AgentState) -> dict:
 
     if intent in ["ambiguous", "invalid"]:
         if understanding and understanding.clarification:
-            opts = "\n".join(f"- {opt}" for opt in understanding.clarification.options)
-            msg = f"{understanding.clarification.question}\n{opts}"
-            blocks.append(Block(type="clarification", markdown=msg))
+            # Options travel separately so the chat can render them as buttons.
+            blocks.append(
+                Block(
+                    type="clarification",
+                    markdown=understanding.clarification.question,
+                    options=understanding.clarification.options,
+                )
+            )
         else:
             if intent == "ambiguous":
                 msg = (
