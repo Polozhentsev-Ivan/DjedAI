@@ -25,6 +25,7 @@ from djedai.data.relations import (
     RELATIONS_TABLE,
     RelationReport,
     find_relations,
+    measure_join_impact,
     read_relations,
 )
 from djedai.data.typed_views import create_typed_views
@@ -405,6 +406,25 @@ def test_null_keys_are_lost_by_inner_join(con, tmp_path):
     (warning,) = report.warnings
     assert "с пустым ключом 1" in warning and "остаётся 3 из 4" in warning
     assert "amount 100 → 60" in warning
+
+
+def test_measure_join_impact_checks_only_the_requested_population(con, tmp_path):
+    relations_of(
+        con,
+        tmp_path,
+        {
+            "stores": {"store_id": ["1", "2"]},
+            "sales": {"store_id": ["1", "1", "2", ""], "amount": ["10", "20", "30", "40"]},
+        },
+    )
+    measures = [("amount", '"amount"')]
+    everything = measure_join_impact(con, "sales", "store_id", "stores", "store_id", measures)
+    assert (everything.rows_before, everything.null_key_rows) == (4, 1)
+    population = measure_join_impact(
+        con, "sales", "store_id", "stores", "store_id", measures, where='"amount" < 40'
+    )
+    assert (population.rows_before, population.rows_inner, population.null_key_rows) == (3, 3, 0)
+    assert population.sums[0].before == 60
 
 
 def test_orphans_and_null_keys_are_counted_separately(con, tmp_path):
