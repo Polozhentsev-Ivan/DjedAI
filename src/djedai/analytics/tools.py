@@ -2008,7 +2008,10 @@ def seasonality(
             )
         check_budget()
 
-        if float(series.std()) == 0.0:
+        level = float(np.median(series.to_numpy()))
+        centered = series.to_numpy() - level
+        spread = float(np.max(np.abs(centered)))
+        if spread == 0.0:
             return ToolResult(
                 result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
@@ -2033,7 +2036,9 @@ def seasonality(
             )
 
         try:
-            res = STL(series.to_numpy(), period=period, robust=True).fit()
+            # Fit in units of variation; a large baseline or small metric unit
+            # must not change the significance of floating-point roundoff.
+            res = STL(centered / spread, period=period, robust=True).fit()
             check_budget()
         except (TurnCancelled, TurnTimeout):
             raise
@@ -2058,8 +2063,14 @@ def seasonality(
         var_r = float(np.var(resid))
         var_sr = float(np.var(seasonal + resid))
         var_tr = float(np.var(trend + resid))
-        strength_s = max(0.0, 1.0 - var_r / var_sr) if var_sr > 0 else 0.0
-        strength_t = max(0.0, 1.0 - var_r / var_tr) if var_tr > 0 else 0.0
+        noise_variance = (np.finfo(float).eps * 128 * len(series)) ** 2
+        strength_s = max(0.0, 1.0 - var_r / var_sr) if var_sr > noise_variance else 0.0
+        strength_t = max(0.0, 1.0 - var_r / var_tr) if var_tr > noise_variance else 0.0
+
+        # Strengths are dimensionless; publish the decomposition in source units.
+        trend = trend * spread + level
+        seasonal = seasonal * spread
+        resid = resid * spread
 
         usable = len(seasonal) - len(seasonal) % period
         phase_means = seasonal[:usable].reshape(-1, period).mean(axis=0)
@@ -2253,16 +2264,34 @@ def segment_profile(
         safe_table = _quote_id(table)
         safe_groups = [_quote_id(g) for g in group_by]
 
-        select_parts = safe_groups + ["COUNT(*) AS segment_size"]
+        out_columns = list(group_by)
+        used_columns = {name.casefold() for name in out_columns}
+
+        def output_alias(base: str) -> str:
+            name = base
+            suffix = 1
+            while name.casefold() in used_columns:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_columns.add(name.casefold())
+            out_columns.append(name)
+            return name
+
+        size_column = output_alias("segment_size")
+        measure_columns = []
+        select_parts = safe_groups + [f"COUNT(*) AS {_quote_id(size_column)}"]
         for m in measures:
             safe_m = _quote_id(m)
-            select_parts += [
-                f"AVG({safe_m}) AS {_quote_id(m + '_mean')}",
-                f"MEDIAN({safe_m}) AS {_quote_id(m + '_median')}",
-                f"MIN({safe_m}) AS {_quote_id(m + '_min')}",
-                f"MAX({safe_m}) AS {_quote_id(m + '_max')}",
-                f"STDDEV_POP({safe_m}) AS {_quote_id(m + '_std')}",
+            aliases = [
+                output_alias(f"{m}_{stat}") for stat in ("mean", "median", "min", "max", "std")
             ]
+            measure_columns.append(aliases)
+            select_parts.extend(
+                f"{function}({safe_m}) AS {_quote_id(alias)}"
+                for function, alias in zip(
+                    ("AVG", "MEDIAN", "MIN", "MAX", "STDDEV_POP"), aliases, strict=True
+                )
+            )
 
         effective_limit = min(top_n, get_limits().sql_max_rows)
         n_group = len(group_by)
@@ -2272,10 +2301,10 @@ def segment_profile(
             f"SELECT {', '.join(select_parts)} FROM {safe_table} "
             f"WHERE 1=1{filter_sql} GROUP BY {group_positions}"
         )
-        query = f"{base_query} ORDER BY segment_size DESC LIMIT {effective_limit + 1}"
-        summary_columns = ["COUNT(*)", "COALESCE(SUM(segment_size), 0)"]
-        for measure in measures:
-            mean_alias = _quote_id(measure + "_mean")
+        query = f"{base_query} ORDER BY {_quote_id(size_column)} DESC LIMIT {effective_limit + 1}"
+        summary_columns = ["COUNT(*)", f"COALESCE(SUM({_quote_id(size_column)}), 0)"]
+        for aliases in measure_columns:
+            mean_alias = _quote_id(aliases[0])
             summary_columns.extend([f"MAX({mean_alias})", f"MIN({mean_alias})"])
         summary = execute(
             f"SELECT {', '.join(summary_columns)} FROM ({base_query}) segments"
@@ -2283,16 +2312,6 @@ def segment_profile(
         raw = execute(query).fetchall()
         truncated = len(raw) > effective_limit
         raw = raw[:effective_limit]
-
-        out_columns = list(group_by) + ["segment_size"]
-        for m in measures:
-            out_columns += [
-                f"{m}_mean",
-                f"{m}_median",
-                f"{m}_min",
-                f"{m}_max",
-                f"{m}_std",
-            ]
 
         params_dict = {
             "table": table,
@@ -2384,7 +2403,7 @@ def segment_profile(
             chart_hint = ChartHint(
                 type="bar",
                 x=group_by[0],
-                y=[f"{measures[0]}_mean"] if measures else ["segment_size"],
+                y=[measure_columns[0][0]] if measures else [size_column],
             )
 
         return ToolResult(
