@@ -8,6 +8,7 @@ import numpy as np
 import sqlglot
 from sqlglot import exp
 
+from djedai.analytics.metrics import MetricContext, metric_guard
 from djedai.analytics.queries import check_budget, check_dataset_table, execute_dataset_query
 from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
 from djedai.config import get_limits
@@ -179,8 +180,13 @@ def run_sql(
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
     allowed_tables: Collection[str] | None = None,
+    semantics: MetricContext | None = None,
 ) -> ToolResult:
-    """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
+    """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB.
+
+    С ``semantics`` запрос, агрегирующий колонку подтверждённой метрики через JOIN
+    с размножением или потерей строк, отклоняется до выполнения (B2-9).
+    """
     con = None
     try:
         limits = get_limits()
@@ -235,6 +241,15 @@ def run_sql(
                         message="Запрос выходит за область выбранного датасета.",
                     ),
                 )
+
+        if semantics is not None and (problem := metric_guard(parsed, semantics)):
+            return ToolResult(
+                result_id=str(uuid.uuid4()),
+                status="error",
+                error=ToolError(
+                    code=problem.code, message=problem.message, suggestion=problem.suggestion
+                ),
+            )
 
         # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = connection if connection is not None else duckdb.connect(database=":memory:")

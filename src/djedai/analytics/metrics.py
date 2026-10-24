@@ -28,6 +28,7 @@ from decimal import Decimal
 import duckdb
 from pydantic import ValidationError
 from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from djedai.analytics.queries import execute_dataset_query
 from djedai.config import get_limits
@@ -606,3 +607,309 @@ def _json_value(value: object) -> object:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     return value
+
+
+# --- Защита run_sql: колонка подтверждённой метрики не агрегируется после fanout ---
+
+_ORDER_INSENSITIVE = (exp.Min, exp.Max)  # повтор строки не меняет min/max
+
+
+@dataclass
+class _Source:
+    alias: str
+    table: str | None  # таблица каталога; None — подзапрос или CTE
+    unique: set[str]  # колонки (casefold), уникальные в источнике
+    scope: Scope | None = None
+
+
+def metric_guard(query: exp.Expression, semantics: MetricContext) -> MetricError | None:
+    """Ошибка, если агрегат колонки подтверждённой метрики идёт через JOIN с fanout/потерями.
+
+    Строки источника с мерой сохраняются, только если от него по равенствам JOIN каждый
+    следующий источник присоединён по уникальной колонке (и тогда строки не размножаются),
+    а INNER JOIN не теряет строк: связь каталога покрывает все значения и ключ без пустых.
+    Источник без такого пути (CROSS JOIN, условие не на равенство, неуникальный ключ)
+    считается размножающим. ``COUNT(DISTINCT)`` и подзапросы без GROUP BY по ключу эту
+    проверку не проходят: DISTINCT не восстанавливает grain.
+    """
+    measures = {
+        (m.measure.table.casefold(), m.measure.column.casefold()): m
+        for m in semantics.metrics.values()
+        if m.status == "confirmed" and m.measure is not None
+    }
+    if not measures:
+        return None
+    catalog = semantics.catalog
+    for scope in traverse_scope(query):
+        select = scope.expression
+        if not isinstance(select, exp.Select):
+            continue
+        sources = _sources(scope, catalog)
+        if len(sources) < 2:
+            continue
+        for function in select.find_all(exp.AggFunc):
+            if isinstance(function, _ORDER_INSENSITIVE) or _owner(function) is not select:
+                continue
+            for column in function.find_all(exp.Column):
+                source = _column_source(column, sources, catalog)
+                metric = source and _carried_metric(source, column.name, measures, catalog)
+                if metric is None:
+                    continue
+                problem = _fanout(select, sources, source, catalog)
+                if problem is not None:
+                    code, detail = problem
+                    return MetricError(
+                        code,
+                        f"Запрос агрегирует «{metric.title}» ({metric.measure.table}."
+                        f"{metric.measure.column}) через JOIN, который {detail}: "
+                        "результат был бы искажён.",
+                        f"Используйте compute_metric с metric_id='{metric.metric_id}' или "
+                        "агрегируйте меру до JOIN по ключу её grain.",
+                    )
+    return None
+
+
+def _owner(node: exp.Expression) -> exp.Expression | None:
+    return node.find_ancestor(exp.Select)
+
+
+def _sources(scope: Scope, catalog: DatasetCatalog) -> dict[str, _Source]:
+    sources = {}
+    for alias, (_, source) in scope.selected_sources.items():
+        key = alias.casefold()
+        if isinstance(source, exp.Table):
+            table = catalog.table(source.name) or next(
+                (t for t in catalog.tables if t.table_id.casefold() == source.name.casefold()),
+                None,
+            )
+            unique = {c.name.casefold() for c in table.columns if c.is_unique} if table else set()
+            sources[key] = _Source(key, table.table_id if table else None, unique)
+        elif isinstance(source, Scope):
+            sources[key] = _Source(key, None, _derived_unique(source, catalog), source)
+    return sources
+
+
+def _derived_unique(scope: Scope, catalog: DatasetCatalog) -> set[str]:
+    """Уникальные колонки подзапроса: ключи GROUP BY или ключи единственной таблицы."""
+    select = scope.expression
+    if not isinstance(select, exp.Select):
+        return set()
+    projections = {
+        p.alias_or_name.casefold(): p.unalias() for p in select.expressions if p.alias_or_name
+    }
+    group = select.args.get("group")
+    if group is not None:
+        keys = []
+        for item in group.expressions:
+            if isinstance(item, exp.Literal) and item.is_int:
+                index = int(item.this) - 1
+                if 0 <= index < len(select.expressions):
+                    item = select.expressions[index].unalias()
+            keys.append(item)
+        names = {
+            name
+            for name, expression in projections.items()
+            if any(expression == key for key in keys)
+        }
+        return names if len(keys) == 1 else set()
+    inner = _sources(scope, catalog)
+    if len(inner) != 1 or select.args.get("distinct"):
+        return set()
+    (source,) = inner.values()
+    return {
+        name
+        for name, expression in projections.items()
+        if isinstance(expression, exp.Column) and expression.name.casefold() in source.unique
+    }
+
+
+def _column_source(
+    column: exp.Column, sources: dict[str, _Source], catalog: DatasetCatalog
+) -> _Source | None:
+    if column.table:
+        return sources.get(column.table.casefold())
+    owners = [s for s in sources.values() if column.name.casefold() in _columns_of(s, catalog)]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _columns_of(source: _Source, catalog: DatasetCatalog) -> set[str]:
+    if source.table is not None:
+        return {c.name.casefold() for c in catalog.table(source.table).columns}
+    if source.scope is not None and isinstance(source.scope.expression, exp.Select):
+        return {name.casefold() for name in source.scope.expression.named_selects}
+    return set()
+
+
+def _carried_metric(
+    source: _Source,
+    column: str,
+    measures: Mapping[tuple[str, str], MetricDefinition],
+    catalog: DatasetCatalog,
+) -> MetricDefinition | None:
+    """Метрика, мера которой попадает в ``source.column`` напрямую или через подзапрос."""
+    if source.table is not None:
+        return measures.get((source.table.casefold(), column.casefold()))
+    if source.scope is None or not isinstance(source.scope.expression, exp.Select):
+        return None
+    select = source.scope.expression
+    inner = _sources(source.scope, catalog)
+    for projection in select.expressions:
+        if projection.alias_or_name.casefold() != column.casefold():
+            continue
+        for ref in projection.find_all(exp.Column):
+            owner = _column_source(ref, inner, catalog)
+            if owner is not None and (
+                metric := _carried_metric(owner, ref.name, measures, catalog)
+            ):
+                return metric
+    return None
+
+
+def _fanout(
+    select: exp.Select,
+    sources: dict[str, _Source],
+    start: _Source,
+    catalog: DatasetCatalog,
+) -> tuple[str, str] | None:
+    """Код и описание, если JOIN размножает или теряет строки ``start``; иначе ``None``."""
+    order, sides, edges = _join_graph(select, sources)
+    reached = {start.alias}
+    pending = [start.alias]
+    while pending:
+        current = pending.pop()
+        for (left, left_column), (right, right_column) in edges:
+            for here, there, there_column in (
+                (left, right, right_column),
+                (right, left, left_column),
+            ):
+                if here == current and there not in reached:
+                    if there_column.casefold() not in sources[there].unique:
+                        return (
+                            "metric_grain_violation",
+                            f"размножает строки: {there}.{there_column} не уникален",
+                        )
+                    reached.add(there)
+                    pending.append(there)
+    missing = [alias for alias in sources if alias not in reached]
+    if missing:
+        return (
+            "metric_grain_violation",
+            f"присоединяет {', '.join(missing)} без равенства по уникальному ключу",
+        )
+    for index, alias in enumerate(order[1:], start=1):
+        side = sides[alias]
+        left_part = set(order[:index])
+        if start.alias in left_part and side not in ("LEFT", "FULL"):
+            if not _complete(edges, left_part, alias, sources, catalog):
+                return "metric_rows_lost", f"теряет строки без пары в {alias}"
+        if start.alias == alias and side not in ("RIGHT", "FULL"):
+            if not _complete(edges, {alias}, None, sources, catalog, left_part):
+                return "metric_rows_lost", f"теряет строки {alias} без пары"
+    return None
+
+
+def _join_graph(select: exp.Select, sources: dict[str, _Source]):
+    """Порядок источников, сторона каждого JOIN и равенства колонок между источниками."""
+    from_ = select.args.get("from_")
+    order = [from_.this.alias_or_name.casefold()] if from_ is not None else []
+    sides: dict[str, str] = {}
+    conditions: list[exp.Expression] = []
+    for join in select.args.get("joins") or []:
+        alias = join.this.alias_or_name.casefold()
+        order.append(alias)
+        sides[alias] = "CROSS" if join.kind == "CROSS" else (join.side or "INNER").upper()
+        if join.args.get("on") is not None:
+            conditions.append(join.args["on"])
+        for identifier in join.args.get("using") or []:
+            name = identifier.name
+            for previous in order[:-1]:
+                conditions.append(
+                    exp.EQ(
+                        this=exp.column(name, table=previous),
+                        expression=exp.column(name, table=alias),
+                    )
+                )
+                break
+    if select.args.get("where") is not None:
+        conditions.append(select.args["where"].this)
+    edges = []
+    for condition in conditions:
+        for term in condition.flatten() if isinstance(condition, exp.And) else [condition]:
+            if not isinstance(term, exp.EQ):
+                continue
+            left, right = term.this, term.expression
+            if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+                continue
+            if not left.table or not right.table:
+                continue
+            a, b = left.table.casefold(), right.table.casefold()
+            if a != b and a in sources and b in sources:
+                edges.append(((a, left.name), (b, right.name)))
+    return order, sides, edges
+
+
+def _complete(
+    edges,
+    side: set[str],
+    joined: str | None,
+    sources: dict[str, _Source],
+    catalog: DatasetCatalog,
+    other: set[str] | None = None,
+) -> bool:
+    """Каждая строка ``side`` находит пару: связь каталога покрывает все значения ключа."""
+    targets = {joined} if joined is not None else (other or set())
+    for (a, a_column), (b, b_column) in edges:
+        for here, here_column, there, there_column in (
+            (a, a_column, b, b_column),
+            (b, b_column, a, a_column),
+        ):
+            if here not in side or there not in targets:
+                continue
+            here_ref = _base_column(sources[here], here_column, catalog)
+            there_ref = _base_column(sources[there], there_column, catalog)
+            if here_ref is None or there_ref is None:
+                continue
+            (here_table, here_column), (there_table, there_column) = here_ref, there_ref
+            column = catalog.table(here_table).column(here_column)
+            relation = next(
+                (
+                    r
+                    for r in catalog.relations
+                    if (r.from_.table, r.from_.column, r.to.table, r.to.column)
+                    == (here_table, here_column, there_table, there_column)
+                ),
+                None,
+            )
+            if (
+                column is not None
+                and column.null_ratio == 0
+                and relation is not None
+                and relation.overlap == 1.0
+            ):
+                return True
+    return False
+
+
+def _base_column(source: _Source, column: str, catalog: DatasetCatalog) -> tuple[str, str] | None:
+    """Колонка таблицы каталога за ``source.column``: прямо или через простой подзапрос.
+
+    Подзапрос из одной таблицы только отбирает её строки, поэтому полнота связи и пустые
+    ключи исходной колонки к нему применимы.
+    """
+    if source.table is not None:
+        table = catalog.table(source.table)
+        found = next((c for c in table.columns if c.name.casefold() == column.casefold()), None)
+        return (table.table_id, found.name) if found is not None else None
+    if source.scope is None or not isinstance(source.scope.expression, exp.Select):
+        return None
+    inner = _sources(source.scope, catalog)
+    if len(inner) != 1:
+        return None
+    for projection in source.scope.expression.expressions:
+        expression = projection.unalias()
+        if projection.alias_or_name.casefold() == column.casefold() and isinstance(
+            expression, exp.Column
+        ):
+            (only,) = inner.values()
+            return _base_column(only, expression.name, catalog)
+    return None

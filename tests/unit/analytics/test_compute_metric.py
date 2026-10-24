@@ -7,17 +7,14 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
-from datetime import UTC, datetime
 from pathlib import Path
 
-import duckdb
 import pytest
 
 from djedai.analytics.metrics import MetricContext, compute_metric
 from djedai.analytics.registry import execute_tool
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.metrics import MetricDefinition
-from djedai.data.service import CsvSource, ingest_csv_dataset
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "metrics"
 CONFIRMED = {
@@ -129,18 +126,9 @@ DEFINITIONS = [
 ]  # fmt: skip
 
 
-@pytest.fixture(scope="module")
-def dataset(tmp_path_factory):
-    path = tmp_path_factory.mktemp("metrics") / "dataset.duckdb"
-    catalog = ingest_csv_dataset(
-        [CsvSource(p, p.name) for p in sorted(FIXTURES.glob("*.csv"))],
-        path,
-        dataset_id="ds_metrics",
-        name="metrics",
-        created_at=datetime.now(UTC),
-    )
-    with duckdb.connect(str(path), read_only=True) as connection:
-        yield connection, catalog
+@pytest.fixture
+def dataset(metrics_dataset):
+    return metrics_dataset
 
 
 @pytest.fixture

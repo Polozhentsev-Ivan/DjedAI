@@ -470,7 +470,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
 }
 
 
-_SEMANTIC_TOOLS = {"compute_metric"}
+_SEMANTIC_TOOLS = {"compute_metric", "run_sql"}
 
 
 def execute_tool(
