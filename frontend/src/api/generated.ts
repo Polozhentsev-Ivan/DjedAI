@@ -4,6 +4,72 @@
  */
 
 export interface paths {
+    "/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a local account without logging in */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a revocable 24-hour Bearer session */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["currentUser"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/datasets": {
         parameters: {
             query?: never;
@@ -278,6 +344,44 @@ export interface components {
             created_at: string;
         };
         /**
+         * UserCreate
+         * @description Данные для регистрации нового пользователя.
+         */
+        UserCreate: {
+            /**
+             * Username
+             * @description Логин пользователя
+             */
+            username: string;
+            /**
+             * Email
+             * @description Email пользователя
+             * @default null
+             */
+            email?: string | null;
+            /**
+             * Password
+             * @description Пароль пользователя
+             */
+            password: string;
+        };
+        /**
+         * UserLogin
+         * @description Данные для аутентификации (входа).
+         */
+        UserLogin: {
+            /**
+             * Username
+             * @description Логин пользователя
+             */
+            username: string;
+            /**
+             * Password
+             * @description Пароль пользователя
+             */
+            password: string;
+        };
+        /**
          * TokenResponse
          * @description Ответ API при успешной аутентификации.
          */
@@ -422,11 +526,23 @@ export interface components {
             error: components["schemas"]["ToolError"] | null;
         };
         DatasetAccepted: components["schemas"]["DatasetUploadAccepted"];
+        /**
+         * ConnectRequest
+         * @description Owned database source; credentials are write-only and never part of its catalog.
+         */
         ConnectRequest: {
-            /** @enum {string} */
+            /**
+             * Kind
+             * @enum {string}
+             */
             kind: "postgres" | "clickhouse";
+            /**
+             * Dsn
+             * Format: password
+             */
             dsn: string;
-            tables?: string[];
+            /** Tables */
+            tables?: string[] | null;
         };
         /** @enum {string} */
         SemanticType: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
@@ -1268,6 +1384,12 @@ export interface components {
              * @default null
              */
             detail?: string | null;
+            /**
+             * Code
+             * @description Код ошибки, в том числе unauthorized
+             * @default null
+             */
+            code?: string | null;
         };
         /**
          * XAxis
@@ -1817,6 +1939,96 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserCreate"];
+            };
+        };
+        responses: {
+            /** @description Public user profile */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserLogin"];
+            };
+        };
+        responses: {
+            /** @description Token returned once, never cached */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    currentUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public profile of the verified session owner */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current session revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listDatasets: {
         parameters: {
             query?: never;

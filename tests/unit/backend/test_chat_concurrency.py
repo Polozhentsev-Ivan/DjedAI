@@ -17,6 +17,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.api.routes.chats import router
+from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
 from djedai.backend.db.repositories import (
     create_chat,
@@ -24,7 +25,6 @@ from djedai.backend.db.repositories import (
     get_or_create_user,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
-from djedai.backend.local_user import local_owner_id
 from djedai.contracts.agent import Block
 
 
@@ -40,9 +40,12 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
     init_db(engine)
     factory = sessionmaker(bind=engine)
     with factory() as db:
-        get_or_create_user(db, "u_lock", "lock_owner")
+        user = get_or_create_user(db, "u_lock", "lock_owner")
+        user.password_hash = hash_password("test-lock-password")
+        db.commit()
         create_dataset(db, "ds_lock", "u_lock", "Lock test")
         create_chat(db, "c_lock", "u_lock", "ds_lock")
+        token = create_session(db, user.id)
 
     lookup_started = threading.Event()
 
@@ -55,7 +58,7 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
         _context: Any,
         _executemany: bool,
     ) -> None:
-        if statement.lstrip().upper().startswith("SELECT") and "FROM chats" in statement:
+        if statement.lstrip().upper().startswith("SELECT") and "sessions.token_hash" in statement:
             lookup_started.set()
 
     def database_session() -> Iterator[Session]:
@@ -63,7 +66,6 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
             yield session
 
     app = FastAPI()
-    app.dependency_overrides[local_owner_id] = lambda: "u_lock"
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_db] = database_session
     app.dependency_overrides[get_session_factory] = lambda: factory
@@ -85,7 +87,11 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
         try:
             with httpx.Client(base_url=base_url, trust_env=False, timeout=5.0) as client:
                 post_results.append(
-                    client.post("/api/chats/c_lock/messages", json={"text": "Hello"})
+                    client.post(
+                        "/api/chats/c_lock/messages",
+                        json={"text": "Hello"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
                 )
         except Exception as exc:
             post_results.append(exc)
@@ -105,7 +111,7 @@ def test_locked_chat_lookup_does_not_block_parallel_probe(tmp_path: Path) -> Non
             assert client.get("/probe").json() == {"ok": True}
             lock.execute("BEGIN EXCLUSIVE")
             post_thread.start()
-            assert lookup_started.wait(2.0), "POST did not reach the chat lookup"
+            assert lookup_started.wait(2.0), "POST did not reach the session lookup"
             assert not post_finished.is_set(), "The exclusive lock must hold the POST open"
 
             # Keep the real database lock held throughout the independent network request.

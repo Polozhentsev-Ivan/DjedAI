@@ -13,7 +13,7 @@ describe('LoginPage', () => {
     const { router } = await renderRoute('/login');
     await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
     expect(screen.getByLabelText('Пароль')).toHaveAccessibleDescription('Введите пароль');
-    await userEvent.type(screen.getByLabelText('Имя пользователя / Email'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
     await userEvent.type(screen.getByLabelText('Пароль'), 'secret-123');
     await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/sources'); });
@@ -28,19 +28,20 @@ describe('LoginPage', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/login'); });
   });
 
-  it('shows loading and both errors', async () => {
-    await renderRoute('/login?state=loading');
-    expect(screen.getByRole('button', { name: 'Входим…' })).toBeDisabled();
-  });
-
   it('shows the login error', async () => {
-    await renderRoute('/login?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
+    await renderRoute('/login');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Пароль'), 'wrong-password');
+    await userEvent.click(screen.getByRole('button', { name: 'Войти в систему' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Неверный логин или пароль');
   });
 
   it('shows the registration error', async () => {
-    await renderRoute('/register?state=error');
-    expect(screen.getByRole('alert')).toHaveTextContent('Пользователь с таким именем уже существует');
+    await renderRoute('/register');
+    await userEvent.type(screen.getByLabelText('Имя пользователя'), 'ivan');
+    await userEvent.type(screen.getByLabelText('Пароль'), 'secret-123');
+    await userEvent.click(screen.getByRole('button', { name: 'Зарегистрироваться' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Пользователь с таким именем уже существует');
   });
 });
 
@@ -147,6 +148,38 @@ describe('SourcesPage', () => {
     await renderRoute('/sources');
     expect(await screen.findByText('База приложения недоступна')).toBeInTheDocument();
     server.resetHandlers();
+  });
+
+  it('cancels the slow list on unmount, retries after 503 and ignores the late answer', async () => {
+    let answerLate: () => void = () => undefined;
+    const late = new Promise<void>((resolve) => { answerLate = resolve; });
+    const requests: Request[] = [];
+    server.use(http.get(api('/datasets'), async ({ request }) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        await late;
+        return HttpResponse.json([{ ...createDb().datasets[0]!, dataset_id: 'ds_late', name: 'late_list' }]);
+      }
+      if (requests.length === 2) return HttpResponse.json({ error: { code: 'db_down', message: 'База приложения недоступна' } }, { status: 503 });
+      return undefined;
+    }));
+    const { unmount } = await renderRoute('/sources');
+    expect(screen.getByText('Загружаем список датасетов…')).toBeInTheDocument();
+    await waitFor(() => { expect(requests).toHaveLength(1); });
+    unmount();
+    expect(requests[0]!.signal.aborted).toBe(true);
+
+    await renderRoute('/sources');
+    expect(await screen.findByText('База приложения недоступна')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    const table = await screen.findByRole('table', { name: 'Ваши датасеты' });
+    expect(within(table).getByText('retail_crm_prod')).toBeInTheDocument();
+
+    answerLate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('late_list')).not.toBeInTheDocument();
+    expect(within(table).getByText('retail_crm_prod')).toBeInTheDocument();
+    expect(requests).toHaveLength(3);
   });
 });
 

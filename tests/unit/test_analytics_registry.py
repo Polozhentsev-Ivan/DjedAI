@@ -562,14 +562,12 @@ def test_execute_tool_validates_params_and_dispatches():
     assert described.status == "ok"
 
 
-def test_execute_tool_ignores_future_source_result_id():
-    result = execute_tool(
-        "run_sql",
-        {"sql": "SELECT 1 AS value", "source_result_id": "r_previous"},
-    )
-
-    assert result.status == "ok"
-    assert result.params["sql"] == "SELECT 1 AS value"
+def test_execute_tool_rejects_unsupported_source_result_id():
+    with pytest.raises(ValueError, match="source_result_id"):
+        execute_tool(
+            "run_sql",
+            {"sql": "SELECT 1 AS value", "source_result_id": "r_previous"},
+        )
 
 
 def test_execute_tool_rejects_unknown_tool_and_invalid_params():

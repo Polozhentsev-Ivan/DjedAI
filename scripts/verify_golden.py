@@ -1,4 +1,4 @@
-"""Validate golden v1 and independently check its references against the full CSV.
+"""Validate the complete golden suite and independently check its CSV references.
 
 This checks the question set, not the agent. No application analytics or model
 client is imported; numerical references come from csv/Counter/Decimal only.
@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -55,6 +56,71 @@ FACT_KEYS = {
     "production.error_percent",
 }
 MSK = timezone(timedelta(hours=3))
+SCENARIO_FACT_KEYS = {
+    "monthly.counts",
+    "quarterly.counts",
+    "quarterly.errors",
+    "env_status.counts",
+    "env_trigger.counts",
+    "service.top5",
+    "duplicates.full_rows",
+    "chains.repeated",
+    "duration.min_seconds",
+    "duration.max_seconds",
+    "duration.mean_seconds",
+    "duration.over_3600_count",
+    "month_of_year.peak_month",
+    "month_of_year.peak_daily_mean",
+    "weekday.counts",
+    "weekday.peak_day",
+    "weekday.peak_daily_mean",
+    "july.counts",
+    "july.change_percent",
+    "correlation.planned_processed",
+    "correlation.daily_attempts_errors",
+    "lag.best_days",
+    "lag.best_r",
+    "lag.plus5_r",
+    "forecast.base7",
+    "forecast.base7_total",
+    "forecast.growth7",
+    "forecast.growth7_total",
+    "forecast.holdout7",
+    "forecast.holdout_mae",
+}
+FACT_KEYS |= SCENARIO_FACT_KEYS
+CHART_TYPES = {
+    "line",
+    "bar",
+    "area",
+    "scatter",
+    "pie",
+    "histogram",
+    "heatmap",
+    "box",
+    "table",
+    "kpi",
+}
+REQUIREMENTS = {
+    "charts",
+    "dashboards",
+    "memory",
+    "seasonality",
+    "segments",
+    "correlation",
+    "forecast",
+}
+PLANNED_TOOLS = {
+    "time_aggregate",
+    "find_duplicates",
+    "detect_anomalies",
+    "seasonality",
+    "segment_profile",
+    "compare_segments",
+    "correlation",
+    "lagged_correlation",
+    "forecast",
+}
 
 
 class GoldenError(ValueError):
@@ -142,7 +208,11 @@ def load_suite(
             f"{case_id}: scenario",
         )
         require(
-            isinstance(case.get("question"), str) and bool(case["question"].strip()),
+            isinstance(case.get("question"), str)
+            and (
+                bool(case["question"].strip())
+                or case.get("expect", {}).get("outcome") == "input_error"
+            ),
             f"{case_id}: empty question",
         )
         expect = case["expect"]
@@ -157,7 +227,9 @@ def load_suite(
         if expect.get("outcome") == "answer":
             require(expect.get("population") in manifest["populations"], f"{case_id}: population")
             require(
-                scenario != "edge" and bool(expect["tools_any"]), f"{case_id}: answer/tool mismatch"
+                scenario != "edge"
+                and (bool(expect["tools_any"]) or bool(expect.get("reuse_result_from"))),
+                f"{case_id}: answer/tool mismatch",
             )
             normal_counts[scenario] += 1
             facts = expect.get("facts")
@@ -190,7 +262,7 @@ def load_suite(
                     require(
                         isinstance(fact["value"], list), f"{case_id}: unordered fact must be a list"
                     )
-        else:
+        elif expect.get("outcome") == "clarify":
             require(
                 expect.get("outcome") == "clarify" and scenario == "edge", f"{case_id}: outcome"
             )
@@ -215,12 +287,163 @@ def load_suite(
             require(
                 not set(forbidden) & set(expect["tools_any"]), f"{case_id}: contradictory tools"
             )
-    require(
-        normal_counts[1] >= 5 and normal_counts[2] >= 5,
-        "Need at least 5 normal questions per scenario 1/2",
-    )
+        else:
+            require(scenario == "edge", f"{case_id}: rejection must be edge")
+            require(expect.get("outcome") in {"reject", "input_error"}, f"{case_id}: outcome")
+            require(
+                not expect.get("facts") and not expect["tools_any"], f"{case_id}: invented result"
+            )
+            require(set(expect.get("tools_forbidden", [])) == TOOLS, f"{case_id}: forbid analytics")
+            if expect["outcome"] == "input_error":
+                require(not case["question"].strip(), f"{case_id}: input must be empty")
+                require(
+                    expect.get("input_policy")
+                    == {"ui_submit": False, "api_status": 422, "model_called": False},
+                    f"{case_id}: input validation policy",
+                )
+            else:
+                require(
+                    expect.get("intent") in {"invalid", "off_topic"}, f"{case_id}: reject intent"
+                )
+                require(expect.get("blocks_include") == ["text"], f"{case_id}: rejection text")
+    for scenario in range(1, 11):
+        require(
+            normal_counts[scenario] >= (5 if scenario <= 6 else 3),
+            f"Need more questions for scenario {scenario}",
+        )
+    require(sum(case["scenario"] == "edge" for case in cases) >= 10, "Need at least 10 edge cases")
     require(edge_intents == {"ambiguous", "invalid"}, "Need ambiguous and invalid examples")
+    validate_scenario_contracts(cases, manifest)
     return cases, manifest
+
+
+def validate_scenario_contracts(cases: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    """Validate evaluation rubrics, without pretending to execute their features."""
+    planned = manifest.get("planned_tools", {})
+    require(
+        manifest.get("scenario_source", {}).get("covered") == list(range(1, 11)),
+        "Scenario source must cover all ten scenarios",
+    )
+    require(isinstance(planned, dict) and set(planned) == PLANNED_TOOLS, "Planned tool catalog")
+    require(
+        all(type(issue) is int and issue > 0 for issue in planned.values()), "Planned tool issues"
+    )
+    previous = {}
+    for case in cases:
+        case_id, expect = case["id"], case["expect"]
+        require(
+            set(case) <= {"id", "scenario", "dataset", "question", "context", "expect"},
+            f"{case_id}: unknown question field",
+        )
+        future = expect.get("tools_planned", [])
+        require(
+            _strings(future) and set(future) <= set(planned), f"{case_id}: unknown planned tool"
+        )
+        require(not set(future) & TOOLS, f"{case_id}: registered tool marked planned")
+        capabilities = expect.get("requirements", [])
+        require(
+            _strings(capabilities) and set(capabilities) <= REQUIREMENTS, f"{case_id}: requirements"
+        )
+        context = case.get("context")
+        dependencies = []
+        if context is not None:
+            require(isinstance(context, dict), f"{case_id}: context must be a mapping")
+            require(
+                set(context) == {"previous_cases", "same_chat"},
+                f"{case_id}: context may contain only real question references",
+            )
+            dependencies = context["previous_cases"]
+            require(_strings(dependencies, nonempty=True), f"{case_id}: context questions")
+            require(context["same_chat"] is True, f"{case_id}: same chat required")
+            require(
+                all(
+                    dep in previous and previous[dep]["dataset"] == case["dataset"]
+                    for dep in dependencies
+                ),
+                f"{case_id}: context must reference earlier cases in same dataset",
+            )
+            require("memory" in capabilities, f"{case_id}: context requires memory")
+        require(case["scenario"] != 6 or bool(context), f"{case_id}: scenario 6 requires context")
+        if "reuse_result_from" in expect:
+            require(
+                expect["reuse_result_from"] in dependencies,
+                f"{case_id}: reuse requires prior context",
+            )
+        facts = {fact["key"]: fact for fact in expect.get("facts", [])}
+        chart = expect.get("chart")
+        if chart is not None:
+            require(isinstance(chart, dict), f"{case_id}: chart mapping")
+            require(
+                _strings(chart.get("types_any"), nonempty=True)
+                and set(chart["types_any"]) <= CHART_TYPES,
+                f"{case_id}: chart types",
+            )
+            require(
+                chart.get("x_kind") in {"time", "category", "number"}, f"{case_id}: chart axis kind"
+            )
+            for field in ("x_meaning", "y_unit"):
+                require(
+                    isinstance(chart.get(field), str) and bool(chart[field].strip()),
+                    f"{case_id}: chart {field}",
+                )
+            require(
+                chart.get("data_fact") in facts, f"{case_id}: chart must refer to a checked fact"
+            )
+            require(
+                type(chart.get("min_points")) is int and chart["min_points"] > 0,
+                f"{case_id}: chart points",
+            )
+            value = facts[chart["data_fact"]]["value"]
+            require(
+                isinstance(value, list)
+                or chart["min_points"] == 1
+                and set(chart["types_any"]) <= {"kpi"},
+                f"{case_id}: scalar chart fact requires a single KPI",
+            )
+            require(
+                not isinstance(value, list) or chart["min_points"] == len(value),
+                f"{case_id}: chart must retain all reference points",
+            )
+            require(chart.get("result_backed") is True, f"{case_id}: chart result provenance")
+            require("charts" in capabilities, f"{case_id}: chart capability")
+        require(case["scenario"] != 4 or chart is not None, f"{case_id}: scenario 4 requires chart")
+        dashboard = expect.get("dashboard")
+        if dashboard is not None:
+            require(isinstance(dashboard, dict), f"{case_id}: dashboard mapping")
+            require(dashboard.get("persisted") is True, f"{case_id}: dashboard persistence")
+            require(
+                dashboard.get("refresh") == "recompute_recipes",
+                f"{case_id}: dashboard refresh recipe",
+            )
+            widgets = dashboard.get("widgets")
+            require(isinstance(widgets, list) and bool(widgets), f"{case_id}: dashboard widgets")
+            widget_ids = set()
+            for widget in widgets:
+                require(isinstance(widget, dict), f"{case_id}: widget mapping")
+                widget_id = widget.get("id")
+                require(
+                    isinstance(widget_id, str)
+                    and bool(widget_id.strip())
+                    and widget_id not in widget_ids,
+                    f"{case_id}: widget id",
+                )
+                widget_ids.add(widget_id)
+                require(
+                    _strings(widget.get("facts"), nonempty=True)
+                    and set(widget["facts"]) <= set(facts),
+                    f"{case_id}: widget reference facts",
+                )
+                require(
+                    _strings(widget.get("chart_types_any"), nonempty=True)
+                    and set(widget["chart_types_any"]) <= CHART_TYPES,
+                    f"{case_id}: widget chart types",
+                )
+            require("dashboards" in capabilities, f"{case_id}: dashboard capability")
+        require(
+            case["scenario"] != 5 or dashboard is not None,
+            f"{case_id}: scenario 5 requires dashboard",
+        )
+        previous[case_id] = case
 
 
 def file_identity(path: Path) -> dict[str, Any]:
@@ -268,6 +491,151 @@ def download_file(path: Path, source: dict[str, Any]) -> None:
         finally:
             temporary.close()
             part.unlink(missing_ok=True)
+
+
+def pearson(pairs: list[tuple[int, int]]) -> float | None:
+    """Pearson from integer sufficient statistics; constant inputs are undefined."""
+    n = len(pairs)
+    sx, sy = sum(x for x, _ in pairs), sum(y for _, y in pairs)
+    xx = n * sum(x * x for x, _ in pairs) - sx * sx
+    yy = n * sum(y * y for _, y in pairs) - sy * sy
+    return (
+        (n * sum(x * y for x, y in pairs) - sx * sy) / math.sqrt(xx * yy)
+        if xx > 0 and yy > 0
+        else None
+    )
+
+
+def compute_scenario_facts(path: Path, dialect: dict[str, Any]) -> dict[str, Any]:
+    """Independent reference math for scenarios 3–10; no production tools or SQL."""
+    monthly, quarterly, quarter_errors = Counter(), Counter(), Counter()
+    env_status, env_trigger, services, chains = Counter(), Counter(), Counter(), Counter()
+    daily, daily_errors = Counter(), Counter()
+    weekday_counts, calendar_month_counts = Counter(), Counter()
+    runs, repeated_runs = set(), set()
+    pairs, durations = [], []
+    with path.open(encoding=dialect["encoding"], newline="") as stream:
+        reader = csv.DictReader(stream, delimiter=dialect["delimiter"])
+        require(reader.fieldnames == dialect["columns"], "CSV header does not match manifest")
+        for index, row in enumerate(reader, 1):
+            require(None not in row and None not in row.values(), f"Malformed CSV record {index}")
+            run = row["Код запуска"]
+            if run in runs:
+                repeated_runs.add(run)
+            runs.add(run)
+            chains[row["Код цепочки запусков"]] += 1
+            env_status[row["Окружение"], row["Статус"]] += 1
+            env_trigger[row["Окружение"], row["Способ запуска"]] += 1
+            services[row["Сервис"]] += 1
+            if row["Записей к обработке"] and row["Обработано записей"]:
+                pairs.append((int(row["Записей к обработке"]), int(row["Обработано записей"])))
+            if not row["Начало (МСК)"]:
+                continue
+            start = datetime.strptime(row["Начало (МСК)"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=MSK)
+            month, quarter = start.strftime("%Y-%m"), f"{start.year}-Q{(start.month - 1) // 3 + 1}"
+            monthly[month] += 1
+            quarterly[quarter] += 1
+            quarter_errors[quarter] += row["Статус"] == "Ошибка"
+            daily[start.date()] += 1
+            daily_errors[start.date()] += row["Статус"] == "Ошибка"
+            weekday_counts[start.weekday()] += 1
+            calendar_month_counts[start.month] += 1
+            if row["Окончание (МСК)"]:
+                end = datetime.strptime(row["Окончание (МСК)"], "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=MSK
+                )
+                require(end >= start, "Negative attempt duration")
+                durations.append(int((end - start).total_seconds()))
+    # A repeated full row necessarily repeats its run ID. Only that subset needs
+    # full tuple comparisons; unique run IDs prove zero duplicates without a huge set.
+    duplicates = Counter()
+    if repeated_runs:
+        with path.open(encoding=dialect["encoding"], newline="") as stream:
+            for row in csv.DictReader(stream, delimiter=dialect["delimiter"]):
+                if row["Код запуска"] in repeated_runs:
+                    duplicates[tuple(row[column] for column in dialect["columns"])] += 1
+    days = []
+    if daily:
+        days = [min(daily) + timedelta(days=i) for i in range((max(daily) - min(daily)).days + 1)]
+    month_days, weekday_days = (
+        Counter(day.month for day in days),
+        Counter(day.weekday() for day in days),
+    )
+    month_rates = {m: Decimal(calendar_month_counts[m]) / count for m, count in month_days.items()}
+    weekday_rates = {d: Decimal(weekday_counts[d]) / count for d, count in weekday_days.items()}
+    peak_month = min(month_rates, key=lambda m: (-month_rates[m], m)) if month_rates else None
+    peak_day = min(weekday_rates, key=lambda d: (-weekday_rates[d], d)) if weekday_rates else None
+    lag_values = {}
+    for lag in range(-7, 8):
+        lag_values[lag] = pearson(
+            [
+                (daily[day], daily_errors[days[i + lag]])
+                for i, day in enumerate(days)
+                if 0 <= i + lag < len(days)
+            ]
+        )
+    usable_lags = {lag: r for lag, r in lag_values.items() if r is not None}
+    best_lag = (
+        min(usable_lags, key=lambda lag: (-abs(usable_lags[lag]), abs(lag), lag))
+        if usable_lags
+        else None
+    )
+    base, growth, holdout = [], [], []
+    if len(days) >= 7:
+        for offset, day in enumerate(days[-7:], 1):
+            future = (days[-1] + timedelta(days=offset)).isoformat()
+            base.append([future, daily[day]])
+            growth.append([future, float(Decimal(daily[day]) * Decimal("1.1"))])
+    if len(days) >= 14:
+        holdout = [
+            [day.isoformat(), daily[days[-14 + i]], daily[day]] for i, day in enumerate(days[-7:])
+        ]
+    july = [[month, count] for month, count in sorted(monthly.items()) if month.endswith("-07")]
+    return {
+        "monthly.counts": [list(pair) for pair in sorted(monthly.items())],
+        "quarterly.counts": [list(pair) for pair in sorted(quarterly.items())],
+        "quarterly.errors": [[quarter, quarter_errors[quarter]] for quarter in sorted(quarterly)],
+        "env_status.counts": [
+            [env, status, count] for (env, status), count in sorted(env_status.items())
+        ],
+        "env_trigger.counts": [
+            [env, trigger, count] for (env, trigger), count in sorted(env_trigger.items())
+        ],
+        "service.top5": [
+            list(pair)
+            for pair in sorted(services.items(), key=lambda pair: (-pair[1], pair[0]))[:5]
+        ],
+        "duplicates.full_rows": sum(count - 1 for count in duplicates.values()),
+        "chains.repeated": sum(count > 1 for chain, count in chains.items() if chain),
+        "duration.min_seconds": min(durations) if durations else None,
+        "duration.max_seconds": max(durations) if durations else None,
+        "duration.mean_seconds": Decimal(sum(durations)) / len(durations) if durations else None,
+        "duration.over_3600_count": sum(value > 3600 for value in durations),
+        "month_of_year.peak_month": peak_month,
+        "month_of_year.peak_daily_mean": month_rates.get(peak_month),
+        "weekday.counts": [[day, weekday_counts[day]] for day in sorted(weekday_days)],
+        "weekday.peak_day": peak_day,
+        "weekday.peak_daily_mean": weekday_rates.get(peak_day),
+        "july.counts": july,
+        "july.change_percent": Decimal(100 * (july[-1][1] - july[-2][1])) / july[-2][1]
+        if len(july) >= 2 and july[-2][1]
+        else None,
+        "correlation.planned_processed": pearson(pairs),
+        "correlation.daily_attempts_errors": pearson(
+            [(daily[day], daily_errors[day]) for day in days]
+        ),
+        "lag.best_days": best_lag,
+        "lag.best_r": usable_lags.get(best_lag),
+        "lag.plus5_r": lag_values[5],
+        "forecast.base7": base,
+        "forecast.base7_total": sum(row[1] for row in base),
+        "forecast.growth7": growth,
+        "forecast.growth7_total": sum(Decimal(str(row[1])) for row in growth),
+        "forecast.holdout7": holdout,
+        "forecast.holdout_mae": Decimal(sum(abs(row[1] - row[2]) for row in holdout)) / len(holdout)
+        if holdout
+        else None,
+    }
 
 
 def compute_facts(path: Path, dialect: dict[str, Any]) -> dict[str, Any]:
@@ -319,6 +687,7 @@ def compute_facts(path: Path, dialect: dict[str, Any]) -> dict[str, Any]:
                 middle.append(value)
         cumulative += count
     return {
+        **compute_scenario_facts(path, dialect),
         "dataset.table_count": 1,
         "dataset.relation_count": 0,
         "dataset.row_count": total,
@@ -369,8 +738,18 @@ def fact_matches(fact: dict[str, Any], actual: Any) -> bool:
             return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
         return Counter(map(canonical, actual)) == Counter(map(canonical, expected))
-    # JSON's numeric types may differ, but bool must never stand in for a count.
-    return not isinstance(expected, bool) and not isinstance(actual, bool) and actual == expected
+
+    # JSON's numeric types may differ, but nested bools cannot stand in for counts.
+    def contains_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, list):
+            return any(contains_bool(item) for item in value)
+        if isinstance(value, dict):
+            return any(contains_bool(item) for item in value.values())
+        return False
+
+    return not contains_bool(expected) and not contains_bool(actual) and actual == expected
 
 
 def verify_references(cases: list[dict[str, Any]], actual: dict[str, Any]) -> list[dict[str, Any]]:
@@ -451,6 +830,12 @@ def main(argv: list[str] | None = None) -> int:
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered, encoding="utf-8")
+    # Keep UTF-8 reports readable, but emit valid ASCII-escaped JSON when an
+    # older Windows console cannot represent a unit such as “окружение × статус”.
+    try:
+        rendered.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except UnicodeEncodeError:
+        rendered = json.dumps(report, ensure_ascii=True, indent=2, default=str) + "\n"
     print(rendered, end="")
     return 0 if report["status"] in {"structure_valid", "verified"} else 1
 

@@ -1,4 +1,5 @@
 import type { components } from './generated';
+import { clearSessionIfCurrent, isCurrentSession, sessionSignal, sessionSnapshot } from './session';
 
 export type Schemas = components['schemas'];
 
@@ -56,33 +57,50 @@ interface RequestOptions {
   form?: FormData;
   signal?: AbortSignal | undefined;
   headers?: Record<string, string>;
+  /** Public register/login requests must not carry an existing credential. */
+  authenticated?: boolean;
+  /** Logout revocation survives clearing the local session and its old streams. */
+  sessionBound?: boolean;
 }
 
 /** Sends a request and returns the raw response; network failures and non-2xx become ApiError. */
-export async function send(path: string, { method = 'GET', json, form, signal, headers = {} }: RequestOptions = {}): Promise<Response> {
-  const allHeaders: Record<string, string> = { Accept: 'application/json', ...headers };
-  const init: RequestInit = { method, headers: allHeaders };
+export async function send(path: string, { method = 'GET', json, form, signal, headers = {}, authenticated = true, sessionBound = true }: RequestOptions = {}): Promise<Response> {
+  const session = sessionSnapshot();
+  // Authorization always comes from the current tab session, including when a caller
+  // supplies headers with a different casing.
+  const allHeaders: Record<string, string> = { Accept: 'application/json', ...Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'authorization')) };
+  if (authenticated && session.accessToken) allHeaders.Authorization = `Bearer ${session.accessToken}`;
+  const combinedSignal = sessionBound ? sessionSignal(session, signal) : signal;
+  const init: RequestInit = { method, headers: allHeaders, signal: combinedSignal ?? null };
   if (json !== undefined) {
     init.body = JSON.stringify(json);
     allHeaders['Content-Type'] = 'application/json';
   } else if (form) {
     init.body = form;
   }
-  if (signal) init.signal = signal;
   let response: Response;
   try {
     response = await fetch(apiUrl(path), init);
   } catch (error) {
+    if (combinedSignal?.aborted) throw new DOMException('Request aborted', 'AbortError');
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError(0, NETWORK_ERROR);
   }
-  if (!response.ok) throw await errorFrom(response);
+  if (!response.ok) {
+    const error = await errorFrom(response);
+    if (authenticated && (response.status === 401 || response.status === 403)) clearSessionIfCurrent(session, response.status === 401 ? 'expired' : 'forbidden');
+    throw error;
+  }
+  if (combinedSignal?.aborted) throw new DOMException('Request aborted', 'AbortError');
   return response;
 }
 
 /** JSON request; 204 resolves to undefined. */
 export async function request<T>(path: string, options?: RequestOptions): Promise<T> {
+  const session = sessionSnapshot();
   const response = await send(path, options);
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  const result = (await response.json()) as T;
+  if (!isCurrentSession(session) || options?.signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+  return result;
 }

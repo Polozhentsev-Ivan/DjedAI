@@ -8,22 +8,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from djedai.backend.db.models import ToolResultModel
-from djedai.backend.db.repositories import load_tool_result
+from djedai.backend.auth.dependencies import current_owner_id
+from djedai.backend.db.repositories import get_owned_tool_result, load_tool_result
 from djedai.backend.db.session import get_db
-from djedai.backend.local_user import local_owner_id
 from djedai.contracts.common import ErrorResponse
 from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 router = APIRouter(prefix="/results", tags=["results"])
 logger = logging.getLogger(__name__)
 DbSession = Annotated[Session, Depends(get_db)]
-LocalOwner = Annotated[str, Depends(local_owner_id)]
+LocalOwner = Annotated[str, Depends(current_owner_id)]
 
 
 def _owned_result(db: Session, result_id: str, owner_id: str) -> None:
-    record = db.get(ToolResultModel, result_id)
-    if record is None or record.owner_id != owner_id:
+    if get_owned_tool_result(db, result_id, owner_id) is None:
         raise HTTPException(status_code=404, detail="Результат не найден")
 
 
@@ -40,7 +38,7 @@ def _owned_result(db: Session, result_id: str, owner_id: str) -> None:
 def get_result(result_id: str, db: DbSession, owner_id: LocalOwner) -> ToolResult:
     """Возвращает происхождение расчёта без загрузки строк Parquet."""
     _owned_result(db, result_id, owner_id)
-    result = load_tool_result(db, result_id, load_data=False)
+    result = load_tool_result(db, result_id, load_data=False, owner_id=owner_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Результат не найден")
     return result
@@ -62,7 +60,7 @@ def get_result_data(
     """Читает сохранённые строки; отсутствие данных возвращает понятную ошибку."""
     _owned_result(db, result_id, owner_id)
     result = load_tool_result(
-        db, result_id, storage_dir=request.app.state.settings.results_data_dir
+        db, result_id, storage_dir=request.app.state.settings.results_data_dir, owner_id=owner_id
     )
     if result is None or result.data is None:
         logger.warning("Данные результата '%s' не найдены (owner_id='%s')", result_id, owner_id)

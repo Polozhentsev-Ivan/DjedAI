@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,12 +58,18 @@ def test_smoke_cli_with_local_model(tmp_path: Path, case: str):
                         'SELECT COUNT(*) AS n FROM "orders_utf8_comma"'
                     )
                 content = {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}
-            else:
-                assert schema == "ComposeResponse"
+            elif schema == "ComposeResponse":
                 content = {
                     "answer_blocks": [
                         {"type": "text", "markdown": "4" if case == "wrong_answer" else "3"}
                     ]
+                }
+            else:
+                assert schema == "VerifyResponse"
+                content = {
+                    "is_valid": True,
+                    "issues": [],
+                    "corrected_markdown": "4" if case == "wrong_answer" else "3",
                 }
             body = json.dumps(
                 {
@@ -127,10 +134,14 @@ def test_smoke_cli_with_local_model(tmp_path: Path, case: str):
     assert report["restart_check"]["messages"] == 2
     assert report["results"][0]["data"]["rows"] == [[3]]
     assert report["results"][0]["sql"].endswith('FROM "orders_utf8_comma"')
+    with sqlite3.connect(tmp_path / "run/app.db") as database:
+        assert database.execute("SELECT owner_id FROM chats").fetchall() == [("u_smoke",)]
+        assert database.execute("SELECT owner_id FROM results").fetchall() == [("u_smoke",)]
     assert [request["response_format"]["json_schema"]["name"] for request in requests] == [
         "Understanding",
         "PlanResponse",
         "ComposeResponse",
+        "VerifyResponse",
     ]
     assert "orders_utf8_comma" in requests[0]["messages"][0]["content"]
     assert "Original question and response requirements" in requests[2]["messages"][1]["content"]

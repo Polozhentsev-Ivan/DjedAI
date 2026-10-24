@@ -1,20 +1,23 @@
-"""Persistent CSV dataset orchestration for the explicitly enabled CP1 runtime."""
+"""Persistent owned CSV and read-only PostgreSQL dataset orchestration."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import shutil
-from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+import duckdb
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.db.models import DatasetModel
+from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.common import DatasetDetail, DatasetSummary, DatasetUploadAccepted
 from djedai.contracts.sse import (
@@ -28,7 +31,15 @@ from djedai.contracts.sse import (
 )
 from djedai.contracts.tool_result import ToolError
 from djedai.data.csv_ingest import CsvReadError
-from djedai.data.service import CsvSource, ingest_csv_dataset
+from djedai.data.descriptions import ModelClient
+from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
+from djedai.data.service import (
+    CsvSource,
+    connect_postgres_dataset,
+    describe_dataset,
+    ingest_csv_dataset,
+)
+from djedai.data.typed_views import _lit
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +48,98 @@ logger = logging.getLogger(__name__)
 class DatasetContext:
     catalog: DatasetCatalog
     duckdb_path: Path
+    _owner_id: str = field(default="", repr=False)
+    _source_secret: str | None = field(default=None, repr=False)
+    _secrets: SourceSecrets | None = field(default=None, repr=False)
+
+    @contextmanager
+    def open_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        # Recheck the persisted file at use time as well as at ownership lookup.
+        if (
+            not self.duckdb_path.is_file()
+            or self.duckdb_path.is_symlink()
+            or self.duckdb_path.parent.is_symlink()
+            or self.duckdb_path.resolve() != self.duckdb_path
+        ):
+            raise HTTPException(status_code=409, detail="Файл датасета недоступен")
+        postgres = self._source_secret is not None
+        # Connections opened directly on one DuckDB file share its database instance,
+        # including ATTACHes and configuration. A private memory instance keeps each
+        # PostgreSQL attachment/secret independent while sharing only read-only storage.
+        with duckdb.connect(
+            ":memory:" if postgres else str(self.duckdb_path), read_only=not postgres
+        ) as connection:
+            if postgres:
+                connection.execute(
+                    f"ATTACH {_lit(str(self.duckdb_path))} AS owned_dataset (READ_ONLY)"
+                )
+                connection.execute("USE owned_dataset")
+            if self._source_secret is not None:
+                try:
+                    if self._secrets is None:
+                        raise SourceSecretError("Ключ источника недоступен")
+                    source = self._secrets.decrypt(
+                        self._owner_id, self.catalog.dataset_id, self._source_secret
+                    )
+                    attach_postgres(connection, source.dsn)
+                except (SourceSecretError, PostgresError):
+                    raise HTTPException(
+                        status_code=503, detail="Источник PostgreSQL недоступен"
+                    ) from None
+            connection.execute("SET enable_external_access=false")
+            yield connection
 
 
 class DatasetService:
-    def __init__(self, session_factory: sessionmaker[Session], data_dir: str | Path) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        data_dir: str | Path,
+        *,
+        source_encryption_key: str | None = None,
+        description_client: Callable[[], ModelClient] | None = None,
+    ) -> None:
         self.session_factory = session_factory
         self.data_dir = Path(data_dir).resolve()
-        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._secrets = SourceSecrets(source_encryption_key)
+        # None disables LLM descriptions; the factory is called once per build.
+        self._description_client = description_client
 
     def _path(self, relative: str) -> Path:
         path = (self.data_dir / relative).resolve()
         if not path.is_relative_to(self.data_dir):
             raise ValueError("Путь источника выходит за каталог датасетов")
         return path
+
+    def _dataset_path(self, dataset_id: str, relative: str) -> Path:
+        """Reject references to another dataset, even within the same data root."""
+        if (
+            not dataset_id
+            or Path(dataset_id).name != dataset_id
+            or dataset_id in {".", ".."}
+            or "\\" in dataset_id
+            or "/" in dataset_id
+            or not relative.startswith(f"{dataset_id}/")
+        ):
+            raise ValueError("Некорректный путь датасета")
+        unresolved = self.data_dir / relative
+        directory = self.data_dir / dataset_id
+        resolved = unresolved.resolve()
+        if resolved != unresolved or not resolved.is_relative_to(directory):
+            raise ValueError("Путь источника выходит за каталог датасета")
+        for path in (unresolved, *unresolved.parents):
+            if path == self.data_dir:
+                break
+            if path.is_symlink():
+                raise ValueError("Символические ссылки источников не поддерживаются")
+        return resolved
+
+    def _database_path(self, model: DatasetModel) -> Path:
+        relative = f"{model.dataset_id}/dataset.duckdb"
+        if model.duckdb_path != relative:
+            raise ValueError("Некорректный путь базы датасета")
+        return self._dataset_path(model.dataset_id, relative)
 
     @staticmethod
     def _owned(db: Session, owner_id: str, dataset_id: str) -> DatasetModel:
@@ -70,7 +160,9 @@ class DatasetService:
             name=model.name,
             source={
                 "kind": "csv_upload" if model.source_kind == "csv" else model.source_kind,
-                "files": len(model.raw_files or []),
+                "files": len(model.raw_files or [])
+                if model.source_kind in {"csv", "csv_upload"}
+                else None,
             },
             status="ready"
             if model.status == "ready"
@@ -110,6 +202,8 @@ class DatasetService:
             model = self._owned(db, owner_id, dataset_id)
             if model.status != "ready" or not model.catalog:
                 raise HTTPException(status_code=409, detail="Каталог датасета ещё не готов")
+            if model.catalog.get("dataset_id") != dataset_id:
+                raise HTTPException(status_code=409, detail="Каталог датасета недоступен")
             return DatasetCatalog.model_validate(model.catalog)
 
     def get_context(self, owner_id: str, dataset_id: str) -> DatasetContext:
@@ -117,16 +211,36 @@ class DatasetService:
             model = self._owned(db, owner_id, dataset_id)
             if model.status != "ready" or not model.catalog or not model.duckdb_path:
                 raise HTTPException(status_code=409, detail="Датасет ещё не готов к запросам")
-            path = self._path(model.duckdb_path)
+            try:
+                path = self._database_path(model)
+            except ValueError:
+                raise HTTPException(status_code=409, detail="Файл датасета недоступен") from None
             if not path.is_file():
                 raise HTTPException(status_code=409, detail="Файл датасета недоступен")
-            return DatasetContext(DatasetCatalog.model_validate(model.catalog), path)
+            if model.catalog.get("dataset_id") != dataset_id:
+                raise HTTPException(status_code=409, detail="Каталог датасета недоступен")
+            if model.source_kind == "postgres":
+                try:
+                    if not model.source_secret:
+                        raise SourceSecretError("Источник не настроен")
+                    self._secrets.decrypt(owner_id, dataset_id, model.source_secret)
+                except SourceSecretError:
+                    raise HTTPException(
+                        status_code=503, detail="Источник PostgreSQL недоступен"
+                    ) from None
+            return DatasetContext(
+                DatasetCatalog.model_validate(model.catalog),
+                path,
+                owner_id,
+                model.source_secret if model.source_kind == "postgres" else None,
+                self._secrets,
+            )
 
     async def ingest_uploads(
         self, owner_id: str, files: Sequence[UploadFile]
     ) -> DatasetUploadAccepted:
         dataset_id = await asyncio.to_thread(self._persist_upload, owner_id, files)
-        self._start(dataset_id)
+        self._start(owner_id, dataset_id)
         return DatasetUploadAccepted(dataset_id=dataset_id)
 
     async def ingest_csv(
@@ -139,8 +253,71 @@ class DatasetService:
         HTTP request and shares processing/recovery with the multipart adapter.
         """
         dataset_id = await asyncio.to_thread(self._persist_csv_sources, owner_id, sources)
-        self._start(dataset_id)
+        self._start(owner_id, dataset_id)
         return DatasetUploadAccepted(dataset_id=dataset_id)
+
+    async def connect_db(
+        self,
+        owner_id: str,
+        dsn: str,
+        tables: Sequence[str] | None = None,
+        *,
+        kind: str = "postgresql",
+        name: str | None = None,
+    ) -> DatasetUploadAccepted:
+        """Persist an encrypted source before queuing its owned, restartable build."""
+        if kind != "postgresql":
+            raise HTTPException(status_code=501, detail="Этот источник пока не поддерживается")
+        try:
+            self._secrets.require_key()
+        except SourceSecretError:
+            raise HTTPException(
+                status_code=503, detail="Шифрование источников не настроено"
+            ) from None
+        try:
+            parse_dsn(dsn)
+        except (PostgresError, ValueError):
+            raise HTTPException(
+                status_code=422, detail="Проверьте строку подключения PostgreSQL"
+            ) from None
+        if tables is not None and (
+            not tables or any(not isinstance(table, str) or not table.strip() for table in tables)
+        ):
+            raise HTTPException(status_code=422, detail="Выберите хотя бы одну таблицу")
+        if name is not None and (not name.strip() or len(name) > 255):
+            raise HTTPException(
+                status_code=422, detail="Имя датасета должно содержать 1–255 символов"
+            )
+        dataset_id = await asyncio.to_thread(self._persist_postgres, owner_id, dsn, tables, name)
+        self._start(owner_id, dataset_id)
+        return DatasetUploadAccepted(dataset_id=dataset_id)
+
+    def _persist_postgres(
+        self, owner_id: str, dsn: str, tables: Sequence[str] | None, name: str | None
+    ) -> str:
+        dataset_id = str(uuid4())
+        encrypted = self._secrets.encrypt(owner_id, dataset_id, dsn, tables)
+        directory = self._dataset_path(dataset_id, f"{dataset_id}/dataset.duckdb").parent
+        directory.mkdir(parents=True)
+        try:
+            with self.session_factory() as db:
+                db.add(
+                    DatasetModel(
+                        dataset_id=dataset_id,
+                        owner_id=owner_id,
+                        name=name.strip() if name is not None else "PostgreSQL",
+                        source_kind="postgres",
+                        source_secret=encrypted,
+                        status="processing",
+                        duckdb_path=f"{dataset_id}/dataset.duckdb",
+                        progress={"stage": "queued", "progress": 0.0, "message": "В очереди"},
+                    )
+                )
+                db.commit()
+        except Exception:
+            shutil.rmtree(directory)
+            raise
+        return dataset_id
 
     def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
         def copy_source(index: int, target: Path) -> None:
@@ -172,13 +349,13 @@ class DatasetService:
         if any(not name or not name.lower().endswith(".csv") for name in names):
             raise HTTPException(status_code=422, detail="Поддерживаются только CSV-файлы")
         dataset_id = str(uuid4())
-        directory = self._path(dataset_id)
+        directory = self._dataset_path(dataset_id, f"{dataset_id}/dataset.duckdb").parent
         directory.mkdir(parents=True)
         try:
             raw_files = []
             for index, name in enumerate(names):
                 relative = f"{dataset_id}/raw/{index:04d}.csv"
-                target = self._path(relative)
+                target = self._dataset_path(dataset_id, relative)
                 target.parent.mkdir(exist_ok=True)
                 copy_source(index, target)
                 raw_files.append({"path": relative, "name": name})
@@ -201,16 +378,23 @@ class DatasetService:
             raise
         return dataset_id
 
-    def _start(self, dataset_id: str) -> None:
-        if dataset_id in self._tasks:
+    def _start(self, owner_id: str, dataset_id: str) -> None:
+        key = (owner_id, dataset_id)
+        if key in self._tasks:
             return
-        task = asyncio.create_task(asyncio.to_thread(self._process, dataset_id))
-        self._tasks[dataset_id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(dataset_id, None))
+        task = asyncio.create_task(asyncio.to_thread(self._process, owner_id, dataset_id))
+        self._tasks[key] = task
+        task.add_done_callback(lambda _: self._tasks.pop(key, None))
 
-    def _update_progress(self, dataset_id: str, stage: str, fraction: float, message: str) -> None:
+    def _update_progress(
+        self, owner_id: str, dataset_id: str, stage: str, fraction: float, message: str
+    ) -> None:
         with self.session_factory() as db:
-            model = db.get(DatasetModel, dataset_id)
+            model = db.scalar(
+                select(DatasetModel).where(
+                    DatasetModel.dataset_id == dataset_id, DatasetModel.owner_id == owner_id
+                )
+            )
             if model is not None:
                 # Recovery can repeat earlier stages; public completion never regresses.
                 previous = (model.progress or {}).get("progress", 0.0)
@@ -219,37 +403,70 @@ class DatasetService:
                 ).model_dump(mode="json")
                 db.commit()
 
-    def _process(self, dataset_id: str) -> None:
+    def _process(self, owner_id: str, dataset_id: str) -> None:
         try:
             with self.session_factory() as db:
-                model = db.get(DatasetModel, dataset_id)
-                if model is None or model.status == "ready":
+                model = self._owned(db, owner_id, dataset_id)
+                if model.status == "ready":
                     return
-                sources = [
-                    CsvSource(self._path(item["path"]), item["name"])
-                    for item in model.raw_files or []
-                ]
-                if not model.duckdb_path:
-                    raise ValueError("Отсутствует путь базы CSV")
-                target = self._path(model.duckdb_path)
-                name, created_at = model.name, model.created_at
+                sources = []
+                for index, item in enumerate(model.raw_files or []):
+                    if item["path"] != f"{dataset_id}/raw/{index:04d}.csv":
+                        raise ValueError("Некорректный путь исходного CSV")
+                    sources.append(
+                        CsvSource(self._dataset_path(dataset_id, item["path"]), item["name"])
+                    )
+                target = self._database_path(model)
+                name, created_at, source_kind = model.name, model.created_at, model.source_kind
+                secret = model.source_secret
             working = target.with_suffix(".building.duckdb")
+            self._dataset_path(dataset_id, working.relative_to(self.data_dir).as_posix())
             # An interrupted build is discarded; retained raw files are authoritative.
             working.unlink(missing_ok=True)
             Path(str(working) + ".wal").unlink(missing_ok=True)
-            catalog = ingest_csv_dataset(
-                sources,
-                working,
-                dataset_id=dataset_id,
-                name=name,
-                created_at=created_at,
-                progress=lambda stage, fraction, message: self._update_progress(
-                    dataset_id, stage, fraction, message
-                ),
-            )
+
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._update_progress(owner_id, dataset_id, stage, fraction, message)
+
+            if source_kind == "postgres":
+                if not secret:
+                    raise SourceSecretError("Источник не настроен")
+                source = self._secrets.decrypt(owner_id, dataset_id, secret)
+                catalog = connect_postgres_dataset(
+                    source.dsn,
+                    source.tables,
+                    working,
+                    dataset_id=dataset_id,
+                    name=name,
+                    created_at=created_at,
+                    progress=progress,
+                )
+            elif source_kind in {"csv", "csv_upload"}:
+                catalog = ingest_csv_dataset(
+                    sources,
+                    working,
+                    dataset_id=dataset_id,
+                    name=name,
+                    created_at=created_at,
+                    progress=progress,
+                )
+            else:
+                raise ValueError("Неподдерживаемый источник")
+            if self._description_client is not None:
+                # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
+                progress(
+                    "relations" if source_kind == "postgres" else "profile",
+                    0.0,
+                    "Описание данных",
+                )
+                catalog = self._describe(dataset_id, working, catalog)
             working.replace(target)
             with self.session_factory() as db:
-                model = db.get(DatasetModel, dataset_id)
+                model = db.scalar(
+                    select(DatasetModel).where(
+                        DatasetModel.dataset_id == dataset_id, DatasetModel.owner_id == owner_id
+                    )
+                )
                 if model is not None:
                     model.catalog = catalog.model_dump(mode="json")
                     model.status = "ready"
@@ -257,35 +474,53 @@ class DatasetService:
                     model.progress = {"stage": "ready", "progress": 1.0, "message": "Готово"}
                     db.commit()
         except Exception as error:
-            logger.exception("CSV processing failed for dataset %s", dataset_id)
+            # Driver exceptions can contain source credentials; never log their traceback.
+            logger.warning("Dataset processing failed for owned dataset %s", dataset_id)
             # Internal paths/SQL/stack traces must not leak through the JSON/SSE API.
             message = (
                 str(error)
                 if isinstance(error, CsvReadError)
-                else ("Не удалось обработать CSV. Проверьте файлы и повторите загрузку.")
+                else "Не удалось обработать источник. Проверьте подключение или файлы."
             )
             with self.session_factory() as db:
-                model = db.get(DatasetModel, dataset_id)
+                model = db.scalar(
+                    select(DatasetModel).where(
+                        DatasetModel.dataset_id == dataset_id, DatasetModel.owner_id == owner_id
+                    )
+                )
                 if model is not None:
                     model.status = "error"
                     model.error_message = message
                     model.catalog = None
                     db.commit()
 
+    def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
+        """Descriptions are optional: any failure publishes the statistical catalog."""
+        try:
+            return describe_dataset(database, catalog, self._description_client())
+        except Exception:
+            # Model client errors can echo endpoint or key details; log no traceback.
+            logger.warning("Catalog descriptions failed for owned dataset %s", dataset_id)
+            warning = (
+                "Описания данных не сгенерированы: модель не настроена или недоступна; "
+                "структура и статистика каталога доступны"
+            )
+            return catalog.model_copy(update={"warnings": [*catalog.warnings, warning]})
+
     async def recover_interrupted(self) -> None:
-        def pending() -> list[str]:
+        def pending() -> list[tuple[str, str]]:
             with self.session_factory() as db:
                 return list(
-                    db.scalars(
-                        select(DatasetModel.dataset_id).where(
-                            DatasetModel.source_kind == "csv_upload",
+                    db.execute(
+                        select(DatasetModel.owner_id, DatasetModel.dataset_id).where(
+                            DatasetModel.source_kind.in_(["csv", "csv_upload", "postgres"]),
                             DatasetModel.status.in_(["processing", "uploading", "profiling"]),
                         )
                     )
                 )
 
-        for dataset_id in await asyncio.to_thread(pending):
-            self._start(dataset_id)
+        for owner_id, dataset_id in await asyncio.to_thread(pending):
+            self._start(owner_id, dataset_id)
 
     async def close(self) -> None:
         # to_thread cannot be stopped safely; finish writes before disposing the engine.

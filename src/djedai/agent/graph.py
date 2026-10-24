@@ -1,5 +1,7 @@
 import json
 import uuid
+from collections.abc import Callable
+from contextlib import nullcontext
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -15,8 +17,10 @@ from djedai.contracts.agent import (
     Entities,
     PlanResponse,
     Understanding,
+    VerifyResponse,
 )
 from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 
 def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
@@ -33,6 +37,8 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "charts": [],
         "answer_blocks": [],
         "retries": 0,
+        "compose_retries": 0,
+        "is_verified": False,
     }
 
 
@@ -111,6 +117,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
 
     for step in plan_steps:
         try:
+            if budget := current_budget():
+                budget.check()
             if dispatcher:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
@@ -134,6 +142,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             res = res.model_copy(update={"tool": step.tool, "params": step.args})
             new_results.append(res)
 
+        except (TurnTimeout, TurnCancelled):
+            raise
         except Exception as e:
             new_results.append(
                 ToolResult(
@@ -176,6 +186,15 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         state.get("understanding").resolved_question if state.get("understanding") else None
     )
     user_prompt = user_prompt or last_msg or "Explain the results."
+
+    # Hint for the retry iteration to explicitly fix hallucinations
+    if state.get("compose_retries", 0) > 0:
+        user_prompt += (
+            "\n\nWARNING: Your previous response contained unverified or hallucinated numbers. "
+            "Please carefully check formatting, rounding, and units, "
+            "and ensure ALL numbers strictly match the facts."
+        )
+
     if last_msg and user_prompt != last_msg:
         user_prompt += f"\nOriginal question and response requirements: {last_msg}"
 
@@ -188,12 +207,70 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
-    return {"answer_blocks": blocks}
+    return {"answer_blocks": blocks, "compose_retries": state.get("compose_retries", 0) + 1}
 
 
-def verify(state: AgentState) -> dict:
-    # Final check of numbers in text vs data
-    return {}
+def verify(state: AgentState, config: RunnableConfig) -> dict:
+    """Final check of numbers in text vs data."""
+    client = config.get("configurable", {}).get("client")
+    blocks = state.get("answer_blocks", [])
+
+    text_blocks = [b for b in blocks if b.type == "text"]
+    if not text_blocks:
+        return {"is_verified": True}
+
+    draft = "\n\n".join(b.markdown for b in text_blocks if b.markdown)
+
+    facts_and_data = []
+    for r in state.get("results", []):
+        if r.status == "ok":
+            entry = {"tool": r.tool}
+            if r.facts:
+                entry["facts"] = r.facts
+            if r.data:
+                entry["data"] = r.data
+            facts_and_data.append(entry)
+
+    if not facts_and_data:
+        new_blocks = [b for b in blocks if b.type != "text"]
+        new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
+        return {"is_verified": True, "answer_blocks": new_blocks}
+
+    if client:
+        sys_prompt = load_prompt("verify").format(facts=str(facts_and_data), draft=draft)
+        response = client.generate_typed_response(
+            sys_prompt, "Verify the numbers and formats.", VerifyResponse
+        )
+
+        if response.status == "success" and response.data:
+            v_data = response.data
+            if v_data.is_valid:
+                return {"is_verified": True}
+            else:
+                # If we've reached max retries, accept the corrected/stripped markdown
+                if state.get("compose_retries", 0) >= 2:
+                    new_blocks = [b for b in blocks if b.type != "text"]
+                    new_blocks.append(Block(type="text", markdown=v_data.corrected_markdown))
+                    return {"is_verified": True, "answer_blocks": new_blocks}
+                else:
+                    # Triggers conditional route to loop back to compose
+                    return {"is_verified": False}
+        else:
+            # The API failed (timeout, 500, etc.).
+            # We do not allow the publication of an unvalidated draft.
+            new_blocks = [b for b in blocks if b.type != "text"]
+            new_blocks.append(
+                Block(
+                    type="error",
+                    markdown=(
+                        "Ошибка проверки ответа: недоступен API верификации. "
+                        "Неподтвержденный ответ удален."
+                    ),
+                )
+            )
+            return {"is_verified": True, "answer_blocks": new_blocks}
+
+    return {"is_verified": True}
 
 
 def clarify(state: AgentState) -> dict:
@@ -261,17 +338,35 @@ def route_after_execute(state: AgentState) -> str:
     return "visualize"
 
 
+def route_after_verify(state: AgentState) -> str:
+    if state.get("is_verified", True):
+        return END
+    if state.get("compose_retries", 0) < 2:
+        return "compose"
+    return END
+
+
 def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("load_ctx", load_ctx)
-    workflow.add_node("understand", understand)
-    workflow.add_node("plan", plan)
-    workflow.add_node("execute", execute)
-    workflow.add_node("visualize", visualize)
-    workflow.add_node("compose", compose)
-    workflow.add_node("verify", verify)
-    workflow.add_node("clarify", clarify)
+    def observed(name: str, function: Callable, *, state_only: bool = False) -> Callable:
+        def node(state: AgentState, config: RunnableConfig) -> dict:
+            diagnostics = config.get("configurable", {}).get("diagnostics")
+            budget = config.get("configurable", {}).get("budget")
+            with diagnostics.stage(name) if diagnostics else nullcontext():
+                with budget.activate() if budget else nullcontext():
+                    return function(state) if state_only else function(state, config)
+
+        return node
+
+    workflow.add_node("load_ctx", observed("load_ctx", load_ctx))
+    workflow.add_node("understand", observed("understand", understand))
+    workflow.add_node("plan", observed("plan", plan))
+    workflow.add_node("execute", observed("execute", execute))
+    workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
+    workflow.add_node("compose", observed("compose", compose))
+    workflow.add_node("verify", observed("verify", verify))
+    workflow.add_node("clarify", observed("clarify", clarify, state_only=True))
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")
@@ -289,7 +384,9 @@ def build_agent_graph() -> StateGraph:
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")
-    workflow.add_edge("verify", END)
+
+    # Conditional edge to handle regeneration
+    workflow.add_conditional_edges("verify", route_after_verify, {"compose": "compose", END: END})
 
     workflow.add_edge("clarify", END)
 

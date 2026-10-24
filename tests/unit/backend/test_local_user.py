@@ -67,5 +67,17 @@ def test_local_bootstrap_cli_uses_configured_database_and_owner(tmp_path: Path) 
         )
         assert disabled.returncode == 2
         assert "CP1_LOCAL_MODE=true" in disabled.stderr
+        optional = subprocess.run(
+            [*args, "--if-enabled"],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert optional.returncode == 0
+        with sessionmaker(bind=engine)() as db:
+            assert len(list(db.scalars(select(UserModel)))) == 1
     finally:
         engine.dispose()

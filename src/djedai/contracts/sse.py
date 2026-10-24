@@ -54,6 +54,7 @@ class SSEErrorData(BaseModel):
 
     message: str = Field(description="Понятное описание возникшей ошибки на русском языке")
     detail: str | None = Field(default=None, description="Технические детали ошибки")
+    code: str | None = Field(default=None, description="Код ошибки, в том числе unauthorized")
 
 
 class SSEStatusEvent(BaseModel):

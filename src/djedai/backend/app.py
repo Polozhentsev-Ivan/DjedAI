@@ -16,9 +16,12 @@ from pydantic.json_schema import models_json_schema
 from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
+from djedai.agent.config import get_agent_client
 from djedai.backend.api.router import api_router
+from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
+from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -86,10 +89,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from djedai.backend.dataset_service import DatasetService
 
     cfg = app.state.settings
-    app.state.dataset_service = DatasetService(app.state.session_factory, cfg.datasets_data_dir)
+    app.state.dataset_service = DatasetService(
+        app.state.session_factory,
+        cfg.datasets_data_dir,
+        source_encryption_key=cfg.source_encryption_key.get_secret_value()
+        if cfg.source_encryption_key
+        else None,
+        description_client=get_agent_client if cfg.catalog_descriptions else None,
+    )
     try:
-        if cfg.cp1_local_mode:
-            await app.state.dataset_service.recover_interrupted()
+        await app.state.dataset_service.recover_interrupted()
         yield
     finally:
         await app.state.dataset_service.close()
@@ -158,10 +167,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+    app.state.diagnostics = DiagnosticJournal(
+        cfg.diagnostics_dir, cfg.diagnostics_max_bytes, cfg.diagnostics_backups
+    )
     app.state.engine = create_db_engine(cfg.app_database_url)
     app.state.session_factory = sessionmaker(
         bind=app.state.engine, autocommit=False, autoflush=False
     )
+
+    app.state.auth_limiter = AuthRateLimiter(
+        cfg.auth_rate_limit_requests, cfg.auth_rate_limit_window_seconds
+    )
+    app.add_middleware(AuthPolicyMiddleware, prefix=cfg.api_prefix, limiter=app.state.auth_limiter)
 
     # Настройка CORS с явным dev allowlist
     app.add_middleware(
@@ -217,7 +234,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message="Внутренняя ошибка сервера",
             )
         )
-        return JSONResponse(payload.model_dump(mode="json"), status_code=500)
+        return JSONResponse(
+            payload.model_dump(mode="json"),
+            status_code=500,
+            headers=AUTH_CACHE_HEADERS
+            if _request.url.path.startswith(cfg.api_prefix + "/")
+            else None,
+        )
 
     # Кастомный генератор схемы OpenAPI с полным набором общих контрактов
     app.openapi = lambda: get_custom_openapi(app)

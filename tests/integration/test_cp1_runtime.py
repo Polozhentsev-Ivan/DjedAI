@@ -8,27 +8,51 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import Request
 from fastapi.testclient import TestClient
+from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from djedai.agent.client import ModelResponse
+from djedai.agent.client import BIModelClient, ModelResponse
+from djedai.agent.prompts import load_prompt
 from djedai.backend import chat_service
 from djedai.backend.app import create_app
+from djedai.backend.auth import hash_password
 from djedai.backend.config import Settings, get_settings
-from djedai.backend.db.models import ChatModel, DatasetModel, ToolResultModel
+from djedai.backend.db.models import ChatModel, DatasetModel, ToolResultModel, UserModel
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.local_user import bootstrap_local_user
+from djedai.contracts.agent import ComposeResponse, VerifyResponse
+from djedai.contracts.tool_result import ToolResultData
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+PASSWORD = "test-runtime-password"
+
+
+@pytest.fixture(scope="module")
+def account_password_hash() -> str:
+    return hash_password(PASSWORD)
+
+
+@contextmanager
+def _client(settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/auth/login", json={"username": "local", "password": PASSWORD})
+        assert login.status_code == 200, login.text
+        client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+        yield client
 
 
 class ControlledModel:
@@ -51,13 +75,77 @@ class ControlledModel:
             value = {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}
         elif response_model.__name__ == "ComposeResponse":
             value = {"answer_blocks": [{"type": "text", "markdown": "Расчёт завершён."}]}
+        elif response_model.__name__ == "VerifyResponse":
+            value = {
+                "is_valid": True,
+                "issues": [],
+                "corrected_markdown": "Расчёт завершён.",
+            }
         else:
             raise AssertionError(f"Unexpected response contract: {response_model}")
         return ModelResponse(status="success", data=response_model.model_validate(value))
 
 
+@pytest.mark.parametrize("question", ["Сколько строк и какова сумма?", "Ответь COUNT=...;SUM=..."])
+def test_browser_model_supports_successful_numeric_verification(question: str) -> None:
+    """The HTTP fixture must verify successfully, rather than rely on graph fail-open."""
+    model_app = runpy.run_path(str(ROOT / "tests/e2e/serve_cp1.py"))["model_app"]
+    facts = str(
+        [
+            {
+                "tool": "run_sql",
+                "data": ToolResultData(columns=["n", "total"], rows=[[2, 30]], row_count=1),
+            }
+        ]
+    )
+    requested_schemas = []
+    with TestClient(model_app(), raise_server_exceptions=False) as server:
+
+        def complete(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requested_schemas.append(payload["response_format"]["json_schema"]["name"])
+            response = server.post("/v1/chat/completions", json=payload)
+            return httpx.Response(
+                response.status_code,
+                content=response.content,
+                headers={"content-type": response.headers["content-type"]},
+                request=request,
+            )
+
+        model = BIModelClient(
+            api_key="cp1-test-only",
+            base_url="http://cp1-model.test/v1",
+            model_name="cp1-controlled-model",
+        )
+        model.client.close()
+        model.client = OpenAI(
+            api_key="cp1-test-only",
+            base_url="http://cp1-model.test/v1",
+            max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(complete)),
+        )
+        try:
+            composed = model.generate_typed_response(
+                load_prompt("compose").format(facts=facts), question, ComposeResponse
+            )
+            assert composed.status == "success" and composed.data is not None
+            draft = composed.data.answer_blocks[0].markdown
+            assert draft
+            verified = model.generate_typed_response(
+                load_prompt("verify").format(facts=facts, draft=draft),
+                "Verify the numbers and formats.",
+                VerifyResponse,
+            )
+            assert verified.status == "success" and verified.data is not None
+            assert verified.data.is_valid and verified.data.issues == []
+            assert verified.data.corrected_markdown == draft
+            assert requested_schemas == ["ComposeResponse", "VerifyResponse"]
+        finally:
+            model.client.close()
+
+
 @pytest.fixture
-def configured(tmp_path: Path, monkeypatch):
+def configured(tmp_path: Path, monkeypatch, account_password_hash: str):
     url = f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
     migration = Config(str(ROOT / "alembic.ini"))
     migration.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
@@ -65,15 +153,18 @@ def configured(tmp_path: Path, monkeypatch):
     command.upgrade(migration, "head")
     engine = create_db_engine(url)
     factory = sessionmaker(bind=engine)
-    bootstrap_local_user(factory, "runtime-local")
+    bootstrap_local_user(factory, "runtime-local", username="local")
     bootstrap_local_user(factory, "runtime-other", username="runtime-other")
+    with factory() as db:
+        for user_id in ("runtime-local", "runtime-other"):
+            db.get(UserModel, user_id).password_hash = account_password_hash
+        db.commit()
     # Explicit app settings must win over process-global defaults for result writes/reads.
     monkeypatch.setenv("RESULTS_DATA_DIR", str(tmp_path / "wrong-global-results"))
     get_settings.cache_clear()
     settings = Settings(
         _env_file=None,
-        cp1_local_mode=True,
-        cp1_local_user_id="runtime-local",
+        cp1_local_mode=False,
         app_database_url=url,
         datasets_data_dir=str(tmp_path / "datasets"),
         RESULTS_DATA_DIR=str(tmp_path / "app-specific-results"),
@@ -141,7 +232,7 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
     settings, factory = configured
     model = _model(monkeypatch)
     saved = []
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         for name, values, expected in (
             ("alpha", (10, 20), [2, 30]),
             ("beta", (3, 5, 7, 11), [4, 26]),
@@ -190,12 +281,93 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
         assert len(plans) == 2
         assert "Таблица alpha" in plans[0] and "Таблица beta" not in plans[0]
         assert "Таблица beta" in plans[1] and "Таблица alpha" not in plans[1]
+        checks = [system for schema, system, _ in model.calls if schema == "VerifyResponse"]
+        assert len(checks) == 2
+        assert all("Drafted Response:\nРасчёт завершён." in system for system in checks)
 
-    with TestClient(create_app(settings)) as restarted:
+    with _client(settings) as restarted:
         for chat_id, result_id, metadata, data, history in saved:
             assert restarted.get(f"/api/results/{result_id}").json() == metadata
             assert restarted.get(f"/api/results/{result_id}/data").json() == data
             assert restarted.get(f"/api/chats/{chat_id}").json() == history
+
+
+@pytest.mark.parametrize("failure", ["empty", "timeout", "timeout_after_rejection"])
+def test_unverified_numbers_are_neither_published_nor_saved(
+    configured, monkeypatch, failure
+) -> None:
+    settings, _ = configured
+
+    class UnverifiedModel(ControlledModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.compose_calls = 0
+            self.verify_calls = 0
+
+        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+            if failure == "empty" and response_model.__name__ == "PlanResponse":
+                return ModelResponse(
+                    status="success",
+                    data=response_model.model_validate(
+                        {
+                            "plan": [
+                                {
+                                    "tool": "value_counts",
+                                    "args": {
+                                        "table": "sales",
+                                        "column": "amount",
+                                        "filter": "FALSE",
+                                    },
+                                }
+                            ]
+                        }
+                    ),
+                )
+            if response_model is ComposeResponse:
+                self.compose_calls += 1
+                return ModelResponse(
+                    status="success",
+                    data=ComposeResponse.model_validate(
+                        {"answer_blocks": [{"type": "text", "markdown": "Количество строк: 999"}]}
+                    ),
+                )
+            if response_model is VerifyResponse:
+                self.verify_calls += 1
+                if failure == "timeout_after_rejection" and self.verify_calls == 1:
+                    return ModelResponse(
+                        status="success",
+                        data=VerifyResponse(
+                            is_valid=False,
+                            issues=["999 не подтверждено данными"],
+                            corrected_markdown="Количество строк: 2",
+                        ),
+                    )
+                return ModelResponse(status="error", error_type="TIMEOUT", message="Test timeout")
+            return super().generate_typed_response(system_prompt, user_prompt, response_model)
+
+    model = UnverifiedModel()
+    monkeypatch.setattr(chat_service, "get_agent_client", lambda: model)
+    with _client(settings) as client:
+        _, chat_id = _upload(client)
+        events = _post_turn(client, chat_id)
+        names = [event for event, _ in events]
+        blocks = [data for event, data in events if event == "block"]
+        history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert "999" not in json.dumps(blocks, ensure_ascii=False)
+        assert "999" not in json.dumps(
+            [message.get("blocks", []) for message in history], ensure_ascii=False
+        )
+        if failure == "empty":
+            assert names[-1] == "done" and "error" not in names
+            assert blocks == [{"type": "text", "markdown": "Нет данных для формирования ответа."}]
+            assert [message["role"] for message in history] == ["user", "assistant"]
+            assert history[-1]["blocks"] == blocks
+            assert model.compose_calls == 1 and model.verify_calls == 0
+        else:
+            assert names[-1] == "error" and "done" not in names and "block" not in names
+            assert [message["role"] for message in history] == ["user"]
+            expected_calls = 2 if failure == "timeout_after_rejection" else 1
+            assert model.compose_calls == model.verify_calls == expected_calls
 
 
 def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatch) -> None:
@@ -227,7 +399,7 @@ def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatc
             ]
         )
         db.commit()
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         for result_id in ("missing-result", "foreign-result", "unowned-result"):
             for suffix in ("", "/data"):
                 response = client.get(f"/api/results/{result_id}{suffix}")
@@ -249,7 +421,7 @@ def test_missing_model_configuration_returns_503_without_synthetic_answer(
     settings, factory = configured
     for field in ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY"):
         monkeypatch.setenv(field, "")
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         _, chat_id = _upload(client)
         response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько строк?"})
         assert response.status_code == 503
@@ -265,7 +437,7 @@ def test_dataset_connection_closes_for_failed_and_interrupted_turns(
 ) -> None:
     settings, factory = configured
     _model(monkeypatch, fail=ending == "model_error")
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         dataset_id, chat_id = _upload(client)
         context = client.app.state.dataset_service.get_context("runtime-local", dataset_id)
         runtime = chat_service.get_agent_runtime(Request({"type": "http", "app": client.app}))
@@ -273,7 +445,12 @@ def test_dataset_connection_closes_for_failed_and_interrupted_turns(
         cancelled = False
         with factory() as db:
             stream = chat_service.stream_chat_turn(
-                db, chat_id, "Сколько строк?", runtime, is_cancelled=lambda: cancelled
+                db,
+                chat_id,
+                "Сколько строк?",
+                runtime,
+                is_cancelled=lambda: cancelled,
+                owner_id="runtime-local",
             )
             if ending == "model_error":
                 events = list(stream)
@@ -307,7 +484,7 @@ def test_bound_runtime_rejects_writes_external_reads_and_other_datasets(
         "other_dataset": "SELECT * FROM only_other_dataset",
     }
     model = _model(monkeypatch, sql=statements[operation])
-    with TestClient(create_app(settings)) as client:
+    with _client(settings) as client:
         _upload(client, "only_other_dataset", (99,))
         dataset_id, chat_id = _upload(client)
         events = _post_turn(client, chat_id)
@@ -320,10 +497,8 @@ def test_bound_runtime_rejects_writes_external_reads_and_other_datasets(
             assert metadata["data"] is metadata["data_ref"] is None
             if operation == "write":
                 assert metadata["error"]["code"] == "forbidden_operation"
-            elif operation in ("file", "network"):
-                assert "disabled" in metadata["error"]["message"].lower()
             else:
-                assert "does not exist" in metadata["error"]["message"].lower()
+                assert metadata["error"]["code"] == "dataset_scope_violation"
         assert model.calls
         context = client.app.state.dataset_service.get_context("runtime-local", dataset_id)
         _assert_database_released(context.duckdb_path)

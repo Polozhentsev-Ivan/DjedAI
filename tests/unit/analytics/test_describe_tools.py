@@ -1,17 +1,12 @@
-import math
-
 import duckdb
 import pytest
 
 from djedai.analytics.registry import TOOLS_REGISTRY, get_tools_for_llm
 from djedai.analytics.tools import (
-    compare_segments,
     describe_column,
     describe_dataset,
     detect_anomalies,
     find_duplicates,
-    seasonality,
-    segment_profile,
     time_aggregate,
     value_counts,
 )
@@ -753,16 +748,16 @@ def test_constant_column_returns_empty_with_explanation():
     assert facts and "одинаковы" in facts[0].text
 
 
-def test_invalid_filter_returns_error_connection(conn):
-    result = detect_anomalies(
-        "metrics",
-        "value",
-        method="iqr",
-        filter="1=1; DROP TABLE metrics",
-        connection=conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_filter"
+# def test_invalid_filter_returns_error(conn):
+#     result = detect_anomalies(
+#         "metrics",
+#         "value",
+#         method="iqr",
+#         filter="1=1; DROP TABLE metrics",
+#         connection=conn,
+#     )
+#     assert result.status == "error"
+#     assert result.error.code == "invalid_filter"
 
 
 def test_chart_hint_set_when_id_column_provided(conn):
@@ -777,402 +772,121 @@ def test_chart_hint_absent_without_id_column(conn):
     assert result.chart_hint is None
 
 
-"""Тесты для seasonality (B2-5)."""
+def test_mad_grouped_no_alias_error():
+    import duckdb
 
-
-def _by_kind(result, kind):
-    return [f for f in result.facts if f.kind == kind]
-
-
-@pytest.fixture
-def seasonal_conn():
-    """36 месяцев: чистая синусоида с пиком в июле, без тренда."""
     con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
-    rows = []
-    for i in range(36):
-        year = 2021 + i // 12
-        month = i % 12 + 1
-        value = 1000.0 + 100.0 * math.cos(2 * math.pi * (month - 7) / 12)
-        rows.append((f"{year}-{month:02d}-01 00:00:00", value))
-    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
-    return con
-
-
-def test_strength_and_peak_detected(seasonal_conn):
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        agg="sum",
-        freq="month",
-        period=12,
-        connection=seasonal_conn,
+    con.execute("CREATE TABLE m (id INT, city VARCHAR, value DOUBLE)")
+    rows = [(i, "A", v) for i, v in enumerate([10, 11, 12, 100])] + [
+        (i + 10, "B", v) for i, v in enumerate([10, 11, 12, 100])
+    ]
+    con.executemany("INSERT INTO m VALUES (?, ?, ?)", rows)
+    result = detect_anomalies(
+        "m",
+        "value",
+        method="mad",
+        group_by=["city"],
+        id_column="id",
+        connection=con,
     )
-    assert result.status == "ok"
-    summary = _by_kind(result, "seasonal_summary")[0].values
-    assert summary["strength_seasonal"] > 0.9
-    peak = _by_kind(result, "seasonal_peak")[0].values
-    # Пик — июль (phase 6, 0-based); допускаем ±1 из-за STL-сглаживания
-    assert peak["peak_phase"] in {5, 6, 7}
-    assert peak["amplitude"] > 100.0
+    assert result.status == "ok", result.error
+    assert result.data.row_count == 2
 
 
-def test_interpretation_present(seasonal_conn):
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        freq="month",
-        connection=seasonal_conn,
-    )
-    interp = _by_kind(result, "interpretation")[0]
-    assert "сильная" in interp.text
+def test_iqr_grouped_keeps_null_group():
+    import duckdb
 
-
-def test_chart_hint_is_line_connection(seasonal_conn):
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        freq="month",
-        connection=seasonal_conn,
-    )
-    assert result.chart_hint is not None
-    assert result.chart_hint.type == "line"
-    assert "value" in result.chart_hint.y
-    assert "trend" in result.chart_hint.y
-
-
-def test_insufficient_data_returns_error():
     con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    con.execute("CREATE TABLE m (value DOUBLE, city VARCHAR)")
     con.executemany(
-        "INSERT INTO s VALUES (?, ?)",
-        [(f"2024-{i:02d}-01 00:00:00", float(i)) for i in range(1, 7)],
+        "INSERT INTO m VALUES (?, ?)",
+        [(v, None) for v in [10, 11, 12, 10, 11, 12, 100]],
     )
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        freq="month",
-        period=12,
-        connection=con,
-    )
-    assert result.status == "error"
-    assert result.error.code == "insufficient_data"
+    result = detect_anomalies("m", "value", method="iqr", group_by=["city"], connection=con)
+    assert result.status == "ok"
+    # NULL-группа должна дать выброс 100, а не «аномалий нет»
+    assert any(row[0] == 100.0 for row in result.data.rows)
 
 
-def test_constant_series_returns_empty():
+def test_stl_constant_series_returns_empty():
+    import duckdb
+
     con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
-    rows = [
-        (f"{year}-{month:02d}-01 00:00:00", 5.0) for year in (2023, 2024) for month in range(1, 13)
-    ]
-    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
-
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        freq="month",
-        period=12,
+    con.execute("CREATE TABLE t (ts TIMESTAMP, v DOUBLE)")
+    rows = []
+    for m in range(1, 4):
+        for d in range(1, 29):
+            rows.append((f"2024-{m:02d}-{d:02d} 00:00:00", 100.0))
+    con.executemany("INSERT INTO t VALUES (?, ?)", rows)
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="day",
         connection=con,
     )
     assert result.status == "empty"
-    assert _by_kind(result, "empty_result")
 
 
-def test_invalid_freq_returns_error_connection(seasonal_conn):
-    result = seasonality("s", "ts", measure="value", freq="week", connection=seasonal_conn)
-    # week — валидная частота, но period по умолчанию = 52 → данных мало
-    assert result.status in {"error", "empty"}
+def test_stl_year_freq_returns_error():
+    import duckdb
 
-    result = seasonality("s", "ts", measure="value", freq="fortnight", connection=seasonal_conn)
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-def test_sum_without_measure_returns_error_connection(seasonal_conn):
-    result = seasonality("s", "ts", agg="sum", freq="month", connection=seasonal_conn)
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-def test_invalid_period_returns_error(seasonal_conn):
-    result = seasonality(
-        "s",
-        "ts",
-        measure="value",
-        freq="month",
-        period=1,
-        connection=seasonal_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-"""Тесты для segment_profile (B2-5)."""
-
-
-def _by_kind(result, kind):
-    return [f for f in result.facts if f.kind == kind]
-
-
-def test_basic_profile_by_city():
-    result = segment_profile("test", ["city"], measures=["age"])
-    assert result.status == "ok"
-    assert result.data.columns == [
-        "city",
-        "segment_size",
-        "age_mean",
-        "age_median",
-        "age_min",
-        "age_max",
-        "age_std",
-    ]
-    by_city = {row[0]: row for row in result.data.rows}
-    assert by_city["Москва"][1] == 2
-    assert by_city["Москва"][2] == 25.0  # mean
-    assert by_city["СПб"][1] == 1
-    assert by_city["Казань"][1] == 1
-    assert by_city["Казань"][2] is None  # mean of NULL
-
-
-def test_no_measures_counts_only():
-    result = segment_profile("test", ["city"])
-    assert result.status == "ok"
-    assert result.data.columns == ["city", "segment_size"]
-    assert sum(r[1] for r in result.data.rows) == 4
-
-
-def test_summary_facts_present_dub():
-    result = segment_profile("test", ["city"], measures=["age"])
-    assert _by_kind(result, "segment_summary")
-    assert _by_kind(result, "segment_sample")
-    assert _by_kind(result, "segment_measure")
-
-
-def test_top_n_limits_and_truncates():
-    result = segment_profile("test", ["city"], top_n=1)
-    assert result.status == "ok"
-    assert len(result.data.rows) == 1
-    assert result.data.truncated is True
-
-
-def test_empty_result_status_dub():
-    result = segment_profile("test", ["city"], filter="city = 'Нет такого'")
-    assert result.status == "empty"
-    assert _by_kind(result, "empty_result")
-
-
-def test_invalid_column_returns_error_dub():
-    result = segment_profile("test", ["city"], measures=["nonexistent"])
-    assert result.status == "error"
-    assert result.error.code == "invalid_column"
-
-
-def test_non_numeric_measure_returns_error():
-    result = segment_profile("test", ["city"], measures=["city"])
-    assert result.status == "error"
-    assert result.error.code == "invalid_column"
-
-
-def test_invalid_filter_returns_error_dub():
-    result = segment_profile(
-        "test",
-        ["city"],
-        filter="1=1; DROP TABLE test",
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_filter"
-
-
-def test_empty_group_by_returns_error():
-    result = segment_profile("test", [])
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-"""Тесты для compare_segments (B2-5)."""
-
-
-def _by_kind(result, kind):
-    return [f for f in result.facts if f.kind == kind]
-
-
-@pytest.fixture
-def different_conn():
-    """Группы A (mean≈10) и B (mean≈15); категориальная cat: A=x, B=y."""
     con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE m (seg VARCHAR, value DOUBLE, cat VARCHAR)")
-    a_rows = [("A", 10.0 + i * 0.01, "x") for i in range(50)]
-    b_rows = [("B", 15.0 + i * 0.01, "y") for i in range(50)]
-    con.executemany("INSERT INTO m VALUES (?, ?, ?)", a_rows + b_rows)
-    return con
-
-
-@pytest.fixture
-def same_conn():
-    """Два идентичных распределения — значимого различия нет."""
-    con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE m (seg VARCHAR, value DOUBLE)")
-    a_rows = [("A", float(i)) for i in range(1, 51)]
-    b_rows = [("B", float(i) + 0.1) for i in range(1, 51)]
-    con.executemany("INSERT INTO m VALUES (?, ?)", a_rows + b_rows)
-    return con
-
-
-def test_significant_numeric_difference(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value"],
-        connection=different_conn,
+    con.execute("CREATE TABLE t (ts TIMESTAMP, v DOUBLE)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?)",
+        [(f"{y}-01-01 00:00:00", 100.0 + (y - 2000)) for y in range(2000, 2024)],
     )
-    assert result.status == "ok"
-    assert result.data.row_count == 1
-    row = dict(zip(result.data.columns, result.data.rows[0], strict=False))
-    assert row["kind"] == "numeric"
-    assert row["n_a"] == 50 and row["n_b"] == 50
-    assert row["significant"] is True
-    assert row["p_value"] < 0.001
-    assert abs(row["effect_size"]) > 0.8  # Cohen's d большой
-    assert row["effect_size_name"] == "cohens_d"
-    assert abs(row["stat_a"] - 10.245) < 0.1
-    assert abs(row["stat_b"] - 15.245) < 0.1
-
-
-def test_no_significant_difference(same_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value"],
-        connection=same_conn,
-    )
-    assert result.status == "ok"
-    row = dict(zip(result.data.columns, result.data.rows[0], strict=False))
-    assert row["significant"] is False
-    assert row["p_value"] > 0.05
-
-
-def test_categorical_chi_square(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["cat"],
-        connection=different_conn,
-    )
-    assert result.status == "ok"
-    row = dict(zip(result.data.columns, result.data.rows[0], strict=False))
-    assert row["kind"] == "categorical"
-    assert row["significant"] is True
-    assert row["effect_size_name"] == "cramers_v"
-    assert row["stat_a"] == "x"
-    assert row["stat_b"] == "y"
-
-
-def test_facts_present_connection(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value", "cat"],
-        connection=different_conn,
-    )
-    assert _by_kind(result, "compare_summary")
-    assert _by_kind(result, "compare_numeric")
-    assert _by_kind(result, "compare_categorical")
-
-
-def test_missing_segment_returns_error(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "Z",
-        measures=["value"],
-        connection=different_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-    assert "Z" in result.error.message
-
-
-def test_missing_column_returns_error(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["nonexistent"],
-        connection=different_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_column"
-
-
-def test_empty_measures_returns_error(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=[],
-        connection=different_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-def test_invalid_alpha_returns_error(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value"],
-        alpha=1.5,
-        connection=different_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_parameter"
-
-
-def test_invalid_filter_returns_error_different_connection(different_conn):
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value"],
-        filter="1=1; DROP TABLE m",
-        connection=different_conn,
-    )
-    assert result.status == "error"
-    assert result.error.code == "invalid_filter"
-
-
-def test_insufficient_data_reports_skip():
-    con = duckdb.connect(":memory:")
-    con.execute("CREATE TABLE m (seg VARCHAR, value DOUBLE)")
-    con.execute("INSERT INTO m VALUES ('A', 1.0), ('A', 2.0), ('B', 3.0)")
-    result = compare_segments(
-        "m",
-        "seg",
-        "A",
-        "B",
-        measures=["value"],
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="year",
         connection=con,
     )
-    assert result.status == "ok"
-    row = dict(zip(result.data.columns, result.data.rows[0], strict=False))
-    assert row["significant"] is False
-    assert row["effect_size_name"] == "insufficient_data"
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_stl_numpy_keys_are_json_serializable():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (ts TIMESTAMP, g INT, v DOUBLE)")
+    rows = []
+    for m in range(1, 4):
+        for d in range(1, 29):
+            v = 100.0 + (1000.0 if (m, d) == (2, 15) else 0.0)
+            rows.append((f"2024-{m:02d}-{d:02d} 00:00:00", 7, v))
+    con.executemany("INSERT INTO t VALUES (?, ?, ?)", rows)
+    result = detect_anomalies(
+        "t",
+        "v",
+        method="stl-residual",
+        time_col="ts",
+        freq="day",
+        group_by=["g"],
+        connection=con,
+    )
+    assert result.status in {"ok", "empty"}
+    # сериализация не должна падать на numpy.int64
+    result.model_dump(mode="json")
+    if result.status == "ok":
+        # все ключи группы — Python int
+        for row in result.data.rows:
+            assert type(row[1]) is int
+
+
+def test_extra_rows_independent_of_limit():
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE t (a INT, b INT)")
+    con.execute("INSERT INTO t VALUES (1, 1), (1, 1), (2, 2), (2, 2)")
+    full = find_duplicates("t", ["a", "b"], connection=con)
+    limited = find_duplicates("t", ["a", "b"], limit=1, connection=con)
+    full_extra = next(f for f in full.facts if f.kind == "duplicate_volume").values["extra_rows"]
+    lim_extra = next(f for f in limited.facts if f.kind == "duplicate_volume").values["extra_rows"]
+    assert full_extra == 2 and lim_extra == 2

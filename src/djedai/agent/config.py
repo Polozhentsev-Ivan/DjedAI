@@ -42,6 +42,8 @@ def get_agent_client() -> BIModelClient:
             model_name=config.name,
             timeout=limits.model_timeout_seconds,
             max_output_tokens=limits.model_max_output_tokens,
+            max_retries=limits.model_max_retries,
+            retry_delay=limits.model_retry_delay_seconds,
         )
     except ValidationError as e:
         raise ValueError(f"Отсутствует или неверна конфигурация модели: {e}") from e

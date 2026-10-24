@@ -67,6 +67,7 @@ def authenticate_user(db: Session, username: str, password: str) -> UserModel | 
         )
     ).one_or_none()
     if record is None:
+        verify_password(password, None)
         return None
     user, password_hash = record
     if not verify_password(password, password_hash):

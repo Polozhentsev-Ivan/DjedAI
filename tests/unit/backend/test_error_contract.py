@@ -3,11 +3,16 @@ from fastapi.testclient import TestClient
 
 from djedai.backend.app import create_app
 from djedai.backend.config import Settings
+from djedai.backend.db.session import create_db_engine, init_db
 from djedai.contracts.common import ErrorResponse
 
 
-def test_http_and_validation_errors_share_the_wire_contract_without_inputs():
-    with TestClient(create_app(Settings(_env_file=None))) as client:
+def test_http_and_validation_errors_share_the_wire_contract_without_inputs(tmp_path):
+    settings = Settings(_env_file=None, app_database_url=f"sqlite:///{tmp_path / 'app.db'}")
+    engine = create_db_engine(settings.app_database_url)
+    init_db(engine)
+    engine.dispose()
+    with TestClient(create_app(settings)) as client:
         schema = client.get("/api/openapi.json").json()
         validation = schema["paths"]["/api/auth/register"]["post"]["responses"]["422"]
         assert validation["content"]["application/json"]["schema"] == {
@@ -28,8 +33,12 @@ def test_http_and_validation_errors_share_the_wire_contract_without_inputs():
         assert "password-must-not-be-echoed" not in response.text
 
 
-def test_server_errors_do_not_expose_exception_details():
-    app = create_app(Settings(_env_file=None))
+def test_server_errors_do_not_expose_exception_details(tmp_path):
+    settings = Settings(_env_file=None, app_database_url=f"sqlite:///{tmp_path / 'app.db'}")
+    engine = create_db_engine(settings.app_database_url)
+    init_db(engine)
+    engine.dispose()
+    app = create_app(settings)
 
     @app.get("/internal-failure")
     def fail():

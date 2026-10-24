@@ -19,6 +19,16 @@ const reportPath = path.join(output, 'browser-report.json');
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, baseURL: values.url });
 page.setDefaultTimeout(180_000);
+const username = process.env.DJEDAI_SMOKE_USERNAME;
+const password = process.env.DJEDAI_SMOKE_PASSWORD;
+assert(username && password, 'Set DJEDAI_SMOKE_USERNAME and DJEDAI_SMOKE_PASSWORD for the smoke account');
+const registration = await page.request.post('/api/auth/register', { data: { username, password } });
+assert([201, 409].includes(registration.status()), 'Unable to register the smoke account');
+const login = await page.request.post('/api/auth/login', { data: { username, password } });
+assert.equal(login.status(), 200, 'Unable to authenticate the smoke account');
+const { access_token: accessToken } = await login.json();
+await page.addInitScript((token) => { window.sessionStorage.setItem('djedai.access_token', token); }, accessToken);
+const authHeaders = { Authorization: `Bearer ${accessToken}` };
 await page.addInitScript(() => {
   window.__cp1Streams = [];
   const original = window.fetch;
@@ -50,7 +60,7 @@ await page.addInitScript(() => {
 });
 
 async function json(url) {
-  const response = await page.request.get(url);
+  const response = await page.request.get(url, { headers: authHeaders });
   assert.equal(response.status(), 200, `${url}: ${await response.text()}`);
   return response.json();
 }
@@ -99,7 +109,7 @@ try {
       const accepted = await acceptedPromise;
       assert.equal(accepted.status(), 202);
       const { dataset_id: datasetId } = await accepted.json();
-      const eventResponse = await page.request.get(`/api/datasets/${datasetId}/events`);
+      const eventResponse = await page.request.get(`/api/datasets/${datasetId}/events`, { headers: authHeaders });
       assert.match(await eventResponse.text(), /event: done/);
       const dataset = await json(`/api/datasets/${datasetId}`);
       assert.equal(dataset.status, 'ready');

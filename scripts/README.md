@@ -71,7 +71,7 @@ Python-команды запускаем в среде проекта через
 
 ## Команды
 
-- `verify_golden.py` — проверка набора [golden v1](../eval/README.md) для сценариев 1–2 (#79). Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает факты средствами `csv`, `Counter`, `Decimal` и `datetime`.
+- `verify_golden.py` — проверка [golden-набора](../eval/README.md) для сценариев 1–10 и edge cases (#79/#80). Проверяет минимумы всех групп, контекст, рубрики графиков/дашбордов и отдельно ошибки ввода. Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает группировки, корреляции, лаги и условные прогнозы средствами стандартной библиотеки Python.
   - Только структура, без сети и CSV: `uv run --locked python scripts/verify_golden.py --validate-only`.
   - Проверка полного файла: `uv run --locked python scripts/verify_golden.py --data-file "../artifacts/golden-v1/08_Фоновые_задания.csv" --download --output ../artifacts/golden-v1/reference-report.json`.
   - `--download` скачивает закреплённую версию только при отсутствии файла; существующий кэш проверяется и не заменяется. Для локального файла флаг можно опустить.
@@ -98,6 +98,12 @@ Python-команды запускаем в среде проекта через
 - `seed_demo_postgres.py` — загрузка синтетики из `tests/fixtures/synthetic/` в демо-PostgreSQL (#100, PG-часть) через тот же разбор CSV, что в DjedAI; таблицы получают типы БД, повторный запуск их пересоздаёт.
   - Запуск: `uv run python scripts/seed_demo_postgres.py --dsn 'postgresql://djedai_loader:<пароль>@127.0.0.1:5432/djedai_demo'` (или `DJEDAI_DEMO_PG_LOADER_DSN`).
   - Роли и установка сервера — [infra/postgres/README.md](../infra/postgres/README.md).
+- `test_postgres_isolation.py` — воспроизводимая приёмка PostgreSQL и изоляции владельцев (#60, #103). Нужны Docker с Linux engine и среда проекта; для первой загрузки образа и расширения DuckDB `postgres` нужен доступ к их реестрам. LLM не запускается: модельные ответы в тестах заданы явно, а auth, HTTP/SSE, граф, инструменты, SQLite, Parquet и PostgreSQL работают через код приложения.
+  - Запуск из корня репозитория: `uv run --locked python scripts/test_postgres_isolation.py`.
+  - С JSON-отчётом вне checkout: `uv run --locked python scripts/test_postgres_isolation.py --output ../artifacts/issue-103/postgres-acceptance.json`.
+  - Образ закреплён точным тегом и digest: `postgres:17.11-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27`. Скрипт создаёт отдельный контейнер с уникальным именем и меткой, публикует порт только на `127.0.0.1` и загружает синтетику в две БД с разным числом магазинов. Пароли и ключ шифрования случайные, живут только во время прогона; DSN не передаются аргументами процесса и не записываются в отчёт.
+  - Проверяются адаптер PostgreSQL, сохранение зашифрованного источника, чтение живых данных без копирования, read-only доступ, два владельца и одинаковые имена таблиц в разных источниках, чужие `404`, запросы и результаты после перезапуска, безопасные ошибки подключения. Запускаются `test_postgres_adapter.py`, `test_owned_postgres.py` и `test_postgres_owner_api.py`.
+  - Код 0 и `status: passed` означают, что все тесты прошли без пропусков и контейнер удалён. При завершении скрипт проверяет свою метку и удаляет только созданный им контейнер с его временным томом; другие контейнеры и данные Docker не затрагиваются. Неудачная проверка или неподтверждённое удаление дают код 1. Без `--output` отчёт выводится в stdout.
 - `export_schema.py` — экспорт полной схемы OpenAPI и отдельных JSON Schema контрактов для генерации TypeScript-типов frontend (#92, #83).
   - Проверка схемы: `uv run python scripts/export_schema.py --check`
   - Экспорт OpenAPI в файл: `uv run python scripts/export_schema.py -o openapi.json`

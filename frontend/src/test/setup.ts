@@ -3,6 +3,7 @@ import { cleanup } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest';
 import { File as NodeFile } from 'node:buffer';
 import { resetServer, server } from './server';
+import { clearSession } from '@/api/session';
 
 // React constructs FormData from DOM forms, while Node fetch/MSW require native
 // multipart classes (including global File when decoding incoming multipart).
@@ -49,6 +50,7 @@ beforeEach(() => {
   resetServer();
   window.localStorage.clear();
   window.sessionStorage.clear();
+  clearSession();
 });
 afterEach(() => {
   cleanup();

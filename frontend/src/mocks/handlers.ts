@@ -61,6 +61,9 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
   const api = (path: string) => `${API_BASE}${path}`;
   const pending = new Map<string, Schemas['DatasetDetail']>();
   let uploads = 0;
+  const account = (username: string): Schemas['UserRead'] => ({ user_id: `u_${username}`, username, is_active: true, created_at: '2026-10-22T00:00:00Z' });
+  const accounts = new Map([['ivan', { password: 'secret-123', user: account('ivan') }]]);
+  const sessions = new Map([['test-session', account('ivan')]]);
 
   const slow = async () => {
     if (scenario() === 'slow') await delay('infinite');
@@ -104,6 +107,29 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
   };
 
   return [
+    http.post(api('/auth/register'), async ({ request }) => {
+      const body = await request.json() as Schemas['UserCreate'];
+      if (accounts.has(body.username)) return errorJson(409, { code: 'username_taken', message: 'Пользователь с таким именем уже существует' });
+      const user = account(body.username);
+      accounts.set(body.username, { password: body.password, user });
+      return HttpResponse.json(user, { status: 201 });
+    }),
+    http.post(api('/auth/login'), async ({ request }) => {
+      const body = await request.json() as Schemas['UserLogin'];
+      const found = accounts.get(body.username);
+      if (!found || found.password !== body.password) return errorJson(401, { code: 'unauthorized', message: 'Неверный логин или пароль' });
+      const access_token = `mock-${crypto.randomUUID()}`;
+      sessions.set(access_token, found.user);
+      return HttpResponse.json({ access_token, expires_in: 86400, token_type: 'bearer' });
+    }),
+    http.get(api('/auth/me'), ({ request }) => {
+      const user = sessions.get(request.headers.get('Authorization')?.replace(/^Bearer /, '') ?? '');
+      return user ? HttpResponse.json(user) : errorJson(401, { code: 'unauthorized', message: 'Требуется действующая сессия' });
+    }),
+    http.post(api('/auth/logout'), ({ request }) => {
+      sessions.delete(request.headers.get('Authorization')?.replace(/^Bearer /, '') ?? '');
+      return new HttpResponse(null, { status: 204 });
+    }),
     http.get(api('/datasets'), async () => {
       await slow();
       return HttpResponse.json(scenario() === 'empty' ? [] : db.datasets.map(summary));

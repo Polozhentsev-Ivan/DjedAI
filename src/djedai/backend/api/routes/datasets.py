@@ -1,4 +1,4 @@
-"""CSV upload, catalog and persistent profiling state for CP1."""
+"""Owned CSV/PostgreSQL datasets, catalogs and persistent profiling streams."""
 
 from __future__ import annotations
 
@@ -9,11 +9,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from djedai.backend.auth.access import SessionAccess, get_session_access, guard_stream
+from djedai.backend.auth.dependencies import current_owner_id
 from djedai.backend.dataset_service import DatasetService
-from djedai.backend.local_user import local_owner_id
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.catalog import DatasetCatalog
-from djedai.contracts.common import DatasetDetail, DatasetSummary, DatasetUploadAccepted
+from djedai.contracts.common import (
+    ConnectRequest,
+    DatasetDetail,
+    DatasetSummary,
+    DatasetUploadAccepted,
+)
+from djedai.contracts.sse import DatasetErrorEvent, SSEErrorData
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -23,7 +30,7 @@ def get_dataset_service(request: Request) -> DatasetService:
 
 
 DatasetServiceDep = Annotated[DatasetService, Depends(get_dataset_service)]
-OwnerDep = Annotated[str, Depends(local_owner_id)]
+OwnerDep = Annotated[str, Depends(current_owner_id)]
 
 
 @router.post("/upload", response_model=DatasetUploadAccepted, status_code=202)
@@ -37,6 +44,18 @@ async def upload_dataset(
 @router.get("", response_model=list[DatasetSummary])
 def list_datasets(owner_id: OwnerDep, service: DatasetServiceDep) -> list[DatasetSummary]:
     return service.list_for_owner(owner_id)
+
+
+@router.post("/connect", response_model=DatasetUploadAccepted, status_code=202)
+async def connect_dataset(
+    payload: ConnectRequest, owner_id: OwnerDep, service: DatasetServiceDep
+) -> DatasetUploadAccepted:
+    return await service.connect_db(
+        owner_id,
+        payload.dsn.get_secret_value(),
+        payload.tables,
+        kind="postgresql" if payload.kind == "postgres" else payload.kind,
+    )
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetail)
@@ -63,13 +82,25 @@ def get_dataset_catalog(
     },
 )
 async def get_dataset_events(
-    dataset_id: str, request: Request, owner_id: OwnerDep, service: DatasetServiceDep
+    dataset_id: str,
+    request: Request,
+    owner_id: OwnerDep,
+    service: DatasetServiceDep,
+    access: Annotated[SessionAccess, Depends(get_session_access)],
 ) -> StreamingResponse:
     # Access is checked before sending HTTP headers, including terminal/replayed streams.
     await asyncio.to_thread(service.get_detail, owner_id, dataset_id)
+    await asyncio.to_thread(access.require)
 
     async def stream() -> AsyncIterator[str]:
-        async for event in service.events(owner_id, dataset_id):
+        expired = DatasetErrorEvent(
+            data=SSEErrorData(
+                code="unauthorized",
+                message="Сессия недействительна",
+                detail="Войдите снова, чтобы продолжить",
+            )
+        )
+        async for event in guard_stream(service.events(owner_id, dataset_id), access, expired):
             if await request.is_disconnected():
                 return
             yield encode_sse_event(event)
@@ -78,7 +109,7 @@ async def get_dataset_events(
         stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "X-Accel-Buffering": "no",
         },
     )

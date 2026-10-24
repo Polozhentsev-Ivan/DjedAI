@@ -1,12 +1,15 @@
-import threading
 import time
 import uuid
+from collections.abc import Collection
+from functools import partial
 
 import duckdb
 import numpy as np
 import sqlglot
 from sqlglot import exp
 
+from djedai.analytics.queries import check_budget, check_dataset_table, execute_dataset_query
+from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
 from djedai.config import get_limits
 from djedai.contracts.tool_result import (
     ChartHint,
@@ -15,6 +18,7 @@ from djedai.contracts.tool_result import (
     ToolResult,
     ToolResultData,
 )
+from djedai.execution import TurnCancelled, TurnTimeout, query_timer
 
 
 def _quote_id(identifier: str) -> str:
@@ -94,6 +98,26 @@ _NUMERIC_TYPES = (
     "TINYINT",
     "UBIGINT",
 )
+_STL_PERIOD_BY_FREQ = {
+    "minute": 60,
+    "hour": 24,
+    "day": 7,
+    "week": 52,
+    "month": 12,
+    "quarter": 4,
+    "year": 1,
+}
+
+
+def _to_python(v):
+    """numpy/pandas scalar → Python-native значение для JSON/Parquet."""
+    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+        try:
+            return v.item()
+        except (ValueError, AttributeError):
+            pass
+    return v
+
 
 _RU_MONTHS = [
     "январь",
@@ -131,7 +155,7 @@ _PANDAS_FREQ = {
     "minute": "min",
     "hour": "h",
     "day": "D",
-    "week": "W",
+    "week": "W-MON",
     "month": "MS",
     "quarter": "QS",
     "year": "YS",
@@ -154,6 +178,7 @@ def run_sql(
     max_rows: int | None = None,
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Безопасно выполняет SQL-запрос (только SELECT/CTE) в DuckDB."""
     con = None
@@ -168,7 +193,13 @@ def run_sql(
         )
         # 1. ПАРСИМ SQL
         try:
-            parsed = sqlglot.parse_one(sql, read="duckdb")
+            parsed = parse_read_query(sql)
+        except DatasetScopeError:
+            return ToolResult(
+                result_id=str(uuid.uuid4()),
+                status="error",
+                error=ToolError(code="forbidden_operation", message="Разрешён один запрос SELECT."),
+            )
         except Exception as e:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -192,6 +223,19 @@ def run_sql(
                 ),
             )
 
+        if allowed_tables is not None:
+            try:
+                validate_dataset_query(parsed, allowed_tables)
+            except (DatasetScopeError, sqlglot.errors.OptimizeError):
+                return ToolResult(
+                    result_id=str(uuid.uuid4()),
+                    status="error",
+                    error=ToolError(
+                        code="dataset_scope_violation",
+                        message="Запрос выходит за область выбранного датасета.",
+                    ),
+                )
+
         # 3. ВЫПОЛНЯЕМ С ТАЙМАУТОМ
         con = connection if connection is not None else duckdb.connect(database=":memory:")
         con.execute("SET enable_external_access = false;")
@@ -200,7 +244,7 @@ def run_sql(
             con.execute("CREATE TABLE test (id INT, name VARCHAR)")
             con.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')")
 
-        timer = threading.Timer(limits.tool_timeout_seconds, con.interrupt)
+        timer = query_timer(limits.tool_timeout_seconds, con.interrupt)
         timer.start()
 
         try:
@@ -217,7 +261,7 @@ def run_sql(
         row_count = len(rows)
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="run_sql",
             sql=sql,
@@ -293,16 +337,23 @@ def _get_mock_connection():
     return con
 
 
-def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> ToolResult:
+def describe_dataset(
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
     """Возвращает обзор всех таблиц в базе данных."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
-        tables = con.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()
-        table_names = [t[0] for t in tables]
+        if allowed_tables is None:
+            tables = con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+            table_names = [t[0] for t in tables]
+        else:
+            table_names = sorted(allowed_tables)
 
         rows: list[list] = []
         facts: list[Fact] = [
@@ -316,11 +367,7 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
         for t_name in table_names:
             row_count = con.execute(f"SELECT COUNT(*) FROM {_quote_id(t_name)}").fetchone()[0]
 
-            cols = con.execute(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = ?",
-                [t_name],
-            ).fetchall()
+            cols = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(t_name)}").fetchall()
             col_names = [c[0] for c in cols]
             col_types = {c[0]: c[1] for c in cols}
 
@@ -341,14 +388,15 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_dataset",
             params={},
             data=ToolResultData(
                 columns=["table_name", "row_count", "columns"],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
         )
@@ -365,25 +413,25 @@ def describe_dataset(*, connection: duckdb.DuckDBPyConnection | None = None) -> 
 
 
 def describe_column(
-    table: str, column: str, *, connection: duckdb.DuckDBPyConnection | None = None
+    table: str,
+    column: str,
+    *,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Возвращает полный профиль колонки: пропуски, уникальные, статистику, частоты."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        if allowed_tables is not None and table not in allowed_tables:
+            raise DatasetScopeError("Таблица не относится к выбранному датасету")
         # [P1] Проверка через параметры
-        col_check = con.execute(
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name = ? AND column_name = ?",
-            [table, column],
-        ).fetchone()
+        schema = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(table)}").fetchall()
+        col_check = next(([item[1]] for item in schema if item[0] == column), None)
 
         if not col_check:
-            available = con.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
-                [table],
-            ).fetchall()
+            available = schema
             avail_str = ", ".join([c[0] for c in available]) if available else "Таблица не найдена"
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -478,7 +526,7 @@ def describe_column(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="describe_column",
             params={"table": table, "column": column},
@@ -509,17 +557,18 @@ def value_counts(
     filter: str | None = None,
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Возвращает топ-N самых частых значений в колонке."""
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        if allowed_tables is not None and table not in allowed_tables:
+            raise DatasetScopeError("Таблица не относится к выбранному датасету")
         con.execute("SET enable_external_access = false;")
-        col_check = con.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
-            [table, column],
-        ).fetchone()
+        schema = con.execute(f"DESCRIBE SELECT * FROM {_quote_id(table)}").fetchall()
+        col_check = next((item for item in schema if item[0] == column), None)
         if not col_check:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
@@ -557,11 +606,14 @@ def value_counts(
 
         query += f" GROUP BY {safe_col} ORDER BY cnt DESC LIMIT {top_n}"
 
+        if allowed_tables is not None:
+            validate_dataset_query(parse_read_query(query), allowed_tables)
+
         result = con.execute(query).fetchall()
 
         if not result:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="value_counts",
                 params={
@@ -590,7 +642,7 @@ def value_counts(
         ]
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="value_counts",
             params={
@@ -601,8 +653,9 @@ def value_counts(
             },
             data=ToolResultData(
                 columns=[column, "count"],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
             chart_hint=ChartHint(type="bar", x=column, y=["count"]),
@@ -635,13 +688,16 @@ def time_aggregate(
     filter: str | None = None,
     top_n: int | None = None,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Агрегирует метрику по временным бакетам с опциональной группировкой."""
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         # ---------- валидация ----------
         if freq not in _FREQ_UNITS:
             return _err(
@@ -759,7 +815,7 @@ def time_aggregate(
             f"LIMIT {effective_limit + 1}"
         )
 
-        rows_raw = con.execute(query).fetchall()
+        rows_raw = execute(query).fetchall()
         truncated = len(rows_raw) > effective_limit
         rows_raw = rows_raw[:effective_limit]
         row_count = len(rows_raw)
@@ -774,7 +830,7 @@ def time_aggregate(
 
         if row_count == 0:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="time_aggregate",
                 params={
@@ -861,7 +917,7 @@ def time_aggregate(
         )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="time_aggregate",
             params={
@@ -879,6 +935,15 @@ def time_aggregate(
             chart_hint=chart_hint,
             sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
@@ -901,13 +966,16 @@ def find_duplicates(
     include_all_columns: bool = False,
     limit: int = 100,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Находит группы дублей. Без columns — ищет полные дубли строк."""
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             return _err(
                 error=ToolError(
@@ -976,18 +1044,25 @@ def find_duplicates(
             f"LIMIT {effective_limit + 1}"
         )
 
-        result = con.execute(query).fetchall()
+        result = execute(query).fetchall()
         truncated = len(result) > effective_limit
         result = result[:effective_limit]
 
         # Полная статистика (без учёта limit)
-        total_rows = con.execute(
-            f"SELECT COUNT(*) FROM {safe_table} WHERE 1=1{filter_sql}"
-        ).fetchone()[0]
+        total_rows = execute(f"SELECT COUNT(*) FROM {safe_table} WHERE 1=1{filter_sql}").fetchone()[
+            0
+        ]
         group_by_cols = ", ".join(safe_cols)
-        dup_total = con.execute(
+        dup_total = execute(
             f"SELECT COALESCE(SUM(cnt), 0) FROM ("
             f"  SELECT COUNT(*) AS cnt FROM {safe_table} "
+            f"  WHERE 1=1{filter_sql} GROUP BY {group_by_cols} "
+            f"  HAVING COUNT(*) > 1"
+            f")"
+        ).fetchone()[0]
+        total_duplicate_groups = execute(
+            f"SELECT COUNT(*) FROM ("
+            f"  SELECT 1 FROM {safe_table} "
             f"  WHERE 1=1{filter_sql} GROUP BY {group_by_cols} "
             f"  HAVING COUNT(*) > 1"
             f")"
@@ -999,7 +1074,7 @@ def find_duplicates(
 
         if row_count == 0:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="find_duplicates",
                 params={
@@ -1017,25 +1092,46 @@ def find_duplicates(
                 ),
                 facts=[
                     Fact(
-                        text=f"Дублей по колонкам {columns} не найдено "
-                        f"(проверено строк: {total_rows}).",
+                        text=(
+                            f"Проверено строк: {total_rows}, найдено групп дублей: "
+                            f"{int(total_duplicate_groups)}"
+                            + (
+                                f" (показано: {row_count})"
+                                if row_count < total_duplicate_groups
+                                else ""
+                            )
+                            + "."
+                        ),
                         kind="duplicate_summary",
-                        values={"total_rows": total_rows, "duplicate_groups": 0},
-                    )
+                        values={
+                            "total_rows": total_rows,
+                            "duplicate_groups": int(total_duplicate_groups),
+                            "shown_groups": row_count,
+                        },
+                    ),
                 ],
                 sql=query,
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
 
         max_group = max(r[len(columns)] for r in result)
-        extra_rows = int(dup_total) - row_count
+        extra_rows = int(dup_total) - int(total_duplicate_groups)
         pct = round(dup_total / total_rows * 100, 2) if total_rows else 0.0
 
         facts: list[Fact] = [
             Fact(
-                text=f"Проверено строк: {total_rows}, найдено групп дублей: {row_count}.",
+                text=(
+                    f"Проверено строк: {total_rows}, найдено групп дублей: "
+                    f"{int(total_duplicate_groups)}"
+                    + (f" (показано: {row_count})" if row_count < total_duplicate_groups else "")
+                    + "."
+                ),
                 kind="duplicate_summary",
-                values={"total_rows": total_rows, "duplicate_groups": row_count},
+                values={
+                    "total_rows": total_rows,
+                    "duplicate_groups": int(total_duplicate_groups),
+                    "shown_groups": row_count,
+                },
             ),
             Fact(
                 text=f"Всего строк в группах дублей: {dup_total} ({pct}%), "
@@ -1062,7 +1158,7 @@ def find_duplicates(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="find_duplicates",
             params={
@@ -1081,6 +1177,15 @@ def find_duplicates(
             facts=facts,
             sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
@@ -1103,13 +1208,14 @@ def _detect_stl_residual_anomalies(
     group_by: list[str],
     filter_sql: str,
     limit: int,
-) -> tuple[list[dict], str]:
-    """Аномалии через STL-декомпозицию. Возвращает (anomalies, sql)."""
+    allowed_tables: Collection[str] | None = None,
+) -> tuple[list[dict], bool, str]:
+    """Аномалии через STL-декомпозицию. Возвращает (anomalies, was_truncated, sql)."""
+    import numpy as np
     import pandas as pd
     from statsmodels.tsa.seasonal import STL
 
-    freq_period = {"day": 7, "week": 52, "month": 12, "quarter": 4, "year": 1}
-    period = freq_period.get(freq, 7)
+    period = _STL_PERIOD_BY_FREQ.get(freq, 7)
 
     safe_table = _quote_id(table)
     safe_time = _quote_id(time_col)
@@ -1131,9 +1237,10 @@ def _detect_stl_residual_anomalies(
         f"ORDER BY {group_positions} ASC"
     )
 
-    raw = con.execute(query).fetchall()
+    execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+    raw = execute(query).fetchall()
     if not raw:
-        return [], query
+        return [], False, query
 
     df = pd.DataFrame(raw, columns=["time_bucket", *group_by, "value"])
     df["value"] = df["value"].astype(float)
@@ -1145,12 +1252,24 @@ def _detect_stl_residual_anomalies(
             return
         try:
             series = sub["value"].to_numpy(dtype=float)
-            res = STL(series, period=period, robust=True).fit()
+            check_budget()
+            # Work in units of variation, removing a constant level before STL.
+            # Both the fit and its roundoff tolerance are invariant to metric units.
+            centered = series - np.median(series)
+            spread = float(np.max(np.abs(centered)))
+            if spread == 0:
+                return
+            res = STL(centered / spread, period=period, robust=True).fit()
+            check_budget()
             resid = res.resid
             resid_s = pd.Series(resid)
             med = float(resid_s.median())
             mad = float((resid_s - med).abs().median())
             scale = 1.4826 * mad if mad > 0 else float(resid_s.std())
+            # Only normalized floating-point roundoff is suppressed, not real
+            # residuals hidden by a large baseline or very small measurement unit.
+            noise_floor = np.finfo(float).eps * 128 * len(series)
+            scale = max(scale, noise_floor)
             if not scale:
                 return
             z = (resid - med) / scale
@@ -1158,15 +1277,17 @@ def _detect_stl_residual_anomalies(
                 if abs(zi) > threshold:
                     row = sub.iloc[i]
                     item = {
-                        "time_bucket": row["time_bucket"],
+                        "time_bucket": str(row["time_bucket"]),
                         "value": float(row["value"]),
-                        "residual": float(resid[i]),
+                        "residual": float(resid[i] * spread),
                         "z_score": float(zi),
                         "direction": "above" if zi > 0 else "below",
                     }
                     for g in group_by:
-                        item[g] = row[g]
+                        item[g] = _to_python(row[g])
                     anomalies.append(item)
+        except (TurnCancelled, TurnTimeout):
+            raise
         except Exception:
             return
 
@@ -1177,7 +1298,8 @@ def _detect_stl_residual_anomalies(
         _process(df)
 
     anomalies.sort(key=lambda a: abs(a["z_score"]), reverse=True)
-    return anomalies[:limit], query
+    was_truncated = len(anomalies) > limit
+    return anomalies[:limit], was_truncated, query
 
 
 def detect_anomalies(
@@ -1193,6 +1315,7 @@ def detect_anomalies(
     id_column: str | None = None,
     limit: int = 100,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Аномалии в числовой колонке: iqr / zscore / mad / stl-residual.
 
@@ -1202,9 +1325,11 @@ def detect_anomalies(
     """
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         # ---------- валидация ----------
         if method not in _ANOMALY_METHODS:
             return _err(
@@ -1228,6 +1353,20 @@ def detect_anomalies(
                     code="invalid_parameter",
                     message=f"Недопустимая частота: '{freq}'.",
                     suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if method == "stl-residual" and _STL_PERIOD_BY_FREQ.get(freq, 7) < 2:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"STL не поддерживает freq='{freq}' "
+                        f"(период {_STL_PERIOD_BY_FREQ.get(freq, 7)} < 2)."
+                    ),
+                    suggestion=(
+                        "Для столь редких данных используйте freq='quarter' "
+                        "или точечные методы (iqr/zscore/mad)."
+                    ),
                 )
             )
         if threshold is None:
@@ -1293,7 +1432,7 @@ def detect_anomalies(
         # ==========================================================
         if method == "stl-residual":
             try:
-                anomalies, query = _detect_stl_residual_anomalies(
+                anomalies, was_truncated, query = _detect_stl_residual_anomalies(
                     con,
                     table,
                     time_col,
@@ -1303,6 +1442,7 @@ def detect_anomalies(
                     group_by,
                     filter_sql,
                     min(limit, get_limits().sql_max_rows),
+                    allowed_tables=allowed_tables,
                 )
             except ImportError:
                 return _err(
@@ -1329,7 +1469,7 @@ def detect_anomalies(
 
             if not anomalies:
                 return ToolResult(
-                    result_id=f"r_{uuid.uuid4().hex[:8]}",
+                    result_id=f"r_{uuid.uuid4().hex}",
                     status="empty",
                     tool="detect_anomalies",
                     params=params_dict,
@@ -1393,7 +1533,7 @@ def detect_anomalies(
                 )
 
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="ok",
                 tool="detect_anomalies",
                 params=params_dict,
@@ -1401,7 +1541,7 @@ def detect_anomalies(
                     columns=out_columns,
                     rows=rows,
                     row_count=len(rows),
-                    truncated=len(anomalies) >= limit,
+                    truncated=was_truncated,
                 ),
                 facts=facts,
                 chart_hint=ChartHint(
@@ -1424,7 +1564,12 @@ def detect_anomalies(
         safe_id = _quote_id(id_column) if id_column else None
         group_list = ", ".join(safe_groups)
         group_list_prefix = f"{group_list}, " if group_by else ""
-        join_on = " AND ".join(f"t.{g} = s.{g}" for g in safe_groups) if group_by else None
+        # IS NOT DISTINCT FROM сохраняет группы с NULL в ключе
+        join_on = (
+            " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
+            if group_by
+            else None
+        )
 
         base_cols = ([safe_id] if safe_id else []) + [safe_col] + safe_groups
         seen: set[str] = set()
@@ -1480,15 +1625,21 @@ def detect_anomalies(
                 if group_by
                 else (f"med AS (SELECT MEDIAN({safe_col}) AS median FROM base)")
             )
-            join_med_in = f"JOIN med m ON {join_on}" if group_by else ", med m"
+            join_med_in = (
+                (
+                    "JOIN med m ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m.{g}" for g in safe_groups)
+                )
+                if group_by
+                else ", med m"
+            )
+            group_list_qualified = ", ".join(f"t.{g}" for g in safe_groups)
             mad_cte = (
                 (
-                    f"mad AS (SELECT {
-                        ', '.join('t.' + g for g in safe_groups) + ', ' if group_by else ''
-                    }"
+                    f"mad AS (SELECT {group_list_qualified}, "
                     f"MEDIAN(ABS(t.{safe_col} - m.median)) AS mad "
                     f"FROM base t {join_med_in} "
-                    f"GROUP BY {group_list or 'ALL'})"
+                    f"GROUP BY {group_list_qualified})"
                 )
                 if group_by
                 else (
@@ -1499,8 +1650,10 @@ def detect_anomalies(
             stats_cte = f"{med_cte}, {mad_cte}"
             join_stats = (
                 (
-                    f"JOIN med m2 ON {', '.join('t.' + g + ' = m2.' + g for g in safe_groups)} "
-                    f"JOIN mad s ON {', '.join('t.' + g + ' = s.' + g for g in safe_groups)}"
+                    "JOIN med m2 ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m2.{g}" for g in safe_groups)
+                    + " JOIN mad s ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
                 )
                 if group_by
                 else ", med m2, mad s"
@@ -1539,7 +1692,7 @@ def detect_anomalies(
             f"LIMIT {effective_limit + 1}"
         )
 
-        result = con.execute(query).fetchall()
+        result = execute(query).fetchall()
         truncated = len(result) > effective_limit
         result = result[:effective_limit]
         row_count = len(result)
@@ -1565,7 +1718,7 @@ def detect_anomalies(
         }
 
         if row_count == 0:
-            stats_row = con.execute(
+            stats_row = execute(
                 f"SELECT COUNT(*), COUNT(DISTINCT {safe_col}) "
                 f"FROM {safe_table} "
                 f"WHERE {safe_col} IS NOT NULL{filter_sql}"
@@ -1582,7 +1735,7 @@ def detect_anomalies(
                     f"не обнаружено (проверено значений: {total_vals})."
                 )
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="detect_anomalies",
                 params=params_dict,
@@ -1647,7 +1800,7 @@ def detect_anomalies(
         )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="detect_anomalies",
             params=params_dict,
@@ -1661,6 +1814,15 @@ def detect_anomalies(
             chart_hint=chart_hint,
             sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
@@ -1685,6 +1847,7 @@ def seasonality(
     period: int | None = None,
     filter: str | None = None,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Ищет сезонность STL-декомпозицией.
 
@@ -1693,9 +1856,11 @@ def seasonality(
     """
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         if freq not in _FREQ_UNITS:
             return _err(
                 error=ToolError(
@@ -1783,7 +1948,7 @@ def seasonality(
             f"WHERE {safe_time} IS NOT NULL{filter_sql} "
             f"GROUP BY 1 ORDER BY 1 ASC"
         )
-        raw = con.execute(query).fetchall()
+        raw = execute(query).fetchall()
 
         if len(raw) < 2 * period:
             return _err(
@@ -1807,12 +1972,32 @@ def seasonality(
             freq=_PANDAS_FREQ[freq],
         )
         gaps = len(full_idx) - len(df)
+        # An observed NULL is unknown, not an absent sum/count bucket.
+        # Do not invent zero-valued means, medians or other missing statistics.
+        if df["value"].isna().any() or (gaps > 0 and agg not in {"sum", "count"}):
+            return _err(
+                error=ToolError(
+                    code="missing_data",
+                    message=(
+                        "В ряду есть неизвестные значения. "
+                        "Для сезонности нужен полный числовой ряд."
+                    ),
+                    suggestion="Проверьте пропуски или выберите непрерывный период.",
+                )
+            )
         df = df.reindex(full_idx, fill_value=0.0)
         series = df["value"].astype(float)
+        if not np.isfinite(series.to_numpy()).all():
+            return _err(
+                error=ToolError(
+                    code="invalid_data", message="Ряд содержит нечисловые или бесконечные значения."
+                )
+            )
+        check_budget()
 
         if float(series.std()) == 0.0:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="seasonality",
                 params={
@@ -1836,6 +2021,9 @@ def seasonality(
 
         try:
             res = STL(series.to_numpy(), period=period, robust=True).fit()
+            check_budget()
+        except (TurnCancelled, TurnTimeout):
+            raise
         except Exception as e:
             return _err(
                 error=ToolError(
@@ -1847,6 +2035,12 @@ def seasonality(
         trend = np.asarray(res.trend, dtype=float)
         seasonal = np.asarray(res.seasonal, dtype=float)
         resid = np.asarray(res.resid, dtype=float)
+        if not all(np.isfinite(values).all() for values in (trend, seasonal, resid)):
+            return _err(
+                error=ToolError(
+                    code="invalid_data", message="STL не вернул конечные числовые значения."
+                )
+            )
 
         var_r = float(np.var(resid))
         var_sr = float(np.var(seasonal + resid))
@@ -1861,15 +2055,21 @@ def seasonality(
         amplitude = float(phase_means[peak_phase] - phase_means[trough_phase])
 
         rows = [
-            [ts.strftime("%Y-%m-%d"), float(v), float(t), float(s), float(r)]
+            [
+                ts.isoformat() if freq in {"hour", "minute"} else ts.strftime("%Y-%m-%d"),
+                float(v),
+                float(t),
+                float(s),
+                float(r),
+            ]
             for ts, v, t, s, r in zip(df.index, series, trend, seasonal, resid, strict=False)
         ]
 
         phase_label = ""
         if freq == "month" and period == 12:
-            phase_label = f" ({_RU_MONTHS[peak_phase]})"
+            phase_label = f" ({_RU_MONTHS[df.index[peak_phase].month - 1]})"
         elif freq == "day" and period == 7:
-            phase_label = f" ({_RU_WEEKDAYS[peak_phase]})"
+            phase_label = f" ({_RU_WEEKDAYS[df.index[peak_phase].weekday()]})"
 
         interp = "сильная" if strength_s >= 0.6 else "умеренная" if strength_s >= 0.3 else "слабая"
 
@@ -1914,7 +2114,7 @@ def seasonality(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="seasonality",
             params={
@@ -1928,8 +2128,9 @@ def seasonality(
             },
             data=ToolResultData(
                 columns=["time_bucket", "value", "trend", "seasonal", "resid"],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
             chart_hint=ChartHint(
@@ -1939,6 +2140,15 @@ def seasonality(
             ),
             sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
@@ -1961,13 +2171,16 @@ def segment_profile(
     filter: str | None = None,
     top_n: int = 100,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Сводка по группам: размер + mean/median/min/max/std по measures."""
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         if not group_by:
             return _err(
                 error=ToolError(
@@ -2031,25 +2244,30 @@ def segment_profile(
         for m in measures:
             safe_m = _quote_id(m)
             select_parts += [
-                f"AVG({safe_m}) AS {m}_mean",
-                f"MEDIAN({safe_m}) AS {m}_median",
-                f"MIN({safe_m}) AS {m}_min",
-                f"MAX({safe_m}) AS {m}_max",
-                f"STDDEV_POP({safe_m}) AS {m}_std",
+                f"AVG({safe_m}) AS {_quote_id(m + '_mean')}",
+                f"MEDIAN({safe_m}) AS {_quote_id(m + '_median')}",
+                f"MIN({safe_m}) AS {_quote_id(m + '_min')}",
+                f"MAX({safe_m}) AS {_quote_id(m + '_max')}",
+                f"STDDEV_POP({safe_m}) AS {_quote_id(m + '_std')}",
             ]
 
         effective_limit = min(top_n, get_limits().sql_max_rows)
         n_group = len(group_by)
         group_positions = ", ".join(str(i) for i in range(1, n_group + 1))
 
-        query = (
+        base_query = (
             f"SELECT {', '.join(select_parts)} FROM {safe_table} "
-            f"WHERE 1=1{filter_sql} "
-            f"GROUP BY {group_positions} "
-            f"ORDER BY segment_size DESC "
-            f"LIMIT {effective_limit + 1}"
+            f"WHERE 1=1{filter_sql} GROUP BY {group_positions}"
         )
-        raw = con.execute(query).fetchall()
+        query = f"{base_query} ORDER BY segment_size DESC LIMIT {effective_limit + 1}"
+        summary_columns = ["COUNT(*)", "COALESCE(SUM(segment_size), 0)"]
+        for measure in measures:
+            mean_alias = _quote_id(measure + "_mean")
+            summary_columns.extend([f"MAX({mean_alias})", f"MIN({mean_alias})"])
+        summary = execute(
+            f"SELECT {', '.join(summary_columns)} FROM ({base_query}) segments"
+        ).fetchone()
+        raw = execute(query).fetchall()
         truncated = len(raw) > effective_limit
         raw = raw[:effective_limit]
 
@@ -2073,7 +2291,7 @@ def segment_profile(
 
         if not raw:
             return ToolResult(
-                result_id=f"r_{uuid.uuid4().hex[:8]}",
+                result_id=f"r_{uuid.uuid4().hex}",
                 status="empty",
                 tool="segment_profile",
                 params=params_dict,
@@ -2094,13 +2312,14 @@ def segment_profile(
             )
 
         rows = [list(r) for r in raw]
-        total_rows = sum(r[n_group] for r in rows)
+        total_rows = int(summary[1])
+        segment_count = int(summary[0])
 
         facts: list[Fact] = [
             Fact(
-                text=f"Всего сегментов: {len(rows)}, строк в них: {total_rows}.",
+                text=f"Всего сегментов: {segment_count}, строк в них: {total_rows}.",
                 kind="segment_summary",
-                values={"segment_count": len(rows), "total_rows": total_rows},
+                values={"segment_count": segment_count, "total_rows": total_rows},
             ),
         ]
 
@@ -2133,23 +2352,17 @@ def segment_profile(
             )
 
         for i, m in enumerate(measures):
-            mean_idx = n_group + 1 + i * 5
-            valid = [r for r in rows if r[mean_idx] is not None]
-            if not valid:
+            max_mean, min_mean = summary[2 + 2 * i : 4 + 2 * i]
+            if max_mean is None:
                 continue
-            mx = max(valid, key=lambda r: r[mean_idx])
-            mn = min(valid, key=lambda r: r[mean_idx])
             facts.append(
                 Fact(
-                    text=f"{m}: максимум среднего {round(float(mx[mean_idx]), 4)} "
-                    f"(сегмент {[mx[j] for j in range(n_group)]}), "
-                    f"минимум {round(float(mn[mean_idx]), 4)}.",
+                    text=(
+                        f"{m}: по всем сегментам максимум среднего {round(float(max_mean), 4)}, "
+                        f"минимум {round(float(min_mean), 4)}."
+                    ),
                     kind="segment_measure",
-                    values={
-                        "measure": m,
-                        "max_mean": float(mx[mean_idx]),
-                        "min_mean": float(mn[mean_idx]),
-                    },
+                    values={"measure": m, "max_mean": float(max_mean), "min_mean": float(min_mean)},
                 )
             )
 
@@ -2162,7 +2375,7 @@ def segment_profile(
             )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="segment_profile",
             params=params_dict,
@@ -2176,6 +2389,15 @@ def segment_profile(
             chart_hint=chart_hint,
             sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
@@ -2200,13 +2422,16 @@ def compare_segments(
     filter: str | None = None,
     alpha: float = 0.05,
     connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
 ) -> ToolResult:
     """Сравнивает группы a и b: t-test + Cohen's d (числовые) / χ² + Cramér's V."""
     started = time.perf_counter()
     con = connection if connection is not None else _get_mock_connection()
-    timer = threading.Timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
     timer.start()
     try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
         if not measures:
             return _err(
                 error=ToolError(
@@ -2242,26 +2467,6 @@ def compare_segments(
 
         safe_table = _quote_id(table)
         safe_seg = _quote_id(segment_col)
-        check = con.execute(
-            f"SELECT {safe_seg}, COUNT(*) FROM {safe_table} WHERE {safe_seg} IN (?, ?) GROUP BY 1",
-            [a, b],
-        ).fetchall()
-        counts = dict(check)
-        if counts.get(a, 0) == 0:
-            return _err(
-                error=ToolError(
-                    code="invalid_parameter",
-                    message=f"Значение '{a}' не найдено в колонке '{segment_col}'.",
-                )
-            )
-        if counts.get(b, 0) == 0:
-            return _err(
-                error=ToolError(
-                    code="invalid_parameter",
-                    message=f"Значение '{b}' не найдено в колонке '{segment_col}'.",
-                )
-            )
-
         try:
             filter_expr = _parse_filter_sql(filter)
         except ValueError as e:
@@ -2272,6 +2477,25 @@ def compare_segments(
                 )
             )
         filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        count_row = execute(
+            f"SELECT COUNT(*) FILTER (WHERE {safe_seg} = ?), "
+            f"COUNT(*) FILTER (WHERE {safe_seg} = ?), COUNT(DISTINCT {safe_seg}) "
+            f"FROM {safe_table} WHERE {safe_seg} IN (?, ?){filter_sql}",
+            [a, b, a, b],
+        ).fetchone()
+        counts = {a: count_row[0], b: count_row[1]}
+        if not count_row[0] or not count_row[1]:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Сегмент '{a if not count_row[0] else b}' отсутствует после фильтра.",
+                )
+            )
+        if count_row[2] < 2:
+            return _err(
+                error=ToolError(code="invalid_parameter", message="Выберите два разных сегмента.")
+            )
 
         try:
             from scipy import stats
@@ -2302,7 +2526,7 @@ def compare_segments(
             if is_numeric:
                 a_vals = [
                     float(r[0])
-                    for r in con.execute(
+                    for r in execute(
                         f"SELECT {safe_m} FROM {safe_table} "
                         f"WHERE {safe_seg} = ? AND {safe_m} IS NOT NULL{filter_sql}",
                         [a],
@@ -2310,7 +2534,7 @@ def compare_segments(
                 ]
                 b_vals = [
                     float(r[0])
-                    for r in con.execute(
+                    for r in execute(
                         f"SELECT {safe_m} FROM {safe_table} "
                         f"WHERE {safe_seg} = ? AND {safe_m} IS NOT NULL{filter_sql}",
                         [b],
@@ -2343,12 +2567,6 @@ def compare_segments(
 
                 mean_a = float(np.mean(a_vals))
                 mean_b = float(np.mean(b_vals))
-                try:
-                    _, p_val = stats.ttest_ind(a_vals, b_vals, equal_var=False)
-                    p_val = float(p_val)
-                except Exception:
-                    p_val = None
-
                 var_a = float(np.var(a_vals, ddof=1))
                 var_b = float(np.var(b_vals, ddof=1))
                 n_a, n_b = len(a_vals), len(b_vals)
@@ -2357,17 +2575,39 @@ def compare_segments(
                     if (n_a + n_b > 2)
                     else 0.0
                 )
-                d = (mean_a - mean_b) / pooled if pooled > 0 else 0.0
+                p_val = None
+                if pooled > 0:
+                    check_budget()
+                    _, probability = stats.ttest_ind(a_vals, b_vals, equal_var=False)
+                    p_val = float(probability) if np.isfinite(probability) else None
+                d = (mean_a - mean_b) / pooled if pooled > 0 else None
+                effect_name = "cohens_d" if d is not None else "undefined_effect"
+                p_val = (
+                    p_val if d is not None and p_val is not None and np.isfinite(p_val) else None
+                )
                 significant = p_val is not None and p_val < alpha
+                verdict = (
+                    "вывод недоступен"
+                    if p_val is None
+                    else "значимо"
+                    if significant
+                    else "не значимо"
+                )
+                effect_text = (
+                    f"Cohen's d={round(d, 3)} ({_cohens_d_label(d)})"
+                    if d is not None
+                    else "t-test и размер эффекта не определены при нулевой совместной дисперсии"
+                )
+                check_budget()
 
                 facts.append(
                     Fact(
                         text=(
                             f"{measure}: mean(A)={round(mean_a, 4)}, "
                             f"mean(B)={round(mean_b, 4)}, "
-                            f"Cohen's d={round(d, 3)} ({_cohens_d_label(d)}), "
+                            f"{effect_text}, "
                             f"p={round(p_val, 6) if p_val is not None else '—'} — "
-                            f"{'значимо' if significant else 'не значимо'}."
+                            f"{verdict}."
                         ),
                         kind="compare_numeric",
                         values={
@@ -2391,28 +2631,28 @@ def compare_segments(
                         d,
                         p_val,
                         significant,
-                        "cohens_d",
+                        effect_name,
                     ]
                 )
 
             else:
                 a_counts = {
-                    str(k): int(v)
-                    for k, v in con.execute(
+                    k: int(v)
+                    for k, v in execute(
                         f"SELECT {safe_m}, COUNT(*) FROM {safe_table} "
                         f"WHERE {safe_seg} = ?{filter_sql} GROUP BY 1",
                         [a],
                     ).fetchall()
                 }
                 b_counts = {
-                    str(k): int(v)
-                    for k, v in con.execute(
+                    k: int(v)
+                    for k, v in execute(
                         f"SELECT {safe_m}, COUNT(*) FROM {safe_table} "
                         f"WHERE {safe_seg} = ?{filter_sql} GROUP BY 1",
                         [b],
                     ).fetchall()
                 }
-                categories = sorted(set(a_counts) | set(b_counts))
+                categories = list(dict.fromkeys([*a_counts, *b_counts]))
                 cont = [
                     [a_counts.get(c, 0) for c in categories],
                     [b_counts.get(c, 0) for c in categories],
@@ -2443,14 +2683,47 @@ def compare_segments(
                     )
                     continue
                 try:
-                    chi2, p_val, _, _ = stats.chi2_contingency(cont)
+                    chi2, p_val, _, expected = stats.chi2_contingency(cont)
+                    if np.any(expected < 5):
+                        rows.append(
+                            [
+                                measure,
+                                "categorical",
+                                n_a_tot,
+                                n_b_tot,
+                                None,
+                                None,
+                                None,
+                                None,
+                                False,
+                                "insufficient_data",
+                            ]
+                        )
+                        facts.append(
+                            Fact(
+                                text=f"{measure}: ожидаемые частоты меньше 5; χ² неприменим.",
+                                kind="compare_skip",
+                                values={"measure": measure},
+                            )
+                        )
+                        continue
+                    check_budget()
                     p_val = float(p_val)
                     v = float(np.sqrt(chi2 / (n_a_tot + n_b_tot)))
+                except (TurnCancelled, TurnTimeout):
+                    raise
                 except Exception:
                     p_val = None
                     v = None
 
                 significant = p_val is not None and p_val < alpha
+                verdict = (
+                    "вывод недоступен"
+                    if p_val is None
+                    else "значимо"
+                    if significant
+                    else "не значимо"
+                )
                 top_a = max(a_counts, key=a_counts.get) if a_counts else None
                 top_b = max(b_counts, key=b_counts.get) if b_counts else None
 
@@ -2461,7 +2734,7 @@ def compare_segments(
                             f"топ в A='{top_a}', топ в B='{top_b}', "
                             f"Cramér's V={round(v, 3) if v is not None else '—'}, "
                             f"p={round(p_val, 6) if p_val is not None else '—'} — "
-                            f"{'значимо' if significant else 'не значимо'}."
+                            f"{verdict}."
                         ),
                         kind="compare_categorical",
                         values={
@@ -2490,7 +2763,7 @@ def compare_segments(
                 )
 
         return ToolResult(
-            result_id=f"r_{uuid.uuid4().hex[:8]}",
+            result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
             tool="compare_segments",
             params={
@@ -2515,11 +2788,21 @@ def compare_segments(
                     "significant",
                     "effect_size_name",
                 ],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
             duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
         )
     except Exception as e:
         return _err(error=ToolError(code="db_error", message=str(e)))
