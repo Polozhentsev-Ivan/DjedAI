@@ -58,10 +58,15 @@ test.afterAll(async () => { await stopBackend(); });
 test.beforeEach(async ({ page }, info) => { if (!info.title.startsWith('UI auth:')) await authenticate(page); });
 
 async function upload(page: Page, name: string, body: string, status = 'ready', extra = false) {
+  const files = { [name]: body };
+  if (extra) files['customers.csv'] = 'id,name\n1,Alice\n2,Bob\n';
+  return uploadFiles(page, files, status);
+}
+
+async function uploadFiles(page: Page, csv: Record<string, string>, status = 'ready') {
   await page.goto('/sources');
   const response = page.waitForResponse((r) => r.url().endsWith('/api/datasets/upload') && r.request().method() === 'POST');
-  const files = [{ name, mimeType: 'text/csv', buffer: Buffer.from(body) }];
-  if (extra) files.push({ name: 'customers.csv', mimeType: 'text/csv', buffer: Buffer.from('id,name\n1,Alice\n2,Bob\n') });
+  const files = Object.entries(csv).map(([name, body]) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(body) }));
   await page.getByTestId('csv-input').setInputFiles(files);
   const accepted = await response;
   expect(accepted.status()).toBe(202);
@@ -112,6 +117,72 @@ test('CSV → real HTTP model/SQL → result and history survive backend restart
   await expect(page.getByText('Строк: 2; сумма: 18.', { exact: true })).toHaveCount(1);
   expect(await (await apiGet(page, '/api/results/missing')).json()).toMatchObject({ error: { code: 'not_found' } });
   expect(await page.evaluate<number>('navigator.serviceWorker.getRegistrations().then(items => items.length)')).toBe(0);
+});
+
+interface CatalogColumn { name: string; original_name: string; semantic_type: string; null_ratio: number; description: string }
+/** The browser backend describes every catalog, so descriptions are always filled here. */
+interface Catalog {
+  summary: string;
+  tables: { table_id: string; description: string; columns: CatalogColumn[] }[];
+  relations: { from: { table: string; column: string }; to: { table: string; column: string }; overlap: number; cardinality: string }[];
+  warnings: string[];
+  transformations: { table: string; column: string | null; action: string }[];
+}
+
+const percent = (ratio: number) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(Math.round(ratio * 1000) / 10)}%`;
+
+test('catalog screen matches the catalog API: fields, descriptions, journal and relations graph', async ({ page }) => {
+  const id = await uploadFiles(page, {
+    'orders.csv': 'order_id,customer_id,amount,Комментарий клиента\n1,1,12,\n2,2,30,позвонить\n3,1,8,\n4,3,5,\n',
+    'customers.csv': 'id,name\n1,Alice\n2,Bob\n3,Eve\n',
+  });
+  const catalog = await (await apiGet(page, `/api/datasets/${id}/catalog`)).json() as Catalog;
+  expect(catalog.relations.map((r) => `${r.from.table}.${r.from.column}->${r.to.table}.${r.to.column}`)).toContain('orders.customer_id->customers.id');
+  await page.goto(`/catalog/${id}`);
+  await expect(page.getByText(catalog.summary, { exact: true })).toBeVisible();
+
+  for (const table of catalog.tables) {
+    await page.getByRole('tab', { name: new RegExp(`^${table.table_id}`) }).click();
+    await expect(page.getByText(table.description, { exact: true })).toBeVisible();
+    const rows = page.getByRole('table', { name: `Структура таблицы ${table.table_id}` }).getByRole('row');
+    await expect(rows).toHaveCount(table.columns.length + 1);
+    for (const [index, column] of table.columns.entries()) {
+      const cells = rows.nth(index + 1).getByRole('cell');
+      await expect(cells.nth(0)).toHaveText(column.original_name);
+      await expect(cells.nth(1)).toHaveText(column.name);
+      await expect(cells.nth(2)).toContainText(column.semantic_type);
+      await expect(cells.nth(3)).toHaveText(column.description);
+      await expect(cells.nth(4)).toHaveText(percent(column.null_ratio));
+    }
+  }
+
+  for (const warning of catalog.warnings) await expect(page.getByText(warning, { exact: true })).toBeVisible();
+  for (const t of catalog.transformations) {
+    await expect(page.getByText(`${[t.table, t.column].filter(Boolean).join('.')}: ${t.action}`).first()).toBeVisible();
+  }
+
+  const graph = page.getByRole('group', { name: 'Граф связей таблиц' });
+  await expect(graph.getByRole('button', { name: /^Таблица / })).toHaveCount(catalog.tables.length);
+  await expect(graph.getByRole('img')).toHaveCount(catalog.relations.length);
+  const bars = page.getByRole('progressbar', { name: 'Совпадение ключей' });
+  await expect(bars).toHaveCount(catalog.relations.length);
+  for (const [index, r] of catalog.relations.entries()) {
+    const name = `${r.from.table}.${r.from.column} → ${r.to.table}.${r.to.column}: `;
+    await expect(graph.getByRole('img', { name })).toContainText(`${r.cardinality} · ${percent(r.overlap)}`);
+    await expect(bars.nth(index)).toHaveAttribute('aria-valuenow', String(Math.round(r.overlap * 1000) / 10));
+  }
+  await graph.getByRole('button', { name: /^Таблица customers/ }).click();
+  await expect(page.getByRole('tab', { name: /^customers/ })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('catalog of a dataset without relations has no graph', async ({ page }) => {
+  const id = await uploadFiles(page, { 'orders.csv': 'id,amount\n1,12\n2,30\n' });
+  const catalog = await (await apiGet(page, `/api/datasets/${id}/catalog`)).json() as Catalog;
+  expect(catalog.relations).toEqual([]);
+  await page.goto(`/catalog/${id}`);
+  await expect(page.getByText('Связи между таблицами не найдены')).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Граф связей таблиц' })).toHaveCount(0);
+  await expect(page.getByRole('progressbar')).toHaveCount(0);
 });
 
 test('bad CSV and model failure terminate visibly; cancellation never retries POST', async ({ page }) => {
