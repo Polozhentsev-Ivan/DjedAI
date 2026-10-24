@@ -64,7 +64,7 @@ jobs:
       - name: Test auth migrations and persistence
         run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py
       - name: Test CP1 CSV and runtime integration
-        run: uv run --locked pytest --strict-markers tests/integration/test_csv_dataset_service.py tests/integration/test_csv_dataset_api.py tests/integration/test_cp1_runtime.py
+        run: uv run --locked pytest --strict-markers tests/integration/test_csv_dataset_service.py tests/integration/test_csv_dataset_api.py tests/integration/test_data_interface.py tests/integration/test_cp1_runtime.py
       - name: Test owned read-only PostgreSQL sources against a real server
         run: uv run --locked python scripts/test_postgres_isolation.py --output "$RUNNER_TEMP/postgres-isolation.json"
       - name: Test HTTP owner isolation and session revocation

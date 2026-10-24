@@ -4,6 +4,8 @@
 
 - [AUTH-4 / #104](decisions/104-browser-auth.md) — формы входа/регистрации, guard, выход и очистка личного workspace.
 
+- [B1-10 / #62](decisions/62-data-interface.md) — Python-интерфейс блока данных: `ingest_csv`/`connect_db`/`get_catalog`, статусы, ошибки, владелец и этап ClickHouse.
+
 - [AUTH-3 / #103 и PostgreSQL / #60](decisions/103-owner-isolation.md) — проверка владельца, SSE, SQL/файлы, ключ источников и границы следующих задач.
 
 - [Решения PL-1 / #47](decisions/47-contracts-and-runtime.md) — общие форматы,
