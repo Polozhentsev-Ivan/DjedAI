@@ -17,13 +17,21 @@ import duckdb
 
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.data.catalog_builder import build_csv_catalog, build_db_catalog
-from djedai.data.clickhouse import ClickHouseHttp, ClickHouseLimits, connect_clickhouse
+from djedai.data.clickhouse import (
+    ClickHouseHttp,
+    ClickHouseLimits,
+    connect_clickhouse,
+    open_session,
+)
+from djedai.data.clickhouse import list_tables as list_clickhouse_tables
 from djedai.data.csv_ingest import load_raw_csv
 from djedai.data.descriptions import ModelClient, describe_catalog
 from djedai.data.postgres import (
     PgConnectionInfo,
+    attach_postgres,
     connect_postgres,
     detach_postgres,
+    list_tables,
     read_db_sources,
 )
 from djedai.data.profiler import profile_table
@@ -35,6 +43,14 @@ from djedai.data.typed_views import create_typed_view
 class CsvSource:
     path: Path
     original_name: str
+
+
+@dataclass(frozen=True)
+class SourceCheck:
+    """A reachable source without its password and the tables it offers for connection."""
+
+    source: str
+    tables: tuple[tuple[str, int | None], ...]  # name accepted by connect, rows if known
 
 
 def ingest_csv_dataset(
@@ -203,4 +219,37 @@ def connect_clickhouse_dataset(
         relations=[relation.to_contract() for relation in relations.relations],
         warnings=list(relations.warnings),
         transformations=transformations,
+    )
+
+
+def check_postgres_source(dsn: str | PgConnectionInfo) -> SourceCheck:
+    """Attach read-only in a private memory database, list tables and detach; nothing is kept.
+
+    Tables in ``public`` are named without the schema, as ``connect_postgres`` accepts them.
+    """
+    with duckdb.connect() as connection:
+        info = attach_postgres(connection, dsn)
+        try:
+            tables = list_tables(connection)
+        finally:
+            detach_postgres(connection)
+    return SourceCheck(
+        info.describe(),
+        tuple(
+            (table if schema == "public" else f"{schema}.{table}", None) for schema, table in tables
+        ),
+    )
+
+
+def check_clickhouse_source(
+    dsn: str | ClickHouseHttp, limits: ClickHouseLimits | None = None
+) -> SourceCheck:
+    """Open a read-only ClickHouse session and list its tables with server row counts."""
+    session = open_session(dsn, limits)
+    return SourceCheck(
+        session.client.describe(),
+        tuple(
+            (table.name, table.rows if table.rows >= 0 else None)
+            for table in list_clickhouse_tables(session)
+        ),
     )

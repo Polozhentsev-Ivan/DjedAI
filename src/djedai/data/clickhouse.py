@@ -240,10 +240,15 @@ class ClickHouseHttp:  # HTTP-интерфейс ClickHouse; пароль не �
                 raise SourceTooLargeError(
                     "источник больше порога загрузки — уменьшите выбор таблиц"
                 ) from None
+            if "(AUTHENTICATION_FAILED)" in detail:
+                raise ClickHouseError("неверный пользователь или пароль") from None
+            if "(UNKNOWN_DATABASE)" in detail:
+                raise ClickHouseError(f"база данных «{self.database}» не найдена") from None
             raise ClickHouseError(f"{self.describe()}: {self._hide(detail)}") from None
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
-            message = f"не удалось подключиться к {self.describe()}: {self._hide(str(reason))}"
+            address = f"{self.host}:{self.port}"
+            message = f"сервер {address} недоступен ({self._hide(str(reason))})"
             raise ClickHouseError(message) from None
 
     def _hide(self, text: str) -> str:

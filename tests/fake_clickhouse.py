@@ -103,7 +103,10 @@ class FakeClickHouse:
     def answer(self, sql: str, params: dict[str, str], auth: str) -> tuple[int, bytes]:
         token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
         if auth != f"Basic {token}":
-            return 516, f"Code: 516. DB::Exception: {self.user}: Authentication failed".encode()
+            return 516, (
+                f"Code: 516. DB::Exception: {self.user}: Authentication failed: password is "
+                "incorrect, or there is no user with such name. (AUTHENTICATION_FAILED)"
+            ).encode()
         if "readonly" in params and self.readonly == "1":
             return 500, b"Code: 164. DB::Exception: Cannot modify 'readonly' setting. (READONLY)"
         con = self.connection.cursor()

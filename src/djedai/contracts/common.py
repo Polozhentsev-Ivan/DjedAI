@@ -70,3 +70,34 @@ class ConnectRequest(BaseModel):
     kind: Literal["postgres", "clickhouse"]
     dsn: SecretStr = Field(min_length=1, max_length=8192)
     tables: list[str] | None = Field(default=None, max_length=100)
+
+
+class SourceCheckRequest(BaseModel):
+    """Database source to probe before connecting; nothing is stored."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["postgres", "clickhouse"]
+    dsn: SecretStr = Field(min_length=1, max_length=8192)
+
+
+class SourceTable(BaseModel):
+    """A table offered for connection; ``name`` is passed back in ``ConnectRequest.tables``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    row_count: int | None = Field(
+        default=None, ge=0, description="Оценка числа строк, если источник её знает"
+    )
+
+
+class SourceCheckResult(BaseModel):
+    """A reachable read-only source and its tables; the DSN and password are not echoed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["postgres", "clickhouse"]
+    source: str = Field(description="Адрес без пароля: user@host:port/database")
+    tables: list[SourceTable]
+    truncated: bool = Field(default=False, description="Таблиц больше, чем показано")
