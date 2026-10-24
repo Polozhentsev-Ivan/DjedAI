@@ -108,6 +108,7 @@ describe('CP1 chat integration', () => {
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Остановить' })).not.toBeInTheDocument(); });
     expect(screen.getAllByText('Всего 42 строки')).toHaveLength(1);
     expect(document.querySelectorAll('[data-role="user"]')).toHaveLength(1);
+    expect(stream.aborted()).toBe(false);
   });
 
   it('stops the POST stream without repeating it', async () => {

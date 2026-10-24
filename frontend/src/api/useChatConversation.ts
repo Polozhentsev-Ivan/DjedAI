@@ -44,12 +44,12 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
   context.current = { chatId, datasetId };
   const [turns, setTurns] = useState<LocalTurn[]>([]);
   // A late stream/cancel completion must never release a newer turn.
-  const finish = useCallback((current: Run) => {
+  const finish = useCallback((current: Run, closeStream = true) => {
     if (run.current !== current) return false;
     run.current = null;
     clearTimeout(current.stopTimer);
     setTurns((values) => values.map((value) => value.messageId === current.messageId ? { ...value, running: false } : value));
-    current.controller.abort();
+    if (closeStream) current.controller.abort();
     return true;
   }, []);
 
@@ -181,7 +181,8 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
     } catch (error) {
       update(current, (value) => ({ ...value, blocks: [], resultIds: [], error: failure(error) }));
     } finally {
-      if (finish(current)) void recover(current);
+      // streamEvents already closed its reader on done/error; preserve a clean EOF.
+      if (finish(current, false)) void recover(current);
     }
     return true;
   };

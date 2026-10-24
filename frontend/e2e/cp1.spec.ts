@@ -374,6 +374,14 @@ test('persisted success closes a held SSE and accepts the next question exactly 
   }
 });
 
+test('production smoke observes completed streams and persisted question outcomes', ({ baseURL }, info) => {
+  const output = execFileSync(process.execPath, ['frontend/scripts/smoke-cp1.mjs', '--url', baseURL ?? 'http://127.0.0.1:4173', '--output', info.outputPath('smoke')], {
+    cwd: root, encoding: 'utf8', windowsHide: true, timeout: 45000,
+    env: { ...process.env, DJEDAI_SMOKE_USERNAME: `smoke-${randomUUID()}`, DJEDAI_SMOKE_PASSWORD: 'browser-smoke-regression' },
+  });
+  expect(output).toContain('PASS:');
+});
+
 test('two browser sessions isolate same-named CSVs, chats, results and SSE', async ({ page, browser }) => {
   const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
   const other = await context.newPage();
