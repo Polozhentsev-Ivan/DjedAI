@@ -17,22 +17,35 @@ export function specialOption(spec: Spec, data: Data, t: ChartTheme): EChartsCor
   const tooltip = { ...tooltipBox(t), trigger: 'item' };
 
   if (spec.type === 'scatter') {
-    const groups = spec.color ? values(data, column(data, spec.color.field)).map(categoryLabel) : x.map(() => '');
-    const names = [...new Set(groups)];
+    const groups = spec.color ? values(data, column(data, spec.color.field)) : x.map(() => '');
+    const categories = [...new Set(groups)];
+    const ambiguousLabels = new Set(categories.map(categoryLabel)).size !== categories.length;
+    const labels = categories.map((group) => {
+      if (!ambiguousLabels) return categoryLabel(group);
+      if (group === null) return 'Нет значения (пропуск)';
+      const type = typeof group === 'string' ? 'строка' : typeof group === 'number' ? 'число' : 'логическое';
+      return `${JSON.stringify(group)} (${type})`;
+    });
+    // ECharts selects legend items by series name; display labels are not category identities.
+    const seriesLabels = new Map<string, string>();
+    const series = measures.flatMap((measure, measureIndex) => categories.map((group, groupIndex) => {
+      const ys = values(data, column(data, measure.field));
+      const name = `scatter:${measureIndex}:${groupIndex}`;
+      seriesLabels.set(name, [labels[groupIndex], measure.label ?? measure.field].filter(Boolean).join(' · '));
+      return {
+        name, type: 'scatter', symbolSize: 9,
+        itemStyle: { opacity: 0.8 }, emphasis: { focus: 'series' },
+        data: x.flatMap((v, i) => numeric(v) && numeric(ys[i]) && groups[i] === group ? [[v, ys[i]]] : []),
+      };
+    }));
+    const seriesLabel = (name: string) => seriesLabels.get(name) ?? name;
     return {
       ...base, grid,
-      legend: spec.color || measures.length > 1 ? { type: 'scroll', textStyle: { color: t.ink }, top: 0 } : undefined,
+      legend: spec.color || measures.length > 1 ? { type: 'scroll', textStyle: { color: t.ink }, top: 0, formatter: seriesLabel } : undefined,
       xAxis: { ...value, name: spec.x?.label ?? spec.x?.field, nameLocation: 'middle', nameGap: 26, nameTextStyle: { color: t.muted, align: 'center' }, axisLabel: { color: t.muted, formatter: (v: number) => measureLabel(v, undefined, 0) } },
       yAxis: { ...value, name: first?.label ?? first?.field },
-      tooltip: { ...tooltip, formatter: (p: { value: number[]; seriesName: string; seriesIndex: number }) => `${escapeHtml(p.seriesName)}<br/>${escapeHtml(spec.x?.label ?? spec.x?.field ?? '')}: <b>${escapeHtml(measureLabel(p.value[0] ?? null, undefined, 0))}</b><br/>${escapeHtml(measureLabel(p.value[1] ?? null, measures[Math.floor(p.seriesIndex / names.length)], scale))}` },
-      series: measures.flatMap((measure) => names.map((name) => {
-        const ys = values(data, column(data, measure.field));
-        return {
-          name: [name, measure.label ?? measure.field].filter(Boolean).join(' · '), type: 'scatter', symbolSize: 9,
-          itemStyle: { opacity: 0.8 }, emphasis: { focus: 'series' },
-          data: x.flatMap((v, i) => numeric(v) && numeric(ys[i]) && groups[i] === name ? [[v, ys[i]]] : []),
-        };
-      })),
+      tooltip: { ...tooltip, formatter: (p: { value: number[]; seriesName: string; seriesIndex: number }) => `${escapeHtml(seriesLabel(p.seriesName))}<br/>${escapeHtml(spec.x?.label ?? spec.x?.field ?? '')}: <b>${escapeHtml(measureLabel(p.value[0] ?? null, undefined, 0))}</b><br/>${escapeHtml(measureLabel(p.value[1] ?? null, measures[Math.floor(p.seriesIndex / categories.length)], scale))}` },
+      series,
     };
   }
   if (spec.type === 'heatmap') {

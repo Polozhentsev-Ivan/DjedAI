@@ -23,6 +23,7 @@ interface Option {
   xAxis: { type: string; data: string[] };
   yAxis: { data: string[] };
   series: { type: string; name: string; data: unknown[]; stack?: string; markPoint?: { data: unknown[] } }[];
+  legend: { formatter: (name: string) => string };
   tooltip: { formatter: (point: never) => string };
   visualMap: { min: number; max: number };
 }
@@ -64,6 +65,28 @@ describe('data mapping without client-side analytical calculations', () => {
     const option = specOption(spec, { ...data, rows: [...(data.rows ?? []), [null, 5, 'Москва'], [1, null, 'Казань'], [0, 0, 'Казань']] }, theme) as unknown as Option;
     expect(option.xAxis.type).toBe('value');
     expect(option.series.map((s) => s.data)).toEqual([[[12, 820], [25, 950], [40, 1250]], [[18, 760], [32, 1100], [0, 0]]]);
+    expect(option.series.map((s) => option.legend.formatter(s.name))).toEqual(['Москва · Средний чек, ₽', 'Казань · Средний чек, ₽']);
+  });
+
+  it.each([
+    [null, 'Нет значения', 'Нет значения (пропуск)', '"Нет значения" (строка)'],
+    [1, '1', '1 (число)', '"1" (строка)'],
+    [true, 'true', 'true (логическое)', '"true" (строка)'],
+  ] as const)('keeps scatter categories %s and %s separate despite matching display labels', (first, second, firstLabel, secondLabel) => {
+    const { spec } = example('scatter');
+    const data = { columns: ['orders', 'average', 'region'], rows: [[1, 10, first], [2, 20, second], [3, 30, first]] };
+    expect(dataError(spec, data)).toBeUndefined();
+    const option = specOption(spec, data, theme) as unknown as Option;
+    expect(option.series.map((s) => s.data)).toEqual([[[1, 10], [3, 30]], [[2, 20]]]);
+    expect(new Set(option.series.map((s) => s.name)).size).toBe(2);
+    expect(option.series.map((s) => option.legend.formatter(s.name))).toEqual([
+      `${firstLabel} · Средний чек, ₽`, `${secondLabel} · Средний чек, ₽`,
+    ]);
+    option.series.forEach((series, seriesIndex) => {
+      const tooltip = document.createElement('div');
+      tooltip.innerHTML = option.tooltip.formatter({ value: series.data[0], seriesName: series.name, seriesIndex } as never);
+      expect(tooltip.textContent).toContain(option.legend.formatter(series.name));
+    });
   });
 
   it('renders ready histogram intervals and frequencies without binning', () => {
@@ -127,6 +150,16 @@ describe('data mapping without client-side analytical calculations', () => {
     const { spec, data } = example('scatter');
     const option = specOption({ ...spec, color: null, y: [{ field: 'average', format: 'money' }, { field: 'orders', format: 'percent' }] }, data, theme) as unknown as Option;
     expect(option.tooltip.formatter({ value: [12, 12.5], seriesName: 'Доля', seriesIndex: 1 } as never)).toContain('12,5%');
+  });
+
+  it('keeps measure formats across typed scatter groups', () => {
+    const { spec } = example('scatter');
+    const data = { columns: ['orders', 'average', 'region'], rows: [[1, 10, null], [2, 20, 'Нет значения']] };
+    const option = specOption({ ...spec, y: [...(spec.y ?? []), { field: 'orders', label: 'Доля', format: 'percent' }] }, data, theme) as unknown as Option;
+    expect(option.series.map((s) => s.data)).toEqual([[[1, 10]], [[2, 20]], [[1, 1]], [[2, 2]]]);
+    expect(new Set(option.series.map((s) => s.name)).size).toBe(4);
+    expect(plain(option.tooltip.formatter({ value: [2, 20], seriesName: option.series[1]!.name, seriesIndex: 1 } as never))).toContain('20 ₽');
+    expect(option.tooltip.formatter({ value: [2, 2], seriesName: option.series[3]!.name, seriesIndex: 3 } as never)).toContain('2%');
   });
 
   it('preserves gaps in a heatmap and handles a constant zero scale', () => {

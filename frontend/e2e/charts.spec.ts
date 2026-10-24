@@ -33,6 +33,40 @@ async function examplesApi(page: Page) {
 
 test.beforeEach(async ({ page }) => { await examplesApi(page); });
 
+test('scatter legend toggles missing and literal categories independently', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.route('**/api/results/r_scatter/data', (route) => route.fulfill({ json: {
+    columns: ['orders', 'average', 'region'], rows: [[1, 10, null], [2, 20, 'Нет значения']], row_count: 2, truncated: false,
+  } satisfies Schemas['ResultData'] }));
+  await page.goto('/chat/c_charts');
+  const scatter = page.getByRole('img', { name: /Заказы и средний чек/ });
+  await scatter.scrollIntoViewIfNeeded();
+  const missing = scatter.getByText('Нет значения (пропуск) · Средний чек, ₽', { exact: true });
+  const literal = scatter.getByText('"Нет значения" (строка) · Средний чек, ₽', { exact: true });
+  await expect(missing).toBeVisible();
+  await expect(literal).toBeVisible();
+  // Count scatter's unit-circle markers, excluding axes and larger legend icons.
+  const points = scatter.locator('svg path[d^="M1 0A1 1"]');
+  await expect(points).toHaveCount(2);
+  await missing.click();
+  await expect(points).toHaveCount(1);
+  await literal.click();
+  await expect(points).toHaveCount(0);
+  await missing.click();
+  await expect(points).toHaveCount(1);
+  await literal.click();
+  await expect(points).toHaveCount(2);
+  await page.mouse.move(0, 0);
+  let previousFrame = '';
+  await expect.poll(async () => {
+    const frame = await scatter.locator('svg').innerHTML();
+    const settled = frame === previousFrame;
+    previousFrame = frame;
+    return settled;
+  }, { intervals: [100] }).toBe(true);
+  await scatter.screenshot({ path: info.outputPath('scatter-distinct-categories.png') });
+});
+
 test('all ten manual specs render through the production chat and result data API', async ({ page }, info) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
