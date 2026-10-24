@@ -4,6 +4,7 @@ from typing import Any, Literal, TypedDict
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field
 
+from djedai.analytics.metrics import TIME_GRAINS, MetricContext, compute_metric
 from djedai.analytics.tools import (
     compare_segments,
     describe_column,
@@ -296,6 +297,44 @@ class CompareSegmentsParams(BaseModel):
     )
 
 
+class MetricFilterParam(BaseModel):
+    column: str = Field(description="Колонка вида таблица.колонка")
+    op: Literal["eq", "ne", "in", "not_in", "gt", "gte", "lt", "lte", "is_null", "not_null"]
+    value: Any = Field(default=None, description="Значение; для in/not_in — список")
+
+
+class ComputeMetricParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "metric_id": "revenue",
+                    "group_by": ["customers.segment"],
+                    "period_start": "2023-01-01",
+                    "period_end": "2024-01-01",
+                    "time_grain": "month",
+                }
+            ]
+        }
+    )
+
+    metric_id: str = Field(description="ID подтверждённой метрики из раздела «Метрики»")
+    group_by: list[str] = Field(
+        default_factory=list, description="Колонки разбивки вида таблица.колонка"
+    )
+    period_start: str | None = Field(default=None, description="Начало периода ISO, включительно")
+    period_end: str | None = Field(default=None, description="Конец периода ISO, не включительно")
+    time_grain: Literal[TIME_GRAINS] | None = Field(  # type: ignore[valid-type]
+        default=None, description="Разбивка по календарю метрики"
+    )
+    currency: str | None = Field(
+        default=None, description="Валюта, если метрика хранит валюту в колонке"
+    )
+    filters: list[MetricFilterParam] = Field(
+        default_factory=list, description="Дополнительные условия вопроса"
+    )
+
+
 class ToolDefinition(BaseModel):
     """Внутреннее описание инструмента с моделью для валидации параметров."""
 
@@ -391,6 +430,16 @@ TOOLS_REGISTRY = [
         ),
         parameters_model=CompareSegmentsParams,
     ),
+    ToolDefinition(
+        name="compute_metric",
+        description=(
+            "Считает подтверждённую бизнес-метрику по её определению: на своём grain, "
+            "с популяцией, валютой и календарём из определения. Для подтверждённых метрик "
+            "используйте его вместо run_sql. Неопределённая метрика, размножение строк JOIN, "
+            "потеря строк или смешанные валюты возвращают ошибку для уточнения."
+        ),
+        parameters_model=ComputeMetricParams,
+    ),
 ]
 
 
@@ -417,7 +466,11 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
     "seasonality": seasonality,
     "segment_profile": segment_profile,
     "compare_segments": compare_segments,
+    "compute_metric": compute_metric,
 }
+
+
+_SEMANTIC_TOOLS = {"compute_metric"}
 
 
 def execute_tool(
@@ -426,8 +479,13 @@ def execute_tool(
     *,
     connection: duckdb.DuckDBPyConnection | None = None,
     allowed_tables: Collection[str] | None = None,
+    semantics: MetricContext | None = None,
 ) -> ToolResult:
-    """Валидирует параметры и выполняет инструмент из реестр."""
+    """Валидирует параметры и выполняет инструмент из реестр.
+
+    ``semantics`` — каталог и подтверждённые метрики датасета (B2-9): их получают
+    ``compute_metric`` и защита ``run_sql`` от размножения строк.
+    """
     definition = next((tool for tool in TOOLS_REGISTRY if tool.name == tool_name), None)
     if definition is None:
         raise ValueError(f"Инструмент '{tool_name}' не зарегистрирован")
@@ -446,6 +504,8 @@ def execute_tool(
         arguments["allowed_tables"] = allowed_tables
     if connection is not None:
         arguments["connection"] = connection
+    if tool_name in _SEMANTIC_TOOLS:
+        arguments["semantics"] = semantics
     result = TOOL_FUNCTIONS[tool_name](**arguments)
     if (
         allowed_tables is not None
