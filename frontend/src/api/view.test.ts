@@ -54,15 +54,47 @@ describe('column views', () => {
     expect(columnNote(column('customer_id'), orders, relations)).toBe('Связь с customers.id');
     expect(columnNote(column('payment_date'), orders, relations)).toBe('Формат ДД.ММ.ГГГГ');
     expect(columnNote(column('status'), orders, relations)).toBe('4 значения');
+    const parsed = (format: string) => columnNote({ ...column('amount'), parse: { format, success_ratio: 1 } }, orders, relations);
+    expect(parsed('decimal_comma, RUB')).toBe('Десятичная запятая');
+    expect(parsed('decimal_point')).toBe('Десятичная точка');
+    expect(parsed('iso')).toBe('Формат iso');
     expect(columnNote(column('amount'), orders, relations)).toBe('—');
     expect(humanFormat('%d.%m.%Y %H:%M')).toBe('ДД.ММ.ГГГГ ЧЧ:ММ');
   });
 
   it('builds the journal and relations', () => {
-    expect(journal(ordersCatalog).map((j) => j.level)).toEqual(['info', 'info', 'info', 'warning']);
+    expect(journal(ordersCatalog)).toEqual([
+      { level: 'info', text: 'orders: 3 колонки получили системные имена — соответствие показано в структуре таблицы' },
+      { level: 'info', text: 'orders.order_id: оставлена текстом: ведущие нули — это идентификатор' },
+      { level: 'info', text: 'orders.amount: распознаны денежные суммы, валюта RUB, десятичный разделитель «,» — 100% непустых значений' },
+      { level: 'info', text: 'orders.payment_date: распознаны даты, формат ДД.ММ.ГГГГ — 99,9% непустых значений' },
+      { level: 'warning', text: 'orders.payment_date: 12 значений не распознаны как даты и заменены на пустые, например «не указана», «потом»' },
+      { level: 'warning', text: 'Модель не описала в customers: region' },
+    ]);
     const [relation] = relationViews(ordersCatalog);
     expect(relation).toMatchObject({ from: { label: 'Клиент', column: 'orders.customer_id' }, to: { label: 'ID клиента' }, overlap: 99.8 });
     expect(relation?.note).toBe('Многие к одному · уверенность высокая');
+  });
+
+  it('explains every journal action in words and keeps unknown ones as is', () => {
+    const entry = (action: string, detail: Record<string, unknown>, column: string | null = 'c') =>
+      journal({ ...ordersCatalog, warnings: [], transformations: [{ table: 't', column, action, detail }] });
+    expect(entry('rename_column', { from: 'Цена', to: 'price' })).toEqual([{ level: 'info', text: 't: колонка «Цена» получила системное имя price' }]);
+    expect(entry('rename_column', {})[0]?.text).toBe('t: колонка «» получила системное имя c');
+    expect(entry('keep_text', { reason: 'text' })).toEqual([]);
+    expect(entry('keep_text', { reason: 'unsupported_type', type: 'INTERVAL' })[0]?.text).toBe('t.c: оставлена текстом: тип источника не поддерживается (INTERVAL)');
+    expect(entry('keep_text', { reason: 'mixed_currencies', currencies: ['RUB', 'USD'] })[0]?.text).toBe('t.c: оставлена текстом: в колонке смешаны валюты (currencies: RUB, USD)');
+    expect(entry('keep_text', { reason: 'new_reason' })[0]?.text).toBe('t.c: оставлена текстом: new_reason');
+    expect(entry('keep_text', {})[0]?.text).toBe('t.c: оставлена текстом: ');
+    expect(entry('parse_bool', {})[0]?.text).toBe('t.c: распознаны логические значения');
+    expect(entry('unparsed_values', { target: 'weird' })[0]).toEqual({ level: 'warning', text: 't.c: 0 значений не распознаны как weird и заменены на пустые' });
+    expect(entry('unparsed_values', {})[0]?.text).toContain('как нужный тип');
+    expect(entry('cast_type', { from: 'TIMESTAMP WITH TIME ZONE', to: 'TIMESTAMP', timezone: 'UTC' })[0]?.text)
+      .toBe('t.c: тип TIMESTAMP WITH TIME ZONE приведён к TIMESTAMP, время переведено в UTC');
+    expect(entry('cast_type', { from: 'UUID', to: 'VARCHAR' })[0]?.text).toBe('t.c: тип UUID приведён к VARCHAR');
+    expect(entry('cast_type', {})[0]?.text).toBe('t.c: cast_type');
+    expect(entry('parse_vector', { size: 3 }, null)[0]?.text).toBe('t: parse_vector — size: 3');
+    expect(plain(tableMeta({ ...orders, duplicate_rows: 2 }))).toBe('orders · 6 колонок · 120 000 строк · 2 повтора строк');
   });
 
   it('draws every table and an arrow from the many side to the key', () => {

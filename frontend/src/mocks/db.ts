@@ -44,11 +44,17 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   relations: [
     { from: { table: 'orders', column: 'customer_id' }, to: { table: 'customers', column: 'id' }, overlap: 0.998, jaccard: 0.998, cardinality: 'N:1', confidence: 'high' },
   ],
-  warnings: ['В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL. Исходные значения сохранены в raw'],
+  warnings: ['Модель не описала в customers: region'],
+  // The journal of typed views (src/djedai/data/typed_views.py): renames, parsing, unparsed values, kept text.
   transformations: [
-    { table: 'orders', column: 'amount', action: 'parse_money', detail: { currency: '₽', decimal: ',' } },
-    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: { format: '%d.%m.%Y' } },
-    { table: 'orders', column: 'status', action: 'detect_category', detail: { count: 4, values: ['оплачен', 'доставлен', 'отменён', 'возврат'] } },
+    { table: 'orders', column: 'order_id', action: 'rename_column', detail: { from: 'Номер заказа', to: 'order_id' } },
+    { table: 'orders', column: 'payment_date', action: 'rename_column', detail: { from: 'Дата оплаты', to: 'payment_date' } },
+    { table: 'orders', column: 'amount', action: 'rename_column', detail: { from: 'Сумма с НДС, руб', to: 'amount' } },
+    { table: 'orders', column: 'order_id', action: 'keep_text', detail: { reason: 'id_leading_zeros', examples_with_zeros: 120000 } },
+    { table: 'orders', column: 'status', action: 'keep_text', detail: { reason: 'text' } },
+    { table: 'orders', column: 'amount', action: 'parse_money', detail: { decimal_separator: ',', currency: 'RUB', type: 'DECIMAL(18,2)', non_empty: 120000, parsed: 120000, success_ratio: 1 } },
+    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: { format: '%d.%m.%Y', type: 'DATE', non_empty: 119892, parsed: 119880, success_ratio: 0.9999 } },
+    { table: 'orders', column: 'payment_date', action: 'unparsed_values', detail: { count: 12, examples: ['не указана', 'потом'], target: 'date' } },
   ],
 };
 

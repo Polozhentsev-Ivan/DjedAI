@@ -16,7 +16,8 @@ it('renders a transformation with structured details from the shared contract', 
   };
   const entries = journal({ ...ordersCatalog, transformations: [transformation], warnings: [] });
   render(<>{entries.map((entry) => <TransformLogItem key={entry.text} {...entry} />)}</>);
-  expect(screen.getByText(/decimal: ,/)).toHaveTextContent('currency: ₽');
+  // Known keys become words; keys the UI does not know yet stay visible as is.
+  expect(screen.getByText(/decimal: ,/)).toHaveTextContent('распознаны денежные суммы, валюта ₽');
   expect(screen.getByText(/decimal: ,/)).toHaveTextContent('errors: {"count":0}');
 });
 

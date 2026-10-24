@@ -189,8 +189,9 @@ describe('CatalogPage', () => {
     expect(await screen.findByText(/orders · 6 колонок · 120\s000 строк/)).toBeInTheDocument();
     expect(screen.getByText('money (₽)')).toBeInTheDocument();
     expect(screen.getByText('Связь с customers.id')).toBeInTheDocument();
-    expect(screen.getByText('3 информации')).toBeInTheDocument();
-    expect(screen.getByText('1 предупреждение')).toBeInTheDocument();
+    expect(screen.getByText('4 информации')).toBeInTheDocument();
+    expect(screen.getByText('2 предупреждения')).toBeInTheDocument();
+    expect(screen.getByText(/12 значений не распознаны как даты/)).toBeInTheDocument();
     expect(screen.getByRole('progressbar', { name: 'Совпадение ключей' })).toHaveAttribute('aria-valuenow', '99.8');
     await userEvent.click(screen.getByRole('tab', { name: /customers/ }));
     expect(screen.getByText('registered_at')).toBeInTheDocument();

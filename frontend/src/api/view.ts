@@ -14,6 +14,7 @@ const ROWS = ['строка', 'строки', 'строк'] as const;
 const TABLES = ['таблица', 'таблицы', 'таблиц'] as const;
 const COLUMNS = ['колонка', 'колонки', 'колонок'] as const;
 const VALUES = ['значение', 'значения', 'значений'] as const;
+const DUPLICATES = ['повтор строки', 'повтора строк', 'повторов строк'] as const;
 
 export const rowsLabel = (n: number) => `${formatCount(n)} ${plural(n, ROWS)}`;
 
@@ -48,7 +49,8 @@ export function catalogSummary(d: Schemas['DatasetDetail']): string {
 
 export function tableMeta(table: Table): string {
   const n = table.columns.length;
-  return `${table.table_id} · ${n} ${plural(n, COLUMNS)} · ${rowsLabel(table.row_count)}`;
+  const duplicates = table.duplicate_rows > 0 ? ` · ${formatCount(table.duplicate_rows)} ${plural(table.duplicate_rows, DUPLICATES)}` : '';
+  return `${table.table_id} · ${n} ${plural(n, COLUMNS)} · ${rowsLabel(table.row_count)}${duplicates}`;
 }
 
 /** Type badge text: «money (₽)», «text (id)», «date». */
@@ -77,22 +79,115 @@ export function humanFormat(pattern: string): string {
   return pattern.replace(/%[dmYyHMS]/g, (token) => parts[token] ?? token);
 }
 
+/** Number formats name the decimal separator; the currency and percent are already in the type. */
+const SEPARATOR: Record<string, string> = { decimal_comma: 'Десятичная запятая', decimal_point: 'Десятичная точка' };
+
+function parseNote(format: string): string {
+  if (format.includes('%')) return `Формат ${humanFormat(format)}`;
+  return SEPARATOR[format.split(',')[0]?.trim() ?? ''] ?? `Формат ${format}`;
+}
+
 export function columnNote(column: Column, table: Table, relations: readonly Schemas['Relation'][]): string {
   if (column.is_unique && table.primary_key_candidates?.includes(column.name)) return 'Уникальный ключ';
   const relation = relations.find((r) => r.from.table === table.table_id && r.from.column === column.name);
   if (relation) return `Связь с ${relation.to.table}.${relation.to.column}`;
-  if (column.parse?.format) return `Формат ${humanFormat(column.parse.format)}`;
+  if (column.parse?.format) return parseNote(column.parse.format);
   if (column.semantic_type === 'category') return `${column.distinct_count} ${plural(column.distinct_count, VALUES)}`;
   return '—';
 }
 
-export function journal(catalog: Catalog): { level: LogLevel; text: string }[] {
+type Transformation = Schemas['Transformation'];
+type JournalEntry = { level: LogLevel; text: string };
+
+/** What a parse_* action recognized, by the semantic type it produced. */
+const PARSED: Record<string, string> = {
+  money: 'денежные суммы', percent: 'проценты', integer: 'целые числа', float: 'дробные числа',
+  bool: 'логические значения', date: 'даты', datetime: 'дата и время',
+};
+/** Why a column stayed text; «text» itself is ordinary text and is not logged. */
+const KEPT_TEXT: Record<string, string> = {
+  empty_column: 'колонка пустая',
+  id_leading_zeros: 'ведущие нули — это идентификатор',
+  id_name: 'по названию это идентификатор',
+  mixed_currencies: 'в колонке смешаны валюты',
+  mixed_money_percent: 'в колонке смешаны деньги и проценты',
+  ambiguous_date: 'формат даты неоднозначен: день и месяц не различить',
+  unsupported_type: 'тип источника не поддерживается',
+};
+/** Detail keys the sentences already say or that only matter to the pipeline. */
+const SPOKEN = new Set(['currency', 'format', 'decimal_separator', 'success_ratio', 'type', 'non_empty', 'parsed', 'reason', 'from', 'to', 'timezone', 'count', 'examples', 'target', 'examples_with_zeros']);
+
+const raw = (value: unknown): string => (typeof value === 'string' ? value : Array.isArray(value) ? value.map(raw).join(', ') : JSON.stringify(value));
+
+/** null — nothing worth logging, undefined — an action the UI does not know. */
+function sentence(t: Transformation, detail: Record<string, unknown>): JournalEntry | null | undefined {
+  const str = (key: string) => (typeof detail[key] === 'string' ? detail[key] : undefined);
+  const num = (key: string) => (typeof detail[key] === 'number' ? detail[key] : undefined);
+  if (t.action.startsWith('parse_') && PARSED[t.action.slice(6)]) {
+    const parts = [`распознаны ${PARSED[t.action.slice(6)]}`];
+    const [currency, format, separator] = [str('currency'), str('format'), str('decimal_separator')];
+    if (currency) parts.push(`валюта ${currency}`);
+    if (format) parts.push(`формат ${humanFormat(format)}`);
+    if (separator) parts.push(`десятичный разделитель «${separator}»`);
+    const ratio = num('success_ratio');
+    return { level: 'info', text: `${parts.join(', ')}${ratio === undefined ? '' : ` — ${formatPercent(Math.floor(ratio * 1000) / 10)} непустых значений`}` };
+  }
+  if (t.action === 'unparsed_values') {
+    const count = num('count') ?? 0;
+    const examples = Array.isArray(detail.examples) ? detail.examples.map((e) => `«${raw(e)}»`).join(', ') : '';
+    const target = PARSED[str('target') ?? ''] ?? str('target') ?? 'нужный тип';
+    return {
+      level: 'warning',
+      text: `${formatCount(count)} ${plural(count, VALUES)} не распознаны как ${target} и заменены на пустые${examples ? `, например ${examples}` : ''}`,
+    };
+  }
+  if (t.action === 'keep_text') {
+    const reason = str('reason') ?? '';
+    if (reason === 'text') return null;
+    const source = str('type');
+    const type = reason === 'unsupported_type' && source ? ` (${source})` : '';
+    return { level: 'info', text: `оставлена текстом: ${KEPT_TEXT[reason] ?? reason}${type}` };
+  }
+  const [from, to, timezone] = [str('from'), str('to'), str('timezone')];
+  if (t.action === 'cast_type' && from && to) {
+    return { level: 'info', text: `тип ${from} приведён к ${to}${timezone ? `, время переведено в ${timezone}` : ''}` };
+  }
+  return undefined;
+}
+
+function transformationEntry(t: Transformation): JournalEntry | null {
+  const target = [t.table, t.column].filter(Boolean).join('.');
+  const detail = t.detail ?? {};
+  const known = sentence(t, detail);
+  if (known === null) return null;
+  if (known === undefined) {
+    // An action the UI does not know yet: show it as is rather than hide it.
+    const all = Object.entries(detail).map(([key, value]) => `${key}: ${raw(value)}`).join(', ');
+    return { level: 'info', text: `${target}: ${t.action}${all ? ` — ${all}` : ''}` };
+  }
+  const rest = Object.entries(detail).filter(([key]) => !SPOKEN.has(key)).map(([key, value]) => `${key}: ${raw(value)}`).join(', ');
+  return { level: known.level, text: `${target}: ${known.text}${rest ? ` (${rest})` : ''}` };
+}
+
+/** Renames of one table in one line: both names are side by side in the structure table. */
+function renames(transformations: readonly Transformation[]): JournalEntry[] {
+  const byTable = new Map<string, Transformation[]>();
+  for (const t of transformations) if (t.action === 'rename_column') byTable.set(t.table, [...(byTable.get(t.table) ?? []), t]);
+  return [...byTable].map(([table, list]): JournalEntry => {
+    if (list.length === 1) {
+      const [only] = list as [Transformation];
+      const d = only.detail ?? {};
+      return { level: 'info', text: `${table}: колонка «${raw(d.from ?? '')}» получила системное имя ${raw(d.to ?? only.column ?? '')}` };
+    }
+    return { level: 'info', text: `${table}: ${list.length} ${plural(list.length, COLUMNS)} получили системные имена — соответствие показано в структуре таблицы` };
+  });
+}
+
+export function journal(catalog: Catalog): JournalEntry[] {
+  const transformations = catalog.transformations ?? [];
   return [
-    ...(catalog.transformations ?? []).map((t) => {
-      const target = [t.table, t.column].filter(Boolean).join('.');
-      const detail = Object.entries(t.detail ?? {}).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join(', ');
-      return { level: 'info' as const, text: `${target}: ${t.action}${detail ? ` — ${detail}` : ''}` };
-    }),
+    ...renames(transformations),
+    ...transformations.filter((t) => t.action !== 'rename_column').map(transformationEntry).filter((e): e is JournalEntry => e !== null),
     ...(catalog.warnings ?? []).map((text) => ({ level: 'warning' as const, text })),
   ];
 }
