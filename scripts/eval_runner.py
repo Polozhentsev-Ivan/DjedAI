@@ -495,7 +495,7 @@ def evaluate_case(
         if tools_any and not set(tools_any).intersection(used_tools):
             issues.append(f"Did not use any expected tools {tools_any}. Used: {used_tools}")
         if not any(
-            _field(block, "type") == "text" and _field(block, "markdown", "").strip()
+            _field(block, "type") == "text" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
             issues.append("The answer contains no text block")
@@ -524,7 +524,7 @@ def evaluate_case(
         if intent != expect.get("intent"):
             issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
         elif not any(
-            _field(block, "type") == "clarification" and _field(block, "markdown")
+            _field(block, "type") == "clarification" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
             issues.append("Clarification outcome produced no clarification block")

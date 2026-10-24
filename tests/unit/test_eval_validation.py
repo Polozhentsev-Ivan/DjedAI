@@ -391,3 +391,13 @@ def test_report_is_saved_before_inference_and_atomically_completed(tmp_path, mon
     assert completed["summary"]["passed"] == 1
     assert completed["summary"]["pending"] == 0
     assert not output.with_name("report.json.tmp").exists()
+
+
+@pytest.mark.parametrize("markdown", [None, "", "   "])
+def test_empty_text_block_is_a_failed_answer_with_preserved_trace(markdown):
+    s = state(result([[123]]), "123")
+    s["answer_blocks"] = [Block(type="text", markdown=markdown)]
+    status, issues, details = evaluate_case(case(), s)
+    assert status == "failed"
+    assert "The answer contains no text block" in issues
+    assert details["answer_blocks"][0]["markdown"] == markdown
