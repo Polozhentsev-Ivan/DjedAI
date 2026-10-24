@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,9 @@ let backend: ChildProcess | undefined;
 let directory: string;
 let python: string;
 const tokens = new WeakMap<Page, string>();
+// tests/fake_clickhouse.py serves the demo dataset next to the backend (serve_cp1 --clickhouse-port).
+const CLICKHOUSE_PASSWORD = 'reader-secret!';
+const CLICKHOUSE = `http://djedai_reader:${encodeURIComponent(CLICKHOUSE_PASSWORD)}@127.0.0.1:18123/djedai_demo`;
 
 async function authenticate(page: Page) {
   const username = `browser-${randomUUID()}`;
@@ -28,7 +31,7 @@ function apiGet(page: Page, url: string) {
 }
 
 async function startBackend() {
-  backend = spawn(python, ['tests/e2e/serve_cp1.py', '--data-dir', directory], { cwd: root, stdio: 'pipe' });
+  backend = spawn(python, ['tests/e2e/serve_cp1.py', '--data-dir', directory, '--clickhouse-port', '18123'], { cwd: root, stdio: 'pipe' });
   const process = backend;
   let output = '';
   backend.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
@@ -423,6 +426,91 @@ test('two browser sessions isolate same-named CSVs, chats, results and SSE', asy
     expect(forbiddenStream.status()).toBe(404);
     expect(forbiddenStream.headers()['content-type']).not.toContain('text/event-stream');
   } finally { await context.close(); }
+});
+
+async function openDbForm(page: Page, kind: 'PostgreSQL' | 'ClickHouse', dsn: string) {
+  await page.goto('/sources');
+  await page.getByRole('tab', { name: 'Подключить БД' }).click();
+  await page.getByRole('radio', { name: kind }).click();
+  await page.getByLabel('Строка подключения (DSN)').fill(dsn);
+}
+
+/** Everything the page could have kept: web storage, Cache Storage and IndexedDB names. */
+function browserStorage(page: Page) {
+  return page.evaluate(async () => {
+    const values: string[] = [];
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      for (let i = 0; i < storage.length; i++) values.push(storage.getItem(storage.key(i) ?? '') ?? '');
+    }
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const request of await cache.keys()) values.push(request.url, await (await cache.match(request))?.text() ?? '');
+    }
+    values.push(JSON.stringify(await indexedDB.databases()));
+    return values.join('\n');
+  });
+}
+
+test('DB form: ClickHouse check lists real tables, connects them and keeps no secret in the browser', async ({ page }) => {
+  await openDbForm(page, 'ClickHouse', CLICKHOUSE);
+  const checking = page.waitForResponse((r) => r.url().endsWith('/api/datasets/connect/check'));
+  await page.getByRole('button', { name: 'Проверить соединение' }).click();
+  const checked = await checking;
+  expect(checked.status()).toBe(200);
+  expect(checked.headers()['cache-control']).toBe('no-store');
+  expect(await checked.text()).not.toContain('reader-secret');
+  await expect(page.getByText(/Соединение установлено/)).toContainText('djedai_reader@127.0.0.1:18123/djedai_demo');
+  await expect(page.getByRole('button', { name: /^sales/ })).toContainText('4 376');
+  await page.getByRole('button', { name: /^sales/ }).click();
+  await page.getByRole('button', { name: /^stores/ }).click();
+  const accepting = page.waitForResponse((r) => r.url().endsWith('/api/datasets/connect') && r.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Подключить', exact: true }).click();
+  const accepted = await accepting;
+  expect(accepted.status()).toBe(202);
+  expect(accepted.request().postDataJSON()).toMatchObject({ kind: 'clickhouse', tables: ['sales', 'stores'] });
+  const { dataset_id: datasetId } = await accepted.json() as { dataset_id: string };
+  await expect.poll(async () => {
+    const value = await (await apiGet(page, `/api/datasets/${datasetId}`)).json() as { status: string };
+    return value.status;
+  }, { timeout: 20_000 }).toBe('ready');
+  await expect(page.getByLabel('Строка подключения (DSN)')).toHaveValue('');
+  const datasets = page.getByRole('table', { name: 'Ваши датасеты' });
+  await expect(datasets.getByText('ClickHouse').first()).toBeVisible();
+  const catalog = await (await apiGet(page, `/api/datasets/${datasetId}/catalog`)).json() as { tables: { table_id: string; row_count: number }[] };
+  expect(catalog.tables.map((t) => [t.table_id, t.row_count]).sort()).toEqual([['sales', 4376], ['stores', 10]]);
+  await page.goto(`/catalog/${datasetId}`);
+  await expect(page.getByText('total_amount', { exact: true }).first()).toBeVisible();
+
+  expect(await browserStorage(page)).not.toContain('reader-secret');
+  // The production bundle carries no source credentials or server keys.
+  const dist = path.join(root, 'frontend', 'dist');
+  for (const file of await readdir(dist, { recursive: true, withFileTypes: true })) {
+    if (!file.isFile()) continue;
+    const text = await readFile(path.join(file.parentPath, file.name), 'utf8');
+    expect(text, file.name).not.toContain('reader-secret');
+    expect(text, file.name).not.toMatch(/SOURCE_ENCRYPTION_KEY|DEMO_(PG|CH)_\w*PASSWORD/);
+  }
+});
+
+test('DB form: wrong password and unreachable PostgreSQL are reported, nothing is connected by a check', async ({ page }) => {
+  await openDbForm(page, 'ClickHouse', CLICKHOUSE.replace(encodeURIComponent(CLICKHOUSE_PASSWORD), 'wrong-password'));
+  await page.getByRole('button', { name: 'Проверить соединение' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Неверный пользователь или пароль');
+
+  const unreachable = 'postgresql://private-user:private-password@127.0.0.1:1/private-db?connect_timeout=1';
+  await openDbForm(page, 'PostgreSQL', unreachable);
+  await page.getByRole('button', { name: 'Проверить соединение' }).click();
+  await expect(page.getByRole('alert')).toContainText('Сервер базы данных недоступен');
+  await expect(page.getByRole('alert')).not.toContainText('private');
+  expect(await (await apiGet(page, '/api/datasets')).json()).toEqual([]);
+
+  // Connecting anyway is accepted and then fails visibly, without echoing the DSN.
+  await page.getByRole('button', { name: 'Подключить', exact: true }).click();
+  await expect(page.getByText('Не удалось подключить базу данных')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/private-(user|password|db)/)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Закрыть' }).click();
+  await expect(page.getByRole('table', { name: 'Ваши датасеты' }).getByText('Ошибки')).toBeVisible();
+  expect(await browserStorage(page)).not.toContain('private-password');
 });
 
 test('UI auth: registration, logout, account switching, reload and revoked session', async ({ page }) => {

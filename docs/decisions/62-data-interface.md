@@ -17,6 +17,7 @@ data_dir, *, source_encryption_key=None)`. В приложении это `app.s
 | `await ingest_csv(owner_id, sources)` | `Sequence[CsvSource(path, original_name)]`, без HTTP | `DatasetUploadAccepted(dataset_id, status="processing")` |
 | `await ingest_uploads(owner_id, files)` | `Sequence[UploadFile]` (multipart-адаптер) | то же |
 | `await connect_db(owner_id, dsn, tables=None, *, kind="postgresql", name=None)` | DSN и необязательный список таблиц; `kind` — `postgresql` или `clickhouse` | то же |
+| `await check_db(dsn, *, kind="postgresql")` | DSN; ничего не сохраняет (#84) | `SourceCheckResult`: адрес без пароля и таблицы, имена которых принимает `connect_db` |
 | `get_catalog(owner_id, dataset_id)` | — | `DatasetCatalog` готового датасета |
 | `get_detail(owner_id, dataset_id)` / `list_for_owner(owner_id)` | — | `DatasetDetail` / `list[DatasetSummary]` |
 | `get_context(owner_id, dataset_id)` | — | `DatasetContext`: каталог и `open_connection()` для аналитики |
