@@ -7,6 +7,7 @@ additionally use DJEDAI_TEST_PG_DSN and the seeded demo tables.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -36,6 +37,8 @@ DSN = os.environ.get("DJEDAI_TEST_PG_DSN")
 CSV = b"order_id,amount,ordered_at\n001,10.5,2026-01-02\n002,20,2026-01-03\n"
 # Per-call metadata; everything else in the catalog must not depend on the entry point.
 VOLATILE = {"dataset_id", "created_at"}
+# Valid DSN syntax for validation paths; nothing connects to it.
+DSN_SHAPE = "postgresql://reader@db.invalid/shop"
 
 
 @pytest.fixture
@@ -82,6 +85,12 @@ def _wait_ready(client: TestClient, dataset_id: str) -> None:
     # The SSE stream ends with exactly one terminal event.
     events = client.get(f"/api/datasets/{dataset_id}/events")
     assert "event: done\n" in events.text, events.text
+
+
+def _terminal(client: TestClient, dataset_id: str) -> tuple[str, dict]:
+    frames = client.get(f"/api/datasets/{dataset_id}/events").text.strip().split("\n\n")
+    event, data = frames[-1].split("\n")
+    return event.removeprefix("event: "), json.loads(data.removeprefix("data: "))
 
 
 def _same_catalog(python: dict, http: dict) -> None:
@@ -164,6 +173,22 @@ def test_csv_python_and_http_entry_points_share_ids_catalogs_and_errors(
         response = client.post("/api/datasets/upload", files={"files": ("orders.txt", CSV)})
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "http_422"
+        assert _python_error(lambda: client.portal.call(service.ingest_csv, "local", [])) == 422
+        assert _python_error(lambda: client.portal.call(service.connect_db, "local", "")) == 422
+        response = client.post(
+            "/api/datasets/connect", json={"kind": "postgres", "dsn": DSN_SHAPE, "tables": []}
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "http_422"
+
+        # HTTP schema validation rejects a request before the facade, with its own code.
+        for response in (
+            client.post("/api/datasets/upload"),
+            client.post("/api/datasets/connect", json={"kind": "postgres", "dsn": ""}),
+            client.post("/api/datasets/connect", json={"kind": "mysql", "dsn": DSN_SHAPE}),
+        ):
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "invalid_request"
 
         # ClickHouse is part of the agreed request format but not implemented yet (#61).
         with pytest.raises(HTTPException) as error:
@@ -179,6 +204,31 @@ def test_csv_python_and_http_entry_points_share_ids_catalogs_and_errors(
         assert "clickhouse://" not in response.text
         listed = {item["dataset_id"] for item in client.get("/api/datasets").json()}
         assert listed == {http_id, python_id, "queued"}
+
+
+def test_processing_error_code_is_in_detail_while_sse_carries_only_the_message(
+    configured, tmp_path: Path
+) -> None:
+    settings, _ = configured
+    empty = tmp_path / "bad.csv"
+    empty.write_bytes(b"")
+    with _client(settings) as client:
+        service = client.app.state.dataset_service
+        http_id = client.post("/api/datasets/upload", files={"files": ("bad.csv", b"")}).json()[
+            "dataset_id"
+        ]
+        python_id = client.portal.call(
+            service.ingest_csv, "local", [CsvSource(empty, "bad.csv")]
+        ).dataset_id
+        for dataset_id in (http_id, python_id):
+            event, data = _terminal(client, dataset_id)
+            detail = client.get(f"/api/datasets/{dataset_id}").json()
+            assert detail == service.get_detail("local", dataset_id).model_dump(mode="json")
+            assert detail["status"] == "error"
+            assert detail["error"]["code"] == "dataset_processing_failed"
+            # The stream has no processing error code; clients read it from the detail.
+            assert event == "error"
+            assert data == {"message": detail["error"]["message"], "detail": None, "code": None}
 
 
 @pytest.mark.skipif(not DSN, reason="DJEDAI_TEST_PG_DSN is not configured")

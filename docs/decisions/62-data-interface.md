@@ -42,14 +42,26 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
 `backend/app.py`. Начиная с 500 HTTP-ответ заменяет текст на «Сервис временно
 недоступен», а в Python остаётся исходный `detail`.
 
+Ошибки ввода по HTTP бывают двух видов, и у них разный `code`. Запрос, не
+прошедший схему FastAPI, отклоняется до вызова фасада обработчиком
+`RequestValidationError`. Ошибку проверки внутри фасада возвращает `HTTPException`.
+В Python есть только второй вид.
+
 | Условие | Код | `ToolError.code` |
 | --- | --- | --- |
+| HTTP: запрос не прошёл схему — нет поля `files`, пустой или слишком длинный `dsn`, `kind` не из `postgres`/`clickhouse`, больше 100 таблиц | 422 | `invalid_request` |
+| Фасад: пустой список файлов (только Python), файл не `.csv`, некорректный DSN, пустой список таблиц, плохое имя | 422 | `http_422` |
 | Неизвестный или чужой `dataset_id` (любой метод чтения, SSE) | 404 | `not_found` |
 | Каталог или контекст ещё не готов, файл датасета недоступен | 409 | `conflict` |
-| Нет файлов, не `.csv`, некорректный DSN, пустой список таблиц, плохое имя | 422 | `http_422` |
 | `kind` не поддерживается (сейчас `clickhouse`) | 501 | `http_501` |
 | Не задан `SOURCE_ENCRYPTION_KEY`, сохранённый источник PostgreSQL недоступен | 503 | `unavailable` |
-| Сборка завершилась ошибкой | статус `error` | `dataset_processing_failed` в `DatasetDetail.error` и SSE `error` |
+| Сборка завершилась ошибкой | статус `error` | `dataset_processing_failed` в `DatasetDetail.error` |
+
+Терминальное SSE-событие `error` (`SSEErrorData`) при ошибке сборки содержит
+только `message` — тот же текст, что `DatasetDetail.error.message`; `code` равен
+`null`. Код в потоке задаётся лишь при отзыве или истечении сессии:
+`code="unauthorized"`. Чтобы узнать код ошибки сборки, после события `error`
+прочитайте `GET /api/datasets/{id}` (`get_detail`).
 
 Текст ошибки сборки — сообщение `CsvReadError` для CSV или общая фраза. DSN,
 пути, SQL и трассировки драйвера не попадают в ответы, SSE, каталог и логи.
@@ -80,6 +92,10 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
    запросы выполняются в ClickHouse в его диалекте. Сейчас `DatasetContext.open_connection()`
    возвращает DuckDB-соединение, поэтому контекст для CH нужно расширить вместе с
    владельцами `run_sql` и агента.
+
+Открытый вопрос: передавать ли в SSE `error` код `dataset_processing_failed`.
+Поле `SSEErrorData.code` для этого уже есть, но это изменение wire-формата SSE,
+и его нужно согласовать с владельцем API/SSE.
 
 Проверка сверки Python ↔ HTTP по ID, каталогу и ошибкам —
 `tests/integration/test_data_interface.py`. PostgreSQL-часть запускается в
