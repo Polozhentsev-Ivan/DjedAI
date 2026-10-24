@@ -7,6 +7,7 @@ import { useWorkspace } from '@/app/workspaceContext';
 import { ResultChart } from '@/charts/ResultChart';
 import { Button } from '@/components/Button';
 import { ChatMessage } from '@/components/ChatMessage';
+import { ChartCard } from '@/components/ChartCard';
 import { Icon } from '@/components/Icon';
 import { SavedResult } from '@/components/SavedResult';
 import { EmptyState, ErrorState, LoadingState } from '@/components/StateBlock';
@@ -15,7 +16,7 @@ import { cn } from '@/lib/cn';
 function Blocks({ blocks }: { blocks: readonly Schemas['Block'][] }) {
   return blocks.map((block, index) => {
     if (block.type === 'text') return <div key={index} className="whitespace-pre-wrap">{block.markdown}</div>;
-    if (block.type === 'chart') return <section key={index}><h2 className="font-semibold">{block.chart.title}</h2><ResultChart resultId={block.chart.result_id} spec={block.chart} /></section>;
+    if (block.type === 'chart') return <ChartCard key={index} title={block.chart.title} subtitle={block.chart.subtitle ?? undefined}><ResultChart spec={block.chart} /></ChartCard>;
     if (block.type === 'table') return <SavedResult key={index} id={block.result_id} />;
     if (block.type === 'clarification') return <div key={index}>{block.question}<ul>{block.options.map((option) => <li key={option}>{option}</li>)}</ul></div>;
     if (block.type === 'dashboard_link') return <Link key={index} to={`/dashboards/${encodeURIComponent(block.dashboard_id)}`}>{block.title}</Link>;

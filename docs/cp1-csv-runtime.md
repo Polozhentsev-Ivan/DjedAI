@@ -60,7 +60,8 @@ SQLite хранит владельца, статус, каталог, текущ
 остаются следующими этапами.
 
 Рабочий CSV-фасад B1-10 находится в
-`djedai.backend.dataset_service.DatasetService(factory, data_dir)`:
+`djedai.backend.dataset_service.DatasetService(factory, data_dir)`; полный контракт
+с ошибками и этапами — [B1-10 / #62](decisions/62-data-interface.md):
 
 - `await ingest_csv(owner_id, sources)` принимает `Sequence[CsvSource]`
   (`djedai.data.service.CsvSource(path, original_name)`) без HTTP и `UploadFile`.
