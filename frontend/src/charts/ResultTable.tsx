@@ -3,6 +3,8 @@ import { formatDate } from '@/lib/format';
 import { column, numeric, type Data, type Spec } from './data';
 import { measureLabel } from './format';
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
 /** A column the spec does not describe is numeric when every present value is a number. */
 function numericColumn(data: Data, index: number): boolean {
   const present = (data.rows ?? []).map((row) => row[index]).filter((value) => value !== null && value !== undefined);
@@ -32,7 +34,10 @@ export function ResultTable({ spec, data, fields: projection }: { spec: Spec; da
       const measure = spec.y?.find((m) => m.field === field);
       let text = value === null || value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
       if (numeric(value)) text = measureLabel(value, measure, 0);
-      if (field === spec.x?.field && spec.x.kind === 'time' && typeof value === 'string' && !Number.isNaN(new Date(value).getTime())) text = formatDate(value);
+      const date = typeof value === 'string' && !Number.isNaN(new Date(value).getTime());
+      if (date && field === spec.x?.field && spec.x.kind === 'time') text = formatDate(value);
+      // A projection without a spec (a table block) still shows ISO dates in the Russian format.
+      else if (date && projection && ISO_DATE.test(value)) text = formatDate(value);
       return [field, text];
     })),
   }));

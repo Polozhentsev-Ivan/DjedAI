@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Schemas } from '@/api/client';
+import type { Schemas } from '../api/client';
 
 // Read from disk: the fixture lives outside the Vite root, and jsdom's URL is not accepted by node:fs.
 const path = resolve(dirname(fileURLToPath(import.meta.url)), '../../../tests/fixtures/chat/blocks.json');

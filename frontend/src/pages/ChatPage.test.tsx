@@ -519,4 +519,13 @@ describe('chat answer blocks', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(3);
     expect(screen.getByText('Показаны первые 2 из 3 строк.')).toBeInTheDocument();
   });
+
+  it('shows ISO dates of a table block in the Russian format', async () => {
+    resultApi();
+    savedChat([{ type: 'table', result_id: 'r_fixture' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    expect(within(table).getByText('01.01.2026')).toBeInTheDocument();
+    expect(screen.getByText('r_fixture · 3 строки')).toBeInTheDocument();
+  });
 });

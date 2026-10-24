@@ -4,6 +4,7 @@ import type { Schemas } from '@/api/client';
 import { useResultData } from '@/api/queries';
 import { ResultChart } from '@/charts/ResultChart';
 import { ResultTable } from '@/charts/ResultTable';
+import { plural } from '@/lib/format';
 import { ChartCard } from './ChartCard';
 import { ClarifyBlock } from './ClarifyBlock';
 import { Icon } from './Icon';
@@ -26,10 +27,10 @@ function TableBlock({ block }: { block: Schemas['TableBlock'] }) {
   const shown = { ...data.data, rows: rows.slice(0, limit) };
   const total = data.data.row_count ?? rows.length;
   return (
-    <ChartCard title={title} subtitle={`${block.result_id} · ${total.toLocaleString('ru-RU')} строк`}>
+    <ChartCard title={title} subtitle={`${block.result_id} · ${total.toLocaleString('ru-RU')} ${plural(total, ['строка', 'строки', 'строк'])}`}>
       <div className="pb-2 pt-3">
         {rows.length === 0 ? <p className="px-1 text-muted-foreground">Результат не содержит строк</p>
-          : <ResultTable spec={{ chart_id: block.result_id, type: 'table', title }} data={shown} fields={block.columns} />}
+          : <ResultTable spec={{ chart_id: block.result_id, type: 'table', title }} data={shown} fields={block.columns ?? []} />}
         {(total > shown.rows.length || data.data.truncated) && rows.length > 0 && (
           <p className="px-1 pt-2 text-xs text-muted-foreground">Показаны первые {shown.rows.length} из {total.toLocaleString('ru-RU')} строк.</p>
         )}
