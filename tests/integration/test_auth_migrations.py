@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import delete, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -37,6 +38,12 @@ from djedai.backend.db.session import create_db_engine
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
 PRE_AUTH = "a5c2f58e6aea"
+
+
+def test_migration_chain_has_a_single_head(tmp_path: Path) -> None:
+    """Параллельные ветки миграций не должны давать Multiple head revisions."""
+    cfg = migration_config(f"sqlite:///{(tmp_path / 'heads.db').as_posix()}")
+    assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
 
 
 def migration_config(db_url: str) -> Config:

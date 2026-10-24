@@ -60,18 +60,19 @@ NUMBER_RE = re.compile(
     r"(?=$|[^0-9.,]|[.,](?!\d))",
     re.IGNORECASE,
 )
-DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+DATETIME_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
 # Dates and years refer to calendar positions, not to measured numbers.
 RU_MONTH = r"(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*"
 DATE_ONLY_RE = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
-    r"|\d{4}-\d{2}-\d{2}"
+    DATETIME_RE.pattern + r"|\d{4}-\d{2}-\d{2}"
     r"|\d{4}-\d{2}"
     r"|\d{1,2}[./]\d{1,2}[./]\d{2,4}"
     r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"
     rf"|\b\d{{1,2}}\s+{RU_MONTH}\s+\d{{4}}\b"
     rf"|\b{RU_MONTH}\s+\d{{4}}\b"
-    r"|\b(?:19|20)\d{2}\s*(?:г\.|год[ауе]?)\b"
+    r"|\b(?:19|20)\d{2}\s*(?:г\.(?!\w)|год[ауе]?\b)"
 )
 
 

@@ -8,7 +8,13 @@ from urllib.parse import urlsplit
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
-from djedai.agent.diagnostics import DiagnosticHttpClient, capture_usage, model_call
+from djedai.agent.diagnostics import (
+    DiagnosticHttpClient,
+    capture_usage,
+    model_call,
+    retry_started,
+    retry_wait,
+)
 from djedai.agent.transport import attempt_lease
 from djedai.execution import (
     ExecutionBudget,
@@ -74,6 +80,8 @@ class BIModelClient:
         self.client.max_retries = 0
         for attempt in range(self.max_retries + 1):
             budget.check()
+            if attempt:
+                retry_started()
             try:
                 with attempt_lease(budget, self.timeout):
                     response = self.client.chat.completions.create(**kwargs)
@@ -111,6 +119,7 @@ class BIModelClient:
                 if delay >= budget.remaining:
                     # Honour the server's delay by not attempting an early retry.
                     raise
+                retry_wait(delay)
                 budget.wait(delay)
         raise RuntimeError("Unreachable model retry state")
 

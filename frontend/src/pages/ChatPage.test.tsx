@@ -2,6 +2,8 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw/http';
 import type { Schemas } from '@/api/client';
+import { keys } from '@/api/queries';
+import { clearSession } from '@/api/session';
 import { createDb } from '@/mocks/db';
 import { renderRoute } from '@/test/renderRoute';
 import { server, useScenario } from '@/test/server';
@@ -22,22 +24,29 @@ function liveStream() {
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let signal: AbortSignal | undefined;
   let calls = 0;
+  let messageId = '';
   const realFetch = globalThis.fetch;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url.endsWith('/messages')) signal = init?.signal ?? undefined;
     return realFetch(input, init);
   });
-  server.use(http.post(api('/chats/:id/messages'), () => {
+  server.use(http.post(api('/chats/:id/messages'), async ({ request }) => {
+    const body = await request.json() as Schemas['SendMessageRequest'];
+    messageId = `m_${body.request_id?.replaceAll('-', '')}`;
     calls += 1;
     return new HttpResponse(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), { headers: { 'Content-Type': 'text/event-stream' } });
-  }));
+  }), http.post(api('/chats/:id/messages/:messageId/cancel'), () => HttpResponse.json({
+    run_id: 'run_stopped', status: 'cancelled', node: 'understand', message: 'Получение ответа остановлено', code: 'cancelled', started_at: new Date().toISOString(), deadline_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+  } satisfies Schemas['ChatTurnState'])));
   return {
     ready: () => waitFor(() => { expect(stream).toBeDefined(); }),
     emit: (event: string, data: unknown) => { act(() => { stream?.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }); },
     close: () => { act(() => { stream?.close(); }); },
     aborted: () => signal?.aborted,
+    signal: () => signal,
     calls: () => calls,
+    messageId: () => messageId,
   };
 }
 
@@ -92,13 +101,14 @@ describe('CP1 chat integration', () => {
     stream.emit('block', { type: 'text', markdown: 'Всего 42 строки' });
     expect(await screen.findByText('Всего 42 строки')).toBeInTheDocument();
     saved.messages = [
-      { message_id: 'u_42', role: 'user', text: question, created_at: saved.created_at },
+      { message_id: stream.messageId(), role: 'user', text: question, created_at: saved.created_at },
       { message_id: 'm_42', role: 'assistant', blocks: [{ type: 'text', markdown: 'Всего 42 строки' }], created_at: saved.created_at },
     ];
     stream.emit('done', { message_id: 'm_42' });
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Остановить' })).not.toBeInTheDocument(); });
     expect(screen.getAllByText('Всего 42 строки')).toHaveLength(1);
     expect(document.querySelectorAll('[data-role="user"]')).toHaveLength(1);
+    expect(stream.aborted()).toBe(false);
   });
 
   it('stops the POST stream without repeating it', async () => {
@@ -106,6 +116,7 @@ describe('CP1 chat integration', () => {
     await renderRoute('/chat/c_q1');
     await ask();
     await stream.ready();
+    stream.emit('status', { node: 'understand', text: 'Разбираю вопрос…', message_id: stream.messageId(), run_id: 'run_stopped' });
     expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Остановить' }));
     await waitFor(() => { expect(stream.aborted()).toBe(true); });
@@ -124,6 +135,21 @@ describe('CP1 chat integration', () => {
     await waitFor(() => { expect(stream.aborted()).toBe(true); });
     expect(await screen.findByRole('heading', { name: 'Регионы' })).toBeInTheDocument();
     expect(screen.queryByText('Предыдущий незаконченный ответ')).not.toBeInTheDocument();
+    expect(stream.calls()).toBe(1);
+  });
+
+  it('waits for acceptance before confirming an early stop', async () => {
+    const stream = liveStream();
+    await renderRoute('/chat/c_q1');
+    await ask();
+    await stream.ready();
+    await userEvent.click(screen.getByRole('button', { name: 'Остановить' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Останавливаю запрос…');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(stream.aborted()).toBe(false);
+    stream.emit('status', { node: 'load_ctx', text: 'Загружаю контекст чата…', message_id: stream.messageId() });
+    await waitFor(() => { expect(stream.aborted()).toBe(true); });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Получение ответа остановлено');
     expect(stream.calls()).toBe(1);
   });
 
@@ -155,8 +181,8 @@ describe('CP1 chat integration', () => {
     useScenario('error');
     await renderRoute('/chat/c_q1');
     await ask();
-    expect(await screen.findByRole('alert')).toHaveTextContent('Запрос превысил таймаут 30 сек.');
-    expect(screen.getByRole('alert')).toHaveTextContent('Попробуйте уточнить период.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Модель не ответила за отведённое время');
+    expect(screen.getByRole('alert')).toHaveTextContent('Отправьте вопрос снова, если нужно.');
     expect(screen.queryByRole('button', { name: 'Повторить' })).not.toBeInTheDocument();
   });
 
@@ -198,5 +224,179 @@ describe('CP1 chat integration', () => {
     expect(screen.getByText('Год')).toBeInTheDocument();
     expect(screen.getAllByText('Результат расчёта r_rev')).toHaveLength(1);
     expect(screen.getByRole('link', { name: 'Сохранённый дашборд' })).toHaveAttribute('href', '/dashboards/d_q');
+  });
+
+  it('keeps three identical failed questions distinct after a reload and retries only the selected one', async () => {
+    const saved = createDb().chats[0]!;
+    saved.messages = [];
+    const outcomes = [
+      ['model_timeout', 'Модель не ответила за отведённое время', 'timeout'],
+      ['model_unavailable', 'Сервис модели временно недоступен', 'error'],
+      ['cancelled', 'Получение ответа остановлено', 'cancelled'],
+    ] as const;
+    let posts = 0;
+    server.use(http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)),
+      http.post(api('/chats/c_q1/messages'), async ({ request }) => {
+        const body = await request.json() as Schemas['SendMessageRequest'];
+        expect(body.request_id).toMatch(/^[\da-f-]{36}$/);
+        const id = `m_${body.request_id?.replaceAll('-', '')}`;
+        const now = new Date().toISOString();
+        const outcome = outcomes[posts++];
+        const state: Schemas['ChatTurnState'] = { run_id: `run_${posts}`, status: outcome?.[2] ?? 'success', node: 'understand', message: outcome?.[1] ?? 'Ответ готов', code: outcome?.[0] ?? null, started_at: now, deadline_at: now, finished_at: now, assistant_message_id: outcome ? null : 'a_retry' };
+        saved.messages.push({ message_id: id, role: 'user', text: body.text, created_at: now, turn: state });
+        if (!outcome) saved.messages.push({ message_id: 'a_retry', role: 'assistant', blocks: [{ type: 'text', markdown: 'Ответ после явного повтора' }], created_at: now });
+        const frames: [string, unknown][] = outcome ? [['error', { code: state.code, message: state.message }]] : [['block', { type: 'text', markdown: 'Ответ после явного повтора' }], ['done', { message_id: 'a_retry' }]];
+        return new HttpResponse(frames.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+      }));
+    const view = await renderRoute('/chat/c_q1');
+    for (let index = 1; index <= 3; index++) {
+      await ask('Одинаковый вопрос');
+      await waitFor(() => { expect(screen.getAllByRole('alert')).toHaveLength(index); });
+      await waitFor(() => { expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled(); });
+      expect(screen.getAllByText('Одинаковый вопрос')).toHaveLength(index);
+    }
+    expect(new Set(saved.messages.map((message) => message.message_id)).size).toBe(3);
+    view.unmount();
+    await renderRoute('/chat/c_q1');
+    expect(await screen.findAllByRole('alert')).toHaveLength(3);
+    for (const [code, title] of outcomes) {
+      const alert = screen.getByText(title).closest('[data-message-id]')!;
+      expect(within(alert as HTMLElement).getByText(new RegExp(`Код: ${code}`))).toBeInTheDocument();
+    }
+    expect(posts).toBe(3);
+    expect(document.querySelectorAll('[data-role="assistant"]')).toHaveLength(0);
+    await userEvent.click(screen.getAllByRole('button', { name: 'Повторить вопрос' })[0]!);
+    expect(await screen.findByText('Ответ после явного повтора')).toBeInTheDocument();
+    await waitFor(() => { expect(screen.getAllByText('Одинаковый вопрос')).toHaveLength(4); });
+    expect(screen.getAllByRole('alert')).toHaveLength(3);
+    expect(screen.getAllByText('Ответ после явного повтора')).toHaveLength(1);
+    expect(posts).toBe(4);
+  });
+
+  it('shows a retry pause and the resumed stage without inventing a completed answer', async () => {
+    const stream = liveStream();
+    await renderRoute('/chat/c_q1');
+    await ask();
+    await stream.ready();
+    stream.emit('status', { node: 'understand', phase: 'stage', text: 'Разбираю вопрос…' });
+    expect(await screen.findByRole('status')).toHaveTextContent('Разбираю вопрос…');
+    stream.emit('status', { node: 'understand', phase: 'retry', text: 'Ожидаю повторного запроса к модели…' });
+    await waitFor(() => { expect(screen.getByRole('status')).toHaveTextContent('Ожидаю повторного запроса к модели…'); });
+    stream.emit('status', { node: 'understand', phase: 'stage', text: 'Разбираю вопрос…' });
+    await waitFor(() => { expect(screen.getByRole('status')).toHaveTextContent('Разбираю вопрос…'); });
+    stream.emit('tool_result', { result_id: 'r_rev', ok: true });
+    expect(document.querySelectorAll('[data-role="assistant"]')).toHaveLength(0);
+    stream.emit('error', { code: 'model_unavailable', message: 'Сервис модели временно недоступен' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Сервис модели временно недоступен');
+    await waitFor(() => { expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled(); });
+    expect(stream.calls()).toBe(1);
+  });
+
+  it('can cancel a running question recovered by GET without posting the question again', async () => {
+    const saved = createDb().chats[0]!;
+    const now = new Date().toISOString();
+    const state: Schemas['ChatTurnState'] = { run_id: 'run_restored', status: 'running', node: 'plan', message: 'Строю план анализа…', started_at: now, deadline_at: new Date(Date.now() + 30000).toISOString() };
+    saved.messages = [{ message_id: 'm_restored', role: 'user', text: question, created_at: now, turn: state }];
+    let cancellations = 0;
+    let sends = 0;
+    server.use(http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)),
+      http.post(api('/chats/c_q1/messages'), () => { sends++; return HttpResponse.error(); }),
+      http.post(api('/chats/c_q1/messages/m_restored/cancel'), () => {
+        cancellations++;
+        Object.assign(state, { status: 'cancelled', code: 'cancelled', message: 'Получение ответа остановлено', finished_at: now });
+        return HttpResponse.json(state);
+      }));
+    await renderRoute('/chat/c_q1');
+    expect(await screen.findByRole('status')).toHaveTextContent('Строю план анализа…');
+    await userEvent.click(screen.getByRole('button', { name: 'Остановить' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Получение ответа остановлено');
+    expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled();
+    expect(cancellations).toBe(1);
+    expect(sends).toBe(0);
+  });
+
+  it('clears the local question and buffered blocks when the session ends', async () => {
+    const stream = liveStream();
+    await renderRoute('/chat/c_q1');
+    await ask('Частный вопрос');
+    await stream.ready();
+    stream.emit('block', { type: 'text', markdown: 'Частный промежуточный ответ' });
+    expect(await screen.findByText('Частный промежуточный ответ')).toBeInTheDocument();
+    act(() => { clearSession('expired'); });
+    await waitFor(() => { expect(stream.aborted()).toBe(true); });
+    expect(await screen.findByRole('button', { name: 'Войти в систему' })).toBeInTheDocument();
+    expect(screen.queryByText('Частный вопрос')).not.toBeInTheDocument();
+    expect(screen.queryByText('Частный промежуточный ответ')).not.toBeInTheDocument();
+    expect(stream.calls()).toBe(1);
+  });
+
+  it('allows the next question after restored cancellation while history GET remains pending', async () => {
+    const stream = liveStream();
+    const saved = createDb().chats[0]!;
+    const now = new Date().toISOString();
+    const state: Schemas['ChatTurnState'] = { run_id: 'run_restored', status: 'running', node: 'plan', message: 'Строю план анализа…', started_at: now, deadline_at: new Date(Date.now() + 30000).toISOString() };
+    saved.messages = [{ message_id: 'm_restored', role: 'user', text: question, created_at: now, turn: state }];
+    let releaseHistory = () => { /* set below */ };
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    let reads = 0;
+    let cancellations = 0;
+    server.use(http.get(api('/chats/c_q1'), async () => {
+      if (++reads > 1) await historyGate;
+      return HttpResponse.json(saved);
+    }), http.post(api('/chats/c_q1/messages/m_restored/cancel'), () => {
+      cancellations++;
+      Object.assign(state, { status: 'cancelled', code: 'cancelled', message: 'Получение ответа остановлено', finished_at: now });
+      return HttpResponse.json(state);
+    }));
+    try {
+      await renderRoute('/chat/c_q1');
+      await waitFor(() => { expect(screen.getByRole('button', { name: 'Активный датасет' })).toHaveTextContent('orders_2026'); });
+      await userEvent.click(await screen.findByRole('button', { name: 'Остановить' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Получение ответа остановлено');
+      expect(cancellations).toBe(1);
+      await waitFor(() => { expect(reads).toBeGreaterThan(1); });
+      expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled();
+      await ask('Следующий вопрос после подтверждённой отмены');
+      await waitFor(() => { expect(stream.calls()).toBe(1); });
+      expect(screen.getByText('Следующий вопрос после подтверждённой отмены')).toBeInTheDocument();
+      const nextSignal = stream.signal();
+      releaseHistory();
+      await act(async () => { await historyGate; });
+      expect(nextSignal?.aborted).toBe(false);
+      expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
+    } finally {
+      releaseHistory();
+    }
+  });
+
+  it.each(['success', 'timeout'] as const)('accepts the next question when GET confirms %s before the old SSE finishes', async (status) => {
+    const stream = liveStream();
+    const saved = createDb().chats[0]!;
+    saved.messages = [];
+    server.use(http.post(api('/chats'), () => HttpResponse.json({ chat_id: saved.chat_id }, { status: 201 })),
+      http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)));
+    const { client } = await renderRoute('/chat');
+    await ask();
+    await stream.ready();
+    const firstSignal = stream.signal();
+    const now = new Date().toISOString();
+    const state: Schemas['ChatTurnState'] = { run_id: 'run_saved_before_sse', status: 'running', node: 'verify', message: 'Проверяю числа в ответе…', started_at: now, deadline_at: new Date(Date.now() + 30000).toISOString() };
+    saved.messages.push({ message_id: stream.messageId(), role: 'user', text: question, created_at: now, turn: state });
+    // Seed running history through HTTP, then let normal polling observe the outcome.
+    await act(async () => { await client.invalidateQueries({ queryKey: keys.chat(saved.chat_id) }); });
+    expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
+    Object.assign(state, { status, code: status === 'timeout' ? 'model_timeout' : null, message: status === 'timeout' ? 'Модель не ответила за отведённое время' : 'Ответ готов', finished_at: now, assistant_message_id: status === 'success' ? 'a_early' : null });
+    if (status === 'success') saved.messages.push({ message_id: 'a_early', role: 'assistant', blocks: [{ type: 'text', markdown: 'Ответ сохранён до конца SSE' }], created_at: now });
+    if (status === 'success') expect(await screen.findByText('Ответ сохранён до конца SSE', {}, { timeout: 3000 })).toBeInTheDocument();
+    else expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('Модель не ответила за отведённое время');
+    await ask('Второй вопрос при задержанном первом SSE');
+    await waitFor(() => { expect(stream.calls()).toBe(2); });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(stream.aborted()).toBe(false);
+    expect(screen.getByText('Второй вопрос при задержанном первом SSE')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
+    expect(screen.getAllByText(question)).toHaveLength(1);
+    stream.emit('status', { node: 'understand', text: 'Разбираю второй вопрос…' });
+    expect(await screen.findByRole('status')).toHaveTextContent('Разбираю второй вопрос…');
   });
 });

@@ -12,6 +12,7 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Receive, Scope, Send
 
@@ -25,6 +26,8 @@ from djedai.backend.chat_service import (
     stream_chat_turn,
     turn_timeout_event,
 )
+from djedai.backend.chat_turns import finish_error, read_turn, recover_expired_turns
+from djedai.backend.db.models import MessageModel
 from djedai.backend.db.repositories import (
     create_chat as create_chat_record,
 )
@@ -45,10 +48,11 @@ from djedai.contracts.chat import (
     ChatCreated,
     ChatDetail,
     ChatSummary,
+    ChatTurnState,
     SendMessageRequest,
 )
 from djedai.contracts.sse import SSEErrorData, SSEErrorEvent
-from djedai.execution import TurnCancelled
+from djedai.execution import TurnTimeout
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 logger = logging.getLogger(__name__)
@@ -99,6 +103,7 @@ def get_chat(chat_id: str, db: DbSession, owner_id: LocalOwner) -> ChatDetail:
     if dataset is None or dataset.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Чат не найден")
     summary = chat_summary(chat)
+    recover_expired_turns(db, chat_id)
     messages = [message_to_chat_message(item) for item in get_chat_messages(db, chat_id)]
     return ChatDetail(**summary.model_dump(), messages=messages)
 
@@ -140,6 +145,24 @@ def _require_chat(chat_id: str, db: DbSession, owner_id: LocalOwner) -> None:
 
 
 @router.post(
+    "/{chat_id}/messages/{message_id}/cancel",
+    response_model=ChatTurnState,
+    dependencies=[Depends(_require_chat)],
+)
+def cancel_chat_turn(chat_id: str, message_id: str, db: DbSession) -> ChatTurnState:
+    """Explicitly stop only the selected owned question; never start a new turn."""
+    message = db.get(MessageModel, message_id)
+    if message is None or message.chat_id != chat_id or message.role != "user" or not message.turn:
+        raise HTTPException(status_code=404, detail="Вопрос не найден")
+    state = ChatTurnState.model_validate(message.turn)
+    finish_error(db, message_id, state.run_id, "cancelled")
+    updated = read_turn(db, message_id)
+    if updated is None or updated.status == "running":
+        raise HTTPException(status_code=503, detail="Не удалось подтвердить остановку запроса")
+    return updated
+
+
+@router.post(
     "/{chat_id}/messages",
     dependencies=[Depends(_require_chat)],
     responses={
@@ -166,11 +189,42 @@ async def send_chat_message(
 ) -> StreamingResponse:
     """Сохраняет вопрос и отдаёт ответ агента потоком SSE вне event loop."""
     await asyncio.to_thread(access.require)
+    question_id = f"m_{payload.request_id.hex}" if payload.request_id else f"m_{uuid4().hex}"
+    run_id = f"run_{uuid4().hex}"
+
+    def already_accepted() -> bool:
+        with session_factory() as db:
+            return db.get(MessageModel, question_id) is not None
+
+    if payload.request_id and await asyncio.to_thread(already_accepted):
+        raise HTTPException(
+            status_code=409, detail="Этот вопрос уже принят. Обновите историю чата."
+        )
     cancel_event = threading.Event()
-    budget = runtime.budget(cancel_event.is_set)
+    budget = runtime.budget(lambda: cancelled())
     queue: asyncio.Queue[object] = asyncio.Queue()
     done_sentinel = object()
     loop = asyncio.get_running_loop()
+
+    def cancellation_code() -> str:
+        return "stream_interrupted" if access.valid() else "unauthorized"
+
+    def persist_error(code: str) -> None:
+        try:
+            with session_factory() as db:
+                finish_error(db, question_id, run_id, code)
+        except Exception:
+            logger.error("Chat outcome store unavailable (run_id=%s)", run_id)
+
+    def cancelled() -> bool:
+        if cancel_event.is_set() or not access.valid():
+            return True
+        try:
+            with session_factory() as db:
+                state = read_turn(db, question_id)
+                return state is not None and state.status not in {"running", "success"}
+        except SQLAlchemyError:
+            return True
 
     def enqueue(item: object) -> None:
         try:
@@ -183,14 +237,18 @@ async def send_chat_message(
         session: Session | None = None
         try:
             session = session_factory()
+            session.info["chat_turn_worker"] = True
             for event in stream_chat_turn(
                 session,
                 chat_id,
                 payload.text,
                 runtime,
-                is_cancelled=lambda: cancel_event.is_set() or not access.valid(),
+                is_cancelled=cancelled,
                 owner_id=owner_id,
                 budget=budget,
+                question_id=question_id,
+                run_id=run_id,
+                cancellation_code=cancellation_code,
             ):
                 if cancel_event.is_set():
                     break
@@ -198,8 +256,10 @@ async def send_chat_message(
                 enqueue((frame, event.event in {"done", "error"}))
         except Exception:
             logger.error("Chat worker failed")
+            persist_error("agent_error")
             err_event = SSEErrorEvent(
                 data=SSEErrorData(
+                    code="agent_error",
                     message="Не удалось получить ответ агента",
                     detail="Не удалось завершить запрос. Повторите его явно.",
                 )
@@ -217,31 +277,36 @@ async def send_chat_message(
     worker_thread.start()
 
     async def frames() -> AsyncIterator[str]:
+        terminal = False
         try:
             while True:
                 if await request.is_disconnected():
                     cancel_event.set()
                     break
                 try:
-                    budget.check()
+                    if budget.remaining <= 0:
+                        raise TurnTimeout
                     item = await asyncio.wait_for(queue.get(), timeout=min(0.1, budget.remaining))
-                    budget.check()
                 except TimeoutError:
                     if budget.remaining > 0:
                         continue
                     cancel_event.set()
+                    await asyncio.to_thread(persist_error, "turn_timeout")
+                    terminal = True
                     yield encode_sse_event(turn_timeout_event())
-                    return
-                except TurnCancelled:
                     return
                 if item is done_sentinel:
                     break
                 if isinstance(item, tuple):
+                    terminal = item[1]
                     yield item[0]
                     if item[1]:
                         return
         finally:
             cancel_event.set()
+            if not terminal:
+                with anyio.CancelScope(shield=True):
+                    await asyncio.to_thread(persist_error, cancellation_code())
 
     return ClosableStreamingResponse(
         guard_stream(

@@ -2,6 +2,7 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
+from decimal import Decimal
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -226,29 +227,83 @@ def wants_visualization(state: AgentState) -> bool:
 
 
 def active_results(state: AgentState) -> list[ToolResult]:
-    """Возвращает актуальные результаты для визуализации, текста и верификации.
+    """Все успешные результаты текущего хода, включая сохранённые с предыдущих попыток (ретраев)."""
+    return [r for r in state.get("results", []) if r.status == "ok"]
 
-    Берем результаты текущего плана, а при его отсутствии (modify_previous) —
-    сохранённые результаты, на которые сослался пользователь, затем результаты
-    в фокусе разговора. Это позволяет менять представление и раскрывать детали
-    без повторного расчёта.
-    """
-    current_results = state.get("results", [])
+
+def chart_source_results(state: AgentState) -> list[ToolResult]:
+    """Возвращает уже посчитанные результаты, по которым можно построить график."""
+    current_ok = active_results(state)
+    if current_ok:
+        return current_ok
+
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
     history_results = state.get("history_results", [])
-    plan_len = len(state.get("plan", []))
-    if plan_len > 0:
-        candidates = current_results[-plan_len:]
-    else:
-        understanding = state.get("understanding")
-        references = understanding.references if understanding else []
-        saved = {r.result_id: r for r in history_results + current_results}
-        if references:
-            candidates = [saved[ref] for ref in references if ref in saved]
-        elif focus := state.get("focus_result_ids", []):
-            candidates = [saved[result_id] for result_id in focus if result_id in saved]
-        else:
-            candidates = (current_results or history_results)[-1:]
-    return [r for r in candidates if r.status == "ok"]
+    saved = {r.result_id: r for r in [*history_results, *state.get("results", [])]}
+
+    if references:
+        referenced = [
+            saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"
+        ]
+        if referenced:
+            return referenced
+
+    # Follow-up without an explicit reference: the conversation focus, not the
+    # arbitrary last result, is what the user is asking to show differently.
+    focus = state.get("focus_result_ids", [])
+    focused = [saved[result_id] for result_id in focus if result_id in saved]
+    focused = [result for result in focused if result.status == "ok"]
+    if focused:
+        return focused
+
+    return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
+
+
+def chart_block_result_ids(blocks: list[Block]) -> list[str]:
+    """Возвращает результат_id, на которые ссылаются блоки-графики ответа."""
+    result_ids = []
+    for block in blocks:
+        if block.type != "chart" or not block.chart:
+            continue
+        result_id = block.chart.get("result_id")
+        if result_id:
+            result_ids.append(result_id)
+    return list(dict.fromkeys(result_ids))
+
+
+def answer_results(state: AgentState) -> list[ToolResult]:
+    """Результаты, по которым объясняется и проверяется ответ текущего хода.
+
+    Если ход только изменил представление, берём сохранённые результаты,
+    на которые сослался пользователь или которые остаются в фокусе разговора.
+    Без этого верификатор и compose теряют факты предыдущего ответа.
+    """
+    current = active_results(state)
+    if current:
+        return current
+
+    saved = {
+        result.result_id: result
+        for result in state.get("history_results", []) + state.get("results", [])
+    }
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
+
+    candidate_groups = [
+        references,
+        state.get("focus_result_ids", []),
+        chart_block_result_ids(state.get("answer_blocks", [])),
+    ]
+    for candidate_ids in candidate_groups:
+        matched = [
+            saved[result_id]
+            for result_id in candidate_ids
+            if result_id in saved and saved[result_id].status == "ok"
+        ]
+        if matched:
+            return matched
+    return []
 
 
 def updated_focus_result_ids(state: AgentState) -> list[str]:
@@ -283,39 +338,102 @@ def describe_result_for_chart(result: ToolResult) -> dict:
     }
 
 
+NUMERIC_TYPES = {
+    "INT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "TINYINT",
+    "SMALLINT",
+    "FLOAT",
+    "DOUBLE",
+    "REAL",
+    "DECIMAL",
+    "NUMERIC",
+    "MONEY",
+}
+
+
+def _column_info(column: object) -> tuple[str | None, str | None]:
+    """Возвращает имя и объявленный тип колонки результата."""
+    if isinstance(column, str):
+        return column, None
+    if isinstance(column, dict):
+        name = column.get("name")
+        return (name, column.get("type")) if name else (None, None)
+    name = getattr(column, "name", None)
+    return (name, getattr(column, "type", None)) if name else (None, None)
+
+
+def _values_are_numeric(rows: list[list[object]], index: int) -> bool | None:
+    """Определяет числовой тип по значениям, если метаданные колонки не заданы.
+
+    Возвращает None, когда значений нет и тип определить нельзя.
+    """
+    decided: bool | None = None
+    for row in rows:
+        if index >= len(row) or row[index] is None:
+            continue
+        value = row[index]
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            return False
+        decided = True
+    return decided
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
-    """Оставляет только графики с реальными результатами и существующими колонками."""
-    results_by_id = {r.result_id: r for r in results}
+    """Оставляет только графики, ссылающиеся на реальные сохранённые результаты и поля."""
+    result_map = {r.result_id: r for r in results}
     sanitized = []
     seen_ids: set[str] = set()
+
+    def is_numeric_type(t: str | None) -> bool:
+        if not t:
+            return True  # If unknown, allow to avoid false positives
+        t_upper = str(t).upper()
+        return any(nt in t_upper for nt in NUMERIC_TYPES)
+
     for chart in charts:
-        if chart.result_id not in results_by_id:
+        res = result_map.get(chart.result_id)
+        if not res or not res.data:
             continue
 
-        res = results_by_id[chart.result_id]
-        if not res.data:
-            continue
+        columns: dict[str, tuple[int, str | None]] = {}
+        for index, column in enumerate(res.data.columns):
+            name, column_type = _column_info(column)
+            if name is not None:
+                columns[name] = (index, column_type)
 
-        valid_cols = set()
-        for c in res.data.columns:
-            if isinstance(c, str):
-                valid_cols.add(c)
-            elif hasattr(c, "name"):
-                valid_cols.add(c.name)
-            elif isinstance(c, dict) and "name" in c:
-                valid_cols.add(c["name"])
+        is_valid = True
 
-        fields_to_check = []
-        if chart.x:
-            fields_to_check.append(chart.x.field)
-        for y in chart.y or []:
-            fields_to_check.append(y.field)
-        if chart.color:
-            fields_to_check.append(chart.color.field)
-        if chart.sort:
-            fields_to_check.append(chart.sort.field)
+        # Проверка оси X
+        if chart.x and chart.x.field not in columns:
+            is_valid = False
 
-        if not all(f in valid_cols for f in fields_to_check):
+        # Проверка осей Y (наличие и числовой тип)
+        for y_measure in chart.y:
+            column = columns.get(y_measure.field)
+            if column is None:
+                is_valid = False
+                continue
+            index, column_type = column
+            if column_type:
+                measure_is_numeric = is_numeric_type(column_type)
+            else:
+                # Инструменты возвращают только имена колонок, поэтому тип
+                # восстанавливаем по значениям: строковые категории нельзя
+                # откладывать по числовой оси.
+                measure_is_numeric = _values_are_numeric(res.data.rows, index) is not False
+            if not measure_is_numeric:
+                is_valid = False
+
+        # Проверка color и sort
+        if chart.color and chart.color.field not in columns:
+            is_valid = False
+        if chart.sort and chart.sort.field not in columns:
+            is_valid = False
+
+        if not is_valid:
             continue
 
         chart_id = chart.chart_id
@@ -323,6 +441,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
             chart_id = f"ch_{uuid.uuid4().hex[:8]}"
         seen_ids.add(chart_id)
         sanitized.append(chart.model_copy(update={"chart_id": chart_id}))
+
     return sanitized
 
 
@@ -331,7 +450,7 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
     if not wants_visualization(state):
         return {"charts": [], "focus_result_ids": focus}
 
-    valid_results = active_results(state)
+    valid_results = chart_source_results(state)
     if not valid_results:
         return {"charts": [], "focus_result_ids": focus}
 
@@ -370,7 +489,7 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         return {"answer_blocks": existing_blocks, "focus_result_ids": focus}
 
     facts_and_data = []
-    for r in active_results(state):
+    for r in answer_results(state):
         entry = {"tool": r.tool}
         if r.facts:
             entry["facts"] = r.facts
@@ -386,7 +505,6 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     )
     user_prompt = user_prompt or last_msg or "Explain the results."
 
-    # Hint for the retry iteration to explicitly fix hallucinations
     if state.get("compose_retries", 0) > 0:
         user_prompt += (
             "\n\nWARNING: Your previous response contained unverified or hallucinated numbers. "
@@ -428,13 +546,15 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         if b.type == "text" and b.markdown:
             draft_parts.append(b.markdown)
         elif b.type == "chart" and b.chart:
-            c = b.chart if isinstance(b.chart, dict) else b.chart.model_dump()
-            if c.get("title"):
-                draft_parts.append(c["title"])
-            if c.get("subtitle"):
-                draft_parts.append(c["subtitle"])
-            if c.get("caption"):
-                draft_parts.append(c["caption"])
+            chart_dict = (
+                b.chart
+                if isinstance(b.chart, dict)
+                else (b.chart.model_dump() if hasattr(b.chart, "model_dump") else {})
+            )
+            if title := chart_dict.get("title"):
+                draft_parts.append(title)
+            if sub := chart_dict.get("subtitle"):
+                draft_parts.append(sub)
 
     if not draft_parts:
         return {"is_verified": True}
@@ -442,7 +562,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     draft = "\n\n".join(draft_parts)
 
     facts_and_data = []
-    for r in active_results(state):
+    for r in answer_results(state):
         entry = {"tool": r.tool}
         if r.facts:
             entry["facts"] = r.facts
@@ -451,7 +571,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         facts_and_data.append(entry)
 
     if not facts_and_data:
-        new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
+        new_blocks = [b for b in blocks if b.type != "text"]
         new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
         return {"is_verified": True, "answer_blocks": new_blocks}
 

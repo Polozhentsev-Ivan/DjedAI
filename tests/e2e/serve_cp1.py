@@ -20,6 +20,7 @@ import uvicorn  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 
 from djedai.backend.app import create_app  # noqa: E402
 from djedai.backend.config import Settings  # noqa: E402
@@ -27,11 +28,49 @@ from djedai.backend.config import Settings  # noqa: E402
 
 def model_app() -> FastAPI:
     app = FastAPI()
+    controls: dict[str, dict] = {}
 
-    @app.post("/v1/chat/completions")
-    def complete(payload: dict) -> dict:
+    @app.post("/control")
+    def control(payload: dict) -> dict:
+        key = f"{payload['marker']}:{payload['stage']}"
+        if payload.get("release"):
+            controls[key]["gate"].set()
+        else:
+            controls[key] = {
+                **payload,
+                "gate": threading.Event(),
+                "started": 0,
+                "finished": 0,
+            }
+        return {"ok": True}
+
+    @app.get("/control")
+    def observations() -> dict:
+        return {
+            key: {"started": value["started"], "finished": value["finished"]}
+            for key, value in controls.items()
+        }
+
+    @app.post("/v1/chat/completions", response_model=None)
+    def complete(payload: dict) -> dict | JSONResponse:
         name = payload["response_format"]["json_schema"]["name"]
         system, question = [entry["content"] for entry in payload["messages"]]
+        for value in list(controls.values()):
+            if (value["marker"] != "*" and value["marker"] not in question) or value[
+                "stage"
+            ] != name:
+                continue
+            value["started"] += 1
+            mode = value["mode"]
+            if mode == "gate":
+                value["gate"].wait(10)
+            elif mode == "timeout":
+                time.sleep(12)
+            elif mode == "unavailable" or (mode == "retry" and value["started"] == 1):
+                return JSONResponse(
+                    {"error": {"message": "Controlled unavailable"}}, status_code=503
+                )
+            value["finished"] += 1
         if "ошибка модели" in question.lower():
             return {"choices": [{"finish_reason": "stop", "message": {"content": "invalid"}}]}
         if "медленно" in question.lower():
@@ -99,6 +138,8 @@ def main() -> None:
         app_database_url=f"sqlite:///{directory / 'app.db'}",
         datasets_data_dir=str(directory / "datasets"),
         results_data_dir=str(directory / "results"),
+        # The browser suite logs many isolated accounts in from the same loopback IP.
+        auth_rate_limit_requests=100,
     )
     # The real client reads its existing environment contract, no runtime injection.
     import os
@@ -108,6 +149,8 @@ def main() -> None:
             "MODEL_BASE_URL": f"http://127.0.0.1:{args.model_port}/v1",
             "MODEL_NAME": "cp1-controlled-model",
             "MODEL_API_KEY": "cp1-test-only",
+            "MODEL_TIMEOUT_SECONDS": "5",
+            "MODEL_RETRY_DELAY_SECONDS": "0.6",
         }
     )
     migration = Config(str(ROOT / "alembic.ini"))

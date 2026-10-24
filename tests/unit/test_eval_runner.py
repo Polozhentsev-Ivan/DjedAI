@@ -161,6 +161,82 @@ def test_check_fact_compares_timestamps_by_instant():
     assert check_fact(fact, [other]) is False
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-09-30T21:59+03:00",
+        "2026-09-30T18:59Z",
+        "2026-09-30 21:59",
+        "2026-09-30T21:59:00.000+0300",
+    ],
+)
+def test_check_fact_accepts_equivalent_timestamp_precisions(timestamp):
+    fact = {
+        "key": "start.max",
+        "comparison": "exact",
+        "value": "2026-09-30T21:59:00+03:00",
+    }
+    assert check_fact(fact, [tool_result(rows=[[timestamp]])]) is True
+    assert check_fact(fact, [tool_result(rows=[["2026-09-30T21:58+03:00"]])]) is False
+
+
+@pytest.mark.parametrize(
+    "calendar_text",
+    [
+        "2024 г.",
+        "2024г.",
+        "2024 г. Итоги",
+        "2024 г.\nИтоги",
+        "2024 год",
+        "2026-09-30T21:59+03:00",
+        "2026-09-30T21:59-03:00",
+        "2026-09-30T21:59+0300",
+        "2026-09-30T21:59Z",
+        "2026-09-30 21:59+03:00",
+        "2026-09-30T21:59:37+03:00",
+        "2026-09-30T21:59:37.123456Z",
+    ],
+)
+def test_answer_calendar_notations_are_not_measured_values(calendar_text):
+    case = answer_case(
+        "calendar_answer",
+        facts=[{"key": "dataset.row_count", "comparison": "exact", "value": 500000}],
+        answer_contains_value={"from_result": True},
+    )
+    result = {
+        "results": [tool_result(rows=[[500000]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", f"Всего 500000 строк.\n{calendar_text}")],
+    }
+
+    status, issues, details = evaluate_case(case, result)
+
+    assert status == "passed", issues
+    assert details["fact_checks"][0]["passed"] is True
+
+
+@pytest.mark.parametrize("wrong_count", [2024, 59, 500])
+def test_calendar_exemptions_do_not_hide_wrong_measured_values(wrong_count):
+    case = answer_case(
+        "wrong_calendar_answer",
+        facts=[{"key": "dataset.row_count", "comparison": "exact", "value": 500000}],
+        answer_contains_value={"from_result": True},
+    )
+    result = {
+        "results": [tool_result(rows=[[500000]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [
+            Block("text", f"2024 г. На 2026-09-30T21:59+03:00 всего {wrong_count} строк.")
+        ],
+    }
+
+    status, issues, details = evaluate_case(case, result)
+
+    assert status == "failed"
+    assert details["fact_checks"][0]["passed"] is True
+    assert f"Number {wrong_count} in the answer is not backed by tool results" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",

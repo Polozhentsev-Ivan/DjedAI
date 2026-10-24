@@ -30,9 +30,9 @@ function errorJson(status: number, error: Schemas['ErrorBody']) {
 type SseFrame = readonly [string, unknown];
 
 /** text/event-stream response that sends frames one by one with a pause. */
-function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal, beforeSend?: (event: string) => void): HttpResponse<ReadableStream> {
+function eventStream(frames: readonly SseFrame[], tick: number, signal: AbortSignal, beforeSend?: (event: string) => void, isCancelled = () => false): HttpResponse<ReadableStream> {
   let cancelled = false;
-  const stopped = () => signal.aborted || cancelled;
+  const stopped = () => signal.aborted || cancelled || isCancelled();
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       for (const [event, data] of frames) {
@@ -214,30 +214,42 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     http.post(api('/chats/:id/messages'), async ({ params, request }) => {
       const chat = db.chats.find((item) => item.chat_id === params.id);
       if (!chat) return notFound('Чат');
-      const { text } = await request.json() as Schemas['SendMessageRequest'];
+      const { text, request_id: requestId } = await request.json() as Schemas['SendMessageRequest'];
       const messageId = `m_${crypto.randomUUID()}`;
-      chat.messages.push({ message_id: `u_${crypto.randomUUID()}`, role: 'user', created_at: new Date().toISOString(), text });
+      const now = new Date().toISOString();
+      const turn: Schemas['ChatTurnState'] = { run_id: `run_${crypto.randomUUID()}`, status: 'running', node: 'understand', phase: 'stage', message: 'Разбираю вопрос…', started_at: now, deadline_at: new Date(Date.now() + 30000).toISOString() };
+      const userMessage: Schemas['ChatMessage'] = { message_id: `m_${requestId?.replaceAll('-', '') ?? crypto.randomUUID()}`, role: 'user', created_at: now, text, turn };
+      chat.messages.push(userMessage);
       if (chat.title === 'Новый чат') chat.title = text.slice(0, 80);
       const blocks: Schemas['Block'][] = [
         { type: 'text', markdown: 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.' },
         { type: 'chart', chart: { chart_id: 'chart_revenue', result_id: 'r_rev', type: 'line', title: 'Выручка по месяцам, ₽', x: { field: 'month', kind: 'time' }, y: [amount] } },
       ];
       const frames: SseFrame[] = [
-        ['status', { node: 'understand', text: 'Определил колонки: «Сумма с НДС, руб», «Дата оплаты»' }],
-        ['status', { node: 'execute', text: 'Анализирую данные…' }],
+        ['status', { node: 'understand', text: turn.message, message_id: userMessage.message_id, run_id: turn.run_id }],
+        ['status', { node: 'execute', text: 'Анализирую данные…', message_id: userMessage.message_id, run_id: turn.run_id }],
         ['tool_call', { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } }],
         ['tool_result', { result_id: 'r_rev', ok: true }],
         ...blocks.map((block) => ['block', block] as const),
         ['done', { message_id: messageId }],
       ];
-      const timeout: SseFrame = ['error', { message: 'Запрос превысил таймаут 30 сек.', detail: 'Попробуйте уточнить период.' }];
+      const timeout: SseFrame = ['error', { code: 'model_timeout', message: 'Модель не ответила за отведённое время', detail: 'Отправьте вопрос снова, если нужно.' }];
       let persisted = false;
       return eventStream(scenario() === 'error' ? [...frames.slice(0, 1), timeout] : frames, tick, request.signal, (event) => {
         if (event === 'block' && !persisted) {
           persisted = true;
+          Object.assign(turn, { status: 'success', message: 'Ответ готов', finished_at: new Date().toISOString(), assistant_message_id: messageId });
           chat.messages.push({ message_id: messageId, role: 'assistant', created_at: new Date().toISOString(), blocks, result_ids: ['r_rev'] });
         }
-      });
+        if (event === 'error') Object.assign(turn, { status: 'timeout', code: 'model_timeout', message: 'Модель не ответила за отведённое время', suggestion: 'Отправьте вопрос снова, если нужно.', finished_at: new Date().toISOString() });
+      }, () => turn.status === 'cancelled');
+    }),
+
+    http.post(api('/chats/:id/messages/:messageId/cancel'), ({ params }) => {
+      const message = db.chats.find((item) => item.chat_id === params.id)?.messages.find((item) => item.message_id === params.messageId);
+      if (!message?.turn) return notFound('Вопрос');
+      if (message.turn.status === 'running') Object.assign(message.turn, { status: 'cancelled', code: 'cancelled', message: 'Получение ответа остановлено', suggestion: 'Отправьте вопрос снова, если нужно.', finished_at: new Date().toISOString() });
+      return HttpResponse.json(message.turn);
     }),
 
     http.get(api('/results/:id'), async ({ params }) => {

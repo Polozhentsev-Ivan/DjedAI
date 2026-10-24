@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from djedai.backend.chat_turns import apply_turn
 from djedai.backend.config import get_settings
 from djedai.backend.db.models import (
     ChatModel,
@@ -34,6 +35,7 @@ from djedai.backend.db.models import (
     UserModel,
 )
 from djedai.backend.db.session import budgeted_write
+from djedai.contracts.chat import ChatTurnState
 from djedai.contracts.message import AssistantMessage
 from djedai.contracts.tool_result import (
     ChartHint,
@@ -43,7 +45,7 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
-from djedai.execution import ExecutionBudget
+from djedai.execution import ExecutionBudget, TurnCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -885,6 +887,7 @@ def save_message(
     blocks: list[dict[str, Any]] | None = None,
     result_ids: list[str] | None = None,
     trace: list[dict[str, Any]] | None = None,
+    turn: dict[str, Any] | None = None,
     created_at: datetime | None = None,
     before_commit: Callable[[], None] | None = None,
 ) -> MessageModel:
@@ -906,6 +909,7 @@ def save_message(
         blocks=blocks,
         result_ids=result_ids,
         trace=trace,
+        turn=turn,
         created_at=effective_created_at,
     )
     db.add(msg)
@@ -923,13 +927,39 @@ def save_message(
 
 
 def save_assistant_message(
-    db: Session, message: AssistantMessage, *, budget: ExecutionBudget | None = None
+    db: Session,
+    message: AssistantMessage,
+    *,
+    budget: ExecutionBudget | None = None,
+    question_id: str | None = None,
+    completed_turn: ChatTurnState | None = None,
+    summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
 ) -> MessageModel:
-    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at."""
+    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at.
+
+    ``summary`` и ``focus_result_ids`` обновляются в той же транзакции, что и
+    сообщение с терминальным статусом хода. При исчерпании бюджета или
+    проигранном CAS откатывается всё вместе: память не опережает ответ.
+    """
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
 
     def write(session: Session) -> MessageModel:
+        if question_id is not None and completed_turn is not None:
+            if not apply_turn(session, question_id, completed_turn):
+                session.rollback()
+                raise TurnCancelled
+        if summary is not None or focus_result_ids is not None:
+            chat = session.get(ChatModel, message.chat_id)
+            if chat is None:
+                raise ValueError("Чат результата не найден")
+            if summary is not None:
+                chat.summary = summary
+            if focus_result_ids is not None:
+                chat.focus_result_ids = list(
+                    dict.fromkeys(result_id for result_id in focus_result_ids if result_id)
+                )
         return save_message(
             db=session,
             message_id=message.message_id,

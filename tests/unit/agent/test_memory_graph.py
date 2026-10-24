@@ -15,7 +15,13 @@ from djedai.contracts.agent import (
     VisualizeResponse,
 )
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
-from djedai.contracts.tool_result import ChartHint, Fact, ToolResult, ToolResultData
+from djedai.contracts.tool_result import (
+    ChartHint,
+    Fact,
+    ToolError,
+    ToolResult,
+    ToolResultData,
+)
 
 
 def _result(result_id: str, fact: str) -> ToolResult:
@@ -198,3 +204,106 @@ def test_details_about_the_second_item_reuse_its_saved_result() -> None:
     assert "Первый факт" not in compose_prompt
     assert result["results"] == []
     assert result["focus_result_ids"] == ["r_second"]
+
+
+def test_corrected_plan_focus_excludes_superseded_successful_attempt() -> None:
+    """Фокус — результаты финального плана, а не все успешные попытки."""
+    graph = build_agent_graph()
+    client = MagicMock()
+    chart = ChartSpec(
+        chart_id="ch_final",
+        result_id="r_final",
+        type="bar",
+        title="Финальный результат",
+        x=XAxis(field="category"),
+        y=[YMeasure(field="value")],
+    )
+    client.generate_typed_response.side_effect = [
+        # Первый ход: успешный SELECT 1, ошибка, исправленный SELECT 2.
+        ModelResponse(status="success", data=Understanding(intent="data_question")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(
+                plan=[
+                    PlannedCall(tool="run_sql", args={"sql": "SELECT 1"}),
+                    PlannedCall(tool="run_sql", args={"sql": "INVALID"}),
+                ]
+            ),
+        ),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(plan=[PlannedCall(tool="run_sql", args={"sql": "SELECT 2"})]),
+        ),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="2")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+        # Второй ход: меняем представление без новых ссылок.
+        ModelResponse(
+            status="success",
+            data=Understanding(intent="modify_previous", references=[]),
+        ),
+        ModelResponse(status="success", data=PlanResponse(plan=[])),
+        ModelResponse(status="success", data=VisualizeResponse(charts=[chart])),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="График")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    def dispatcher(_tool: str, args: dict) -> ToolResult:
+        if args["sql"] == "SELECT 1":
+            return _result("r_first", "Первый результат")
+        if args["sql"] == "INVALID":
+            return ToolResult(
+                result_id="r_error",
+                status="error",
+                tool="run_sql",
+                error=ToolError(code="syntax", message="Ошибка SQL"),
+            )
+        return _result("r_final", "Финальный результат")
+
+    config = {
+        "configurable": {
+            "thread_id": "memory_corrected_plan",
+            "client": client,
+            "tool_dispatcher": dispatcher,
+        }
+    }
+    first = graph.invoke(
+        {
+            "chat_id": "c_corrected",
+            "dataset_id": "ds_corrected",
+            "messages": [Message(role="user", content="Посчитай дважды")],
+        },
+        config=config,
+    )
+    assert [result.result_id for result in first["results"]] == [
+        "r_first",
+        "r_error",
+        "r_final",
+    ]
+    assert first["focus_result_ids"] == ["r_final"]
+
+    # История хранит оба успешных расчёта, но фокус указывает только на финал.
+    second = graph.invoke(
+        {
+            "chat_id": "c_corrected",
+            "dataset_id": "ds_corrected",
+            "messages": [Message(role="user", content="Покажи это по-другому")],
+            "focus_result_ids": ["r_final"],
+            "history_results": [
+                _result("r_final", "Финальный результат"),
+                _result("r_first", "Первый результат"),
+            ],
+        },
+        config=config,
+    )
+
+    visualize_prompt = client.generate_typed_response.call_args_list[7].args[0]
+    assert "r_final" in visualize_prompt
+    assert "r_first" not in visualize_prompt
+    assert second["focus_result_ids"] == ["r_final"]
+    assert [chart.result_id for chart in second["charts"]] == ["r_final"]

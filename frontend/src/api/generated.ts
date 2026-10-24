@@ -213,6 +213,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chats/{chat_id}/messages/{message_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop one owned question; a terminal outcome is returned unchanged. */
+        post: operations["cancelChatTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/results/{result_id}": {
         parameters: {
             query?: never;
@@ -980,6 +1000,12 @@ export interface components {
              * @description Текст вопроса к данным
              */
             text: string;
+            /**
+             * Request Id
+             * @description UUID явной отправки для связи вопроса с локальным состоянием
+             * @default null
+             */
+            request_id?: string | null;
         };
         /**
          * ChatMessage
@@ -1019,6 +1045,74 @@ export interface components {
              * @description ID результатов вычислений, на которые опирается ответ
              */
             result_ids?: string[];
+            /**
+             * @description Состояние хода этого вопроса; у прежних сообщений отсутствует
+             * @default null
+             */
+            turn?: components["schemas"]["ChatTurnState"] | null;
+        };
+        /**
+         * ChatTurnState
+         * @description Owner-visible outcome of the turn started by one user message.
+         */
+        ChatTurnState: {
+            /**
+             * Run Id
+             * @description Идентификатор хода в диагностике
+             */
+            run_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "success" | "error" | "timeout" | "cancelled" | "interrupted";
+            /**
+             * Node
+             * @description Последний начатый этап агента
+             */
+            node: string;
+            /**
+             * Phase
+             * @default stage
+             * @enum {string}
+             */
+            phase?: "stage" | "retry";
+            /**
+             * Message
+             * @description Понятный русский статус или причина завершения
+             */
+            message: string;
+            /**
+             * Code
+             * @description Нормализованный код завершения
+             * @default null
+             */
+            code?: string | null;
+            /**
+             * Suggestion
+             * @default null
+             */
+            suggestion?: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Deadline At
+             * Format: date-time
+             */
+            deadline_at: string;
+            /**
+             * Finished At
+             * @default null
+             */
+            finished_at?: string | null;
+            /**
+             * Assistant Message Id
+             * @default null
+             */
+            assistant_message_id?: string | null;
         };
         /**
          * ChatDetail
@@ -1481,6 +1575,24 @@ export interface components {
              * @description Человекочитаемый статус текущего действия на русском языке
              */
             text: string;
+            /**
+             * Message Id
+             * @description ID сохранённого вопроса пользователя
+             * @default null
+             */
+            message_id?: string | null;
+            /**
+             * Run Id
+             * @description ID хода для диагностики
+             * @default null
+             */
+            run_id?: string | null;
+            /**
+             * Phase
+             * @default stage
+             * @enum {string}
+             */
+            phase?: "stage" | "retry";
         };
         /**
          * SSEToolCallData
@@ -2261,6 +2373,30 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AgentEvent"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelChatTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted turn state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatTurnState"];
                 };
             };
             default: components["responses"]["Error"];
