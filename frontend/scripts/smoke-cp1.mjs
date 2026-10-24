@@ -33,15 +33,27 @@ await page.addInitScript(() => {
   window.__cp1Streams = [];
   const original = window.fetch;
   window.fetch = async (...args) => {
-    const response = await original(...args);
+    const [input, options] = args;
+    const url = typeof input === 'string' || input instanceof URL ? new URL(input, window.location.href).href : input.url;
+    const method = options?.method ?? (input instanceof Request ? input.method : 'GET');
+    const question = method.toUpperCase() === 'POST' && new URL(url).pathname.endsWith('/messages');
+    const stream = { url, chunks: [], raw: '', finished: false, interrupted: false };
+    if (question) window.__cp1Streams.push(stream);
+    let response;
+    try {
+      response = await original(...args);
+    } catch (error) {
+      if (question) stream.interrupted = true;
+      throw error;
+    }
     if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      stream.url = response.url;
+      if (!question) window.__cp1Streams.push(stream);
       const clone = response.clone();
       const started = performance.now();
       void (async () => {
         const reader = clone.body.getReader();
         const decoder = new TextDecoder();
-        const stream = { url: response.url, chunks: [], raw: '', finished: false };
-        window.__cp1Streams.push(stream);
         try {
           while (true) {
             const { value, done } = await reader.read();
@@ -54,7 +66,7 @@ await page.addInitScript(() => {
           stream.finished = true;
         } catch { stream.interrupted = true; }
       })();
-    }
+    } else if (question) stream.finished = true;
     return response;
   };
 });
@@ -121,17 +133,23 @@ try {
       const question = `По таблице ${name} одним SELECT вычисли COUNT(*) AS n и SUM(amount) AS total без фильтров. Ответь только строкой COUNT=<целое>;SUM=<число>, без других слов и без графиков.`;
       await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill(question);
       await page.getByRole('button', { name: 'Отправить', exact: true }).click();
-      await page.waitForFunction(() => window.__cp1Streams.some((s) => s.url.endsWith('/messages') && s.finished), undefined, { timeout: 180_000 });
+      await page.waitForFunction(() => window.__cp1Streams.some((s) => s.url.endsWith('/messages') && (s.finished || s.interrupted)), undefined, { timeout: 180_000 });
       await page.getByRole('button', { name: 'Отправить', exact: true }).waitFor();
       const chatUrl = page.url();
       const chatId = new URL(chatUrl).pathname.split('/').at(-1);
       const chat = await json(`/api/chats/${chatId}`);
       const assistant = chat.messages.findLast((message) => message.role === 'assistant');
       assert(assistant, 'The model must produce a persisted assistant message');
+      const asked = chat.messages.findLast((message) => message.role === 'user');
+      assert.equal(asked?.text, question);
+      assert.equal(asked?.turn?.status, 'success');
+      assert.equal(asked.turn.assistant_message_id, assistant.message_id);
       const answer = assistant.blocks.filter((b) => b.type === 'text').map((b) => b.markdown).join('\n');
       const match = answer.match(/COUNT\s*=\s*(\d+)\s*;\s*SUM\s*=\s*(-?\d+(?:\.\d+)?)/i);
       assert(match, `Unexpected answer format: ${answer}`);
       assert.deepEqual({ n: Number(match[1]), total: Number(match[2]) }, oracle);
+      await page.getByText(answer, { exact: true }).waitFor();
+      assert.equal(await page.getByText(answer, { exact: true }).count(), 1);
       const results = [];
       for (const id of assistant.result_ids) results.push({ metadata: await json(`/api/results/${id}`), data: await json(`/api/results/${id}/data`) });
       assert(results.some((result) => {
@@ -144,8 +162,13 @@ try {
       }), 'Persisted SQL must calculate COUNT AS n and SUM AS total exactly');
       const streams = await page.evaluate(() => window.__cp1Streams);
       const chatStream = streams.find((s) => s.url.endsWith('/messages'));
-      assert.match(chatStream.raw, /event: status/);
-      assert.match(chatStream.raw, /event: done/);
+      if (chatStream.finished) {
+        assert.match(chatStream.raw, /event: status/);
+        assert.match(chatStream.raw, /event: done/);
+      } else {
+        // GET-confirmed success closes the stale stream, even before its headers arrive.
+        assert.equal(chatStream.interrupted, true);
+      }
       assert.doesNotMatch(chatStream.raw, /event: error/);
       assert.equal(await page.evaluate(() => navigator.serviceWorker.getRegistrations().then((items) => items.length)), 0);
       await page.locator('details[data-result-id]').first().locator('summary').click();

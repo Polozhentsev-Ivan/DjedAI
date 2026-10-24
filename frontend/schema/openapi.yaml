@@ -207,6 +207,20 @@ paths:
             text/event-stream:
               schema: { $ref: '#/components/schemas/AgentEvent' }
         default: { $ref: '#/components/responses/Error' }
+  /chats/{chat_id}/messages/{message_id}/cancel:
+    parameters:
+      - { name: chat_id, in: path, required: true, schema: { type: string } }
+      - { name: message_id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: cancelChatTurn
+      summary: Stop one owned question; a terminal outcome is returned unchanged.
+      responses:
+        '200':
+          description: Persisted turn state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTurnState' }
+        default: { $ref: '#/components/responses/Error' }
   /results/{result_id}:
     parameters:
       - { name: result_id, in: path, required: true, schema: { type: string } }
@@ -448,6 +462,9 @@ components:
 
     ChatMessage:
       $ref: './contracts.json#/components/schemas/ChatMessage'
+
+    ChatTurnState:
+      $ref: './contracts.json#/components/schemas/ChatTurnState'
 
     ChatDetail:
       $ref: './contracts.json#/components/schemas/ChatDetail'

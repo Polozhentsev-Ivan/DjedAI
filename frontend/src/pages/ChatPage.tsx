@@ -57,15 +57,13 @@ export function ChatPage() {
   const { chatId } = useParams();
   const { user, activeDataset, setActiveDataset, datasets } = useWorkspace();
   const conversation = useChatConversation(chatId ?? null, activeDataset, (id) => { void navigate(`/chat/${encodeURIComponent(id)}`); });
-  const { history, turn } = conversation;
+  const { history, turns, messages, busy: streaming } = conversation;
   const detail = history.data;
   const chatDataset = detail?.dataset_id;
   useEffect(() => {
     if (chatDataset) setActiveDataset(chatDataset);
   }, [chatDataset, setActiveDataset]);
-  const streaming = turn?.running ?? false;
   const dataset = datasets.find((item) => item.dataset_id === activeDataset)?.name ?? '—';
-  const messages = turn?.history ?? detail?.messages ?? [];
   const ready = activeDataset !== null && (!chatId || history.isSuccess);
   const gutter = 'px-8';
 
@@ -78,20 +76,35 @@ export function ChatPage() {
       <div className="min-h-0 flex-1 overflow-auto" aria-live="polite">
         <div className={cn('mx-auto box-content flex max-w-(--chat-max) flex-col gap-7 pb-10 pt-7', gutter)}>
           {!activeDataset && <EmptyState title="Датасет не выбран" text="Загрузите CSV или выберите готовый датасет, чтобы задать вопрос." actionLabel="К источникам" onAction={() => { void navigate('/sources'); }} />}
-          {chatId && history.isPending && !turn && <LoadingState size="compact" title="Загружаем историю чата…" />}
+          {chatId && history.isPending && turns.length === 0 && <LoadingState size="compact" title="Загружаем историю чата…" />}
           {chatId && history.isError && <ErrorState size="inline" title="Не удалось загрузить историю чата" text={history.error.message} onAction={() => { void history.refetch(); }} />}
-          {ready && messages.length === 0 && !turn?.question && <div className="flex flex-col items-center gap-2.5 pb-2 pt-8 text-center">
+          {ready && messages.length === 0 && <div className="flex flex-col items-center gap-2.5 pb-2 pt-8 text-center">
             <div aria-hidden="true" className="flex size-(--size-avatar-lg) items-center justify-center rounded-full bg-inverse font-semibold text-inverse-foreground">D</div>
             <div className="font-display text-xl font-semibold leading-tight tracking-display">Здравствуйте, {user}</div>
             <div className="text-base text-muted-foreground">Задайте вопрос к датасету {dataset}. Сохранённые результаты расчётов появятся под ответом.</div>
           </div>}
-          {messages.map((message) => message.role === 'user'
-            ? <ChatMessage key={message.message_id} role="user" text={message.text ?? ''} />
-            : <Answer key={message.message_id} blocks={message.blocks} resultIds={message.result_ids} />)}
-          {turn?.question && <ChatMessage role="user" text={turn.question} />}
-          {turn && (turn.blocks.length > 0 || turn.resultIds.length > 0) && <Answer blocks={turn.blocks} resultIds={turn.resultIds} />}
-          {streaming && <div role="status" className="text-muted-foreground">{turn?.status}</div>}
-          {turn?.error && <ErrorState size="inline" title={turn.error.message} text={turn.error.suggestion ?? undefined} actionLabel="" />}
+          {messages.map((message) => {
+            if (message.role !== 'user') return <Answer key={message.message_id} blocks={message.blocks} resultIds={message.result_ids} />;
+            const local = turns.find((value) => value.messageId === message.message_id);
+            const state = message.turn;
+            const terminal = state && state.status !== 'running';
+            const error = terminal ? state.status !== 'success' ? state : null : local?.error;
+            const running = !terminal && !error && (local?.running || state?.status === 'running');
+            const assistantId = state?.assistant_message_id ?? local?.assistantId;
+            const savedAnswer = assistantId && messages.some((value) => value.message_id === assistantId);
+            const code = error && ('code' in error ? error.code : null);
+            return <div key={message.message_id} data-message-id={message.message_id} className="flex flex-col gap-3">
+              <ChatMessage role="user" text={message.text ?? ''} />
+              {running && <div role="status" className="text-muted-foreground">{local?.running ? local.status : state?.message}</div>}
+              {error && <ErrorState size="inline" title={error.message} text={error.suggestion ?? undefined}
+                actionLabel={streaming ? '' : 'Повторить вопрос'} onAction={() => { void conversation.send(message.text ?? ''); }} />}
+              {error && <details className="text-xs text-muted-foreground">
+                <summary className="cursor-pointer">Технические сведения</summary>
+                <div className="mt-1 break-all font-mono">Код: {code ?? 'agent_error'}{state && <><br />Ход: {state.run_id}<br />Этап: {state.node}</>}</div>
+              </details>}
+              {local && !error && !savedAnswer && local.blocks.length > 0 && <Answer blocks={local.blocks} resultIds={local.resultIds} />}
+            </div>;
+          })}
         </div>
       </div>
       <QuestionForm key={`${chatId ?? 'new'}:${activeDataset ?? ''}`} ready={ready} streaming={streaming} onSend={(question) => { void conversation.send(question); }} onStop={conversation.stop} />

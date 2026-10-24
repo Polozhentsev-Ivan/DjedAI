@@ -166,6 +166,7 @@ export function useChat(id: string | null) {
     enabled: id !== null,
     // A revisit recovers the saved history after a stopped or disconnected POST.
     staleTime: 0,
+    refetchInterval: (query) => query.state.data?.messages.some((message) => message.turn?.status === 'running') ? 1000 : false,
   });
 }
 
