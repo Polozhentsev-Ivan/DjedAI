@@ -95,9 +95,13 @@ Python-команды запускаем в среде проекта через
   - Лаг определяется максимумом корреляции рекламной активности и дневного числа продаж при сдвигах 0–14 дней. Источник сигнала — CSV; эталонный лаг не используется в расчёте.
   - Сезонность измеряется числом сырых записей: декабрь, 861 строка. Денежный максимум отдельно: апрель, 253 427 853,81 RUB. Суммы считаются через `Decimal`, до скидки; дубли, пропуски количества и аномалии включены. Это эталоны до очистки; меры, агрегации, единицы и политики перечислены в JSON.
   - Код выхода 0 — эталоны совпали, 1 — несовпадение или неполные входные данные. В тестах две генерации во временные папки побайтово сравниваются с сохранёнными CSV.
-- `seed_demo_postgres.py` — загрузка синтетики из `tests/fixtures/synthetic/` в демо-PostgreSQL (#100, PG-часть) через тот же разбор CSV, что в DjedAI; таблицы получают типы БД, повторный запуск их пересоздаёт.
-  - Запуск: `uv run python scripts/seed_demo_postgres.py --dsn 'postgresql://djedai_loader:<пароль>@127.0.0.1:5432/djedai_demo'` (или `DJEDAI_DEMO_PG_LOADER_DSN`).
-  - Роли и установка сервера — [infra/postgres/README.md](../infra/postgres/README.md).
+- `seed_demo_postgres.py`, `seed_demo_clickhouse.py` — загрузка синтетики из `tests/fixtures/synthetic/` в демо-PostgreSQL и демо-ClickHouse (#100). Обе используют `demo_dataset.py`: тот же разбор CSV и typed views, что в DjedAI, поэтому датасет в двух БД один. Повторный запуск пересоздаёт таблицы.
+  - PostgreSQL: `uv run python scripts/seed_demo_postgres.py --dsn 'postgresql://djedai_loader:<пароль>@127.0.0.1:55432/djedai_demo'` (или `DJEDAI_DEMO_PG_LOADER_DSN`); запись через DuckDB `ATTACH`.
+  - ClickHouse: `uv run python scripts/seed_demo_clickhouse.py --url 'http://djedai_loader:<пароль>@127.0.0.1:58123'` (или `DJEDAI_DEMO_CH_LOADER_URL`); таблицы MergeTree с типами из DuckDB, данные — `INSERT … FORMAT Parquet` в HTTP-интерфейс, без клиентской библиотеки и адаптера #61.
+  - Запуск БД, роли и параметры — [infra/README.md](../infra/README.md#демо-бд-postgresql-и-clickhouse); установка PostgreSQL без Docker — [infra/postgres/README.md](../infra/postgres/README.md).
+- `verify_demo_db.py` — сверка наполненных демо-БД с [eval/demo_db_expectations.json](../eval/demo_db_expectations.json) под ролями `djedai_reader`: таблицы, колонки, строки, агрегаты и запрет записи. Сначала проверяет, что эталоны совпадают с `synthetic_expectations.json`.
+  - Обе БД: `uv run python scripts/verify_demo_db.py` с `DJEDAI_DEMO_PG_READER_DSN` и `DJEDAI_DEMO_CH_READER_URL`; одна БД — только `--pg-dsn` или `--ch-url`.
+  - Код 0 и `status: passed` — все проверки совпали; 1 — расхождение, ошибка запроса или подключения. Пароли в вывод не попадают.
 - `test_postgres_isolation.py` — воспроизводимая приёмка PostgreSQL и изоляции владельцев (#60, #103). Нужны Docker с Linux engine и среда проекта; для первой загрузки образа и расширения DuckDB `postgres` нужен доступ к их реестрам. LLM не запускается: модельные ответы в тестах заданы явно, а auth, HTTP/SSE, граф, инструменты, SQLite, Parquet и PostgreSQL работают через код приложения.
   - Запуск из корня репозитория: `uv run --locked python scripts/test_postgres_isolation.py`.
   - С JSON-отчётом вне checkout: `uv run --locked python scripts/test_postgres_isolation.py --output ../artifacts/issue-103/postgres-acceptance.json`.
