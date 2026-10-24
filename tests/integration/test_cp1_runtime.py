@@ -415,7 +415,7 @@ def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatc
     assert model.calls == []
 
 
-def test_missing_model_configuration_returns_503_without_synthetic_answer(
+def test_missing_model_configuration_persists_failure_without_synthetic_answer(
     configured, monkeypatch
 ) -> None:
     settings, factory = configured
@@ -424,9 +424,13 @@ def test_missing_model_configuration_returns_503_without_synthetic_answer(
     with _client(settings) as client:
         _, chat_id = _upload(client)
         response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько строк?"})
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "unavailable"
-        assert client.get(f"/api/chats/{chat_id}").json()["messages"] == []
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert "event: error" in response.text and '"code":"model_unavailable"' in response.text
+        assert "event: done" not in response.text
+        saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert len(saved) == 1 and saved[0]["role"] == "user"
+        assert saved[0]["turn"]["code"] == "model_unavailable"
         with factory() as db:
             assert list(db.scalars(select(ToolResultModel))) == []
 
