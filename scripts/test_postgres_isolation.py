@@ -33,6 +33,7 @@ TEST_PATHS = (
     "tests/integration/test_postgres_adapter.py",
     "tests/integration/test_owned_postgres.py",
     "tests/integration/test_postgres_owner_api.py",
+    "tests/integration/test_data_interface.py",
 )
 LABEL = "org.djedai.postgres-acceptance"
 
@@ -139,8 +140,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         deadline = time.monotonic() + 90
         while True:
+            # The image's temporary init server only accepts Unix sockets.
+            # TCP readiness waits for the final server after init has completed.
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "--username", "postgres"],
+                [
+                    "docker",
+                    "exec",
+                    name,
+                    "pg_isready",
+                    "--host",
+                    "127.0.0.1",
+                    "--username",
+                    "postgres",
+                ],
                 env=environment,
                 capture_output=True,
                 timeout=10,

@@ -52,7 +52,7 @@ it('redirects an expired restored session without mounting a private workspace',
   setAccessToken('expired-session');
   const { router } = await renderRoute('/chat/private-chat', { authenticated: false });
   await waitFor(() => { expect(router.state.location.pathname).toBe('/login'); });
-  expect(screen.getByRole('status')).toHaveTextContent('Сессия истекла');
+  expect(await screen.findByRole('status')).toHaveTextContent('Сессия истекла');
   expect(sessionSnapshot().accessToken).toBeNull();
 });
 

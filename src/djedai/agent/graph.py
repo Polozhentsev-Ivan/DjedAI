@@ -22,6 +22,7 @@ from djedai.contracts.agent import (
 )
 from djedai.contracts.chart import ChartSpec
 from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 
 def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
@@ -127,6 +128,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
 
     for step in plan_steps:
         try:
+            if budget := current_budget():
+                budget.check()
             if dispatcher:
                 res = dispatcher(step.tool, step.args)
             elif step.tool == "run_sql":
@@ -150,6 +153,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             res = res.model_copy(update={"tool": step.tool, "params": step.args})
             new_results.append(res)
 
+        except (TurnTimeout, TurnCancelled):
+            raise
         except Exception as e:
             new_results.append(
                 ToolResult(

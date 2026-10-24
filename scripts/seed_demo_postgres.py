@@ -14,17 +14,11 @@ import sys
 from pathlib import Path
 
 import duckdb
+from demo_dataset import DATA_DIR, load_typed_dataset
 
-ROOT = Path(__file__).resolve().parents[1]
-# Гарантируем доступность модулей из src/ при прямом вызове
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
+from djedai.data.postgres import PostgresError, parse_dsn
+from djedai.data.typed_views import _ident, _lit
 
-from djedai.data.csv_ingest import load_raw_csvs  # noqa: E402
-from djedai.data.postgres import PostgresError, parse_dsn  # noqa: E402
-from djedai.data.typed_views import _ident, _lit, create_typed_views  # noqa: E402
-
-DATA_DIR = ROOT / "tests" / "fixtures" / "synthetic"
 ALIAS = "demo_pg"
 
 
@@ -33,12 +27,7 @@ def seed(dsn: str, data_dir: Path, schema: str = "public") -> dict[str, int]:
     info = parse_dsn(dsn)
     connection = duckdb.connect()
     try:
-        report = load_raw_csvs(connection, sorted(data_dir.glob("*.csv")))
-        if report.errors:
-            raise SystemExit("\n".join(str(error) for error in report.errors))
-        views = create_typed_views(connection)
-        if views.errors:
-            raise SystemExit("\n".join(str(error) for error in views.errors))
+        views = load_typed_dataset(connection, data_dir)
         connection.execute("LOAD postgres")
         connection.execute(
             "CREATE TEMPORARY SECRET demo_pg_secret "
@@ -49,13 +38,11 @@ def seed(dsn: str, data_dir: Path, schema: str = "public") -> dict[str, int]:
             "(TYPE postgres, SECRET demo_pg_secret)"
         )
         counts = {}
-        for view in views.views:
-            target = f"{ALIAS}.{_ident(schema)}.{_ident(view.view_name)}"
+        for view in views:
+            target = f"{ALIAS}.{_ident(schema)}.{_ident(view)}"
             connection.execute(f"DROP TABLE IF EXISTS {target}")
-            connection.execute(f"CREATE TABLE {target} AS SELECT * FROM {_ident(view.view_name)}")
-            counts[view.view_name] = connection.execute(
-                f"SELECT count(*) FROM {target}"
-            ).fetchone()[0]
+            connection.execute(f"CREATE TABLE {target} AS SELECT * FROM {_ident(view)}")
+            counts[view] = connection.execute(f"SELECT count(*) FROM {target}").fetchone()[0]
         return counts
     finally:
         connection.close()

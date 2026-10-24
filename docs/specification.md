@@ -85,7 +85,7 @@
 
 ## 3. B1 — Data Layer (приём и профилирование)
 
-**Ответственный:** **DE** — весь блок: движок загрузки CSV → DuckDB «на лету», разбор грязных CSV, вывод типов, связи по ID, профайлер, адаптеры БД, оптимизация SQL. Блок отдаёт наружу Python-интерфейс (`ingest_csv(files) → dataset_id`, `connect_db(dsn) → dataset_id`, `get_catalog(dataset_id)`); **BE** только вызывает его из эндпоинтов загрузки (B5-3) в фоновой задаче.
+**Ответственный:** **DE** — весь блок: движок загрузки CSV → DuckDB «на лету», разбор грязных CSV, вывод типов, связи по ID, профайлер, адаптеры БД, оптимизация SQL. Блок отдаёт наружу Python-интерфейс `DatasetService`: `ingest_csv(owner_id, sources)` и `connect_db(owner_id, dsn, tables)` возвращают `dataset_id` со статусом `processing`, `get_catalog(owner_id, dataset_id)` — готовый каталог. **BE** вызывает его из эндпоинтов загрузки (B5-3); сборка идёт в фоне. Сигнатуры, статусы и ошибки — [B1-10 / #62](decisions/62-data-interface.md).
 
 ### 3.1 Адаптер CSV
 

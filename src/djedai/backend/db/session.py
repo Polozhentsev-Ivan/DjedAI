@@ -2,15 +2,52 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+import sqlite3
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 from fastapi import Request
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.config import get_settings
 from djedai.backend.db.base import Base
+from djedai.execution import ExecutionBudget
+
+
+def budgeted_write[T](db: Session, budget: ExecutionBudget, write: Callable[[Session], T]) -> T:
+    """Retry SQLite lock contention cooperatively on a pinned writer connection.
+
+    The caller must flush and check the budget before committing. A zero SQLite
+    busy timeout also prevents COMMIT from waiting behind a long-lived reader.
+    The original connection's timeout is restored before returning it to the pool.
+    """
+    engine = db.get_bind().engine
+    if engine.dialect.name != "sqlite" or engine.url.database in {None, "", ":memory:"}:
+        budget.check()
+        return write(db)
+    with engine.connect() as connection:
+        driver = connection.connection.driver_connection
+        original_timeout = driver.execute("PRAGMA busy_timeout").fetchone()[0]
+        driver.execute("PRAGMA busy_timeout=0")
+        try:
+            with Session(bind=connection, expire_on_commit=False) as writer:
+                while True:
+                    budget.check()
+                    try:
+                        return write(writer)
+                    except OperationalError as exc:
+                        code = getattr(exc.orig, "sqlite_errorcode", 0)
+                        if code & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                            raise
+                        # Roll back before waiting, including a failed COMMIT.
+                        # SQLAlchemy may already have deactivated that transaction.
+                        driver.rollback()
+                        writer.rollback()
+                        budget.wait(0.05)
+        finally:
+            driver.execute(f"PRAGMA busy_timeout={original_timeout}")
 
 
 def create_db_engine(database_url: str | None = None) -> Engine:

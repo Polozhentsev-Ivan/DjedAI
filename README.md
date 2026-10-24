@@ -62,6 +62,10 @@ Backend читает `.env` через `pydantic-settings`, агент — `MODE
 
 ## Запуск CP1 через Compose
 
+Общий лимит ответа агента, сетевые повторы и отмена запроса описаны в
+[инструкции по времени выполнения](docs/agent-deadlines.md). По умолчанию один
+вопрос ограничен 120 секундами, отдельная сетевая попытка — 60 секундами.
+
 Нужны Docker с работающим Linux engine и Docker Compose v2. Команды выполняются из корня Git-репозитория (`repo/`), после создания `.env` по инструкции выше:
 
 ```sh
@@ -89,7 +93,7 @@ docker compose up -d --wait
 
 `restart` и обычный `down` сохраняют том. Ключ `docker compose down -v` удаляет данные приложения; для повторного открытия используйте обычный `down`. После изменения `.env` примените `docker compose up -d --force-recreate --wait`; после изменений исходников — исходную команду с `--build`.
 
-Состав образов, proxy и способы проверки streaming/upload описаны в [infra/README.md](infra/README.md). PostgreSQL подключается через защищённый `POST /api/datasets/connect`; для сохранения DSN нужен серверный `SOURCE_ENCRYPTION_KEY`. Управление ключом, ограничения SQL и границы будущих функций описаны в [AUTH-3 / #103](docs/decisions/103-owner-isolation.md). ClickHouse, demo-профили и финальная конфигурация #99 остаются последующими задачами.
+Состав образов, proxy и способы проверки streaming/upload описаны в [infra/README.md](infra/README.md). PostgreSQL подключается через защищённый `POST /api/datasets/connect`; для сохранения DSN нужен серверный `SOURCE_ENCRYPTION_KEY`. Управление ключом, ограничения SQL и границы будущих функций описаны в [AUTH-3 / #103](docs/decisions/103-owner-isolation.md). Демо-PostgreSQL и демо-ClickHouse с одним датасетом поднимаются профилем `demo` ([инструкция](infra/README.md#демо-бд-postgresql-и-clickhouse)); подключение ClickHouse в приложении (#61) и финальная конфигурация #99 остаются последующими задачами.
 
 ## Интерфейс
 

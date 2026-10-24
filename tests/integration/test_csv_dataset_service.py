@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -12,13 +13,17 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from djedai.agent.client import ModelResponse
 from djedai.backend.dataset_service import DatasetService
 from djedai.backend.db.models import DatasetModel, UserModel
 from djedai.backend.db.session import create_db_engine, init_db
 from djedai.backend.local_user import bootstrap_local_user
+from djedai.data.descriptions import DatasetSummary, TableDescriptions
 from djedai.data.service import CsvSource, ingest_csv_dataset
 
 pytestmark = pytest.mark.integration
+ROOT = Path(__file__).resolve().parents[2]
+SYNTHETIC = ROOT / "tests" / "fixtures" / "synthetic"
 
 
 @pytest.fixture
@@ -315,7 +320,8 @@ def test_data_pipeline_progress_matches_ui_stage_ids(tmp_path: Path) -> None:
         progress=lambda *values: progress.append(values),
     )
     assert len(catalog.tables) == 2
-    assert [stage for stage, _, _ in progress] == ["read", "types", "profile"] * 2
+    assert [stage for stage, _, _ in progress] == ["read", "types", "profile"] * 2 + ["profile"]
+    assert progress[-1][2] == "Поиск связей"
     fractions = [fraction for _, fraction, _ in progress]
     assert fractions == sorted(fractions)
     with pytest.raises(ValueError, match="хотя бы один"):
@@ -451,3 +457,111 @@ def test_csv_owned_context_disables_external_files_and_database_writes(storage, 
             connection.execute("CREATE TABLE injected (n INTEGER)")
         with pytest.raises(duckdb.Error):
             connection.execute("SELECT * FROM read_csv(?)", [str(outside)])
+
+
+def _relation_key(relation) -> tuple[str, str, str, str]:
+    return (
+        relation["from"]["table"],
+        relation["from"]["column"],
+        relation["to"]["table"],
+        relation["to"]["column"],
+    )
+
+
+def test_csv_catalog_includes_synthetic_relations_for_the_agent(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    expected = json.loads((ROOT / "eval" / "synthetic_expectations.json").read_text("utf-8"))
+    files = sorted(SYNTHETIC.glob("*.csv"))
+    catalog = ingest_csv_dataset(
+        [CsvSource(path, path.name) for path in files],
+        tmp_path / "synthetic.duckdb",
+        dataset_id="synthetic",
+        name="Синтетика",
+        created_at=datetime.now(UTC),
+    )
+    found = {
+        _relation_key(relation): relation["cardinality"]
+        for relation in catalog.model_dump(mode="json", by_alias=True)["relations"]
+    }
+    for relation in expected["relations"]["expected"]:
+        assert found[_relation_key(relation)] == relation["cardinality"]
+    for relation in expected["relations"]["not_expected"]:
+        assert _relation_key(relation) not in found
+    prompt = catalog.to_prompt()
+    assert "FK → products.product_id" in prompt
+    assert "- sales.store_id → stores.store_id (N:1" in prompt
+
+
+class FakeClient:
+    """Answers description prompts from their JSON input; no model server is used."""
+
+    model = "fake-model"
+
+    def __init__(self, error_type: str | None = None) -> None:
+        self.error_type = error_type
+        self.calls = 0
+
+    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+        self.calls += 1
+        if self.error_type:
+            return ModelResponse(status="error", error_type=self.error_type, message="сбой")
+        payload = json.loads(user_prompt)
+        if response_model is DatasetSummary:
+            names = ", ".join(table["table"] for table in payload["tables"])
+            return ModelResponse(status="success", data=DatasetSummary(summary=f"Данные: {names}"))
+        columns = [
+            {"name": column["name"], "description": f"Смысл колонки {column['name']}"}
+            for column in payload["columns"]
+        ]
+        data = TableDescriptions(table=f"Строка таблицы {payload['table']}", columns=columns)
+        return ModelResponse(status="success", data=data)
+
+
+def _ingest_described(storage, tmp_path: Path, client_factory):
+    factory, directory = storage
+    source = tmp_path / "orders.csv"
+    source.write_bytes(b"order_id,amount\n001,10\n002,20\n")
+    service = DatasetService(factory, directory, description_client=client_factory)
+
+    async def ingest():
+        accepted = await service.ingest_csv("owner", [CsvSource(source, "orders.csv")])
+        await service.close()
+        return accepted.dataset_id
+
+    dataset_id = asyncio.run(ingest())
+    assert service.get_detail("owner", dataset_id).status == "ready"
+    return service.get_catalog("owner", dataset_id)
+
+
+def test_published_catalog_has_llm_descriptions_when_enabled(storage, tmp_path: Path) -> None:
+    client = FakeClient()
+    catalog = _ingest_described(storage, tmp_path, lambda: client)
+    table = catalog.tables[0]
+    assert table.description == "Строка таблицы orders"
+    assert [column.description for column in table.columns] == [
+        "Смысл колонки order_id",
+        "Смысл колонки amount",
+    ]
+    assert catalog.summary == "Данные: orders"
+    assert client.calls == 2
+    assert catalog.warnings == []
+
+
+def test_unavailable_model_still_publishes_the_statistical_catalog(storage, tmp_path: Path) -> None:
+    catalog = _ingest_described(storage, tmp_path, lambda: FakeClient("TIMEOUT"))
+    assert catalog.tables[0].row_count == 2
+    assert catalog.tables[0].description is None
+    assert any("модель недоступна" in warning for warning in catalog.warnings)
+
+
+def test_misconfigured_model_never_fails_the_dataset(storage, tmp_path: Path) -> None:
+    def unconfigured():
+        raise ValueError("MODEL_API_KEY=secret-must-not-leak")
+
+    catalog = _ingest_described(storage, tmp_path, unconfigured)
+    assert catalog.tables[0].row_count == 2
+    assert catalog.summary is None
+    assert len(catalog.warnings) == 1
+    assert "не настроена или недоступна" in catalog.warnings[0]
+    assert "secret" not in catalog.model_dump_json()
