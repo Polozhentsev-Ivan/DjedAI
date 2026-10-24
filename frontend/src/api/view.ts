@@ -124,6 +124,111 @@ export function relationViews(catalog: Catalog): RelationView[] {
   }));
 }
 
+export interface GraphNode {
+  id: string;
+  rows: string;
+  /** Centre of the node box in viewBox units. */
+  x: number;
+  y: number;
+}
+
+export interface GraphEdge {
+  key: string;
+  /** SVG path from the border of the «from» box to the border of the «to» box. */
+  path: string;
+  labelX: number;
+  labelY: number;
+  label: string;
+  /** Accessible sentence: what joins to what and how well. */
+  title: string;
+  /** N:M has no direction, so no arrow. */
+  directed: boolean;
+  weak: boolean;
+}
+
+export interface RelationGraph {
+  width: number;
+  height: number;
+  node: { width: number; height: number };
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+const NODE = { width: 120, height: 44 } as const;
+/** Gap between parallel edges of one table pair. */
+const BEND = 28;
+const LABEL_LIFT = 12;
+
+function layout(count: number): { width: number; height: number; at: (i: number) => [number, number] } {
+  if (count <= 2) {
+    // Two boxes at the edges leave room for the label between them; the narrow card shows it near 1:1.
+    const width = 340;
+    const edge = NODE.width / 2 + 4;
+    return { width, height: 90, at: (i) => [count === 1 ? width / 2 : i === 0 ? edge : width - edge, 45] };
+  }
+  const width = count <= 4 ? 360 : 480;
+  const height = count <= 4 ? 260 : 340;
+  const rx = width / 2 - NODE.width / 2 - 8;
+  const ry = height / 2 - NODE.height / 2 - 8;
+  return {
+    width,
+    height,
+    at: (i) => {
+      const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
+      return [width / 2 + rx * Math.cos(angle), height / 2 + ry * Math.sin(angle)];
+    },
+  };
+}
+
+/** Where the ray from the box centre towards (dx, dy) leaves the box. */
+function border([x, y]: readonly [number, number], dx: number, dy: number): [number, number] {
+  const scale = Math.min(NODE.width / 2 / Math.abs(dx), NODE.height / 2 / Math.abs(dy));
+  return [x + dx * scale, y + dy * scale];
+}
+
+const round = (n: number) => Math.round(n * 10) / 10;
+
+/** Tables as nodes, computed relations as edges from the many side to the unique key. */
+export function relationGraph(catalog: Catalog): RelationGraph {
+  const tables = catalog.tables ?? [];
+  const { width, height, at } = layout(tables.length);
+  const nodes = tables.map((t, i) => {
+    const [x, y] = at(i);
+    return { id: t.table_id, rows: rowsLabel(t.row_count), x: round(x), y: round(y) };
+  });
+  const position = new Map(nodes.map((n) => [n.id, [n.x, n.y] as const]));
+  const seen = new Map<string, number>();
+  const edges: GraphEdge[] = [];
+  for (const r of catalog.relations ?? []) {
+    const from = position.get(r.from.table);
+    const to = position.get(r.to.table);
+    if (!from || !to || r.from.table === r.to.table) continue;
+    const pair = [r.from.table, r.to.table].sort().join('|');
+    const index = seen.get(pair) ?? 0;
+    seen.set(pair, index + 1);
+    // 0, +1, −1, +2, … gaps aside the straight line; the sign follows the sorted pair, not the direction.
+    const offset = (index % 2 === 0 ? -1 : 1) * Math.ceil(index / 2) * BEND * (r.from.table < r.to.table ? 1 : -1);
+    const [dx, dy] = [to[0] - from[0], to[1] - from[1]];
+    const length = Math.hypot(dx, dy);
+    const control = [(from[0] + to[0]) / 2 - (dy / length) * offset, (from[1] + to[1]) / 2 + (dx / length) * offset] as const;
+    const start = border(from, control[0] - from[0], control[1] - from[1]);
+    const end = border(to, control[0] - to[0], control[1] - to[1]);
+    const overlap = formatPercent(Math.round(r.overlap * 1000) / 10);
+    edges.push({
+      key: `${r.from.table}.${r.from.column}->${r.to.table}.${r.to.column}`,
+      path: `M${round(start[0])},${round(start[1])} Q${round(control[0])},${round(control[1])} ${round(end[0])},${round(end[1])}`,
+      labelX: round((start[0] + 2 * control[0] + end[0]) / 4),
+      // Above the line, so the label never covers the arrow.
+      labelY: round((start[1] + 2 * control[1] + end[1]) / 4 - LABEL_LIFT),
+      label: `${r.cardinality} · ${overlap}`,
+      title: `${r.from.table}.${r.from.column} → ${r.to.table}.${r.to.column}: ${CARDINALITY[r.cardinality].toLowerCase()}, совпадение ${overlap}, уверенность ${CONFIDENCE[r.confidence]}`,
+      directed: r.cardinality !== 'N:M',
+      weak: r.confidence === 'low',
+    });
+  }
+  return { width, height, node: NODE, nodes, edges };
+}
+
 function literal(value: unknown): string {
   if (typeof value === 'string') return `'${value}'`;
   return JSON.stringify(value);

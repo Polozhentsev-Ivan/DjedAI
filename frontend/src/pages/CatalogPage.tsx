@@ -3,12 +3,13 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useDataset, useProfilingProgress } from '@/api/queries';
-import { catalogSummary, columnNote, journal, missingCell, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
+import { catalogSummary, columnNote, journal, missingCell, relationGraph, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
 import { Button } from '@/components/Button';
 import { DataTable, type Column, type Row } from '@/components/DataTable';
 import { Icon } from '@/components/Icon';
+import { RelationGraph } from '@/components/RelationGraph';
 import { EmptyState, ErrorState } from '@/components/StateBlock';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TransformLogItem } from '@/components/TransformLogItem';
@@ -19,6 +20,7 @@ const COLUMNS: readonly Column[] = [
   { key: 'source', label: 'Исходное имя', type: 'strong', width: 'minmax(220px,2fr)' },
   { key: 'system', label: 'В системе', type: 'mono', width: 'minmax(140px,1fr)' },
   { key: 'type', label: 'Тип данных', type: 'type', width: '150px' },
+  { key: 'description', label: 'Описание', type: 'muted', width: 'minmax(220px,2fr)' },
   { key: 'missing', label: 'Пропуски', type: 'number', align: 'right', width: '90px' },
   { key: 'note', label: 'Примечание', type: 'muted', width: 'minmax(180px,1.6fr)' },
 ];
@@ -37,6 +39,7 @@ function rowsOf(table: Schemas['CatalogTable'], relations: readonly Schemas['Rel
       source: c.original_name,
       system: c.name,
       type: { text: typeLabel(c), tone: 'neutral' },
+      description: c.description ?? '—',
       missing: missingCell(c),
       note: columnNote(c, table, relations),
     },
@@ -95,6 +98,7 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
   const warnings = entries.filter((j) => j.level === 'warning').length;
   const infos = entries.length - warnings;
   const relations = relationViews(catalog);
+  const graph = relationGraph(catalog);
   if (!table) return <EmptyState title="В датасете нет таблиц" />;
   return (
     <>
@@ -124,8 +128,9 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
         <div className={cardHeader}>
           <h2 className={cardTitle}>Структура таблицы</h2>
           <span className="text-muted-foreground">{tableMeta(table)}</span>
+          {table.description && <p className="basis-full text-secondary-foreground">{table.description}</p>}
         </div>
-        <DataTable label={`Структура таблицы ${table.table_id}`} columns={COLUMNS} rows={rowsOf(table, catalog.relations ?? [])} minWidth="820px" />
+        <DataTable label={`Структура таблицы ${table.table_id}`} columns={COLUMNS} rows={rowsOf(table, catalog.relations ?? [])} minWidth="1060px" />
       </section>
 
       <div className={cn(twoColumns, 'items-start')}>
@@ -141,6 +146,11 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
         <section className={card}>
           <h2 className={cn(cardTitle, 'border-b border-border px-5 py-4')}>Обнаруженные связи таблиц</h2>
           {relations.length === 0 && <div className="px-5 py-4 text-muted-foreground">Связи между таблицами не найдены</div>}
+          {graph.edges.length > 0 && (
+            <div className="border-b border-border-subtle px-5 py-4">
+              <RelationGraph graph={graph} selected={table.table_id} onSelect={setTableId} />
+            </div>
+          )}
           {relations.map((relation) => (
             <div key={relation.key} className="flex flex-col gap-3.5 px-5 py-4">
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5">
@@ -204,6 +214,7 @@ export function CatalogPage() {
           <div>
             <PageTitle>{detail ? `Каталог датасета: ${detail.name}` : 'Каталог данных'}</PageTitle>
             {detail?.status === 'ready' && <div className="mt-1.5 text-muted-foreground">{catalogSummary(detail)}</div>}
+            {detail?.status === 'ready' && detail.catalog?.summary && <p className="mt-1.5 max-w-[72ch] text-secondary-foreground">{detail.catalog.summary}</p>}
           </div>
           {detail?.status === 'ready' && (
             <Button className="px-5 py-2" onClick={() => { void navigate('/chat'); }}>

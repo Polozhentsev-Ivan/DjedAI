@@ -18,18 +18,20 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   tables: [
     {
       table_id: 'orders', raw_table: 'raw_orders', original_name: 'orders.csv', row_count: 120000,
+      description: 'Заказы интернет-магазина: сумма, скидка, статус и клиент',
       primary_key_candidates: ['order_id'], time_columns: ['payment_date'], duplicate_rows: 0,
       columns: [
-        { name: 'order_id', original_name: 'Номер заказа', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 120000, is_unique: true },
+        { name: 'order_id', original_name: 'Номер заказа', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 120000, is_unique: true, description: 'Уникальный номер заказа' },
         { name: 'payment_date', original_name: 'Дата оплаты', physical_type: 'DATE', semantic_type: 'date', role: 'time', null_ratio: 0.001, distinct_count: 304, is_unique: false, parse: { format: '%d.%m.%Y', success_ratio: 0.9999 } },
-        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: 'RUB' },
+        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: 'RUB', description: 'Сумма заказа с НДС в рублях' },
         { name: 'discount', original_name: 'Скидка', physical_type: 'DOUBLE', semantic_type: 'percent', role: 'measure', null_ratio: 0.052, distinct_count: 21, is_unique: false },
         { name: 'status', original_name: 'Статус', physical_type: 'VARCHAR', semantic_type: 'category', role: 'dimension', null_ratio: 0, distinct_count: 4, is_unique: false },
-        { name: 'customer_id', original_name: 'Клиент', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: false },
+        { name: 'customer_id', original_name: 'Клиент', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: false, description: 'Клиент, оформивший заказ' },
       ],
     },
     {
       table_id: 'customers', raw_table: 'raw_customers', original_name: 'customers.csv', row_count: 450,
+      description: 'Справочник клиентов с регионом и датой регистрации',
       primary_key_candidates: ['id'], time_columns: ['registered_at'], duplicate_rows: 0,
       columns: [
         { name: 'id', original_name: 'ID клиента', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: true },

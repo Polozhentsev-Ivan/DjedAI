@@ -1,7 +1,7 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
 import {
   calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
-  journal, kpiView, missingCell, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
+  journal, kpiView, missingCell, relationGraph, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
 } from './view';
 
 // Intl separates digit groups with no-break spaces; \s matches them.
@@ -63,6 +63,48 @@ describe('column views', () => {
     const [relation] = relationViews(ordersCatalog);
     expect(relation).toMatchObject({ from: { label: 'Клиент', column: 'orders.customer_id' }, to: { label: 'ID клиента' }, overlap: 99.8 });
     expect(relation?.note).toBe('Многие к одному · уверенность высокая');
+  });
+
+  it('draws every table and an arrow from the many side to the key', () => {
+    const graph = relationGraph(ordersCatalog);
+    expect(graph.nodes.map((n) => n.id)).toEqual(['orders', 'customers']);
+    const [from, to] = graph.nodes;
+    expect(from!.y).toBe(to!.y);
+    expect(from!.x).toBeLessThan(to!.x);
+    expect(graph.edges).toHaveLength(1);
+    const [edge] = graph.edges;
+    expect(edge).toMatchObject({ key: 'orders.customer_id->customers.id', label: 'N:1 · 99,8%', directed: true, weak: false });
+    expect(edge?.title).toBe('orders.customer_id → customers.id: многие к одному, совпадение 99,8%, уверенность высокая');
+    // The arrow starts at the right border of «orders» and ends at the left border of «customers».
+    const half = graph.node.width / 2;
+    expect(edge?.path).toBe(`M${from!.x + half},${from!.y} Q${(from!.x + to!.x) / 2},${from!.y} ${to!.x - half},${to!.y}`);
+    expect([edge?.labelX, edge?.labelY]).toEqual([(from!.x + to!.x) / 2, from!.y - 12]);
+  });
+
+  it('keeps tables without relations and skips unknown or self references', () => {
+    const relation = ordersCatalog.relations![0]!;
+    const lonely = relationGraph({ ...ordersCatalog, tables: ordersCatalog.tables!.slice(0, 1), relations: [relation] });
+    expect(lonely.nodes).toEqual([{ id: 'orders', rows: expect.any(String) as string, x: lonely.width / 2, y: 45 }]);
+    expect(lonely.edges).toEqual([]);
+    const self = { ...relation, to: { table: 'orders', column: 'order_id' } };
+    expect(relationGraph({ ...ordersCatalog, relations: [self] }).edges).toEqual([]);
+    expect(relationGraph({ ...ordersCatalog, relations: [] }).edges).toEqual([]);
+    expect(relationGraph({ ...ordersCatalog, tables: [], relations: [] }).nodes).toEqual([]);
+  });
+
+  it('spreads many tables and parallel relations apart', () => {
+    const base = ordersCatalog.tables![1]!;
+    const tables = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ ...base, table_id: id }));
+    const link = (from: string, to: string, cardinality: 'N:1' | 'N:M' = 'N:1', confidence: 'high' | 'low' = 'high') => ({
+      ...ordersCatalog.relations![0]!, from: { table: from, column: 'x' }, to: { table: to, column: 'id' }, cardinality, confidence,
+    });
+    const graph = relationGraph({ ...ordersCatalog, tables, relations: [link('a', 'b'), link('b', 'a', 'N:M', 'low'), link('a', 'b')] });
+    expect(graph.width).toBe(480);
+    expect(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(5);
+    expect(new Set(graph.edges.map((e) => `${e.labelX},${e.labelY}`)).size).toBe(3);
+    expect(graph.edges[1]).toMatchObject({ directed: false, weak: true });
+    const four = relationGraph({ ...ordersCatalog, tables: tables.slice(0, 4), relations: [] });
+    expect([four.width, four.height]).toEqual([360, 260]);
   });
 });
 
