@@ -245,6 +245,135 @@ test('reload disconnects the old turn and restores its reason without replaying 
   expect(posts).toBe(2);
 });
 
+test('confirmed restored cancellation releases sending while history GET is held', async ({ page }) => {
+  const firstMarker = `restored-${randomUUID()}`;
+  const nextMarker = `after-cancel-${randomUUID()}`;
+  await controlModel(firstMarker, 'Understanding', 'gate');
+  await controlModel(nextMarker, 'Understanding', 'gate');
+  const dataset = await upload(page, 'restored.csv', 'id,amount\n1,8\n');
+  const headers = { Authorization: `Bearer ${tokens.get(page) ?? ''}` };
+  const created = await page.request.post('/api/chats', { headers, data: { dataset_id: dataset } });
+  expect(created.status()).toBe(201);
+  const { chat_id: chatId } = await created.json() as { chat_id: string };
+  // Another client owns the open stream; this page restores the running question by GET.
+  const external = await fetch(`http://127.0.0.1:18080/api/chats/${chatId}/messages`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: `${firstMarker}: строки и сумма amount`, request_id: randomUUID() }),
+  });
+  expect(external.status).toBe(200);
+  let holdHistory = false;
+  let heldReads = 0;
+  let releaseHistory = () => { /* set below */ };
+  const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+  await page.route(`**/api/chats/${chatId}`, async (route) => {
+    if (holdHistory) { heldReads++; await historyGate; }
+    await route.continue();
+  });
+  try {
+    await page.goto(`/chat/${chatId}`);
+    await expect(page.getByRole('button', { name: 'Активный датасет' })).toContainText('restored.csv');
+    await expect(page.getByRole('status').filter({ hasText: 'Разбираю вопрос…' })).toHaveCount(1);
+    holdHistory = true;
+    const stopped = page.waitForResponse((response) => response.url().endsWith('/cancel'));
+    await page.getByRole('button', { name: 'Остановить', exact: true }).click();
+    expect(await (await stopped).json()).toMatchObject({ status: 'cancelled' });
+    await expect.poll(() => heldReads).toBeGreaterThan(0);
+    await expect(page.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled();
+    const nextQuestion = `${nextMarker}: строки и сумма amount`;
+    await submitQuestion(page, nextQuestion);
+    await expect(page.getByRole('status')).toHaveText('Разбираю вопрос…');
+    await expect(page.getByText(nextQuestion, { exact: true })).toHaveCount(1);
+    releaseHistory();
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(page.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
+    await controlModel(nextMarker, 'Understanding', 'gate', true);
+    await expect(page.getByText('Строк: 1; сумма: 8.', { exact: true })).toHaveCount(1);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+  } finally {
+    releaseHistory();
+    await controlModel(firstMarker, 'Understanding', 'gate', true);
+    await controlModel(nextMarker, 'Understanding', 'gate', true);
+    await external.body?.cancel();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
+test('persisted success closes a held SSE and accepts the next question exactly once', async ({ page }) => {
+  const firstMarker = `early-success-${randomUUID()}`;
+  const nextMarker = `after-success-${randomUUID()}`;
+  await controlModel(firstMarker, 'Understanding', 'gate');
+  await controlModel(nextMarker, 'Understanding', 'gate');
+  const dataset = await upload(page, 'early-success.csv', 'id,amount\n1,12\n2,30\n');
+  await page.goto(`/catalog/${dataset}`);
+  await page.getByRole('button', { name: /чат/i }).first().click();
+  let releaseSse = () => { /* set below */ };
+  const sseGate = new Promise<void>((resolve) => { releaseSse = resolve; });
+  let posts = 0;
+  let firstBody: string | null = null;
+  let firstFailed = false;
+  let firstRouteFinished = false;
+  let initialHistory = true;
+  await page.route('**/api/chats/c_*', async (route) => {
+    if (initialHistory && route.request().method() === 'GET') {
+      initialHistory = false;
+      const chatId = new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
+      await expect.poll(async () => {
+        const saved = await (await apiGet(page, `/api/chats/${chatId}`)).json() as { messages: { turn?: { status: string } }[] };
+        return saved.messages[0]?.turn?.status;
+      }).toBe('running');
+    }
+    await route.continue();
+  });
+  const runningHistory = page.waitForResponse(async (response) => {
+    if (response.request().method() !== 'GET' || !/\/api\/chats\/c_[^/]+$/.test(new URL(response.url()).pathname)) return false;
+    const saved = await response.json() as { messages: { turn?: { status: string } }[] };
+    return saved.messages[0]?.turn?.status === 'running';
+  });
+  page.on('requestfailed', (request) => {
+    if (firstBody !== null && request.url().endsWith('/messages') && request.postData() === firstBody) firstFailed = true;
+  });
+  await page.route('**/api/chats/*/messages', async (route) => {
+    if (++posts !== 1) { await route.continue(); return; }
+    firstBody = route.request().postData();
+    const response = await route.fetch(); // Real backend persists the answer before delivery.
+    await sseGate;
+    if (firstFailed) await route.abort();
+    else await route.fulfill({ response });
+    firstRouteFinished = true;
+  });
+  try {
+    await submitQuestion(page, `${firstMarker}: строки и сумма amount`);
+    await expect(page).toHaveURL(/\/chat\/c_/);
+    const chatId = new URL(page.url()).pathname.split('/').at(-1) ?? '';
+    await expect.poll(async () => {
+      const saved = await (await apiGet(page, `/api/chats/${chatId}`)).json() as { messages: { turn?: { status: string } }[] };
+      return saved.messages[0]?.turn?.status;
+    }).toBe('running');
+    await runningHistory; // Normal GET polling is active while the SSE is held.
+    await controlModel(firstMarker, 'Understanding', 'gate', true);
+    await expect(page.getByText('Строк: 2; сумма: 42.', { exact: true })).toHaveCount(1);
+    await expect.poll(() => firstFailed).toBe(true);
+    const nextQuestion = `${nextMarker}: строки и сумма amount`;
+    await submitQuestion(page, nextQuestion);
+    await expect.poll(() => posts).toBe(2);
+    await expect(page.getByRole('status')).toHaveText('Разбираю вопрос…');
+    releaseSse();
+    await expect.poll(() => firstRouteFinished).toBe(true);
+    await expect(page.getByRole('textbox', { name: 'Вопрос к данным' })).toBeDisabled();
+    await expect(page.getByText(nextQuestion, { exact: true })).toHaveCount(1);
+    await controlModel(nextMarker, 'Understanding', 'gate', true);
+    await expect(page.getByText('Строк: 2; сумма: 42.', { exact: true })).toHaveCount(2);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(posts).toBe(2);
+  } finally {
+    releaseSse();
+    await controlModel(firstMarker, 'Understanding', 'gate', true);
+    await controlModel(nextMarker, 'Understanding', 'gate', true);
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
 test('two browser sessions isolate same-named CSVs, chats, results and SSE', async ({ page, browser }) => {
   const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
   const other = await context.newPage();

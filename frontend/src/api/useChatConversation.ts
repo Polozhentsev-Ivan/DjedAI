@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, request, type Schemas } from './client';
 import { keys, useChat } from './queries';
 import { isCurrentSession, sessionSnapshot, subscribeSession, type SessionSnapshot } from './session';
@@ -43,7 +43,15 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
   const context = useRef({ chatId, datasetId });
   context.current = { chatId, datasetId };
   const [turns, setTurns] = useState<LocalTurn[]>([]);
-  const [stoppingSaved, setStoppingSaved] = useState(false);
+  // A late stream/cancel completion must never release a newer turn.
+  const finish = useCallback((current: Run) => {
+    if (run.current !== current) return false;
+    run.current = null;
+    clearTimeout(current.stopTimer);
+    setTurns((values) => values.map((value) => value.messageId === current.messageId ? { ...value, running: false } : value));
+    current.controller.abort();
+    return true;
+  }, []);
 
   useLayoutEffect(() => {
     const current = run.current;
@@ -54,15 +62,23 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
       run.current = null;
     }
     setTurns((values) => values.filter((value) => value.chatId === chatId && value.datasetId === datasetId));
-    setStoppingSaved(false);
   }, [chatId, datasetId]);
+
+  useLayoutEffect(() => {
+    const current = run.current;
+    if (!current || current.chatId !== chatId || current.datasetId !== datasetId || !isCurrentSession(current.session)) return;
+    // Saved terminal state is authoritative even while the last SSE is delayed.
+    const state = history.data?.messages.find((message) => message.message_id === current.messageId)?.turn;
+    if (state && state.status !== 'running' && finish(current)) {
+      void client.invalidateQueries({ queryKey: keys.chats(current.datasetId) });
+    }
+  }, [history.data, chatId, datasetId, client, finish]);
   useEffect(() => {
     const clear = () => {
       run.current?.controller.abort();
       clearTimeout(run.current?.stopTimer);
       run.current = null;
       setTurns([]);
-      setStoppingSaved(false);
     };
     const unsubscribe = subscribeSession(clear);
     return () => { unsubscribe(); run.current?.controller.abort(); clearTimeout(run.current?.stopTimer); run.current = null; };
@@ -100,12 +116,15 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
       update(current, (value) => ({ ...value, error: state.status === 'success' ? null : new ApiError(200, {
         code: state.code ?? 'cancelled', message: state.message, suggestion: state.suggestion ?? null,
       }), blocks: [], resultIds: [], running: false }));
+      if (inContext(current)) client.setQueryData<Schemas['ChatDetail']>(keys.chat(current.chatId), (saved) => saved && ({
+        ...saved, messages: saved.messages.map((message) => message.message_id === current.messageId ? { ...message, turn: state } : message),
+      }));
     } catch (error) {
       update(current, (value) => ({ ...value, error: new ApiError(0, {
         code: 'cancel_unconfirmed', message: 'Не удалось подтвердить остановку запроса', suggestion: failure(error).message,
       }), blocks: [], resultIds: [], running: false }));
     } finally {
-      current.controller.abort();
+      if (finish(current)) void recover(current);
     }
   };
 
@@ -118,8 +137,7 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
   }
   const savedRunning = messages.find((message) => message.turn?.status === 'running'
     && !visible.some((value) => value.messageId === message.message_id && !value.running));
-  const busy = stoppingSaved || visible.some((value) => value.running
-    && !messages.some((message) => message.message_id === value.messageId && message.turn && message.turn.status !== 'running')) || !!savedRunning;
+  const busy = (run.current !== null && inContext(run.current)) || visible.some((value) => value.running) || !!savedRunning;
 
   const send = async (question: string) => {
     const text = question.trim();
@@ -163,12 +181,7 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
     } catch (error) {
       update(current, (value) => ({ ...value, blocks: [], resultIds: [], error: failure(error) }));
     } finally {
-      clearTimeout(current.stopTimer);
-      if (run.current === current) {
-        update(current, (value) => ({ ...value, running: false }));
-        run.current = null;
-        await recover(current);
-      }
+      if (finish(current)) void recover(current);
     }
     return true;
   };
@@ -187,14 +200,14 @@ export function useChatConversation(chatId: string | null, datasetId: string | n
         }) }));
         current.controller.abort();
       }, 5000);
-    } else if (savedRunning && chatId && datasetId && !stoppingSaved) {
+    } else if (savedRunning && chatId && datasetId) {
       const restored: Run = { controller: new AbortController(), chatId, datasetId, messageId: savedRunning.message_id, session: sessionSnapshot(), accepted: true, stopRequested: true, cancelling: false };
+      run.current = restored;
       setTurns((values) => [...values.filter((value) => value.messageId !== restored.messageId), {
         chatId, datasetId, messageId: restored.messageId, question: savedRunning.text ?? '', createdAt: savedRunning.created_at,
         blocks: [], resultIds: [], status: 'Останавливаю запрос…', running: true, error: null, assistantId: null,
       }]);
-      setStoppingSaved(true);
-      void cancelRun(restored).then(() => recover(restored)).finally(() => { if (inContext(restored)) setStoppingSaved(false); });
+      void cancelRun(restored);
     }
   };
 

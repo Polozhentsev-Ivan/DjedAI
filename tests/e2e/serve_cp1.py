@@ -138,6 +138,8 @@ def main() -> None:
         app_database_url=f"sqlite:///{directory / 'app.db'}",
         datasets_data_dir=str(directory / "datasets"),
         results_data_dir=str(directory / "results"),
+        # The browser suite logs many isolated accounts in from the same loopback IP.
+        auth_rate_limit_requests=100,
     )
     # The real client reads its existing environment contract, no runtime injection.
     import os
