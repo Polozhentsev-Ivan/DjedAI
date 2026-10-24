@@ -14,6 +14,9 @@ from djedai.backend.db.session import init_db
 
 pytestmark = pytest.mark.integration
 CASES = [
+    ("seasonality", {"time_col": "ts", "measure": "amount", "freq": "day", "period": 7}),
+    ("segment_profile", {"group_by": ["g"], "measures": ["amount"]}),
+    ("compare_segments", {"segment_col": "g", "a": "1", "b": "2", "measures": ["amount"]}),
     ("time_aggregate", {"time_col": "ts", "freq": "month", "agg": "count"}),
     ("find_duplicates", {"columns": ["g", "amount"]}),
     ("detect_anomalies", {"measure": "amount", "method": "iqr"}),

@@ -7,9 +7,19 @@ import duckdb
 import pytest
 
 from djedai.analytics.registry import execute_tool
-from djedai.analytics.tools import detect_anomalies, find_duplicates, time_aggregate
+from djedai.analytics.tools import (
+    compare_segments,
+    detect_anomalies,
+    find_duplicates,
+    seasonality,
+    segment_profile,
+    time_aggregate,
+)
 
 TOOL_CASES = [
+    ("seasonality", {"time_col": "ts", "measure": "v", "freq": "day", "period": 7}),
+    ("segment_profile", {"group_by": ["g"], "measures": ["v"]}),
+    ("compare_segments", {"segment_col": "g", "a": "7", "b": "8", "measures": ["v"]}),
     ("time_aggregate", {"time_col": "ts", "measure": "v", "agg": "sum"}),
     ("find_duplicates", {"columns": ["g", "v"]}),
     ("detect_anomalies", {"measure": "v", "method": "iqr"}),
@@ -22,8 +32,11 @@ def connection():
     with duckdb.connect(":memory:") as con:
         con.execute("CREATE TABLE metrics(ts TIMESTAMP, g INTEGER, v DOUBLE)")
         con.executemany(
-            "INSERT INTO metrics VALUES (?, 7, ?)",
-            [(datetime(2026, 1, 1) + timedelta(days=i), 10 + i % 3) for i in range(84)],
+            "INSERT INTO metrics VALUES (?, ?, ?)",
+            [
+                (datetime(2026, 1, 1) + timedelta(days=i), 7 + i // 42, 10 + i % 3)
+                for i in range(84)
+            ],
         )
         con.execute("CREATE TABLE raw_private(v DOUBLE)")
         con.execute("INSERT INTO raw_private VALUES (999999)")
@@ -64,6 +77,9 @@ def test_filter_subqueries_cannot_escape_the_selected_dataset(connection, tool, 
     "function,params",
     [
         (time_aggregate, {"time_col": "ts"}),
+        (seasonality, {"time_col": "ts"}),
+        (segment_profile, {"group_by": ["g"]}),
+        (compare_segments, {"segment_col": "g", "a": "7", "b": "8", "measures": ["v"]}),
         (find_duplicates, {}),
         (detect_anomalies, {"measure": "v"}),
     ],

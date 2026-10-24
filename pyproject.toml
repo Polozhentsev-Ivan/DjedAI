@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart==0.0.32",
     "cryptography==50.0.2",
     "statsmodels==0.15.0",
+    "scipy==1.18.1",
 ]
 
 [dependency-groups]

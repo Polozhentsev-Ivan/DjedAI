@@ -5,11 +5,14 @@ import duckdb
 from pydantic import BaseModel, ConfigDict, Field
 
 from djedai.analytics.tools import (
+    compare_segments,
     describe_column,
     describe_dataset,
     detect_anomalies,
     find_duplicates,
     run_sql,
+    seasonality,
+    segment_profile,
     time_aggregate,
     value_counts,
 )
@@ -189,6 +192,110 @@ class DetectAnomaliesParams(BaseModel):
     limit: int = Field(default=100, description="Максимум аномалий", ge=1)
 
 
+class SeasonalityParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "measure": "amount",
+                    "freq": "month",
+                    "period": 12,
+                    "agg": "sum",
+                },
+                {"table": "events", "time_col": "ts", "agg": "count", "freq": "day", "period": 7},
+            ]
+        }
+    )
+
+    table: str = Field(description="Имя таблицы")
+    time_col: str = Field(description="Колонка DATE или TIMESTAMP")
+    measure: str | None = Field(
+        default=None,
+        description="Колонка метрики (обязательна при agg != 'count')",
+    )
+    agg: Literal["count", "sum", "avg", "min", "max", "median", "stddev"] = Field(
+        default="sum",
+        description="Функция агрегации",
+    )
+    freq: Literal["minute", "hour", "day", "week", "month", "quarter", "year"] = Field(
+        default="month",
+        description="Частота агрегации",
+    )
+    period: int | None = Field(
+        default=None,
+        description=(
+            "Период сезонности (>= 2). По умолчанию: 60/min, 24/hour, "
+            "7/day, 52/week, 12/month, 4/quarter, 1/year."
+        ),
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+
+
+class SegmentProfileParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"table": "events", "group_by": ["city"], "measures": ["amount"]},
+                {"table": "test", "group_by": ["city"]},
+            ]
+        }
+    )
+
+    table: str = Field(description="Имя таблицы")
+    group_by: list[str] = Field(
+        description="Колонки сегментации",
+        min_length=1,
+    )
+    measures: list[str] | None = Field(
+        default=None,
+        description="Числовые колонки для сводки (без них — только размер)",
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+    top_n: int = Field(default=100, description="Максимум сегментов", ge=1)
+
+
+class CompareSegmentsParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "table": "events",
+                    "segment_col": "city",
+                    "a": "Москва",
+                    "b": "СПб",
+                    "measures": ["amount"],
+                },
+                {
+                    "table": "test",
+                    "segment_col": "city",
+                    "a": "Москва",
+                    "b": "СПб",
+                    "measures": ["age"],
+                },
+            ]
+        }
+    )
+
+    table: str = Field(description="Имя таблицы")
+    segment_col: str = Field(description="Колонка-сегмент")
+    a: str = Field(description="Первое значение сегмента")
+    b: str = Field(description="Второе значение сегмента")
+    measures: list[str] = Field(
+        description="Колонки для сравнения: числовые → t-test + Cohen's d; "
+        "категориальные → χ² + Cramér's V",
+        min_length=1,
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+    alpha: float = Field(
+        default=0.05,
+        description="Порог значимости",
+        gt=0,
+        lt=1,
+    )
+
+
 class ToolDefinition(BaseModel):
     """Внутреннее описание инструмента с моделью для валидации параметров."""
 
@@ -258,6 +365,32 @@ TOOLS_REGISTRY = [
         ),
         parameters_model=DetectAnomaliesParams,
     ),
+    ToolDefinition(
+        name="seasonality",
+        description=(
+            "Ищет повторяющиеся во времени закономерности (STL-декомпозиция). "
+            "Возвращает силу сезонности и тренда, пиковую и минимальную фазы, "
+            "амплитуду. Требует минимум 2*period наблюдений."
+        ),
+        parameters_model=SeasonalityParams,
+    ),
+    ToolDefinition(
+        name="segment_profile",
+        description=(
+            "Сводка по группам: размер сегмента и mean/median/min/max/std "
+            "по выбранным числовым колонкам."
+        ),
+        parameters_model=SegmentProfileParams,
+    ),
+    ToolDefinition(
+        name="compare_segments",
+        description=(
+            "Сравнение двух значений сегментной колонки: для числовых "
+            "колонок — t-test (Welch) и Cohen's d, для категориальных — "
+            "χ² и Cramér's V. Возвращает p-value и признак значимости."
+        ),
+        parameters_model=CompareSegmentsParams,
+    ),
 ]
 
 
@@ -281,6 +414,9 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
     "time_aggregate": time_aggregate,
     "find_duplicates": find_duplicates,
     "detect_anomalies": detect_anomalies,
+    "seasonality": seasonality,
+    "segment_profile": segment_profile,
+    "compare_segments": compare_segments,
 }
 
 

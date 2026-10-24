@@ -330,6 +330,171 @@ EXPECTED_TOOLS = [
             "type": "object",
         },
     },
+    {
+        "name": "seasonality",
+        "description": "Ищет повторяющиеся во времени закономерности (STL-декомпозиция). "
+        "Возвращает силу сезонности и тренда, пиковую и минимальную фазы, амплитуду. "
+        "Требует минимум 2*period наблюдений.",
+        "parameters_schema": {
+            "examples": [
+                {
+                    "agg": "sum",
+                    "freq": "month",
+                    "measure": "amount",
+                    "period": 12,
+                    "table": "events",
+                    "time_col": "ts",
+                },
+                {"agg": "count", "freq": "day", "period": 7, "table": "events", "time_col": "ts"},
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "time_col": {
+                    "description": "Колонка DATE или TIMESTAMP",
+                    "title": "Time Col",
+                    "type": "string",
+                },
+                "measure": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Колонка метрики (обязательна при agg != 'count')",
+                    "title": "Measure",
+                },
+                "agg": {
+                    "default": "sum",
+                    "description": "Функция агрегации",
+                    "enum": ["count", "sum", "avg", "min", "max", "median", "stddev"],
+                    "title": "Agg",
+                    "type": "string",
+                },
+                "freq": {
+                    "default": "month",
+                    "description": "Частота агрегации",
+                    "enum": ["minute", "hour", "day", "week", "month", "quarter", "year"],
+                    "title": "Freq",
+                    "type": "string",
+                },
+                "period": {
+                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Период сезонности (>= 2). По умолчанию: 60/min, "
+                    "24/hour, 7/day, 52/week, 12/month, 4/quarter, 1/year.",
+                    "title": "Period",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+            },
+            "required": ["table", "time_col"],
+            "title": "SeasonalityParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "segment_profile",
+        "description": "Сводка по группам: размер сегмента и mean/median/min/max/std "
+        "по выбранным числовым колонкам.",
+        "parameters_schema": {
+            "examples": [
+                {"group_by": ["city"], "measures": ["amount"], "table": "events"},
+                {"group_by": ["city"], "table": "test"},
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "group_by": {
+                    "description": "Колонки сегментации",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "title": "Group By",
+                    "type": "array",
+                },
+                "measures": {
+                    "anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Числовые колонки для сводки (без них — только размер)",
+                    "title": "Measures",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "top_n": {
+                    "default": 100,
+                    "description": "Максимум сегментов",
+                    "minimum": 1,
+                    "title": "Top N",
+                    "type": "integer",
+                },
+            },
+            "required": ["table", "group_by"],
+            "title": "SegmentProfileParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "compare_segments",
+        "description": "Сравнение двух значений сегментной колонки: "
+        "для числовых колонок — t-test (Welch) и Cohen's d, для категориальных — "
+        "χ² и Cramér's V. Возвращает p-value и признак значимости.",
+        "parameters_schema": {
+            "examples": [
+                {
+                    "a": "Москва",
+                    "b": "СПб",
+                    "measures": ["amount"],
+                    "segment_col": "city",
+                    "table": "events",
+                },
+                {
+                    "a": "Москва",
+                    "b": "СПб",
+                    "measures": ["age"],
+                    "segment_col": "city",
+                    "table": "test",
+                },
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "segment_col": {
+                    "description": "Колонка-сегмент",
+                    "title": "Segment Col",
+                    "type": "string",
+                },
+                "a": {"description": "Первое значение сегмента", "title": "A", "type": "string"},
+                "b": {"description": "Второе значение сегмента", "title": "B", "type": "string"},
+                "measures": {
+                    "description": "Колонки для сравнения: числовые → t-test + Cohen's d; "
+                    "категориальные → χ² + Cramér's V",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "title": "Measures",
+                    "type": "array",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "alpha": {
+                    "default": 0.05,
+                    "description": "Порог значимости",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "title": "Alpha",
+                    "type": "number",
+                },
+            },
+            "required": ["table", "segment_col", "a", "b", "measures"],
+            "title": "CompareSegmentsParams",
+            "type": "object",
+        },
+    },
 ]
 
 

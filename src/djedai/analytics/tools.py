@@ -4,6 +4,7 @@ from collections.abc import Collection
 from functools import partial
 
 import duckdb
+import numpy as np
 import sqlglot
 from sqlglot import exp
 
@@ -116,6 +117,60 @@ def _to_python(v):
         except (ValueError, AttributeError):
             pass
     return v
+
+
+_RU_MONTHS = [
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
+]
+_RU_WEEKDAYS = [
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+]
+_STL_PERIOD_BY_FREQ = {
+    "minute": 60,
+    "hour": 24,
+    "day": 7,
+    "week": 52,
+    "month": 12,
+    "quarter": 4,
+    "year": 1,
+}
+_PANDAS_FREQ = {
+    "minute": "min",
+    "hour": "h",
+    "day": "D",
+    "week": "W-MON",
+    "month": "MS",
+    "quarter": "QS",
+    "year": "YS",
+}
+
+
+def _cohens_d_label(d: float) -> str:
+    ad = abs(d)
+    if ad < 0.2:
+        return "negligible"
+    if ad < 0.5:
+        return "small"
+    if ad < 0.8:
+        return "medium"
+    return "large"
 
 
 def run_sql(
@@ -339,8 +394,9 @@ def describe_dataset(
             params={},
             data=ToolResultData(
                 columns=["table_name", "row_count", "columns"],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
         )
@@ -597,8 +653,9 @@ def value_counts(
             },
             data=ToolResultData(
                 columns=[column, "count"],
-                rows=rows,
-                row_count=len(rows),
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
             chart_hint=ChartHint(type="bar", x=column, y=["count"]),
@@ -1769,6 +1826,1005 @@ def detect_anomalies(
             facts=facts,
             chart_hint=chart_hint,
             sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# SEASONALITY
+# ============================================================================
+
+
+def seasonality(
+    table: str,
+    time_col: str,
+    *,
+    measure: str | None = None,
+    agg: str = "sum",
+    freq: str = "month",
+    period: int | None = None,
+    filter: str | None = None,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Ищет сезонность STL-декомпозицией.
+
+    Возвращает силу сезонности/тренда, пиковую и минимальную фазы,
+    амплитуду. Требует минимум 2*period наблюдений.
+    """
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        if freq not in _FREQ_UNITS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая частота: '{freq}'.",
+                    suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if agg not in _AGG_FUNCS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая агрегация: '{agg}'.",
+                    suggestion=f"Допустимо: {sorted(_AGG_FUNCS)}",
+                )
+            )
+        if agg != "count" and measure is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Для agg='{agg}' обязателен measure.",
+                    suggestion="Укажите measure или используйте agg='count'.",
+                )
+            )
+        if period is None:
+            period = _STL_PERIOD_BY_FREQ[freq]
+        if not isinstance(period, int) or isinstance(period, bool) or period < 2:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="period должен быть целым числом >= 2.",
+                )
+            )
+
+        if _column_type(con, table, time_col) is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка времени '{time_col}' не найдена.",
+                    suggestion=f"Доступно: {', '.join(_list_columns(con, table))}",
+                )
+            )
+        if measure is not None and _column_type(con, table, measure) is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка метрики '{measure}' не найдена.",
+                )
+            )
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        try:
+            import pandas as pd
+            from statsmodels.tsa.seasonal import STL
+        except ImportError:
+            return _err(
+                error=ToolError(
+                    code="method_unavailable",
+                    message="Для seasonality нужны statsmodels и pandas.",
+                    suggestion="Установите statsmodels.",
+                )
+            )
+
+        safe_table = _quote_id(table)
+        safe_time = _quote_id(time_col)
+        if agg == "count":
+            agg_expr = "COUNT(*)" if measure is None else f"COUNT({_quote_id(measure)})"
+        else:
+            agg_expr = f"{_AGG_FUNCS[agg]}({_quote_id(measure)})"
+
+        query = (
+            f"SELECT DATE_TRUNC('{freq}', CAST({safe_time} AS TIMESTAMP)) AS bucket, "
+            f"{agg_expr} AS value "
+            f"FROM {safe_table} "
+            f"WHERE {safe_time} IS NOT NULL{filter_sql} "
+            f"GROUP BY 1 ORDER BY 1 ASC"
+        )
+        raw = execute(query).fetchall()
+
+        if len(raw) < 2 * period:
+            return _err(
+                error=ToolError(
+                    code="insufficient_data",
+                    message=(
+                        f"Для сезонности с period={period} нужно >= {2 * period} "
+                        f"наблюдений, получено {len(raw)}."
+                    ),
+                    suggestion="Уменьшите period, расширьте диапазон или увеличьте частоту.",
+                )
+            )
+
+        df = pd.DataFrame(raw, columns=["bucket", "value"])
+        df["bucket"] = pd.to_datetime(df["bucket"])
+        df = df.set_index("bucket").sort_index()
+
+        full_idx = pd.date_range(
+            df.index.min(),
+            df.index.max(),
+            freq=_PANDAS_FREQ[freq],
+        )
+        gaps = len(full_idx) - len(df)
+        # An observed NULL is unknown, not an absent sum/count bucket.
+        # Do not invent zero-valued means, medians or other missing statistics.
+        if df["value"].isna().any() or (gaps > 0 and agg not in {"sum", "count"}):
+            return _err(
+                error=ToolError(
+                    code="missing_data",
+                    message=(
+                        "В ряду есть неизвестные значения. "
+                        "Для сезонности нужен полный числовой ряд."
+                    ),
+                    suggestion="Проверьте пропуски или выберите непрерывный период.",
+                )
+            )
+        df = df.reindex(full_idx, fill_value=0.0)
+        series = df["value"].astype(float)
+        if not np.isfinite(series.to_numpy()).all():
+            return _err(
+                error=ToolError(
+                    code="invalid_data", message="Ряд содержит нечисловые или бесконечные значения."
+                )
+            )
+        check_budget()
+
+        level = float(np.median(series.to_numpy()))
+        centered = series.to_numpy() - level
+        spread = float(np.max(np.abs(centered)))
+        if spread == 0.0:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="seasonality",
+                params={
+                    "table": table,
+                    "time_col": time_col,
+                    "measure": measure,
+                    "agg": agg,
+                    "freq": freq,
+                    "period": period,
+                    "filter": filter,
+                },
+                facts=[
+                    Fact(
+                        text="Ряд постоянный (std=0) — сезонность не выявлена.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        try:
+            # Fit in units of variation; a large baseline or small metric unit
+            # must not change the significance of floating-point roundoff.
+            res = STL(centered / spread, period=period, robust=True).fit()
+            check_budget()
+        except (TurnCancelled, TurnTimeout):
+            raise
+        except Exception as e:
+            return _err(
+                error=ToolError(
+                    code="db_error",
+                    message=f"Ошибка STL-декомпозиции: {e}",
+                )
+            )
+
+        trend = np.asarray(res.trend, dtype=float)
+        seasonal = np.asarray(res.seasonal, dtype=float)
+        resid = np.asarray(res.resid, dtype=float)
+        if not all(np.isfinite(values).all() for values in (trend, seasonal, resid)):
+            return _err(
+                error=ToolError(
+                    code="invalid_data", message="STL не вернул конечные числовые значения."
+                )
+            )
+
+        var_r = float(np.var(resid))
+        var_sr = float(np.var(seasonal + resid))
+        var_tr = float(np.var(trend + resid))
+        noise_variance = (np.finfo(float).eps * 128 * len(series)) ** 2
+        strength_s = max(0.0, 1.0 - var_r / var_sr) if var_sr > noise_variance else 0.0
+        strength_t = max(0.0, 1.0 - var_r / var_tr) if var_tr > noise_variance else 0.0
+
+        # Strengths are dimensionless; publish the decomposition in source units.
+        trend = trend * spread + level
+        seasonal = seasonal * spread
+        resid = resid * spread
+
+        usable = len(seasonal) - len(seasonal) % period
+        phase_means = seasonal[:usable].reshape(-1, period).mean(axis=0)
+        peak_phase = int(np.argmax(phase_means))
+        trough_phase = int(np.argmin(phase_means))
+        amplitude = float(phase_means[peak_phase] - phase_means[trough_phase])
+
+        rows = [
+            [
+                ts.isoformat() if freq in {"hour", "minute"} else ts.strftime("%Y-%m-%d"),
+                float(v),
+                float(t),
+                float(s),
+                float(r),
+            ]
+            for ts, v, t, s, r in zip(df.index, series, trend, seasonal, resid, strict=False)
+        ]
+
+        phase_label = ""
+        if freq == "month" and period == 12:
+            phase_label = f" ({_RU_MONTHS[df.index[peak_phase].month - 1]})"
+        elif freq == "day" and period == 7:
+            phase_label = f" ({_RU_WEEKDAYS[df.index[peak_phase].weekday()]})"
+
+        interp = "сильная" if strength_s >= 0.6 else "умеренная" if strength_s >= 0.3 else "слабая"
+
+        facts = [
+            Fact(
+                text=f"Сезонность с периодом {period} (частота {freq}). "
+                f"Сила сезонности: {round(strength_s, 3)}, "
+                f"сила тренда: {round(strength_t, 3)}.",
+                kind="seasonal_summary",
+                values={
+                    "period": period,
+                    "freq": freq,
+                    "strength_seasonal": strength_s,
+                    "strength_trend": strength_t,
+                },
+            ),
+            Fact(
+                text=f"Пиковая фаза: {peak_phase}{phase_label}, "
+                f"амплитуда сезонности {round(amplitude, 4)}.",
+                kind="seasonal_peak",
+                values={"peak_phase": peak_phase, "amplitude": amplitude},
+            ),
+            Fact(
+                text=f"Минимальная фаза: {trough_phase} "
+                f"(значение {round(float(phase_means[trough_phase]), 4)}).",
+                kind="seasonal_trough",
+                values={"trough_phase": trough_phase, "value": float(phase_means[trough_phase])},
+            ),
+            Fact(
+                text=f"Интерпретация: сезонность {interp} (порог 0.6 — сильная, 0.3 — умеренная).",
+                kind="interpretation",
+                values={"strength": strength_s},
+            ),
+        ]
+        if gaps > 0:
+            facts.append(
+                Fact(
+                    text=f"В ряду {gaps} пропущенных бакетов — заполнены нулями.",
+                    kind="note",
+                    values={"gaps": gaps},
+                )
+            )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="seasonality",
+            params={
+                "table": table,
+                "time_col": time_col,
+                "measure": measure,
+                "agg": agg,
+                "freq": freq,
+                "period": period,
+                "filter": filter,
+            },
+            data=ToolResultData(
+                columns=["time_bucket", "value", "trend", "seasonal", "resid"],
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
+            ),
+            facts=facts,
+            chart_hint=ChartHint(
+                type="line",
+                x="time_bucket",
+                y=["value", "trend", "seasonal"],
+            ),
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# SEGMENT PROFILE
+# ============================================================================
+
+
+def segment_profile(
+    table: str,
+    group_by: list[str],
+    *,
+    measures: list[str] | None = None,
+    filter: str | None = None,
+    top_n: int = 100,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Сводка по группам: размер + mean/median/min/max/std по measures."""
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        if not group_by:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="Параметр group_by не может быть пустым.",
+                    suggestion="Укажите хотя бы одну колонку группировки.",
+                )
+            )
+        if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n < 1:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="top_n должен быть > 0.",
+                )
+            )
+
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        for col in [*group_by, *(measures or [])]:
+            if col not in all_cols:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                        suggestion=f"Доступно: {', '.join(all_cols)}",
+                    )
+                )
+
+        measures = measures or []
+        for m in measures:
+            dtype = (_column_type(con, table, m) or "").upper()
+            if not any(t in dtype for t in _NUMERIC_TYPES):
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка measure '{m}' должна быть числовой (тип: {dtype}).",
+                    )
+                )
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        safe_table = _quote_id(table)
+        safe_groups = [_quote_id(g) for g in group_by]
+
+        out_columns = list(group_by)
+        used_columns = {name.casefold() for name in out_columns}
+
+        def output_alias(base: str) -> str:
+            name = base
+            suffix = 1
+            while name.casefold() in used_columns:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_columns.add(name.casefold())
+            out_columns.append(name)
+            return name
+
+        size_column = output_alias("segment_size")
+        measure_columns = []
+        select_parts = safe_groups + [f"COUNT(*) AS {_quote_id(size_column)}"]
+        for m in measures:
+            safe_m = _quote_id(m)
+            aliases = [
+                output_alias(f"{m}_{stat}") for stat in ("mean", "median", "min", "max", "std")
+            ]
+            measure_columns.append(aliases)
+            select_parts.extend(
+                f"{function}({safe_m}) AS {_quote_id(alias)}"
+                for function, alias in zip(
+                    ("AVG", "MEDIAN", "MIN", "MAX", "STDDEV_POP"), aliases, strict=True
+                )
+            )
+
+        effective_limit = min(top_n, get_limits().sql_max_rows)
+        n_group = len(group_by)
+        group_positions = ", ".join(str(i) for i in range(1, n_group + 1))
+
+        base_query = (
+            f"SELECT {', '.join(select_parts)} FROM {safe_table} "
+            f"WHERE 1=1{filter_sql} GROUP BY {group_positions}"
+        )
+        query = f"{base_query} ORDER BY {_quote_id(size_column)} DESC LIMIT {effective_limit + 1}"
+        summary_columns = ["COUNT(*)", f"COALESCE(SUM({_quote_id(size_column)}), 0)"]
+        for aliases in measure_columns:
+            mean_alias = _quote_id(aliases[0])
+            summary_columns.extend([f"MAX({mean_alias})", f"MIN({mean_alias})"])
+        summary = execute(
+            f"SELECT {', '.join(summary_columns)} FROM ({base_query}) segments"
+        ).fetchone()
+        raw = execute(query).fetchall()
+        truncated = len(raw) > effective_limit
+        raw = raw[:effective_limit]
+
+        params_dict = {
+            "table": table,
+            "group_by": group_by,
+            "measures": measures,
+            "filter": filter,
+            "top_n": top_n,
+        }
+
+        if not raw:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="segment_profile",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=out_columns,
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[
+                    Fact(
+                        text="По заданным условиям нет ни одного сегмента.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        rows = [list(r) for r in raw]
+        total_rows = int(summary[1])
+        segment_count = int(summary[0])
+
+        facts: list[Fact] = [
+            Fact(
+                text=f"Всего сегментов: {segment_count}, строк в них: {total_rows}.",
+                kind="segment_summary",
+                values={"segment_count": segment_count, "total_rows": total_rows},
+            ),
+        ]
+
+        for r in rows[:3]:
+            group_vals = {g: r[i] for i, g in enumerate(group_by)}
+            parts = [f"Сегмент {group_vals}: {r[n_group]} строк"]
+            for i, m in enumerate(measures):
+                mv = r[n_group + 1 + i * 5]
+                if mv is not None:
+                    parts.append(f"{m} mean={round(float(mv), 4)}")
+            facts.append(
+                Fact(
+                    text=", ".join(parts) + ".",
+                    kind="segment_sample",
+                    values={
+                        "group": group_vals,
+                        "size": r[n_group],
+                        "measures": {
+                            m: {
+                                "mean": r[n_group + 1 + i * 5],
+                                "median": r[n_group + 2 + i * 5],
+                                "min": r[n_group + 3 + i * 5],
+                                "max": r[n_group + 4 + i * 5],
+                                "std": r[n_group + 5 + i * 5],
+                            }
+                            for i, m in enumerate(measures)
+                        },
+                    },
+                )
+            )
+
+        for i, m in enumerate(measures):
+            max_mean, min_mean = summary[2 + 2 * i : 4 + 2 * i]
+            if max_mean is None:
+                continue
+            facts.append(
+                Fact(
+                    text=(
+                        f"{m}: по всем сегментам максимум среднего {round(float(max_mean), 4)}, "
+                        f"минимум {round(float(min_mean), 4)}."
+                    ),
+                    kind="segment_measure",
+                    values={"measure": m, "max_mean": float(max_mean), "min_mean": float(min_mean)},
+                )
+            )
+
+        chart_hint = None
+        if len(group_by) == 1:
+            chart_hint = ChartHint(
+                type="bar",
+                x=group_by[0],
+                y=[measure_columns[0][0]] if measures else [size_column],
+            )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="segment_profile",
+            params=params_dict,
+            data=ToolResultData(
+                columns=out_columns,
+                rows=rows,
+                row_count=len(rows),
+                truncated=truncated,
+            ),
+            facts=facts,
+            chart_hint=chart_hint,
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# COMPARE SEGMENTS
+# ============================================================================
+
+
+def compare_segments(
+    table: str,
+    segment_col: str,
+    a: str,
+    b: str,
+    *,
+    measures: list[str],
+    filter: str | None = None,
+    alpha: float = 0.05,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Сравнивает группы a и b: t-test + Cohen's d (числовые) / χ² + Cramér's V."""
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        if not measures:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="Укажите хотя бы одну колонку в measures.",
+                )
+            )
+        if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not (0 < alpha < 1):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="alpha должен быть числом в интервале (0, 1).",
+                )
+            )
+
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        for col in [segment_col, *measures]:
+            if col not in all_cols:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                        suggestion=f"Доступно: {', '.join(all_cols)}",
+                    )
+                )
+
+        safe_table = _quote_id(table)
+        safe_seg = _quote_id(segment_col)
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        count_row = execute(
+            f"SELECT COUNT(*) FILTER (WHERE {safe_seg} = ?), "
+            f"COUNT(*) FILTER (WHERE {safe_seg} = ?), COUNT(DISTINCT {safe_seg}) "
+            f"FROM {safe_table} WHERE {safe_seg} IN (?, ?){filter_sql}",
+            [a, b, a, b],
+        ).fetchone()
+        counts = {a: count_row[0], b: count_row[1]}
+        if not count_row[0] or not count_row[1]:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Сегмент '{a if not count_row[0] else b}' отсутствует после фильтра.",
+                )
+            )
+        if count_row[2] < 2:
+            return _err(
+                error=ToolError(code="invalid_parameter", message="Выберите два разных сегмента.")
+            )
+
+        try:
+            from scipy import stats
+        except ImportError:
+            return _err(
+                error=ToolError(
+                    code="method_unavailable",
+                    message="Для compare_segments нужен scipy.",
+                    suggestion="Установите scipy.",
+                )
+            )
+
+        facts: list[Fact] = [
+            Fact(
+                text=f"Сравнение '{a}' (n={counts[a]}) и '{b}' (n={counts[b]}) "
+                f"по {len(measures)} признакам, α={alpha}.",
+                kind="compare_summary",
+                values={"a": a, "b": b, "n_a": counts[a], "n_b": counts[b], "alpha": alpha},
+            ),
+        ]
+        rows: list[list] = []
+
+        for measure in measures:
+            safe_m = _quote_id(measure)
+            dtype = (_column_type(con, table, measure) or "").upper()
+            is_numeric = any(t in dtype for t in _NUMERIC_TYPES)
+
+            if is_numeric:
+                a_vals = [
+                    float(r[0])
+                    for r in execute(
+                        f"SELECT {safe_m} FROM {safe_table} "
+                        f"WHERE {safe_seg} = ? AND {safe_m} IS NOT NULL{filter_sql}",
+                        [a],
+                    ).fetchall()
+                ]
+                b_vals = [
+                    float(r[0])
+                    for r in execute(
+                        f"SELECT {safe_m} FROM {safe_table} "
+                        f"WHERE {safe_seg} = ? AND {safe_m} IS NOT NULL{filter_sql}",
+                        [b],
+                    ).fetchall()
+                ]
+                if len(a_vals) < 2 or len(b_vals) < 2:
+                    facts.append(
+                        Fact(
+                            text=f"{measure}: недостаточно данных "
+                            f"(A={len(a_vals)}, B={len(b_vals)}).",
+                            kind="compare_skip",
+                            values={"measure": measure},
+                        )
+                    )
+                    rows.append(
+                        [
+                            measure,
+                            "numeric",
+                            len(a_vals),
+                            len(b_vals),
+                            None,
+                            None,
+                            None,
+                            None,
+                            False,
+                            "insufficient_data",
+                        ]
+                    )
+                    continue
+
+                mean_a = float(np.mean(a_vals))
+                mean_b = float(np.mean(b_vals))
+                var_a = float(np.var(a_vals, ddof=1))
+                var_b = float(np.var(b_vals, ddof=1))
+                n_a, n_b = len(a_vals), len(b_vals)
+                pooled = (
+                    float(np.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / (n_a + n_b - 2)))
+                    if (n_a + n_b > 2)
+                    else 0.0
+                )
+                p_val = None
+                if pooled > 0:
+                    check_budget()
+                    _, probability = stats.ttest_ind(a_vals, b_vals, equal_var=False)
+                    p_val = float(probability) if np.isfinite(probability) else None
+                d = (mean_a - mean_b) / pooled if pooled > 0 else None
+                effect_name = "cohens_d" if d is not None else "undefined_effect"
+                p_val = (
+                    p_val if d is not None and p_val is not None and np.isfinite(p_val) else None
+                )
+                significant = p_val is not None and p_val < alpha
+                verdict = (
+                    "вывод недоступен"
+                    if p_val is None
+                    else "значимо"
+                    if significant
+                    else "не значимо"
+                )
+                effect_text = (
+                    f"Cohen's d={round(d, 3)} ({_cohens_d_label(d)})"
+                    if d is not None
+                    else "t-test и размер эффекта не определены при нулевой совместной дисперсии"
+                )
+                check_budget()
+
+                facts.append(
+                    Fact(
+                        text=(
+                            f"{measure}: mean(A)={round(mean_a, 4)}, "
+                            f"mean(B)={round(mean_b, 4)}, "
+                            f"{effect_text}, "
+                            f"p={round(p_val, 6) if p_val is not None else '—'} — "
+                            f"{verdict}."
+                        ),
+                        kind="compare_numeric",
+                        values={
+                            "measure": measure,
+                            "mean_a": mean_a,
+                            "mean_b": mean_b,
+                            "cohens_d": d,
+                            "p_value": p_val,
+                            "significant": significant,
+                        },
+                    )
+                )
+                rows.append(
+                    [
+                        measure,
+                        "numeric",
+                        n_a,
+                        n_b,
+                        mean_a,
+                        mean_b,
+                        d,
+                        p_val,
+                        significant,
+                        effect_name,
+                    ]
+                )
+
+            else:
+                a_counts = {
+                    k: int(v)
+                    for k, v in execute(
+                        f"SELECT {safe_m}, COUNT(*) FROM {safe_table} "
+                        f"WHERE {safe_seg} = ?{filter_sql} GROUP BY 1",
+                        [a],
+                    ).fetchall()
+                }
+                b_counts = {
+                    k: int(v)
+                    for k, v in execute(
+                        f"SELECT {safe_m}, COUNT(*) FROM {safe_table} "
+                        f"WHERE {safe_seg} = ?{filter_sql} GROUP BY 1",
+                        [b],
+                    ).fetchall()
+                }
+                categories = list(dict.fromkeys([*a_counts, *b_counts]))
+                cont = [
+                    [a_counts.get(c, 0) for c in categories],
+                    [b_counts.get(c, 0) for c in categories],
+                ]
+                n_a_tot = sum(cont[0])
+                n_b_tot = sum(cont[1])
+                if n_a_tot < 5 or n_b_tot < 5 or len(categories) < 2:
+                    facts.append(
+                        Fact(
+                            text=f"{measure}: недостаточно категорий/данных для χ².",
+                            kind="compare_skip",
+                            values={"measure": measure},
+                        )
+                    )
+                    rows.append(
+                        [
+                            measure,
+                            "categorical",
+                            n_a_tot,
+                            n_b_tot,
+                            None,
+                            None,
+                            None,
+                            None,
+                            False,
+                            "insufficient_data",
+                        ]
+                    )
+                    continue
+                try:
+                    chi2, p_val, _, expected = stats.chi2_contingency(cont)
+                    if np.any(expected < 5):
+                        rows.append(
+                            [
+                                measure,
+                                "categorical",
+                                n_a_tot,
+                                n_b_tot,
+                                None,
+                                None,
+                                None,
+                                None,
+                                False,
+                                "insufficient_data",
+                            ]
+                        )
+                        facts.append(
+                            Fact(
+                                text=f"{measure}: ожидаемые частоты меньше 5; χ² неприменим.",
+                                kind="compare_skip",
+                                values={"measure": measure},
+                            )
+                        )
+                        continue
+                    check_budget()
+                    p_val = float(p_val)
+                    v = float(np.sqrt(chi2 / (n_a_tot + n_b_tot)))
+                except (TurnCancelled, TurnTimeout):
+                    raise
+                except Exception:
+                    p_val = None
+                    v = None
+
+                significant = p_val is not None and p_val < alpha
+                verdict = (
+                    "вывод недоступен"
+                    if p_val is None
+                    else "значимо"
+                    if significant
+                    else "не значимо"
+                )
+                top_a = max(a_counts, key=a_counts.get) if a_counts else None
+                top_b = max(b_counts, key=b_counts.get) if b_counts else None
+
+                facts.append(
+                    Fact(
+                        text=(
+                            f"{measure}: категорий {len(categories)}, "
+                            f"топ в A='{top_a}', топ в B='{top_b}', "
+                            f"Cramér's V={round(v, 3) if v is not None else '—'}, "
+                            f"p={round(p_val, 6) if p_val is not None else '—'} — "
+                            f"{verdict}."
+                        ),
+                        kind="compare_categorical",
+                        values={
+                            "measure": measure,
+                            "top_a": top_a,
+                            "top_b": top_b,
+                            "cramers_v": v,
+                            "p_value": p_val,
+                            "significant": significant,
+                        },
+                    )
+                )
+                rows.append(
+                    [
+                        measure,
+                        "categorical",
+                        n_a_tot,
+                        n_b_tot,
+                        top_a,
+                        top_b,
+                        v,
+                        p_val,
+                        significant,
+                        "cramers_v",
+                    ]
+                )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="compare_segments",
+            params={
+                "table": table,
+                "segment_col": segment_col,
+                "a": a,
+                "b": b,
+                "measures": measures,
+                "filter": filter,
+                "alpha": alpha,
+            },
+            data=ToolResultData(
+                columns=[
+                    "measure",
+                    "kind",
+                    "n_a",
+                    "n_b",
+                    "stat_a",
+                    "stat_b",
+                    "effect_size",
+                    "p_value",
+                    "significant",
+                    "effect_size_name",
+                ],
+                rows=rows[: get_limits().sql_max_rows],
+                row_count=min(len(rows), get_limits().sql_max_rows),
+                truncated=len(rows) > get_limits().sql_max_rows,
+            ),
+            facts=facts,
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
     except (TurnCancelled, TurnTimeout):
