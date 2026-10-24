@@ -65,6 +65,8 @@ class Settings(LimitSettings):
     )
     model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
+    # LLM descriptions of new dataset catalogs (B1-6); off unless enabled in .env.
+    catalog_descriptions: bool = Field(default=False, alias="CATALOG_DESCRIPTIONS")
 
     # Сетевая политика (исходящий трафик только по whitelist)
     allowed_outbound_hosts: str = Field(default="", alias="ALLOWED_OUTBOUND_HOSTS")
