@@ -63,7 +63,8 @@ sessionStorage не защищает от XSS — ограничение сог�
 
 Смена/очистка токена отменяет старые запросы и потоки. Запоздалые login/logout,
 401 и JSON-ответы не изменяют более новую сессию. После reload вызывают me()
-до восстановления личного workspace. Формы и очистка UI/QueryClient — #104.
+до восстановления личного workspace. Формы и очистка UI/QueryClient реализованы
+в [AUTH-4 / #104](104-browser-auth.md).
 
 После миграций auth API работает и при `CP1_LOCAL_MODE=false`; entrypoint
 пропускает CP1-bootstrap в этом режиме. Защита ресурсов, SQL, файлов и SSE

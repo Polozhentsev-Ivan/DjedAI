@@ -69,6 +69,8 @@ jobs:
         run: uv run --locked python scripts/test_postgres_isolation.py --output "$RUNNER_TEMP/postgres-isolation.json"
       - name: Test HTTP owner isolation and session revocation
         run: uv run --locked pytest --strict-markers tests/integration/test_owner_isolation.py
+      - name: Test analytical tools through protected runtime and storage
+        run: uv run --locked pytest --strict-markers tests/integration/test_analytics_tools_runtime.py
 
   frontend:
     name: frontend

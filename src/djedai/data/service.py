@@ -2,7 +2,8 @@
 
 The file database is published only after every table has a typed view and profile.
 CSV uploads are copied into DuckDB; PostgreSQL tables stay in the source database and
-are read live through read-only views. ClickHouse remains a separate stage.
+are read live through read-only views. Both find table relations; LLM descriptions are
+an optional step before publication. ClickHouse remains a separate stage.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import duckdb
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.data.catalog_builder import build_csv_catalog, build_db_catalog
 from djedai.data.csv_ingest import load_raw_csv
+from djedai.data.descriptions import ModelClient, describe_catalog
 from djedai.data.postgres import (
     PgConnectionInfo,
     connect_postgres,
@@ -67,6 +69,10 @@ def ingest_csv_dataset(
             partial = build_csv_catalog(connection, raw, view, profile, dataset_id=dataset_id)
             tables.extend(partial.tables)
             transformations.extend(partial.transformations)
+        if progress:
+            # The UI knows read/types/profile; relations finish the profile stage.
+            progress("profile", (len(sources) * 3 - 1) / (len(sources) * 3), "Поиск связей")
+        relations = find_relations(connection)
         connection.execute("CHECKPOINT")
     return DatasetCatalog(
         dataset_id=dataset_id,
@@ -74,8 +80,24 @@ def ingest_csv_dataset(
         created_at=created_at,
         source={"kind": "csv_upload"},
         tables=tables,
+        relations=[relation.to_contract() for relation in relations.relations],
+        warnings=list(relations.warnings),
         transformations=transformations,
     )
+
+
+def describe_dataset(
+    database_path: Path, catalog: DatasetCatalog, client: ModelClient
+) -> DatasetCatalog:
+    """Add LLM descriptions to a built, unpublished dataset; model failures become warnings.
+
+    Only the description cache in the dataset file is touched, so a PostgreSQL dataset
+    needs no live source here. The statistical catalog stays valid without the model.
+    """
+    with duckdb.connect(str(database_path)) as connection:
+        report = describe_catalog(connection, catalog, client)
+        connection.execute("CHECKPOINT")
+    return report.catalog
 
 
 def connect_postgres_dataset(

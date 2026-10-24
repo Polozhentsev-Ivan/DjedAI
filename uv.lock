@@ -270,7 +270,9 @@ dependencies = [
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "langgraph" },
+    { name = "numpy" },
     { name = "openai" },
+    { name = "pandas" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
@@ -284,8 +286,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "numpy" },
-    { name = "pandas" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
@@ -302,22 +302,22 @@ requires-dist = [
     { name = "duckdb", specifier = "==1.5.6" },
     { name = "fastapi", specifier = "==0.115.11" },
     { name = "langgraph", specifier = "==1.2.16" },
+    { name = "numpy", specifier = "==2.5.4" },
     { name = "openai", specifier = "==3.31.0" },
+    { name = "pandas", specifier = "==3.0.6" },
     { name = "pydantic", specifier = "==2.14.1" },
     { name = "pydantic-settings", specifier = "==2.8.1" },
-    { name = "python-dotenv", specifier = ">=1.2.4" },
+    { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "sqlalchemy", specifier = "==2.0.38" },
-    { name = "sqlglot", specifier = ">=30.23.0" },
-    { name = "statsmodels", specifier = ">=0.15.0" },
+    { name = "sqlglot", specifier = "==30.23.0" },
+    { name = "statsmodels", specifier = "==0.15.0" },
     { name = "uvicorn", specifier = "==0.34.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "numpy", specifier = ">=2.5.4" },
-    { name = "pandas", specifier = ">=3.0.6" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-cov", specifier = "==7.1.0" },
     { name = "pytest-mock", specifier = "==3.17.0" },

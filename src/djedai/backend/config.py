@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, SecretStr, ValidationInfo, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from djedai.config import LimitSettings
@@ -28,6 +29,16 @@ class Settings(LimitSettings):
     # Общие параметры приложения
     app_env: str = Field(default="development", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    diagnostics_dir: str = Field(default="./var/diagnostics", alias="DIAGNOSTICS_DIR")
+    diagnostics_max_bytes: int = Field(default=10_000_000, ge=1024, alias="DIAGNOSTICS_MAX_BYTES")
+    diagnostics_backups: int = Field(default=5, ge=1, le=100, alias="DIAGNOSTICS_BACKUPS")
+    model_input_price_usd: Decimal | None = Field(
+        default=None, ge=0, allow_inf_nan=False, alias="MODEL_INPUT_PRICE_PER_MILLION_USD"
+    )
+    model_output_price_usd: Decimal | None = Field(
+        default=None, ge=0, allow_inf_nan=False, alias="MODEL_OUTPUT_PRICE_PER_MILLION_USD"
+    )
+    model_price_reference: str | None = Field(default=None, alias="MODEL_PRICE_REFERENCE")
     api_prefix: str = "/api"
     app_version: str = "0.2.0"
 
@@ -54,6 +65,8 @@ class Settings(LimitSettings):
     )
     model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
+    # LLM descriptions of new dataset catalogs (B1-6); off unless enabled in .env.
+    catalog_descriptions: bool = Field(default=False, alias="CATALOG_DESCRIPTIONS")
 
     # Сетевая политика (исходящий трафик только по whitelist)
     allowed_outbound_hosts: str = Field(default="", alias="ALLOWED_OUTBOUND_HOSTS")
@@ -143,6 +156,19 @@ class Settings(LimitSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @model_validator(mode="after")
+    def complete_model_tariff(self) -> Settings:
+        supplied = (
+            self.model_input_price_usd is not None,
+            self.model_output_price_usd is not None,
+            self.model_price_reference is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "Задайте обе ставки MODEL_*_PRICE_PER_MILLION_USD и MODEL_PRICE_REFERENCE"
+            )
+        return self
 
 
 @lru_cache

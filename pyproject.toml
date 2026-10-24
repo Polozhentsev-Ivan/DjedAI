@@ -5,6 +5,8 @@ description = "Локальная аналитическая платформа:
 readme = "README.md"
 requires-python = ">=3.13.16,<3.14"
 dependencies = [
+    "pandas==3.0.6",
+    "numpy==2.5.4",
     "alembic==1.15.1",
     "argon2-cffi==25.1.0",
     "charset-normalizer==3.5.2",
@@ -15,19 +17,17 @@ dependencies = [
     "pydantic==2.14.1",
     "pydantic-settings==2.8.1",
     "sqlalchemy==2.0.38",
-    "python-dotenv>=1.2.4",
-    "sqlglot>=30.23.0",
+    "python-dotenv==1.2.4",
+    "sqlglot==30.23.0",
     "uvicorn==0.34.0",
     "python-multipart==0.0.32",
     "cryptography==50.0.2",
-    "statsmodels>=0.15.0",
+    "statsmodels==0.15.0",
 ]
 
 [dependency-groups]
 dev = [
     "httpx==0.28.1",
-    "numpy>=2.5.4",
-    "pandas>=3.0.6",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-mock==3.17.0",

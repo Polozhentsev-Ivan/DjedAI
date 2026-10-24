@@ -7,6 +7,7 @@ import { formatRelativeDay } from '@/lib/format';
 import { useCompactLayout } from '@/lib/useMediaQuery';
 import { WorkspaceProvider } from './workspace';
 import { useWorkspace } from './workspaceContext';
+import { logout } from '@/api/auth';
 
 function sectionOf(first: string | undefined): Section {
   return first === 'catalog' || first === 'chat' || first === 'dashboards' ? first : 'sources';
@@ -34,7 +35,7 @@ function Shell() {
           else if (first === 'chat' || first === 'dashboards') void navigate(`/${first}`);
         }}
         onAddSource={() => { void navigate('/sources'); }}
-        onLogout={() => { void navigate('/login'); }}
+        onLogout={() => { void logout().catch(() => undefined); }}
       />
       <div className="flex min-h-0 flex-1">
         <div className="flex flex-none self-stretch">

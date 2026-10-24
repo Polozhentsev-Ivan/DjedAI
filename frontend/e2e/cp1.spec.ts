@@ -55,7 +55,7 @@ test.beforeAll(async () => {
   await startBackend();
 });
 test.afterAll(async () => { await stopBackend(); });
-test.beforeEach(async ({ page }) => { await authenticate(page); });
+test.beforeEach(async ({ page }, info) => { if (!info.title.startsWith('UI auth:')) await authenticate(page); });
 
 async function upload(page: Page, name: string, body: string, status = 'ready', extra = false) {
   await page.goto('/sources');
@@ -178,4 +178,65 @@ test('two browser sessions isolate same-named CSVs, chats, results and SSE', asy
     expect(forbiddenStream.status()).toBe(404);
     expect(forbiddenStream.headers()['content-type']).not.toContain('text/event-stream');
   } finally { await context.close(); }
+});
+
+test('UI auth: registration, logout, account switching, reload and revoked session', async ({ page }) => {
+  const firstUser = `ui-a-${randomUUID()}`;
+  const secondUser = `ui-b-${randomUUID()}`;
+  const password = 'browser-auth-check';
+  async function fill(name: string, secret = password) {
+    await page.getByLabel('Имя пользователя', { exact: true }).fill(name);
+    await page.getByLabel('Пароль', { exact: true }).fill(secret);
+  }
+  async function registerUser(name: string) {
+    await page.getByRole('link', { name: 'Зарегистрироваться', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Зарегистрироваться', exact: true })).toBeVisible();
+    await fill(name);
+    const loginResponse = page.waitForResponse((r) => r.url().endsWith('/api/auth/login'));
+    await page.getByRole('button', { name: 'Зарегистрироваться', exact: true }).click();
+    const token = (await (await loginResponse).json() as { access_token: string }).access_token;
+    tokens.set(page, token);
+    await expect(page.getByText(name, { exact: true })).toBeVisible();
+    return token;
+  }
+  async function signOut() {
+    const response = page.waitForResponse((r) => r.url().endsWith('/api/auth/logout'));
+    await page.getByRole('button', { name: 'Выйти', exact: true }).click();
+    await expect(page).toHaveURL(/\/login$/);
+    expect((await response).status()).toBe(204);
+    expect(await page.evaluate(() => window.sessionStorage.getItem('djedai.access_token'))).toBeNull();
+  }
+  await page.goto('/sources');
+  await expect(page).toHaveURL(/\/login$/);
+  const firstToken = await registerUser(firstUser);
+  const datasetId = await upload(page, 'private-a.csv', 'id,amount\n1,15\n2,35\n');
+  await page.goto(`/catalog/${datasetId}`);
+  await page.getByRole('button', { name: /чат/i }).first().click();
+  await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill('Медленно посчитай строки и сумму amount');
+  const sending = page.waitForRequest((r) => r.url().endsWith('/messages') && r.method() === 'POST');
+  await page.getByRole('button', { name: 'Отправить', exact: true }).click();
+  await sending;
+  await signOut();
+  expect((await page.request.get('/api/auth/me', { headers: { Authorization: `Bearer ${firstToken}` } })).status()).toBe(401);
+  await registerUser(secondUser);
+  await expect(page.getByText('У вас пока нет загруженных данных', { exact: true })).toBeVisible();
+  await expect(page.getByText('private-a', { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText(secondUser, { exact: true })).toBeVisible();
+  await expect(page.getByText('У вас пока нет загруженных данных', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.localStorage.getItem('djedai.access_token'))).toBeNull();
+  await signOut();
+  await fill(firstUser, 'wrong-password');
+  await page.getByRole('button', { name: 'Войти в систему', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Неверный логин или пароль');
+  await fill(firstUser);
+  const loginResponse = page.waitForResponse((r) => r.url().endsWith('/api/auth/login'));
+  await page.getByRole('button', { name: 'Войти в систему', exact: true }).click();
+  const token = (await (await loginResponse).json() as { access_token: string }).access_token;
+  await expect(page.getByText(firstUser, { exact: true })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Ваши датасеты' })).toContainText('private-a');
+  expect((await page.request.post('/api/auth/logout', { headers: { Authorization: `Bearer ${token}` } })).status()).toBe(204);
+  await page.reload();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole('status')).toContainText('Сессия истекла');
 });

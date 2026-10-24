@@ -16,10 +16,12 @@ from pydantic.json_schema import models_json_schema
 from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
+from djedai.agent.config import get_agent_client
 from djedai.backend.api.router import api_router
 from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
+from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -93,6 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         source_encryption_key=cfg.source_encryption_key.get_secret_value()
         if cfg.source_encryption_key
         else None,
+        description_client=get_agent_client if cfg.catalog_descriptions else None,
     )
     try:
         await app.state.dataset_service.recover_interrupted()
@@ -164,6 +167,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+    app.state.diagnostics = DiagnosticJournal(
+        cfg.diagnostics_dir, cfg.diagnostics_max_bytes, cfg.diagnostics_backups
+    )
     app.state.engine = create_db_engine(cfg.app_database_url)
     app.state.session_factory = sessionmaker(
         bind=app.state.engine, autocommit=False, autoflush=False
