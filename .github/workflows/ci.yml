@@ -70,7 +70,9 @@ jobs:
       - name: Test HTTP owner isolation and session revocation
         run: uv run --locked pytest --strict-markers tests/integration/test_owner_isolation.py
       - name: Test analytical tools through protected runtime and storage
-        run: uv run --locked pytest --strict-markers tests/integration/test_analytics_tools_runtime.py
+        run: uv run --locked pytest --strict-markers tests/integration/test_analytics_tools_runtime.py tests/integration/test_eval_runner_runtime.py
+      - name: Test golden evaluator coverage
+        run: uv run --locked pytest --strict-markers tests/unit/test_eval_runner.py tests/unit/test_eval_validation.py tests/integration/test_eval_runner_runtime.py --cov=scripts.eval_runner --cov=eval_values --cov-report=term-missing --cov-fail-under=80
 
   frontend:
     name: frontend

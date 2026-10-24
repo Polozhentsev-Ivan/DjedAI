@@ -14,12 +14,12 @@ import re
 import sys
 import tempfile
 import time
-from collections import Counter
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import duckdb
 import yaml
@@ -30,23 +30,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_values import collection_matches  # noqa: E402
 from verify_golden import check_identity, download_file  # noqa: E402
 
 from djedai.agent.config import get_agent_client  # noqa: E402
+from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
-from djedai.analytics.registry import execute_tool  # noqa: E402
+from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
+from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.data.service import CsvSource, ingest_csv_dataset  # noqa: E402
+from djedai.execution import ExecutionBudget  # noqa: E402
 
 DEFAULT_QUESTIONS = ROOT / "eval/questions.yaml"
 DEFAULT_MANIFEST = ROOT / "eval/datasets/hk_background_jobs.json"
 
 # Define current agent capabilities.
 # Used to mark scenarios as skipped if they require unsupported features.
+SUPPORTED_TOOLS = {definition.name for definition in TOOLS_REGISTRY}
 SUPPORTED_REQUIREMENTS = {"memory"}
-SUPPORTED_TOOLS = {"describe_dataset", "describe_column", "value_counts", "run_sql"}
+if {"seasonality", "time_aggregate"} <= SUPPORTED_TOOLS:
+    SUPPORTED_REQUIREMENTS.add("seasonality")
+if {"segment_profile", "compare_segments"} <= SUPPORTED_TOOLS:
+    SUPPORTED_REQUIREMENTS.add("segments")
 
 # Terminal failures published by the graph when the model or the verifier API
 # is unavailable. Ordinary rejection/clarification notices do not match them.
@@ -73,6 +81,9 @@ DATE_ONLY_RE = re.compile(
     rf"|\b\d{{1,2}}\s+{RU_MONTH}\s+\d{{4}}\b"
     rf"|\b{RU_MONTH}\s+\d{{4}}\b"
     r"|\b(?:19|20)\d{2}\s*(?:г\.(?!\w)|год[ауе]?\b)"
+    r"|\b\d{4}[ -]?Q[1-4]\b|\bQ[1-4]\s+\d{4}\b"
+    r"|\b[1-4](?:-й)?\s+квартал(?:а|е|у)?\s+\d{4}\b",
+    re.IGNORECASE,
 )
 
 
@@ -111,10 +122,6 @@ def _walk(value: Any) -> Iterator[Any]:
         yield value
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
-
-
 def _decimal(value: Any) -> Decimal | None:
     """Numeric value of a cell, excluding booleans and non-finite numbers."""
     if value is None or isinstance(value, bool):
@@ -151,10 +158,36 @@ def _text_numbers(text: str) -> Iterator[Decimal]:
             continue
 
 
-def _claim_numbers(text: str) -> list[Decimal]:
-    """Numbers the answer states about the data, without dates, years, and list item numbers."""
+def _claim_text(text: str) -> str:
+    """Exclude calendar labels, identifiers and list markers, preserving numeric literals."""
     text = re.sub(r"(?m)^\s*\d+[.)]\s+", " ", text)
-    return list(_text_numbers(DATE_ONLY_RE.sub(" ", text)))
+    # A numeric prefix in a SQL identifier is not a claim about the data. Bare
+    # numbers, including backtick-formatted numbers, must remain checkable.
+    text = re.sub(r"\b\d+_[^\W\d]\w*\b", " ", text)
+    return DATE_ONLY_RE.sub(" ", text)
+
+
+def _claim_numbers(text: str) -> list[Decimal]:
+    return list(_text_numbers(_claim_text(text)))
+
+
+def _measurements(text: str) -> Iterator[tuple[Decimal, str]]:
+    text = _claim_text(text)
+    for match in NUMBER_RE.finditer(text):
+        values = list(_text_numbers(match[0]))
+        if not values:
+            continue
+        suffix = text[match.end() : match.end() + 30]
+        prefix = text[max(0, match.start() - 30) : match.start()]
+        if re.match(r"\s*(?:%|процент|percent)", suffix, re.I):
+            policy = "percent"
+        elif re.search(
+            r"(?:доля|отношение|коэффициент)\s*(?:[:=]|составляет)?\s*$", prefix, re.I
+        ) or re.match(r"\s*(?:раз[а]?\b|times\b)", suffix, re.I):
+            policy = "ratio"
+        else:
+            policy = "value"
+        yield values[0], policy
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -176,7 +209,7 @@ def _same_instant(left: datetime, right: datetime) -> bool:
 
 def _ok_results(results: Sequence[Any]) -> Iterator[Any]:
     for result in results:
-        if _field(result, "status") == "ok":
+        if _field(result, "status") in {"ok", "empty"} and not _field(result, "error"):
             yield result
 
 
@@ -256,52 +289,6 @@ def _scalar_matches(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
-def _value_key(value: Any) -> Any:
-    """Cell key that treats numerically equal values (454882 and 454882.0) as equal."""
-    number = _decimal(value)
-    if number is not None:
-        return ("number", number)
-    if isinstance(value, bool):
-        return ("bool", value)
-    if value is None:
-        return ("none",)
-    if isinstance(value, str):
-        return ("text", value)
-    if isinstance(value, (list, tuple)):
-        return ("row", tuple(_value_key(item) for item in value))
-    if isinstance(value, dict):
-        return (
-            "dict",
-            tuple(sorted((str(key), _value_key(item)) for key, item in value.items())),
-        )
-    return ("other", _canonical(value))
-
-
-def _list_matches(expected: list[Any], results: Sequence[Any], *, unordered: bool) -> bool:
-    """Match a reference list against whole tool collections, keeping tuple pairing."""
-    scalar_items = all(not isinstance(item, (list, tuple, dict)) for item in expected)
-    if scalar_items:
-        expected_order = [_value_key(item) for item in expected]
-        expected_counts = Counter(expected_order)
-        for group in _structured_groups(results):
-            keys = [_value_key(item) for item in _walk(group)]
-            if unordered and Counter(keys) == expected_counts:
-                return True
-            if not unordered and keys == expected_order:
-                return True
-        return False
-
-    expected_rows = [_value_key(item) for item in expected]
-    expected_counts = Counter(expected_rows)
-    for group in _structured_groups(results):
-        rows = [_value_key(row) for row in group]
-        if unordered and Counter(rows) == expected_counts:
-            return True
-        if not unordered and rows == expected_rows:
-            return True
-    return False
-
-
 def _tolerance(fact: dict) -> Decimal:
     if fact["comparison"] != "approx":
         return Decimal(0)
@@ -319,10 +306,10 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     uniq = list(dict.fromkeys(numbers))
 
     constants = set(_claim_numbers(case.get("question") or ""))
-    claims = list(dict.fromkeys(_claim_numbers(text)))
+    claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
-    for claim in claims:
+    for claim, policy in claims:
         if claim in constants or claim in uniq:
             continue
 
@@ -347,6 +334,14 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
         if found:
             continue
 
+        # A ratio cannot justify an unrelated count just because the numbers
+        # happen to divide to it. Derivations require an explicit unit/context.
+        if policy == "value":
+            issues.append(
+                f"Number {format(claim, 'f')} in the answer is not backed by tool results"
+            )
+            continue
+
         # Check derived pairs (limit to 500 to avoid CPU spin/OOM)
         # Ratios usually come from aggregate counts/sums which are added at the end (summary facts)
         subset = uniq if len(uniq) <= 500 else (uniq[:300] + uniq[-200:])
@@ -354,10 +349,9 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
             if right == 0:
                 continue
             for left in subset:
-                if (
-                    _matches(left / right)
-                    or _matches(left / right * 100)
-                    or _matches((left - right) / right * 100)
+                if (policy == "ratio" and _matches(left / right)) or (
+                    policy == "percent"
+                    and (_matches(left / right * 100) or _matches((left - right) / right * 100))
                 ):
                     found = True
                     break
@@ -371,7 +365,9 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     return issues
 
 
-def check_fact(fact: dict, results: Sequence[Any]) -> bool:
+def check_fact(
+    fact: dict, results: Sequence[Any], *, column_aliases: dict[str, str] | None = None
+) -> bool:
     """Check one reference fact against tool results only; prose is not evidence."""
     expected = fact["value"]
     comparison = fact["comparison"]
@@ -384,12 +380,23 @@ def check_fact(fact: dict, results: Sequence[Any]) -> bool:
         return any(abs(number - target) <= tolerance for number in _structured_numbers(results))
 
     if isinstance(expected, list):
-        if comparison == "exact_unordered":
-            return _list_matches(expected, results, unordered=True)
-        return _list_matches(expected, results, unordered=False)
+        return collection_matches(fact, _structured_groups(results), column_aliases=column_aliases)
 
     if comparison == "exact_unordered":
         return False
+    if fact["key"] == "dataset.relation_count" and expected == 0:
+        for result in _ok_results(results):
+            if _field(result, "tool") != "describe_dataset":
+                continue
+            for values in _data_facts(result):
+                tables = values.get("tables")
+                if (
+                    type(values.get("table_count")) is int
+                    and values["table_count"] == 1
+                    and isinstance(tables, list)
+                    and len(tables) == 1
+                ):
+                    return True  # One table cannot have inter-table relations.
     return any(_scalar_matches(expected, value) for value in _structured_scalars(results))
 
 
@@ -423,14 +430,25 @@ def _intent(result: dict) -> str | None:
 
 
 def _block_text(blocks: Sequence[Any]) -> str:
-    return " ".join(
-        text
-        for block in blocks
-        if _field(block, "type") == "text" and (text := _field(block, "markdown"))
-    )
+    return " ".join(text for block in blocks if (text := _field(block, "markdown")))
 
 
-def evaluate_case(case: dict, result: dict) -> tuple[str, list[str], dict[str, Any]]:
+def _plain(value: Any) -> Any:
+    """Snapshot graph data, excluding the client/configuration and provider response."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return _plain(vars(value))
+    return value
+
+
+def evaluate_case(
+    case: dict, result: dict, *, column_aliases: dict[str, str] | None = None
+) -> tuple[str, list[str], dict[str, Any]]:
     """Score one graph result; terminal failures are rejected before facts/intent."""
     expect = case.get("expect", {})
     outcome = expect.get("outcome")
@@ -439,25 +457,51 @@ def evaluate_case(case: dict, result: dict) -> tuple[str, list[str], dict[str, A
     plan = list(result.get("plan") or [])
     text = _block_text(blocks)
     used_tools = [tool for item in results if (tool := _field(item, "tool"))]
+    forbidden = set(expect.get("tools_forbidden") or [])
+    if {"run_sql", "describe_dataset", "describe_column", "value_counts"} <= forbidden:
+        forbidden |= SUPPORTED_TOOLS
+    called_forbidden = sorted(forbidden.intersection(used_tools))
+    planned_forbidden = sorted(forbidden.intersection(_field(step, "tool") for step in plan))
     details: dict[str, Any] = {
         "answer": text,
         "used_tools": used_tools,
         "fact_checks": [],
+        "plan": _plain(plan),
+        "tool_results": _plain(results),
+        "answer_blocks": _plain(blocks),
+        "intent": _intent(result),
+        "understanding": _plain(result.get("understanding")),
+        "safety_checks": {
+            "forbidden_tools": sorted(forbidden),
+            "called_forbidden": called_forbidden,
+            "planned_forbidden": planned_forbidden,
+            "passed": not (called_forbidden or planned_forbidden),
+        },
+        "unchecked_rubrics": [key for key in ("must_explain", "must_not_claim") if expect.get(key)],
+        "diagnostics": result.get("_eval_diagnostics", []),
     }
 
     issues = _terminal_issues(blocks, results, plan)
     if issues:
         return "failed", issues, details
+    if called_forbidden or planned_forbidden:
+        violations = sorted(set(called_forbidden + planned_forbidden))
+        issues.append(f"Used or planned forbidden tools: {violations}")
 
     if outcome == "answer":
-        tools_any = expect.get("tools_any") or []
+        tools_any = set(expect.get("tools_any") or []) | (
+            set(expect.get("tools_planned") or []) & SUPPORTED_TOOLS
+        )
         if tools_any and not set(tools_any).intersection(used_tools):
             issues.append(f"Did not use any expected tools {tools_any}. Used: {used_tools}")
-        if not text.strip():
+        if not any(
+            _field(block, "type") == "text" and _field(block, "markdown", "").strip()
+            for block in blocks
+        ):
             issues.append("The answer contains no text block")
 
         for fact in expect.get("facts") or []:
-            result_ok = check_fact(fact, results)
+            result_ok = check_fact(fact, results, column_aliases=column_aliases)
             details["fact_checks"].append(
                 {
                     "key": fact["key"],
@@ -479,14 +523,30 @@ def evaluate_case(case: dict, result: dict) -> tuple[str, list[str], dict[str, A
         intent = _intent(result)
         if intent != expect.get("intent"):
             issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
-        elif not any(_field(block, "type") == "clarification" for block in blocks):
+        elif not any(
+            _field(block, "type") == "clarification" and _field(block, "markdown")
+            for block in blocks
+        ):
             issues.append("Clarification outcome produced no clarification block")
+        if expect.get("clarification"):
+            clarification = _field(result.get("understanding"), "clarification")
+            options = list(_field(clarification, "options", []) or [])
+            for block in blocks:
+                options.extend(_field(block, "options", []) or [])
+            if not options:
+                options = re.findall(r"(?m)^\s*[-*]\s+(.+)$", text)
+            choices = {
+                option.strip() for option in options if isinstance(option, str) and option.strip()
+            }
+            if len(choices) < 2:
+                issues.append("Clarification provides fewer than two distinct options")
+            details["unchecked_rubrics"].append("clarification.resolves_and_options_meaning")
 
     elif outcome == "reject":
         intent = _intent(result)
         if intent != expect.get("intent"):
             issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
-        elif not blocks:
+        elif not text.strip():
             issues.append("Rejection produced no answer blocks")
 
     else:
@@ -552,9 +612,9 @@ def _case_skip_reason(case: dict) -> str | None:
     unsupported = requirements - SUPPORTED_REQUIREMENTS
     if unsupported:
         return f"Unsupported requirements: {sorted(unsupported)}"
-    unsupported_tools = set(expect.get("tools_any") or []) - SUPPORTED_TOOLS
-    if unsupported_tools:
-        return f"Unsupported tools: {sorted(unsupported_tools)}"
+    alternatives = set(expect.get("tools_any") or []) | set(expect.get("tools_planned") or [])
+    if alternatives and not alternatives.intersection(SUPPORTED_TOOLS):
+        return f"Unsupported tools: {sorted(alternatives)}"
     if expect.get("outcome") not in {"answer", "clarify", "reject", "input_error"}:
         return f"Unsupported expected outcome: {expect.get('outcome')!r}"
     if expect.get("outcome") == "input_error":
@@ -585,6 +645,15 @@ def _dependency_order(case: dict, cases_by_id: dict[str, dict]) -> list[dict]:
     return order
 
 
+class EvalInvocationError(RuntimeError):
+    """A failed graph turn with the last checkpoint and content-free diagnostics."""
+
+    def __init__(self, error: Exception, result: dict) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.result = result
+        self.error_type = type(error).__name__
+
+
 def _invoke(
     graph: Any,
     dataset: GoldenDataset | Any,
@@ -598,15 +667,45 @@ def _invoke(
         "dataset_id": dataset.catalog.dataset_id,
         "messages": [*history, Message(role="user", content=question)],
     }
+    events: list[dict] = []
+    diagnostics = RunDiagnostics(
+        events.append,
+        owner_id="eval",
+        chat_id=thread_id,
+        dataset_id=dataset.catalog.dataset_id,
+        user_message_id=f"eval_{uuid4().hex}",
+    )
+    budget = ExecutionBudget(get_limits().agent_turn_timeout_seconds)
     config = {
         "configurable": {
             "thread_id": thread_id,
             "client": client,
             "catalog_loader": dataset.load_catalog,
             "tool_dispatcher": dataset.dispatch,
+            "budget": budget,
+            "diagnostics": diagnostics,
         }
     }
-    return graph.invoke(state, config=config)
+    try:
+        with budget.activate():
+            result = graph.invoke(state, config=config)
+    except Exception as error:
+        diagnostics.finish("error", type(error).__name__)
+        partial = {}
+        try:
+            checkpoint = graph.get_state(config)
+            if isinstance(checkpoint.values, dict):
+                partial = checkpoint.values
+        except Exception:  # A graph can fail before creating its first checkpoint.
+            pass
+        raise EvalInvocationError(error, {**partial, "_eval_diagnostics": events}) from error
+    terminal = _terminal_issues(
+        result.get("answer_blocks", []), result.get("results", []), result.get("plan", [])
+    )
+    diagnostics.finish(
+        "error" if terminal else "success", diagnostics.last_error if terminal else None
+    )
+    return {**result, "_eval_diagnostics": events}
 
 
 def process_case(
@@ -617,14 +716,27 @@ def process_case(
     dataset: GoldenDataset | Any,
 ) -> dict[str, Any]:
     """Run prerequisites and the case in one chat thread, then score the case."""
+    overall_start = time.perf_counter()
     case_id = case["id"]
     skip_reason = _case_skip_reason(case)
     if skip_reason is not None:
         return {"id": case_id, "status": "skipped", "reason": skip_reason}
+    if case.get("dataset") != dataset.catalog.dataset_id:
+        return {
+            "id": case_id,
+            "status": "blocked",
+            "reason": "Question dataset differs from the loaded dataset",
+        }
 
     thread_id = f"eval_{case_id}"
     history: list[Message] = []
     executed_context: list[str] = []
+    context_results: list[dict] = []
+    column_aliases = {
+        column.original_name: column.name
+        for table in getattr(dataset.catalog, "tables", [])
+        for column in table.columns
+    }
 
     try:
         dependencies = _dependency_order(case, cases_by_id)
@@ -634,11 +746,14 @@ def process_case(
             "status": "blocked",
             "reason": str(error),
             "thread_id": thread_id,
+            "context_results": context_results,
         }
 
     for dependency in dependencies:
         dependency_id = dependency["id"]
         dependency_skip = _case_skip_reason(dependency)
+        if dependency.get("dataset") != dataset.catalog.dataset_id:
+            dependency_skip = "Question dataset differs from the loaded dataset"
         if dependency_skip is not None:
             return {
                 "id": case_id,
@@ -646,8 +761,10 @@ def process_case(
                 "reason": f"Prerequisite {dependency_id} is skipped: {dependency_skip}",
                 "thread_id": thread_id,
                 "context_cases": executed_context,
+                "context_results": context_results,
             }
         executed_context.append(dependency_id)
+        dependency_start = time.perf_counter()
         try:
             dependency_result = _invoke(
                 graph,
@@ -658,14 +775,37 @@ def process_case(
                 dependency.get("question", ""),
             )
         except Exception as error:  # noqa: BLE001 - a prerequisite failure blocks the case
+            partial = error.result if isinstance(error, EvalInvocationError) else {}
+            _, _, details = evaluate_case(dependency, partial, column_aliases=column_aliases)
+            context_results.append(
+                {
+                    "id": dependency_id,
+                    "status": "failed",
+                    **details,
+                    "issues": [f"Graph execution failed: {error}"],
+                    "duration_seconds": round(time.perf_counter() - dependency_start, 2),
+                }
+            )
             return {
                 "id": case_id,
                 "status": "blocked",
                 "reason": f"Prerequisite {dependency_id} failed to run: {error}",
                 "thread_id": thread_id,
                 "context_cases": executed_context,
+                "context_results": context_results,
             }
-        status, issues, details = evaluate_case(dependency, dependency_result)
+        status, issues, details = evaluate_case(
+            dependency, dependency_result, column_aliases=column_aliases
+        )
+        context_results.append(
+            {
+                "id": dependency_id,
+                "status": status,
+                "issues": issues,
+                **details,
+                "duration_seconds": round(time.perf_counter() - dependency_start, 2),
+            }
+        )
         if status != "passed":
             return {
                 "id": case_id,
@@ -673,6 +813,7 @@ def process_case(
                 "reason": f"Prerequisite {dependency_id} {status}: {'; '.join(issues)}",
                 "thread_id": thread_id,
                 "context_cases": executed_context,
+                "context_results": context_results,
             }
         history.extend(
             [
@@ -681,31 +822,39 @@ def process_case(
             ]
         )
 
-    start_time = time.time()
+    start_time = time.perf_counter()
     try:
         result = _invoke(graph, dataset, client, thread_id, history, case.get("question", ""))
     except Exception as error:  # noqa: BLE001 - report the failed run, not a crash
+        partial = error.result if isinstance(error, EvalInvocationError) else {}
+        _, _, details = evaluate_case(case, partial, column_aliases=column_aliases)
         return {
+            **details,
             "id": case_id,
             "status": "failed",
-            "duration_seconds": round(time.time() - start_time, 2),
+            "duration_seconds": round(time.perf_counter() - start_time, 2),
+            "total_duration_seconds": round(time.perf_counter() - overall_start, 2),
             "thread_id": thread_id,
             "context_cases": executed_context,
+            "context_results": context_results,
+            "error_type": error.error_type
+            if isinstance(error, EvalInvocationError)
+            else type(error).__name__,
             "issues": [f"Graph execution failed: {error}"],
         }
 
-    duration = time.time() - start_time
-    status, issues, details = evaluate_case(case, result)
+    duration = time.perf_counter() - start_time
+    status, issues, details = evaluate_case(case, result, column_aliases=column_aliases)
     return {
+        **details,
         "id": case_id,
         "status": status,
         "duration_seconds": round(duration, 2),
+        "total_duration_seconds": round(time.perf_counter() - overall_start, 2),
         "thread_id": thread_id,
         "context_cases": executed_context,
-        "used_tools": details["used_tools"],
+        "context_results": context_results,
         "issues": issues,
-        "answer": details["answer"],
-        "fact_checks": details["fact_checks"],
     }
 
 
@@ -738,6 +887,8 @@ def run_eval(
     dataset: GoldenDataset | Any | None = None,
     max_workers: int = 5,
 ) -> dict:
+    started = time.perf_counter()
+    started_at = datetime.now(UTC).isoformat()
     with open(questions_path, encoding="utf-8") as f:
         cases = yaml.load(f, Loader=UniqueKeyLoader)
     if not isinstance(cases, list):
@@ -745,6 +896,8 @@ def run_eval(
 
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     cases_by_id = {case["id"]: case for case in cases}
+    if len(cases_by_id) != len(cases):
+        raise ValueError("Question IDs must be unique: chat checkpoints cannot be shared by cases")
     runnable = [case for case in cases if _case_skip_reason(case) is None]
 
     client = None
@@ -764,11 +917,46 @@ def run_eval(
         owns_dataset = True
 
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": manifest.get("dataset_id"),
-        "summary": {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "blocked": 0},
-        "cases": [None] * len(cases),
+        "capabilities": {
+            "tools": sorted(SUPPORTED_TOOLS),
+            "requirements": sorted(SUPPORTED_REQUIREMENTS),
+        },
+        "evaluation_scope": {
+            "semantic_rubrics": "not_run",
+            "transport": "direct_graph",
+            "turn_timeout_seconds": get_limits().agent_turn_timeout_seconds,
+        },
+        "status": "running",
+        "started_at": started_at,
+        "summary": {
+            "total": len(runnable),
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "pending": len(runnable),
+        },
+        "cases": [
+            {
+                "id": case["id"],
+                "question": case.get("question", ""),
+                "scenario": case.get("scenario"),
+                "status": "pending",
+            }
+            for case in cases
+        ],
     }
+
+    def save() -> None:
+        report["elapsed_seconds"] = round(time.perf_counter() - started, 2)
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output_path.with_name(output_path.name + ".tmp")
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, ensure_ascii=False, default=str)
+            temporary.replace(output_path)
 
     print(f"Starting evaluation of {len(cases)} cases ({len(runnable)} runnable)...")
     workers = max(1, min(max_workers, len(runnable) or 1))
@@ -779,10 +967,12 @@ def run_eval(
                 report["cases"][index] = {
                     "id": case["id"],
                     "question": case.get("question", ""),
+                    "scenario": case.get("scenario"),
                     "status": "skipped",
                     "reason": skip_reason,
                 }
                 report["summary"]["skipped"] += 1
+        save()
 
         if blocked_reason is not None:
             for index, case in enumerate(cases):
@@ -790,11 +980,12 @@ def run_eval(
                     report["cases"][index] = {
                         "id": case["id"],
                         "question": case.get("question", ""),
+                        "scenario": case.get("scenario"),
                         "status": "blocked",
                         "reason": blocked_reason,
                     }
                     report["summary"]["blocked"] += 1
-                    report["summary"]["total"] += 1
+                    report["summary"]["pending"] -= 1
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
@@ -813,19 +1004,22 @@ def run_eval(
                             "issues": [f"Case runner crashed: {error}"],
                         }
                     result["question"] = cases[index].get("question", "")
+                    result["scenario"] = cases[index].get("scenario")
                     report["cases"][index] = result
                     report["summary"][result["status"]] += 1
-                    if result["status"] != "skipped":
-                        report["summary"]["total"] += 1
+                    report["summary"]["pending"] -= 1
+                    save()
                     print(f"Completed case: {result['id']} -> {result['status']}")
+        report["status"] = "completed"
+        report["finished_at"] = datetime.now(UTC).isoformat()
     finally:
-        if owns_dataset and dataset is not None:
-            dataset.close()
-
-    if output_path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+        if report["status"] != "completed":
+            report["status"] = "interrupted"
+        try:
+            save()
+        finally:
+            if owns_dataset and dataset is not None:
+                dataset.close()
 
     print("\n--- Evaluation Summary ---")
     print(json.dumps(report["summary"], indent=2))
