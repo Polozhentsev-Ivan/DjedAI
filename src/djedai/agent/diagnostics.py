@@ -51,10 +51,11 @@ class RunDiagnostics:
         dataset_id: str,
         user_message_id: str,
         tariff: Tariff | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.sink = sink
         self.tariff = tariff
-        self.run_id = f"run_{uuid4().hex}"
+        self.run_id = run_id or f"run_{uuid4().hex}"
         self.context = dict(
             run_id=self.run_id,
             owner_id=owner_id,
@@ -204,6 +205,17 @@ def model_call(model: str, schema: str) -> Iterator[ModelCall | None]:
 def capture_usage(usage: Any) -> None:
     if call := _call.get():
         call.capture_usage(usage)
+
+
+def retry_wait(seconds: float) -> None:
+    """Content-free retry notification, before the actual backoff starts."""
+    if call := _call.get():
+        call.emit("model_retry_wait", delay_ms=round(seconds * 1000, 3))
+
+
+def retry_started() -> None:
+    if call := _call.get():
+        call.emit("model_retry_started")
 
 
 class DiagnosticHttpClient(CancellableHttpClient):

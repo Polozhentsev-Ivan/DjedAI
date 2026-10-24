@@ -69,7 +69,7 @@ async function upload(page: Page, name: string, body: string, status = 'ready', 
   await expect.poll(async () => {
     const value = await (await apiGet(page, `/api/datasets/${datasetId}`)).json() as { status: string };
     return value.status;
-  }).toBe(status);
+  }, { timeout: 15000 }).toBe(status);
   return datasetId;
 }
 
@@ -123,7 +123,7 @@ test('bad CSV and model failure terminate visibly; cancellation never retries PO
   await page.getByRole('button', { name: /чат/i }).first().click();
   await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill('Ошибка модели');
   await page.getByRole('button', { name: 'Отправить', exact: true }).click();
-  await expect(page.getByText('Не удалось получить ответ агента', { exact: true })).toBeVisible();
+  await expect(page.getByText('Не удалось проверить ответ модели', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Отправить', exact: true })).toBeVisible();
   let posts = 0;
   page.on('request', (r) => { if (r.url().endsWith('/messages') && r.method() === 'POST') posts++; });
@@ -135,6 +135,114 @@ test('bad CSV and model failure terminate visibly; cancellation never retries PO
   await new Promise((resolve) => setTimeout(resolve, 1500));
   expect(posts).toBe(1);
   await expect(page.getByText('Строк: 1; сумма: 20.', { exact: true })).toHaveCount(0);
+});
+
+async function controlModel(marker: string, stage: string, mode: string, release = false) {
+  const response = await fetch('http://127.0.0.1:18081/control', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marker, stage, mode, release }),
+  });
+  expect(response.status).toBe(200);
+}
+
+async function submitQuestion(page: Page, text: string) {
+  const input = page.getByRole('textbox', { name: 'Вопрос к данным' });
+  await expect(input).toBeEnabled();
+  await input.fill(text);
+  await page.getByRole('button', { name: 'Отправить', exact: true }).click();
+}
+
+test('turn status precedes controlled stage completion; retry pause resumes the same stage', async ({ page }, info) => {
+  const marker = `stage-${randomUUID()}`;
+  const stages = [
+    ['Understanding', 'Разбираю вопрос…'], ['PlanResponse', 'Строю план анализа…'], ['ComposeResponse', 'Формулирую ответ…'], ['VerifyResponse', 'Проверяю числа в ответе…'],
+  ] as const;
+  // Verify intentionally receives a fixed prompt without the original question.
+  const markerFor = (name: string) => name === 'VerifyResponse' ? '*' : marker;
+  for (const [name] of stages) await controlModel(markerFor(name), name, 'gate');
+  const dataset = await upload(page, 'stages.csv', 'id,amount\n1,12\n2,30\n');
+  await page.goto(`/catalog/${dataset}`);
+  await page.getByRole('button', { name: /чат/i }).first().click();
+  await submitQuestion(page, `${marker}: строки и сумма amount`);
+  for (const [name, text] of stages) {
+    await expect(page.getByRole('status')).toHaveText(text);
+    await expect.poll(async () => {
+      const observations = await (await fetch('http://127.0.0.1:18081/control')).json() as Record<string, { started: number; finished: number }>;
+      return observations[`${markerFor(name)}:${name}`];
+    }).toEqual({ started: 1, finished: 0 });
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(0);
+    if (name === 'Understanding') await page.screenshot({ path: info.outputPath('turn-waiting.png') });
+    await controlModel(markerFor(name), name, 'gate', true);
+  }
+  await expect(page.getByText('Строк: 2; сумма: 42.', { exact: true })).toHaveCount(1);
+  const retryMarker = `retry-${randomUUID()}`;
+  await controlModel(retryMarker, 'Understanding', 'retry');
+  await submitQuestion(page, `${retryMarker}: строки и сумма amount`);
+  await expect(page.getByRole('status')).toHaveText('Ожидаю повторного запроса к модели…');
+  await expect(page.getByText('Строк: 2; сумма: 42.', { exact: true })).toHaveCount(2);
+  const observations = await (await fetch('http://127.0.0.1:18081/control')).json() as Record<string, { started: number }>;
+  expect(observations[`${retryMarker}:Understanding`].started).toBe(2);
+});
+
+test('separate identical questions retain timeout, unavailable and stop across reload, then a new question works', async ({ page }, info) => {
+  const marker = `outcome-${randomUUID()}`;
+  const question = `${marker}: строки и сумма amount`;
+  const dataset = await upload(page, 'outcomes.csv', 'id,amount\n1,9\n2,11\n');
+  await page.goto(`/catalog/${dataset}`);
+  await page.getByRole('button', { name: /чат/i }).first().click();
+  let posts = 0;
+  page.on('request', (request) => { if (request.method() === 'POST' && request.url().endsWith('/messages')) posts++; });
+  await controlModel(marker, 'Understanding', 'timeout');
+  await submitQuestion(page, question);
+  await expect(page.getByText('Модель не ответила за отведённое время', { exact: true })).toBeVisible({ timeout: 15000 });
+  await controlModel(marker, 'Understanding', 'unavailable');
+  await submitQuestion(page, question);
+  await expect(page.getByText('Сервис модели временно недоступен', { exact: true })).toBeVisible();
+  await controlModel(marker, 'Understanding', 'gate');
+  await submitQuestion(page, question);
+  await expect(page.getByRole('status')).toHaveText('Разбираю вопрос…');
+  await page.getByRole('button', { name: 'Остановить', exact: true }).click();
+  await expect(page.getByText('Получение ответа остановлено', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled();
+  await controlModel(marker, 'Understanding', 'gate', true);
+  const chatId = new URL(page.url()).pathname.split('/').at(-1) ?? '';
+  await page.reload();
+  await expect(page.locator('[data-role="user"]')).toHaveCount(3);
+  await expect(page.locator('[data-role="assistant"]')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(3);
+  const saved = await (await apiGet(page, `/api/chats/${chatId}`)).json() as { messages: { message_id: string; turn: { code: string; run_id: string } }[] };
+  expect(saved.messages.map((message) => message.turn.code)).toEqual(['model_timeout', 'model_unavailable', 'cancelled']);
+  expect(new Set(saved.messages.map((message) => message.message_id)).size).toBe(3);
+  expect(new Set(saved.messages.map((message) => message.turn.run_id)).size).toBe(3);
+  expect(posts).toBe(3);
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.screenshot({ path: info.outputPath('turn-outcomes-light.png'), fullPage: true });
+  await page.evaluate(() => { document.documentElement.classList.add('dark'); });
+  await page.screenshot({ path: info.outputPath('turn-outcomes-dark.png'), fullPage: true });
+  await submitQuestion(page, 'Новый вопрос: строки и сумма amount');
+  await expect(page.getByText('Строк: 2; сумма: 20.', { exact: true })).toHaveCount(1);
+  await expect(page.locator('[data-role="user"]')).toHaveCount(4);
+  expect(posts).toBe(4);
+});
+
+test('reload disconnects the old turn and restores its reason without replaying POST', async ({ page }) => {
+  const marker = `disconnect-${randomUUID()}`;
+  await controlModel(marker, 'Understanding', 'gate');
+  const dataset = await upload(page, 'disconnect.csv', 'id,amount\n1,8\n');
+  await page.goto(`/catalog/${dataset}`);
+  await page.getByRole('button', { name: /чат/i }).first().click();
+  let posts = 0;
+  page.on('request', (request) => { if (request.method() === 'POST' && request.url().endsWith('/messages')) posts++; });
+  await submitQuestion(page, `${marker}: строки и сумма amount`);
+  await expect(page.getByRole('status')).toHaveText('Разбираю вопрос…');
+  await page.reload();
+  await expect(page.getByText('Соединение прервано до конца ответа', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-role="user"]')).toHaveCount(1);
+  await expect(page.locator('[data-role="assistant"]')).toHaveCount(0);
+  expect(posts).toBe(1);
+  await controlModel(marker, 'Understanding', 'gate', true);
+  await submitQuestion(page, 'Посчитай строки и сумму amount');
+  await expect(page.getByText('Строк: 1; сумма: 8.', { exact: true })).toHaveCount(1);
+  expect(posts).toBe(2);
 });
 
 test('two browser sessions isolate same-named CSVs, chats, results and SSE', async ({ page, browser }) => {
