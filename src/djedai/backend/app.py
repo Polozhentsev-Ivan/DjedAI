@@ -49,6 +49,7 @@ from djedai.contracts import (
     UserLogin,
     UserRead,
 )
+from djedai.data.clickhouse import ClickHouseLimits
 
 # Корневые модели контрактов для включения в OpenAPI / components.schemas
 CONTRACT_ROOT_MODELS = [
@@ -96,6 +97,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         if cfg.source_encryption_key
         else None,
         description_client=get_agent_client if cfg.catalog_descriptions else None,
+        clickhouse_limits=ClickHouseLimits(
+            max_rows=cfg.clickhouse_max_rows,
+            max_bytes=cfg.clickhouse_max_bytes,
+            query_timeout=cfg.clickhouse_query_timeout,
+        ),
     )
     try:
         await app.state.dataset_service.recover_interrupted()
