@@ -58,6 +58,88 @@ def state(tool_result, text):
     }
 
 
+def july_facts(counts=None):
+    return [
+        {
+            "key": "july.counts",
+            "comparison": "exact",
+            "value": counts if counts is not None else [["2025-07", 21377], ["2026-07", 21375]],
+        },
+        {
+            "key": "july.change_percent",
+            "comparison": "approx",
+            "value": -0.009355849745053095,
+            "abs_tolerance": 0.00005,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("Изменение: -0.01%", "passed"),
+        ("Изменение: -0.00935585%", "passed"),
+        ("Изменение: 2%", "failed"),
+        ("Сравнение выполнено", "failed"),
+    ],
+)
+def test_july_percentage_uses_verified_counts_and_checks_answer(answer, expected):
+    actual = result(
+        [["2025-07", 21377], ["2026-07", 21375]],
+        facts=[Fact(text="SQL summary", kind="summary", values={"row_count": 2})],
+    )
+    status, issues, details = evaluate_case(case(july_facts()), state(actual, answer))
+    assert status == expected, issues
+    assert details["fact_checks"][1]["derivation"]["sources"] == ["july.counts"]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [["2025-07", 21375], ["2026-07", 21377]],
+        [["2025-07", 21377], ["2026-07", 21376]],
+        [["2025-07", 21377], ["2026-07", 21375], ["2027-07", 21375]],
+    ],
+)
+def test_percentage_cannot_be_derived_from_wrong_or_missing_source(rows):
+    facts = july_facts()
+    assert not check_fact(facts[1], [result(rows)], reference_facts=facts)
+
+
+def test_percentage_derivation_rejects_missing_reference_and_zero_denominator():
+    facts = july_facts([["2025-07", 0], ["2026-07", 1]])
+    actual = [result(facts[0]["value"])]
+    assert not check_fact(facts[1], actual, reference_facts=facts)
+    assert not check_fact(facts[1], actual)
+    unrelated = {**facts[1], "key": "unrelated.change_percent"}
+    assert not check_fact(unrelated, actual, reference_facts=facts)
+
+
+@pytest.mark.parametrize(
+    ("answer", "status"), [("Ошибок: 6.35%", "passed"), ("Ошибок: 2%", "failed")]
+)
+def test_production_percentage_has_explicit_verified_numerator_and_denominator(answer, status):
+    facts = [
+        {"key": "production.row_count", "comparison": "exact", "value": 407661},
+        {"key": "production.error_count", "comparison": "exact", "value": 25873},
+        {
+            "key": "production.error_percent",
+            "comparison": "approx",
+            "value": 6.346694925440501,
+            "abs_tolerance": 0.005,
+        },
+    ]
+    actual = result([[407661, 25873]])
+    outcome, issues, details = evaluate_case(case(facts), state(actual, answer))
+    assert outcome == status, issues
+    assert details["fact_checks"][2]["derivation"]["sources"] == [
+        "production.error_count",
+        "production.row_count",
+    ]
+    assert not check_fact(facts[2], [result([[407661]])], reference_facts=facts)
+
+
 @pytest.mark.parametrize(
     "text",
     [

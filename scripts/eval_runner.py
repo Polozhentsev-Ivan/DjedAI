@@ -365,8 +365,76 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     return issues
 
 
+def _verified_percentage(
+    fact: dict,
+    results: Sequence[Any],
+    reference_facts: Sequence[dict],
+    column_aliases: dict[str, str] | None,
+) -> dict | None:
+    """Closed set of golden formulas, using only independently confirmed inputs."""
+    sources = {
+        "july.change_percent": ["july.counts"],
+        "production.error_percent": ["production.error_count", "production.row_count"],
+    }.get(fact["key"])
+    if sources is None or fact["comparison"] != "approx":
+        return None
+    references = {item["key"]: item for item in reference_facts}
+    if any(
+        key not in references
+        or not check_fact(references[key], results, column_aliases=column_aliases)
+        for key in sources
+    ):
+        return None
+    if fact["key"] == "july.change_percent":
+        rows = references["july.counts"]["value"]
+        if (
+            not isinstance(rows, list)
+            or len(rows) != 2
+            or any(
+                not isinstance(row, list)
+                or len(row) != 2
+                or not isinstance(row[0], str)
+                or not re.fullmatch(r"\d{4}-07", row[0])
+                for row in rows
+            )
+            or rows[0][0] >= rows[1][0]
+        ):
+            return None
+        old, new = (_decimal(row[1]) for row in rows)
+        if old is None or new is None or old <= 0 or new < 0:
+            return None
+        value = (new - old) / old * 100
+        formula = "100 * (new - old) / old"
+    else:
+        errors, total = (_decimal(references[key]["value"]) for key in sources)
+        if errors is None or total is None or total <= 0 or not 0 <= errors <= total:
+            return None
+        value = errors / total * 100
+        formula = "100 * errors / total"
+    return {"sources": sources, "formula": formula, "value": str(value)}
+
+
+def _percentage_in_answer(text: str, target: Decimal, tolerance: Decimal) -> bool:
+    for claim, policy in _measurements(text):
+        if policy != "percent":
+            continue
+        if abs(claim - target) <= tolerance:
+            return True
+        try:
+            quantum = Decimal(1).scaleb(min(0, claim.as_tuple().exponent))
+            if claim == target.quantize(quantum, rounding=ROUND_HALF_UP):
+                return True
+        except InvalidOperation:
+            continue
+    return False
+
+
 def check_fact(
-    fact: dict, results: Sequence[Any], *, column_aliases: dict[str, str] | None = None
+    fact: dict,
+    results: Sequence[Any],
+    *,
+    column_aliases: dict[str, str] | None = None,
+    reference_facts: Sequence[dict] = (),
 ) -> bool:
     """Check one reference fact against tool results only; prose is not evidence."""
     expected = fact["value"]
@@ -377,7 +445,10 @@ def check_fact(
         if target is None:
             return False
         tolerance = _tolerance(fact)
-        return any(abs(number - target) <= tolerance for number in _structured_numbers(results))
+        if any(abs(number - target) <= tolerance for number in _structured_numbers(results)):
+            return True
+        derived = _verified_percentage(fact, results, reference_facts, column_aliases)
+        return derived is not None and abs(Decimal(derived["value"]) - target) <= tolerance
 
     if isinstance(expected, list):
         return collection_matches(fact, _structured_groups(results), column_aliases=column_aliases)
@@ -500,17 +571,27 @@ def evaluate_case(
         ):
             issues.append("The answer contains no text block")
 
-        for fact in expect.get("facts") or []:
-            result_ok = check_fact(fact, results, column_aliases=column_aliases)
-            details["fact_checks"].append(
-                {
-                    "key": fact["key"],
-                    "comparison": fact["comparison"],
-                    "expected": fact["value"],
-                    "result": result_ok,
-                    "passed": result_ok,
-                }
+        reference_facts = expect.get("facts") or []
+        for fact in reference_facts:
+            result_ok = check_fact(
+                fact, results, column_aliases=column_aliases, reference_facts=reference_facts
             )
+            fact_check = {
+                "key": fact["key"],
+                "comparison": fact["comparison"],
+                "expected": fact["value"],
+                "result": result_ok,
+                "passed": result_ok,
+            }
+            derived = _verified_percentage(fact, results, reference_facts, column_aliases)
+            if derived is not None:
+                fact_check["derivation"] = derived
+                # Execution metadata (e.g. two SQL rows) must not justify a wrong 2% answer.
+                if not _percentage_in_answer(text, Decimal(derived["value"]), _tolerance(fact)):
+                    issues.append(
+                        f"Percentage '{fact['key']}' is missing or incorrect in the answer"
+                    )
+            details["fact_checks"].append(fact_check)
             if not result_ok:
                 issues.append(
                     f"Fact '{fact['key']}' (value: {fact['value']}) "

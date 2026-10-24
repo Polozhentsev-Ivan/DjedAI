@@ -190,3 +190,41 @@ def test_expired_turn_budget_prevents_any_inference(dataset, monkeypatch):
     assert report["status"] == "failed"
     assert report["error_type"] == "TurnTimeout"
     assert model.calls == 0
+
+
+def test_percentage_is_derived_from_real_sql_counts_without_a_percentage_cell(tmp_path):
+    source = tmp_path / "july.csv"
+    source.write_text(
+        "Код;Начало (МСК)\nr1;2025-07-01 12:00:00\nr2;2025-07-02 12:00:00\n"
+        "r3;2026-07-01 12:00:00\n",
+        encoding="utf-8-sig",
+    )
+    dataset = open_dataset(
+        source, {"dataset_id": "eval_live", "source": {"file_name": source.name}}
+    )
+    try:
+        table = dataset.catalog.tables[0].table_id
+        sql = (
+            "SELECT strftime(nachalo_msk, '%Y-%m') AS month, count(*) AS attempts "
+            f'FROM "{table}" GROUP BY month ORDER BY month'
+        )
+        facts = [
+            {
+                "key": "july.counts",
+                "comparison": "exact",
+                "value": [["2025-07", 2], ["2026-07", 1]],
+            },
+            {
+                "key": "july.change_percent",
+                "comparison": "approx",
+                "value": -50,
+                "abs_tolerance": 0.00005,
+            },
+        ]
+        for answer, expected in [("Изменение: -50%", "passed"), ("Изменение: 2%", "failed")]:
+            report = run(dataset, Model("run_sql", {"sql": sql}, answer), facts)
+            assert report["status"] == expected, report["issues"]
+            assert report["tool_results"][0]["data"]["rows"] == [["2025-07", 2], ["2026-07", 1]]
+            assert report["fact_checks"][1]["derivation"]["value"] == "-50.0"
+    finally:
+        dataset.close()
