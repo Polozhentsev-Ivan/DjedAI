@@ -30,7 +30,7 @@ const COLUMNS: readonly Column[] = [
 const DB_KINDS = [{ value: 'postgres', label: 'PostgreSQL' }, { value: 'clickhouse', label: 'ClickHouse' }] as const;
 const DSN_PLACEHOLDER: Record<DbKind, string> = {
   postgres: 'postgresql://user:password@host:5432/retail',
-  clickhouse: 'clickhouse://user:password@host:9000/analytics',
+  clickhouse: 'http://user:password@host:8123/analytics',
 };
 const DB_TABLES = ['orders', 'customers', 'products', 'returns'];
 
