@@ -28,7 +28,8 @@ EXPECTED_TOOLS = [
                 "source_result_id": {
                     "anyOf": [{"type": "string"}, {"type": "null"}],
                     "default": None,
-                    "description": "ID предыдущего результата, если нужно сделать запрос "
+                    "description": "ID предыдущего результата, если "
+                    "нужно сделать запрос "
                     "поверх уже посчитанных данных.",
                     "title": "Source Result Id",
                 },
@@ -103,6 +104,229 @@ EXPECTED_TOOLS = [
             },
             "required": ["table", "column"],
             "title": "ValueCountsParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "time_aggregate",
+        "description": (
+            "Агрегирует числовую метрику по временным бакетам "
+            "(минута/час/день/неделя/месяц/квартал/год), опционально — "
+            "с группировкой. Аналог GROUP BY date_trunc(...)."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "freq": "day",
+                    "agg": "sum",
+                    "measure": "amount",
+                },
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "freq": "month",
+                    "agg": "count",
+                    "group_by": ["city"],
+                },
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "time_col": {
+                    "description": "Колонка DATE или TIMESTAMP",
+                    "title": "Time Col",
+                    "type": "string",
+                },
+                "measure": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Колонка метрики (обязательна при agg != 'count')",
+                    "title": "Measure",
+                },
+                "agg": {
+                    "default": "count",
+                    "description": "Функция агрегации",
+                    "enum": ["count", "sum", "avg", "min", "max", "median", "stddev"],
+                    "title": "Agg",
+                    "type": "string",
+                },
+                "freq": {
+                    "default": "day",
+                    "description": "Размер временного бакета",
+                    "enum": ["minute", "hour", "day", "week", "month", "quarter", "year"],
+                    "title": "Freq",
+                    "type": "string",
+                },
+                "group_by": {
+                    "anyOf": [
+                        {"items": {"type": "string"}, "type": "array"},
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                    "description": "Дополнительные колонки группировки",
+                    "title": "Group By",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE без префиксов таблиц, напр. \"city = 'Москва'\"",
+                    "title": "Filter",
+                },
+                "top_n": {
+                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Максимум бакетов в результате",
+                    "title": "Top N",
+                },
+            },
+            "required": ["table", "time_col"],
+            "title": "TimeAggregateParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "find_duplicates",
+        "description": (
+            "Находит группы дублей по выбранным полям. "
+            "Возвращает комбинацию значений, количество повторов и "
+            "опционально прочие поля первой строки группы."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {"table": "events"},
+                {"table": "test", "columns": ["city", "age"]},
+                {"table": "events", "columns": ["ts", "city"], "include_all_columns": True},
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "columns": {
+                    "anyOf": [
+                        {"items": {"type": "string"}, "type": "array"},
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                    "description": "Колонки дубля. Не указано — ищем полные "
+                    "дубли строк (все колонки).",
+                    "title": "Columns",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "include_all_columns": {
+                    "default": False,
+                    "description": "Показать прочие колонки первой "
+                    "строки группы (только если columns задан)",
+                    "title": "Include All Columns",
+                    "type": "boolean",
+                },
+                "limit": {
+                    "default": 100,
+                    "description": "Максимум групп дублей",
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer",
+                },
+            },
+            "required": ["table"],
+            "title": "FindDuplicatesParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "detect_anomalies",
+        "description": (
+            "Ищет выбросы в числовой колонке. Точечные методы: "
+            "iqr (Тьюки, 1.5·IQR), zscore (3σ), mad (3.5·1.4826·MAD). "
+            "Для временных рядов — stl-residual (остатки STL-декомпозиции, "
+            "нужен time_col и freq). Поддерживает группировку и id_column."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {"table": "events", "measure": "amount", "method": "iqr"},
+                {"table": "events", "measure": "amount", "method": "zscore", "threshold": 2.5},
+                {"table": "events", "measure": "amount", "method": "mad", "group_by": ["city"]},
+                {
+                    "table": "events",
+                    "measure": "amount",
+                    "method": "stl-residual",
+                    "time_col": "ts",
+                    "freq": "month",
+                },
+            ],
+            "properties": {
+                "table": {"description": "Имя таблицы", "title": "Table", "type": "string"},
+                "measure": {
+                    "description": "Числовая колонка для проверки на выбросы",
+                    "title": "Measure",
+                    "type": "string",
+                },
+                "method": {
+                    "default": "iqr",
+                    "description": (
+                        "iqr=1.5·IQR, zscore=3σ, mad=3.5·1.4826·MAD "
+                        "(точечные); stl-residual — остатки STL-декомпозиции "
+                        "временного ряда, нужен time_col."
+                    ),
+                    "enum": ["iqr", "zscore", "mad", "stl-residual"],
+                    "title": "Method",
+                    "type": "string",
+                },
+                "time_col": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Колонка DATE/TIMESTAMP. Обязательна для method='stl-residual'.",
+                    "title": "Time Col",
+                },
+                "freq": {
+                    "default": "day",
+                    "description": "Частота агрегации для stl-residual (остальные "
+                    "методы игнорируют).",
+                    "enum": ["minute", "hour", "day", "week", "month", "quarter", "year"],
+                    "title": "Freq",
+                    "type": "string",
+                },
+                "threshold": {
+                    "anyOf": [{"type": "number"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Порог. По умолчанию: 1.5 / 3.0 / 3.5 /"
+                    " 3.0 для iqr / zscore / mad / stl-residual.",
+                    "title": "Threshold",
+                },
+                "group_by": {
+                    "anyOf": [
+                        {"items": {"type": "string"}, "type": "array"},
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                    "description": "Колонки группировки",
+                    "title": "Group By",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "id_column": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Колонка-идентификатор строки",
+                    "title": "Id Column",
+                },
+                "limit": {
+                    "default": 100,
+                    "description": "Максимум аномалий",
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer",
+                },
+            },
+            "required": ["table", "measure"],
+            "title": "DetectAnomaliesParams",
             "type": "object",
         },
     },

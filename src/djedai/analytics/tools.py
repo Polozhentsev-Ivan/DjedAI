@@ -1,10 +1,13 @@
+import time
 import uuid
 from collections.abc import Collection
+from functools import partial
 
 import duckdb
 import sqlglot
 from sqlglot import exp
 
+from djedai.analytics.queries import check_budget, check_dataset_table, execute_dataset_query
 from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
 from djedai.config import get_limits
 from djedai.contracts.tool_result import (
@@ -14,12 +17,105 @@ from djedai.contracts.tool_result import (
     ToolResult,
     ToolResultData,
 )
-from djedai.execution import query_timer
+from djedai.execution import TurnCancelled, TurnTimeout, query_timer
 
 
 def _quote_id(identifier: str) -> str:
     """Безопасно оборачивает идентификатор в кавычки (защита от инъекций)."""
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def _parse_filter_sql(filter_str: str | None) -> exp.Expression | None:
+    """Парсит SQL-фрагмент WHERE (без инъекций). Бросает ValueError при ошибке."""
+    if not filter_str:
+        return None
+    try:
+        statements = sqlglot.parse(f"SELECT * FROM t WHERE (\n{filter_str}\n)", read="duckdb")
+    except Exception as e:
+        raise ValueError(f"Не удалось разобрать фильтр: {e}") from e
+    if len(statements) != 1 or not isinstance(statements[0], exp.Select):
+        raise ValueError("Фильтр должен содержать одно выражение")
+    parsed = statements[0]
+    if any(
+        value for key, value in parsed.args.items() if key not in {"expressions", "from_", "where"}
+    ):
+        raise ValueError("Фильтр не должен содержать посторонних SQL-конструкций")
+    where_clause = parsed.args.get("where")
+    if not isinstance(where_clause, exp.Where):
+        raise ValueError("Не удалось извлечь WHERE-выражение")
+    return where_clause.this
+
+
+def _column_type(con: duckdb.DuckDBPyConnection, table: str, column: str) -> str | None:
+    row = con.execute(
+        "SELECT data_type FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+        [table, column],
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _list_columns(con: duckdb.DuckDBPyConnection, table: str) -> list[str]:
+    rows = con.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+        [table],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _err(result_id: str | None = None, **kwargs) -> ToolResult:
+    """Сахар для быстрого возврата ошибки."""
+    return ToolResult(result_id=result_id or str(uuid.uuid4()), status="error", **kwargs)
+
+
+_FREQ_UNITS = {"minute", "hour", "day", "week", "month", "quarter", "year"}
+_AGG_FUNCS = {
+    "count": "COUNT",
+    "sum": "SUM",
+    "avg": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+    "median": "MEDIAN",
+    "stddev": "STDDEV_POP",
+}
+_ANOMALY_METHODS = {"iqr", "zscore", "mad", "stl-residual"}
+_DEFAULT_THRESHOLDS = {
+    "iqr": 1.5,
+    "zscore": 3.0,
+    "mad": 3.5,
+    "stl-residual": 3.0,
+}
+_NUMERIC_TYPES = (
+    "INT",
+    "DECIMAL",
+    "DOUBLE",
+    "FLOAT",
+    "REAL",
+    "NUMERIC",
+    "HUGEINT",
+    "BIGINT",
+    "SMALLINT",
+    "TINYINT",
+    "UBIGINT",
+)
+_STL_PERIOD_BY_FREQ = {
+    "minute": 60,
+    "hour": 24,
+    "day": 7,
+    "week": 52,
+    "month": 12,
+    "quarter": 4,
+    "year": 1,
+}
+
+
+def _to_python(v):
+    """numpy/pandas scalar → Python-native значение для JSON/Parquet."""
+    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+        try:
+            return v.item()
+        except (ValueError, AttributeError):
+            pass
+    return v
 
 
 def run_sql(
@@ -170,6 +266,18 @@ def _get_mock_connection():
     con.execute(
         "INSERT INTO test VALUES (1, 'Москва', 25), (2, 'СПб', 30), "
         "(3, 'Москва', 25), (4, 'Казань', NULL)"
+    )
+    con.execute("CREATE TABLE events (id INT, ts TIMESTAMP, city VARCHAR, amount DOUBLE)")
+    con.execute(
+        "INSERT INTO events VALUES "
+        "(1, '2024-01-15 10:00:00', 'Москва', 100.0), "
+        "(2, '2024-01-15 14:00:00', 'СПб',    200.0), "
+        "(3, '2024-01-15 20:00:00', 'Москва', 110.0), "
+        "(4, '2024-01-31 23:59:59', 'СПб',    190.0), "
+        "(5, '2024-02-01 00:00:00', 'Москва', 105.0), "
+        "(6, '2024-02-01 00:00:00', 'Москва', 105.0), "
+        "(7, '2024-02-15 12:00:00', 'СПб',  10000.0), "
+        "(8, '2024-03-01 00:00:00', 'Москва', 120.0)"
     )
     return con
 
@@ -342,7 +450,7 @@ def describe_column(
             facts.append(
                 Fact(
                     text=f"Значение '{display}' встречается {cnt} раз.",
-                    kind="frequency",
+                    kind="freq",
                     values={"value": val, "count": cnt},
                 )
             )
@@ -471,7 +579,7 @@ def value_counts(
         facts = [
             Fact(
                 text=f"Значение '{val if val is not None else 'ПУСТО'}' встречается {cnt} раз.",
-                kind="frequency",
+                kind="freq",
                 values={"value": val, "count": cnt},
             )
             for val, cnt in result
@@ -501,6 +609,1179 @@ def value_counts(
             status="error",
             error=ToolError(code="db_error", message=str(e)),
         )
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# TIME AGGREGATE
+# ============================================================================
+
+
+def time_aggregate(
+    table: str,
+    time_col: str,
+    *,
+    measure: str | None = None,
+    agg: str = "count",
+    freq: str = "day",
+    group_by: list[str] | None = None,
+    filter: str | None = None,
+    top_n: int | None = None,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Агрегирует метрику по временным бакетам с опциональной группировкой."""
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        # ---------- валидация ----------
+        if freq not in _FREQ_UNITS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая частота: '{freq}'.",
+                    suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if agg not in _AGG_FUNCS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая агрегация: '{agg}'.",
+                    suggestion=f"Допустимо: {sorted(_AGG_FUNCS)}",
+                )
+            )
+        if agg != "count" and measure is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Для agg='{agg}' обязателен measure.",
+                    suggestion="Укажите measure или используйте agg='count'.",
+                )
+            )
+        if top_n is not None and (
+            not isinstance(top_n, int) or isinstance(top_n, bool) or top_n < 1
+        ):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="top_n должен быть > 0.",
+                )
+            )
+
+        group_by = group_by or []
+
+        # ---------- проверка колонок ----------
+        col_type = _column_type(con, table, time_col)
+        if col_type is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка времени '{time_col}' не найдена.",
+                    suggestion=f"Доступно: {', '.join(_list_columns(con, table))}",
+                )
+            )
+        if (
+            freq in {"minute", "hour", "second"}
+            and "DATE" in col_type.upper()
+            and "TIMESTAMP" not in col_type.upper()
+        ):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Частота '{freq}' требует TIMESTAMP, а '{time_col}' = {col_type}.",
+                    suggestion="Используйте freq='day' или TIMESTAMP-колонку.",
+                )
+            )
+        for col in group_by:
+            if _column_type(con, table, col) is None:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                    )
+                )
+        if measure is not None and _column_type(con, table, measure) is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка метрики '{measure}' не найдена.",
+                )
+            )
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        # ---------- сборка SQL ----------
+        safe_table = _quote_id(table)
+        safe_time = _quote_id(time_col)
+        safe_groups = [_quote_id(g) for g in group_by]
+
+        if agg == "count":
+            agg_expr = "COUNT(*)" if measure is None else f"COUNT({_quote_id(measure)})"
+        else:
+            agg_expr = f"{_AGG_FUNCS[agg]}({_quote_id(measure)})"
+
+        select_parts = [
+            f"DATE_TRUNC('{freq}', CAST({safe_time} AS TIMESTAMP)) AS time_bucket",
+            *safe_groups,
+            f"{agg_expr} AS value",
+        ]
+        n_group = 1 + len(group_by)
+        group_positions = ", ".join(str(i) for i in range(1, n_group + 1))
+        order_positions = group_positions  # time_bucket, затем группы
+
+        effective_limit = get_limits().sql_max_rows
+        if top_n is not None:
+            effective_limit = min(top_n, effective_limit)
+
+        query = (
+            f"SELECT {', '.join(select_parts)} FROM {safe_table} "
+            f"WHERE {safe_time} IS NOT NULL{filter_sql} "
+            f"GROUP BY {group_positions} "
+            f"ORDER BY {order_positions} ASC "
+            f"LIMIT {effective_limit + 1}"
+        )
+
+        rows_raw = execute(query).fetchall()
+        truncated = len(rows_raw) > effective_limit
+        rows_raw = rows_raw[:effective_limit]
+        row_count = len(rows_raw)
+
+        columns = ["time_bucket", *group_by, "value"]
+        data = ToolResultData(
+            columns=columns,
+            rows=[list(r) for r in rows_raw],
+            row_count=row_count,
+            truncated=truncated,
+        )
+
+        if row_count == 0:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="time_aggregate",
+                params={
+                    "table": table,
+                    "time_col": time_col,
+                    "measure": measure,
+                    "agg": agg,
+                    "freq": freq,
+                    "group_by": group_by,
+                    "filter": filter,
+                    "top_n": top_n,
+                },
+                data=data,
+                facts=[
+                    Fact(
+                        text="По заданным условиям нет ни одного временного бакета.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        # ---------- факты ----------
+        facts: list[Fact] = []
+        buckets = [r[0] for r in rows_raw]
+        vals = [(r[-1], r) for r in rows_raw if r[-1] is not None]
+
+        facts.append(
+            Fact(
+                text=f"Всего временных бакетов: {row_count} (частота: {freq}).",
+                kind="time_summary",
+                values={"bucket_count": row_count, "freq": freq},
+            )
+        )
+        facts.append(
+            Fact(
+                text=f"Период: с {min(buckets)} по {max(buckets)}.",
+                kind="time_range",
+                values={"start": str(min(buckets)), "end": str(max(buckets))},
+            )
+        )
+
+        if vals:
+            max_val, max_row = max(vals, key=lambda p: p[0])
+            min_val, min_row = min(vals, key=lambda p: p[0])
+            numeric_vals = [float(v) for v, _ in vals]
+            avg_val = round(sum(numeric_vals) / len(numeric_vals), 4)
+
+            grp_max = list(max_row[1:-1]) if group_by else []
+            grp_min = list(min_row[1:-1]) if group_by else []
+
+            facts.append(
+                Fact(
+                    text=f"Максимум: {max_val} (бакет {max_row[0]}"
+                    + (f", группа {grp_max}" if group_by else "")
+                    + ").",
+                    kind="peak",
+                    values={"value": float(max_val), "bucket": str(max_row[0]), "group": grp_max},
+                )
+            )
+            facts.append(
+                Fact(
+                    text=f"Минимум: {min_val} (бакет {min_row[0]}"
+                    + (f", группа {grp_min}" if group_by else "")
+                    + ").",
+                    kind="trough",
+                    values={"value": float(min_val), "bucket": str(min_row[0]), "group": grp_min},
+                )
+            )
+            facts.append(
+                Fact(
+                    text=f"Среднее по бакетам: {avg_val}.",
+                    kind="average",
+                    values={"value": avg_val},
+                )
+            )
+
+        chart_hint = ChartHint(
+            type="line",
+            x="time_bucket",
+            y=["value"],
+            color=group_by[0] if len(group_by) == 1 else None,
+        )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="time_aggregate",
+            params={
+                "table": table,
+                "time_col": time_col,
+                "measure": measure,
+                "agg": agg,
+                "freq": freq,
+                "group_by": group_by,
+                "filter": filter,
+                "top_n": top_n,
+            },
+            data=data,
+            facts=facts,
+            chart_hint=chart_hint,
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# FIND DUPLICATES
+# ============================================================================
+
+
+def find_duplicates(
+    table: str,
+    columns: list[str] | None = None,  # ← было list[str]
+    *,
+    filter: str | None = None,
+    include_all_columns: bool = False,
+    limit: int = 100,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Находит группы дублей. Без columns — ищет полные дубли строк."""
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="limit должен быть > 0.",
+                )
+            )
+
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена или пуста.",
+                )
+            )
+
+        # ← КЛЮЧЕВОЕ: если columns не задан — ищем полные дубли по всем колонкам
+        if not columns:
+            columns = all_cols
+            include_all_columns = False  # все колонки уже в ключе, дублировать нечего
+        else:
+            for col in columns:
+                if col not in all_cols:
+                    return _err(
+                        error=ToolError(
+                            code="invalid_column",
+                            message=f"Колонка '{col}' не найдена.",
+                            suggestion=f"Доступно: {', '.join(all_cols)}",
+                        )
+                    )
+            # если пользователь включил include_all_columns, но columns == all_cols —
+            # прочих колонок нет, флаг игнорируется
+            if set(columns) >= set(all_cols):
+                include_all_columns = False
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        safe_table = _quote_id(table)
+        safe_cols = [_quote_id(c) for c in columns]
+        other_cols = [c for c in all_cols if c not in columns] if include_all_columns else []
+        safe_other = [_quote_id(c) for c in other_cols]
+
+        effective_limit = min(limit, get_limits().sql_max_rows)
+
+        select_parts = safe_cols + ["COUNT(*) AS duplicate_count"]
+        if other_cols:
+            select_parts += [f"FIRST({c}) AS {c}" for c in safe_other]
+
+        group_positions = ", ".join(str(i) for i in range(1, len(columns) + 1))
+        query = (
+            f"SELECT {', '.join(select_parts)} FROM {safe_table} "
+            f"WHERE 1=1{filter_sql} "
+            f"GROUP BY {group_positions} "
+            f"HAVING COUNT(*) > 1 "
+            f"ORDER BY duplicate_count DESC "
+            f"LIMIT {effective_limit + 1}"
+        )
+
+        result = execute(query).fetchall()
+        truncated = len(result) > effective_limit
+        result = result[:effective_limit]
+
+        # Полная статистика (без учёта limit)
+        total_rows = execute(f"SELECT COUNT(*) FROM {safe_table} WHERE 1=1{filter_sql}").fetchone()[
+            0
+        ]
+        group_by_cols = ", ".join(safe_cols)
+        dup_total = execute(
+            f"SELECT COALESCE(SUM(cnt), 0) FROM ("
+            f"  SELECT COUNT(*) AS cnt FROM {safe_table} "
+            f"  WHERE 1=1{filter_sql} GROUP BY {group_by_cols} "
+            f"  HAVING COUNT(*) > 1"
+            f")"
+        ).fetchone()[0]
+        total_duplicate_groups = execute(
+            f"SELECT COUNT(*) FROM ("
+            f"  SELECT 1 FROM {safe_table} "
+            f"  WHERE 1=1{filter_sql} GROUP BY {group_by_cols} "
+            f"  HAVING COUNT(*) > 1"
+            f")"
+        ).fetchone()[0]
+
+        out_columns = list(columns) + ["duplicate_count"] + other_cols
+        out_rows = [list(r) for r in result]
+        row_count = len(out_rows)
+
+        if row_count == 0:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="find_duplicates",
+                params={
+                    "table": table,
+                    "columns": columns,
+                    "filter": filter,
+                    "include_all_columns": include_all_columns,
+                    "limit": limit,
+                },
+                data=ToolResultData(
+                    columns=out_columns,
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[
+                    Fact(
+                        text=(
+                            f"Проверено строк: {total_rows}, найдено групп дублей: "
+                            f"{int(total_duplicate_groups)}"
+                            + (
+                                f" (показано: {row_count})"
+                                if row_count < total_duplicate_groups
+                                else ""
+                            )
+                            + "."
+                        ),
+                        kind="duplicate_summary",
+                        values={
+                            "total_rows": total_rows,
+                            "duplicate_groups": int(total_duplicate_groups),
+                            "shown_groups": row_count,
+                        },
+                    ),
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        max_group = max(r[len(columns)] for r in result)
+        extra_rows = int(dup_total) - int(total_duplicate_groups)
+        pct = round(dup_total / total_rows * 100, 2) if total_rows else 0.0
+
+        facts: list[Fact] = [
+            Fact(
+                text=(
+                    f"Проверено строк: {total_rows}, найдено групп дублей: "
+                    f"{int(total_duplicate_groups)}"
+                    + (f" (показано: {row_count})" if row_count < total_duplicate_groups else "")
+                    + "."
+                ),
+                kind="duplicate_summary",
+                values={
+                    "total_rows": total_rows,
+                    "duplicate_groups": int(total_duplicate_groups),
+                    "shown_groups": row_count,
+                },
+            ),
+            Fact(
+                text=f"Всего строк в группах дублей: {dup_total} ({pct}%), "
+                f"из них «лишних»: {extra_rows}.",
+                kind="duplicate_volume",
+                values={"duplicate_rows": int(dup_total), "extra_rows": extra_rows, "percent": pct},
+            ),
+            Fact(
+                text=f"Максимальный размер группы: {max_group}.",
+                kind="duplicate_peak",
+                values={"max_group_size": max_group},
+            ),
+        ]
+        for r in result[:5]:
+            key_vals = r[: len(columns)]
+            cnt = r[len(columns)]
+            key_str = ", ".join(f"{c}={v}" for c, v in zip(columns, key_vals, strict=False))
+            facts.append(
+                Fact(
+                    text=f"Комбинация ({key_str}) встречается {cnt} раз.",
+                    kind="duplicate_group",
+                    values={"key": dict(zip(columns, key_vals, strict=False)), "count": cnt},
+                )
+            )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="find_duplicates",
+            params={
+                "table": table,
+                "columns": columns,
+                "filter": filter,
+                "include_all_columns": include_all_columns,
+                "limit": limit,
+            },
+            data=ToolResultData(
+                columns=out_columns,
+                rows=out_rows,
+                row_count=row_count,
+                truncated=truncated,
+            ),
+            facts=facts,
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# DETECT ANOMALIES
+# ============================================================================
+def _detect_stl_residual_anomalies(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    time_col: str,
+    measure: str,
+    freq: str,
+    threshold: float,
+    group_by: list[str],
+    filter_sql: str,
+    limit: int,
+    allowed_tables: Collection[str] | None = None,
+) -> tuple[list[dict], bool, str] | ToolError:
+    """STL anomalies and truncation, or an explicit error for an unusable series."""
+    import numpy as np
+    import pandas as pd
+    from statsmodels.tsa.seasonal import STL
+
+    period = _STL_PERIOD_BY_FREQ.get(freq, 7)
+
+    safe_table = _quote_id(table)
+    safe_time = _quote_id(time_col)
+    safe_measure = _quote_id(measure)
+    safe_groups = [_quote_id(g) for g in group_by]
+
+    select_parts = [
+        f"DATE_TRUNC('{freq}', CAST({safe_time} AS TIMESTAMP)) AS time_bucket",
+        *safe_groups,
+        f"SUM({safe_measure}) AS value",
+    ]
+    n_group = 1 + len(group_by)
+    group_positions = ", ".join(str(i) for i in range(1, n_group + 1))
+
+    query = (
+        f"SELECT {', '.join(select_parts)} FROM {safe_table} "
+        f"WHERE {safe_time} IS NOT NULL{filter_sql} "
+        f"GROUP BY {group_positions} "
+        f"ORDER BY {group_positions} ASC"
+    )
+
+    execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+    raw = execute(query).fetchall()
+    if not raw:
+        return [], False, query
+
+    df = pd.DataFrame(raw, columns=["time_bucket", *group_by, "value"])
+    df["value"] = df["value"].astype(float)
+    # Check every group before fitting: one unknown bucket invalidates a claim
+    # about the full result, even if other groups have usable observations.
+    if df["value"].isna().any():
+        return ToolError(
+            code="missing_data",
+            message="В ряду есть неизвестные значения. Для STL нужен полный числовой ряд.",
+            suggestion="Проверьте пропуски или выберите непрерывный период.",
+        )
+    if not np.isfinite(df["value"].to_numpy()).all():
+        return ToolError(code="invalid_data", message="Ряд содержит бесконечные значения.")
+
+    anomalies: list[dict] = []
+
+    def _process(sub: "pd.DataFrame") -> None:
+        if len(sub) < max(period * 2, 4):
+            return
+        try:
+            series = sub["value"].to_numpy(dtype=float)
+            check_budget()
+            # Work in units of variation, removing a constant level before STL.
+            # Both the fit and its roundoff tolerance are invariant to metric units.
+            centered = series - np.median(series)
+            spread = float(np.max(np.abs(centered)))
+            if spread == 0:
+                return
+            res = STL(centered / spread, period=period, robust=True).fit()
+            check_budget()
+            resid = res.resid
+            resid_s = pd.Series(resid)
+            med = float(resid_s.median())
+            mad = float((resid_s - med).abs().median())
+            scale = 1.4826 * mad if mad > 0 else float(resid_s.std())
+            # Only normalized floating-point roundoff is suppressed, not real
+            # residuals hidden by a large baseline or very small measurement unit.
+            noise_floor = np.finfo(float).eps * 128 * len(series)
+            scale = max(scale, noise_floor)
+            if not scale:
+                return
+            z = (resid - med) / scale
+            for i, zi in enumerate(z):
+                if abs(zi) > threshold:
+                    row = sub.iloc[i]
+                    item = {
+                        "time_bucket": str(row["time_bucket"]),
+                        "value": float(row["value"]),
+                        "residual": float(resid[i] * spread),
+                        "z_score": float(zi),
+                        "direction": "above" if zi > 0 else "below",
+                    }
+                    for g in group_by:
+                        item[g] = _to_python(row[g])
+                    anomalies.append(item)
+        except (TurnCancelled, TurnTimeout):
+            raise
+        except Exception:
+            return
+
+    if group_by:
+        for _, sub in df.groupby(group_by, dropna=False):
+            _process(sub)
+    else:
+        _process(df)
+
+    anomalies.sort(key=lambda a: abs(a["z_score"]), reverse=True)
+    was_truncated = len(anomalies) > limit
+    return anomalies[:limit], was_truncated, query
+
+
+def detect_anomalies(
+    table: str,
+    measure: str,  # ← было column
+    *,
+    method: str = "iqr",
+    time_col: str | None = None,  # ← НОВОЕ
+    freq: str = "day",  # ← НОВОЕ (только для stl-residual)
+    threshold: float | None = None,
+    group_by: list[str] | None = None,
+    filter: str | None = None,
+    id_column: str | None = None,
+    limit: int = 100,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Аномалии в числовой колонке: iqr / zscore / mad / stl-residual.
+
+    - iqr, zscore, mad — точечные (по значениям строк).
+    - stl-residual — по временному ряду (нужен time_col),
+      возвращает аномальные бакеты и их z-score по остаткам STL.
+    """
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+        # ---------- валидация ----------
+        if method not in _ANOMALY_METHODS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимый метод: '{method}'.",
+                    suggestion=f"Допустимо: {sorted(_ANOMALY_METHODS)}",
+                )
+            )
+        if method == "stl-residual" and time_col is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="Для метода 'stl-residual' обязателен time_col.",
+                    suggestion="Укажите time_col — колонку даты/времени.",
+                )
+            )
+        if method == "stl-residual" and freq not in _FREQ_UNITS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая частота: '{freq}'.",
+                    suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if method == "stl-residual" and _STL_PERIOD_BY_FREQ.get(freq, 7) < 2:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"STL не поддерживает freq='{freq}' "
+                        f"(период {_STL_PERIOD_BY_FREQ.get(freq, 7)} < 2)."
+                    ),
+                    suggestion=(
+                        "Для столь редких данных используйте freq='quarter' "
+                        "или точечные методы (iqr/zscore/mad)."
+                    ),
+                )
+            )
+        if threshold is None:
+            threshold = _DEFAULT_THRESHOLDS[method]
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or threshold <= 0:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="threshold должен быть положительным числом.",
+                )
+            )
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="limit должен быть > 0.",
+                )
+            )
+
+        group_by = group_by or []
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        checked = [measure, *group_by, *([id_column] if id_column else [])]
+        if time_col:
+            checked.append(time_col)
+        for col in checked:
+            if col not in all_cols:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                        suggestion=f"Доступно: {', '.join(all_cols)}",
+                    )
+                )
+        dtype = (_column_type(con, table, measure) or "").upper()
+        if not any(t in dtype for t in _NUMERIC_TYPES):
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка '{measure}' должна быть числовой (тип: {dtype}).",
+                )
+            )
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        # ==========================================================
+        # ВЕТКА stl-residual — отдельная, работает по временному ряду
+        # ==========================================================
+        if method == "stl-residual":
+            try:
+                stl_result = _detect_stl_residual_anomalies(
+                    con,
+                    table,
+                    time_col,
+                    measure,
+                    freq,
+                    threshold,
+                    group_by,
+                    filter_sql,
+                    min(limit, get_limits().sql_max_rows),
+                    allowed_tables=allowed_tables,
+                )
+            except ImportError:
+                return _err(
+                    error=ToolError(
+                        code="method_unavailable",
+                        message="Метод 'stl-residual' требует statsmodels.",
+                        suggestion="Установите statsmodels или используйте method='iqr'.",
+                    )
+                )
+
+            if isinstance(stl_result, ToolError):
+                return _err(error=stl_result)
+            anomalies, was_truncated, query = stl_result
+            out_columns = ["time_bucket", *group_by, "value", "residual", "z_score", "direction"]
+            params_dict = {
+                "table": table,
+                "measure": measure,
+                "method": method,
+                "time_col": time_col,
+                "freq": freq,
+                "threshold": threshold,
+                "group_by": group_by,
+                "filter": filter,
+                "id_column": id_column,
+                "limit": limit,
+            }
+
+            if not anomalies:
+                return ToolResult(
+                    result_id=f"r_{uuid.uuid4().hex}",
+                    status="empty",
+                    tool="detect_anomalies",
+                    params=params_dict,
+                    data=ToolResultData(
+                        columns=out_columns,
+                        rows=[],
+                        row_count=0,
+                        truncated=False,
+                    ),
+                    facts=[
+                        Fact(
+                            text=f"Аномалий методом stl-residual "
+                            f"(частота {freq}, порог {threshold}) не обнаружено.",
+                            kind="empty_result",
+                        )
+                    ],
+                    sql=query,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+
+            rows = [[a.get(c) for c in out_columns] for a in anomalies]
+            above = sum(1 for a in anomalies if a["direction"] == "above")
+            below = len(anomalies) - above
+            max_z = max(abs(a["z_score"]) for a in anomalies)
+
+            facts: list[Fact] = [
+                Fact(
+                    text=f"STL-residual: найдено аномальных бакетов {len(anomalies)} "
+                    f"(выше тренда/сезонности: {above}, ниже: {below}).",
+                    kind="anomaly_summary",
+                    values={"total": len(anomalies), "above": above, "below": below},
+                ),
+                Fact(
+                    text=f"Метод: stl-residual, частота: {freq}, порог |z| > {threshold}.",
+                    kind="anomaly_method",
+                    values={"method": method, "freq": freq, "threshold": threshold},
+                ),
+                Fact(
+                    text=f"Максимальный |z-score| остатка: {round(max_z, 2)}.",
+                    kind="anomaly_peak",
+                    values={"max_abs_z": max_z},
+                ),
+            ]
+            for a in anomalies[:5]:
+                grp_part = f", группа { {g: a[g] for g in group_by} }" if group_by else ""
+                facts.append(
+                    Fact(
+                        text=f"Аномальный бакет {a['time_bucket']}{grp_part}: "
+                        f"значение {a['value']}, остаток {round(a['residual'], 2)}, "
+                        f"z = {round(a['z_score'], 2)} ({a['direction']}).",
+                        kind="anomaly",
+                        values={
+                            "time_bucket": str(a["time_bucket"]),
+                            "value": a["value"],
+                            "residual": a["residual"],
+                            "z_score": a["z_score"],
+                            "direction": a["direction"],
+                            "group": {g: a[g] for g in group_by},
+                        },
+                    )
+                )
+
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="ok",
+                tool="detect_anomalies",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=out_columns,
+                    rows=rows,
+                    row_count=len(rows),
+                    truncated=was_truncated,
+                ),
+                facts=facts,
+                chart_hint=ChartHint(
+                    type="line",
+                    x="time_bucket",
+                    y=["value"],
+                    color=group_by[0] if len(group_by) == 1 else None,
+                ),
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        # ==========================================================
+        # ВЕТКА точечных методов (iqr / zscore / mad) — как было,
+        # только column → measure
+        # ==========================================================
+        safe_table = _quote_id(table)
+        safe_col = _quote_id(measure)
+        safe_groups = [_quote_id(g) for g in group_by]
+        safe_id = _quote_id(id_column) if id_column else None
+        group_list = ", ".join(safe_groups)
+        group_list_prefix = f"{group_list}, " if group_by else ""
+        # IS NOT DISTINCT FROM сохраняет группы с NULL в ключе
+        join_on = (
+            " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
+            if group_by
+            else None
+        )
+
+        base_cols = ([safe_id] if safe_id else []) + [safe_col] + safe_groups
+        seen: set[str] = set()
+        base_select = ", ".join(c for c in base_cols if not (c in seen or seen.add(c)))
+
+        base_cte = (
+            f"base AS (SELECT {base_select} FROM {safe_table} "
+            f"WHERE {safe_col} IS NOT NULL{filter_sql})"
+        )
+
+        if method == "iqr":
+            stats_cte = (
+                (
+                    f"stats AS (SELECT {group_list_prefix}"
+                    f"quantile_cont({safe_col}, 0.25) AS q1, "
+                    f"quantile_cont({safe_col}, 0.75) AS q3 "
+                    f"FROM base GROUP BY {group_list or 'ALL'})"
+                )
+                if group_by
+                else (
+                    f"stats AS (SELECT quantile_cont({safe_col}, 0.25) AS q1, "
+                    f"quantile_cont({safe_col}, 0.75) AS q3 FROM base)"
+                )
+            )
+            join_stats = f"JOIN stats s ON {join_on}" if group_by else ", stats s"
+            lower_expr = f"s.q1 - {threshold} * (s.q3 - s.q1)"
+            upper_expr = f"s.q3 + {threshold} * (s.q3 - s.q1)"
+
+        elif method == "zscore":
+            stats_cte = (
+                (
+                    f"stats AS (SELECT {group_list_prefix}"
+                    f"AVG({safe_col}) AS mean, STDDEV_POP({safe_col}) AS std "
+                    f"FROM base GROUP BY {group_list or 'ALL'})"
+                )
+                if group_by
+                else (
+                    f"stats AS (SELECT AVG({safe_col}) AS mean, "
+                    f"STDDEV_POP({safe_col}) AS std FROM base)"
+                )
+            )
+            join_stats = f"JOIN stats s ON {join_on}" if group_by else ", stats s"
+            lower_expr = f"s.mean - {threshold} * s.std"
+            upper_expr = f"s.mean + {threshold} * s.std"
+
+        else:  # mad
+            med_cte = (
+                (
+                    f"med AS (SELECT {group_list_prefix}"
+                    f"MEDIAN({safe_col}) AS median FROM base "
+                    f"GROUP BY {group_list or 'ALL'})"
+                )
+                if group_by
+                else (f"med AS (SELECT MEDIAN({safe_col}) AS median FROM base)")
+            )
+            join_med_in = (
+                (
+                    "JOIN med m ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m.{g}" for g in safe_groups)
+                )
+                if group_by
+                else ", med m"
+            )
+            group_list_qualified = ", ".join(f"t.{g}" for g in safe_groups)
+            mad_cte = (
+                (
+                    f"mad AS (SELECT {group_list_qualified}, "
+                    f"MEDIAN(ABS(t.{safe_col} - m.median)) AS mad "
+                    f"FROM base t {join_med_in} "
+                    f"GROUP BY {group_list_qualified})"
+                )
+                if group_by
+                else (
+                    f"mad AS (SELECT MEDIAN(ABS(t.{safe_col} - m.median)) AS mad "
+                    f"FROM base t, med m)"
+                )
+            )
+            stats_cte = f"{med_cte}, {mad_cte}"
+            join_stats = (
+                (
+                    "JOIN med m2 ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM m2.{g}" for g in safe_groups)
+                    + " JOIN mad s ON "
+                    + " AND ".join(f"t.{g} IS NOT DISTINCT FROM s.{g}" for g in safe_groups)
+                )
+                if group_by
+                else ", med m2, mad s"
+            )
+            lower_expr = f"m2.median - {threshold} * 1.4826 * s.mad"
+            upper_expr = f"m2.median + {threshold} * 1.4826 * s.mad"
+
+        direction_expr = f"CASE WHEN t.{safe_col} > ({upper_expr}) THEN 'above' ELSE 'below' END"
+        deviation_expr = (
+            f"CASE WHEN t.{safe_col} > ({upper_expr}) "
+            f"THEN t.{safe_col} - ({upper_expr}) "
+            f"ELSE ({lower_expr}) - t.{safe_col} END"
+        )
+
+        final_cols = []
+        if safe_id:
+            final_cols.append(f"t.{safe_id} AS {safe_id}")
+        final_cols.append(f"t.{safe_col} AS {safe_col}")
+        for g in safe_groups:
+            final_cols.append(f"t.{g} AS {g}")
+        final_cols += [
+            f"{direction_expr} AS direction",
+            f"({deviation_expr}) AS deviation",
+            f"({lower_expr}) AS lower_bound",
+            f"({upper_expr}) AS upper_bound",
+        ]
+
+        effective_limit = min(limit, get_limits().sql_max_rows)
+        query = (
+            f"WITH {base_cte}, {stats_cte} "
+            f"SELECT {', '.join(final_cols)} "
+            f"FROM base t {join_stats} "
+            f"WHERE t.{safe_col} < ({lower_expr}) "
+            f"   OR t.{safe_col} > ({upper_expr}) "
+            f"ORDER BY deviation DESC "
+            f"LIMIT {effective_limit + 1}"
+        )
+
+        result = execute(query).fetchall()
+        truncated = len(result) > effective_limit
+        result = result[:effective_limit]
+        row_count = len(result)
+
+        out_columns: list[str] = []
+        if id_column:
+            out_columns.append(id_column)
+        out_columns.append(measure)  # ← было column
+        out_columns += list(group_by)
+        out_columns += ["direction", "deviation", "lower_bound", "upper_bound"]
+
+        params_dict = {
+            "table": table,
+            "measure": measure,
+            "method": method,
+            "time_col": time_col,
+            "freq": freq,
+            "threshold": threshold,
+            "group_by": group_by,
+            "filter": filter,
+            "id_column": id_column,
+            "limit": limit,
+        }
+
+        if row_count == 0:
+            stats_row = execute(
+                f"SELECT COUNT(*), COUNT(DISTINCT {safe_col}) "
+                f"FROM {safe_table} "
+                f"WHERE {safe_col} IS NOT NULL{filter_sql}"
+            ).fetchone()
+            total_vals, distinct_vals = stats_row
+            if distinct_vals <= 1:
+                msg = (
+                    f"Все значения колонки '{measure}' одинаковы "
+                    f"({distinct_vals} уникальных) — аномалий нет."
+                )
+            else:
+                msg = (
+                    f"Аномалий методом {method} с порогом {threshold} "
+                    f"не обнаружено (проверено значений: {total_vals})."
+                )
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="detect_anomalies",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=out_columns,
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[Fact(text=msg, kind="empty_result")],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        rows_as_dicts = [dict(zip(out_columns, r, strict=False)) for r in result]
+        directions = [d["direction"] for d in rows_as_dicts]
+        above = sum(1 for d in directions if d == "above")
+        below = row_count - above
+        max_dev = max(abs(d["deviation"]) for d in rows_as_dicts)
+
+        facts = [
+            Fact(
+                text=f"Найдено аномалий: {row_count} (выше нормы: {above}, ниже нормы: {below}).",
+                kind="anomaly_summary",
+                values={"total": row_count, "above": above, "below": below},
+            ),
+            Fact(
+                text=f"Метод: {method}, порог: {threshold}.",
+                kind="anomaly_method",
+                values={"method": method, "threshold": threshold},
+            ),
+            Fact(
+                text=f"Максимальное отклонение от границы: {max_dev}.",
+                kind="anomaly_peak",
+                values={"max_deviation": float(max_dev)},
+            ),
+        ]
+        for d in rows_as_dicts[:5]:
+            grp = {g: d[g] for g in group_by} if group_by else {}
+            id_part = f"id={d[id_column]}, " if id_column else ""
+            grp_part = f", группа {grp}" if group_by else ""
+            facts.append(
+                Fact(
+                    text=f"Аномалия ({id_part}{measure}={d[measure]}{grp_part}): "
+                    f"{d['direction']} нормы, отклонение {d['deviation']} "
+                    f"(границы [{d['lower_bound']}; {d['upper_bound']}]).",
+                    kind="anomaly",
+                    values={
+                        "id": d.get(id_column) if id_column else None,
+                        "value": float(d[measure]),
+                        "direction": d["direction"],
+                        "deviation": float(d["deviation"]),
+                        "lower_bound": float(d["lower_bound"]),
+                        "upper_bound": float(d["upper_bound"]),
+                        "group": grp,
+                    },
+                )
+            )
+
+        chart_hint = (
+            ChartHint(type="bar", x=id_column or measure, y=[measure]) if id_column else None
+        )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="detect_anomalies",
+            params=params_dict,
+            data=ToolResultData(
+                columns=out_columns,
+                rows=[list(r) for r in result],
+                row_count=row_count,
+                truncated=truncated,
+            ),
+            facts=facts,
+            chart_hint=chart_hint,
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
     finally:
         timer.cancel()
         if connection is None:
