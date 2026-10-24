@@ -1,0 +1,74 @@
+{
+  "description": "Контрольные значения демо-PostgreSQL и демо-ClickHouse (#100). Обе БД наполняются из tests/fixtures/synthetic через typed views DjedAI (scripts/seed_demo_*.py). Проверка: python scripts/verify_demo_db.py. Ссылки reference — пути в eval/synthetic_expectations.json (для metrics — их expected_value); тесты сверяют это и пересчёт по CSV без сервера БД.",
+  "database": "djedai_demo",
+  "tables": {
+    "campaigns": {"rows": 365, "columns": ["date", "activity"]},
+    "products": {"rows": 50, "columns": ["product_id", "product_name", "category", "price"]},
+    "sales": {"rows": 4376, "columns": ["sale_id", "date", "store_id", "product_id", "quantity", "discount_pct", "total_amount"], "reference": "metrics.total_rows_in_sales"},
+    "stores": {"rows": 10, "columns": ["store_id", "city", "region"]}
+  },
+  "checks": {
+    "sales_total_amount": {
+      "sql": "SELECT sum(total_amount) FROM sales",
+      "expected": ["1268254502.40"],
+      "reference": ["relations.expected.0.join.total_amount_before"],
+      "description": "Валовая сумма всех строк продаж, RUB; дубли и аномалии включены."
+    },
+    "sales_duplicate_rows": {
+      "sql": "SELECT count(*) - (SELECT count(*) FROM (SELECT DISTINCT * FROM sales) AS d) FROM sales",
+      "expected": ["208"],
+      "reference": ["metrics.duplicate_rows"],
+      "description": "Лишние полные копии строк."
+    },
+    "sales_missing_quantity": {
+      "sql": "SELECT count(*) FROM sales WHERE quantity IS NULL",
+      "expected": ["210"],
+      "reference": ["metrics.missing_quantity_rows"],
+      "description": "Пропуски количества ('', '-', 'n/a') после типизации — NULL."
+    },
+    "sales_date_range": {
+      "sql": "SELECT min(date), max(date) FROM sales",
+      "expected": ["2023-01-01", "2023-12-31"],
+      "description": "Календарь продаж."
+    },
+    "sales_peak_month_rows": {
+      "sql": "SELECT extract(MONTH FROM date) AS m, count(*) AS n FROM sales GROUP BY m ORDER BY n DESC, m LIMIT 1",
+      "expected": ["12", "861"],
+      "reference": ["metrics.seasonality_peak_month", "metrics.seasonality_peak_rows"],
+      "description": "Месяц с наибольшим числом строк и это число."
+    },
+    "sales_peak_month_revenue": {
+      "sql": "SELECT extract(MONTH FROM date) AS m, sum(total_amount) AS s FROM sales GROUP BY m ORDER BY s DESC, m LIMIT 1",
+      "expected": ["4", "253427853.81"],
+      "reference": ["metrics.revenue_peak_month", "metrics.revenue_peak_amount"],
+      "description": "Месяц с наибольшей суммой продаж и эта сумма, RUB."
+    },
+    "sales_distinct_keys": {
+      "sql": "SELECT count(DISTINCT store_id), count(DISTINCT product_id) FROM sales",
+      "expected": ["10", "50"],
+      "description": "Различные магазины и товары в продажах."
+    },
+    "sales_join_stores": {
+      "sql": "SELECT count(*), sum(s.total_amount) FROM sales AS s JOIN stores AS st ON s.store_id = st.store_id",
+      "expected": ["4376", "1268254502.40"],
+      "reference": ["relations.expected.1.join.rows_after", "relations.expected.1.join.total_amount_after"],
+      "description": "Связь sales.store_id → stores.store_id сохраняет все строки и сумму."
+    },
+    "sales_join_products": {
+      "sql": "SELECT count(*), sum(s.total_amount) FROM sales AS s JOIN products AS p ON s.product_id = p.product_id",
+      "expected": ["4376", "1268254502.40"],
+      "reference": ["relations.expected.0.join.rows_after", "relations.expected.0.join.total_amount_after"],
+      "description": "Связь sales.product_id → products.product_id сохраняет все строки и сумму."
+    },
+    "products_price_total": {
+      "sql": "SELECT round(sum(price), 2) FROM products",
+      "expected": ["1290249.22"],
+      "description": "Сумма прайс-листа (DOUBLE, округление до копейки)."
+    },
+    "campaigns_activity": {
+      "sql": "SELECT sum(activity), count(*) FROM campaigns",
+      "expected": ["1", "365"],
+      "description": "Дней с рекламным импульсом и всего дней."
+    }
+  }
+}

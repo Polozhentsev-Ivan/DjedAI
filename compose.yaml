@@ -42,5 +42,62 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Демо-БД для показа подключений (#100): docker compose --profile demo up -d --wait.
+  # Роли создаются при первом старте пустого тома; наполнение — scripts/seed_demo_*.py.
+  # z — метка SELinux (Fedora и др.), иначе контейнер не прочитает смонтированные init-файлы.
+  # Образ и digest — как в scripts/test_postgres_isolation.py.
+  demo-postgres:
+    image: postgres:17.11-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    profiles: [demo]
+    environment:
+      POSTGRES_PASSWORD: ${DEMO_PG_ADMIN_PASSWORD:-}
+      DEMO_PG_LOADER_PASSWORD: ${DEMO_PG_LOADER_PASSWORD:-}
+      DEMO_PG_READER_PASSWORD: ${DEMO_PG_READER_PASSWORD:-}
+    volumes:
+      - demo-pg-data:/var/lib/postgresql/data
+      - ./infra/postgres/roles.sql:/djedai-demo/roles.sql:ro,z
+      - ./infra/postgres/init-demo.sh:/docker-entrypoint-initdb.d/10-djedai-demo.sh:ro,z
+    ports:
+      - "127.0.0.1:${DEMO_PG_PORT:-55432}:5432"
+    healthcheck:
+      # по TCP: временный сервер инициализации слушает только сокет
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "djedai_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  # LTS 26.3; тег и digest индекса проверены через Docker Hub API 24.10.2026.
+  demo-clickhouse:
+    image: clickhouse/clickhouse-server:26.3.60.2@sha256:3cbe484d8571988bae07dfe98bb0f62778a5ad8225745be9366acf5f1debd9e8
+    profiles: [demo]
+    environment:
+      CLICKHOUSE_USER: djedai_admin
+      CLICKHOUSE_PASSWORD: ${DEMO_CH_ADMIN_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      DEMO_CH_LOADER_PASSWORD: ${DEMO_CH_LOADER_PASSWORD:-}
+      DEMO_CH_READER_PASSWORD: ${DEMO_CH_READER_PASSWORD:-}
+    volumes:
+      - demo-ch-data:/var/lib/clickhouse
+      - ./infra/clickhouse/roles.sql:/djedai-demo/roles.sql:ro,z
+      - ./infra/clickhouse/init-demo.sh:/docker-entrypoint-initdb.d/10-djedai-demo.sh:ro,z
+    ports:
+      - "127.0.0.1:${DEMO_CH_HTTP_PORT:-58123}:8123"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # готовность — роль читателя уже создана init-скриптом
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'SHOW CREATE USER djedai_reader' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   app-data:
+  demo-pg-data:
+  demo-ch-data:

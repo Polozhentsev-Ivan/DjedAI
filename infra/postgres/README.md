@@ -1,6 +1,6 @@
 # Демо-PostgreSQL
 
-Ранняя PG-часть #100: база `djedai_demo` с синтетическим датасетом и read-only учётной записью для проверки подключения PostgreSQL (B1-8 / #60). Контейнерный demo-профиль появится вместе с Compose; до него сервер ставится локально.
+Ранняя PG-часть #100: база `djedai_demo` с синтетическим датасетом и read-only учётной записью для проверки подключения PostgreSQL (B1-8 / #60). Основной путь — сервис `demo-postgres` профиля `demo` с теми же ролями и данными, что и ClickHouse: [запуск, параметры и контрольные значения](../README.md#демо-бд-postgresql-и-clickhouse). Ниже — установка без Docker.
 
 ## Установка на Fedora
 
@@ -37,4 +37,4 @@ DJEDAI_DEMO_PG_LOADER_DSN='postgresql://djedai_loader:<пароль загруз
   uv run pytest --strict-markers tests/integration/test_postgres_adapter.py
 ```
 
-Без `DJEDAI_TEST_PG_DSN` эти тесты пропускаются. `DJEDAI_DEMO_PG_LOADER_DSN` нужен только двум тестам, которые меняют таблицу «снаружи» во время профилирования (временная таблица `live`); без него пропускаются только они. Пароли и DSN в Git не добавляются.
+Контрольные значения после загрузки: `uv run python scripts/verify_demo_db.py --pg-dsn '<DSN djedai_reader>'`. Без `DJEDAI_TEST_PG_DSN` эти тесты пропускаются. `DJEDAI_DEMO_PG_LOADER_DSN` нужен только двум тестам, которые меняют таблицу «снаружи» во время профилирования (временная таблица `live`); без него пропускаются только они. Пароли и DSN в Git не добавляются.
