@@ -1,0 +1,92 @@
+{
+  "dataset_id": "ds_7f3a",
+  "metrics": [
+    {
+      "metric_id": "revenue",
+      "version": 2,
+      "title": "Выручка",
+      "description": "Сумма заказов без отменённых, в рублях",
+      "status": "confirmed",
+      "kind": "sum",
+      "grain": {"table": "orders", "key": "order_id"},
+      "measure": {"table": "orders", "column": "amount"},
+      "additivity": "additive",
+      "filters": [
+        {"column": {"table": "orders", "column": "status"}, "op": "ne", "value": "отменён"}
+      ],
+      "unit": "money",
+      "currency": "RUB",
+      "time_column": {"table": "orders", "column": "created_at"},
+      "confirmation": {
+        "source": "api",
+        "by_user_id": "u_1",
+        "at": "2026-10-25T09:00:00Z"
+      }
+    },
+    {
+      "metric_id": "orders_count",
+      "version": 1,
+      "title": "Число заказов",
+      "status": "confirmed",
+      "kind": "count",
+      "grain": {"table": "orders", "key": "order_id"},
+      "additivity": "additive",
+      "filters": [
+        {"column": {"table": "orders", "column": "status"}, "op": "ne", "value": "отменён"}
+      ],
+      "unit": "count",
+      "time_column": {"table": "orders", "column": "created_at"},
+      "confirmation": {
+        "source": "clarification",
+        "by_user_id": "u_1",
+        "at": "2026-10-25T09:05:00Z",
+        "message_id": "m_101"
+      }
+    },
+    {
+      "metric_id": "average_check",
+      "version": 1,
+      "title": "Средний чек",
+      "status": "confirmed",
+      "kind": "ratio",
+      "grain": {"table": "orders", "key": "order_id"},
+      "numerator": "revenue",
+      "denominator": "orders_count",
+      "additivity": "recompute",
+      "unit": "ratio",
+      "confirmation": {
+        "source": "api",
+        "by_user_id": "u_1",
+        "at": "2026-10-25T09:10:00Z"
+      }
+    }
+  ],
+  "provenance": {
+    "metric_id": "revenue",
+    "version": 2,
+    "title": "Выручка",
+    "formula": "SUM(orders.amount) WHERE orders.status <> 'отменён'",
+    "grain": {"table": "orders", "key": "order_id"},
+    "additivity": "additive",
+    "unit": "money",
+    "currency": "RUB",
+    "filters": [
+      {"column": {"table": "orders", "column": "status"}, "op": "ne", "value": "отменён"},
+      {"column": {"table": "clients", "column": "is_vip"}, "op": "eq", "value": true}
+    ],
+    "period_start": "2023-01-01",
+    "period_end": "2024-01-01",
+    "group_by": [],
+    "checks": [
+      {
+        "from": {"table": "orders", "column": "client_id"},
+        "to": {"table": "clients", "column": "id"},
+        "rows_before": 125430,
+        "rows_after": 125430,
+        "max_fanout": 1,
+        "null_key_rows": 0,
+        "unmatched_rows": 0
+      }
+    ]
+  }
+}

@@ -1941,6 +1941,54 @@
         "title": "Fact",
         "type": "object"
       },
+      "JoinCheck": {
+        "additionalProperties": false,
+        "description": "Проверка JOIN grain-таблицы с измерением на данных: размножение и потери строк.",
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "to": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "rows_before": {
+            "minimum": 0,
+            "title": "Rows Before",
+            "type": "integer"
+          },
+          "rows_after": {
+            "minimum": 0,
+            "title": "Rows After",
+            "type": "integer"
+          },
+          "max_fanout": {
+            "minimum": 0,
+            "title": "Max Fanout",
+            "type": "integer"
+          },
+          "null_key_rows": {
+            "minimum": 0,
+            "title": "Null Key Rows",
+            "type": "integer"
+          },
+          "unmatched_rows": {
+            "minimum": 0,
+            "title": "Unmatched Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows_before",
+          "rows_after",
+          "max_fanout",
+          "null_key_rows",
+          "unmatched_rows"
+        ],
+        "title": "JoinCheck",
+        "type": "object"
+      },
       "MessageBlock": {
         "discriminator": {
           "mapping": {
@@ -1973,6 +2021,240 @@
             "$ref": "#/components/schemas/SuggestionsBlock"
           }
         ]
+      },
+      "MetricFilter": {
+        "additionalProperties": false,
+        "description": "Условие популяции; колонка — из таблицы grain или из таблицы по связи N:1 от неё.",
+        "properties": {
+          "column": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "op": {
+            "enum": [
+              "eq",
+              "ne",
+              "in",
+              "not_in",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "is_null",
+              "not_null"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          }
+        },
+        "required": [
+          "column",
+          "op"
+        ],
+        "title": "MetricFilter",
+        "type": "object"
+      },
+      "MetricGrain": {
+        "additionalProperties": false,
+        "description": "Одна строка метрики — одна строка ``table`` с уникальным ``key``.",
+        "properties": {
+          "table": {
+            "minLength": 1,
+            "title": "Table",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table",
+          "key"
+        ],
+        "title": "MetricGrain",
+        "type": "object"
+      },
+      "MetricProvenance": {
+        "additionalProperties": false,
+        "description": "Происхождение расчёта: версия определения и применённые ограничения.",
+        "properties": {
+          "metric_id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "formula": {
+            "title": "Formula",
+            "type": "string"
+          },
+          "grain": {
+            "$ref": "#/components/schemas/MetricGrain"
+          },
+          "additivity": {
+            "enum": [
+              "additive",
+              "recompute"
+            ],
+            "title": "Additivity",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "money",
+              "count",
+              "ratio",
+              "number"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currency"
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/MetricFilter"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period Start"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period End"
+          },
+          "group_by": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnRef"
+            },
+            "title": "Group By",
+            "type": "array"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/MetricVersionRef"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/JoinCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metric_id",
+          "version",
+          "title",
+          "formula",
+          "grain",
+          "additivity",
+          "unit"
+        ],
+        "title": "MetricProvenance",
+        "type": "object"
+      },
+      "MetricVersionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "metric_id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "metric_id",
+          "version"
+        ],
+        "title": "MetricVersionRef",
+        "type": "object"
       },
       "ParseInfo": {
         "additionalProperties": false,
@@ -2821,6 +3103,18 @@
             "default": null,
             "description": "Время выполнения в миллисекундах",
             "title": "Duration Ms"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Версия определения метрики и применённые ограничения (B2-9)"
           }
         },
         "required": [

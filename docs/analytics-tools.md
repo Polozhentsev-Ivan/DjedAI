@@ -70,3 +70,29 @@ auth/upload/chat/graph/registry/SQLite/Parquet и последующий GET р�
 Применимость Welch и таблицы сопряжённости описывают
 [SciPy ttest_ind](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.ttest_ind.html)
 и [chi2_contingency](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.chi2_contingency.html).
+
+## Бизнес-метрики — #166
+
+`compute_metric(metric_id, group_by, period_start, period_end, time_grain, currency,
+filters)` считает подтверждённую метрику по её определению (`MetricDefinition`).
+Для подтверждённой метрики агент вызывает этот инструмент, а не `run_sql`.
+
+- Агрегат строится по строкам grain-таблицы с популяцией из определения.
+- Период полуоткрытый, `[period_start, period_end)`, по календарю метрики.
+- Измерения из `group_by` и `filters` присоединяются только по связи каталога N:1 с
+  уверенностью `high`. До расчёта связь проверяется на популяции: размножение строк —
+  `metric_grain_violation`, пустые ключи и строки без пары — `metric_rows_lost`.
+- Смешанные валюты дают `metric_mixed_currency`: нужно выбрать `currency` или
+  разбить по колонке валюты. Валюты проверяются на всей популяции расчёта, включая
+  фильтры по измерениям.
+- Отношение делится после агрегации числителя и знаменателя.
+- Результат несёт `metric` (`MetricProvenance`) и факт `metric_definition` с версией
+  и ограничениями.
+
+`run_sql` получает тот же `MetricContext` и отклоняет агрегат меры подтверждённой
+метрики после JOIN с размножением или недоказанной полнотой. Мера прослеживается через
+CTE, подзапросы, UNION, `*` и списки колонок алиаса: JOIN уровнем ниже внешнего SUM
+тоже проверяется. `COUNT(DISTINCT)` и `DISTINCT` в CTE такой запрос не пропускают.
+Без подтверждённых метрик поведение `run_sql` не меняется.
+
+Решения и границы описаны в [B2-9 / #166](decisions/166-metric-semantics.md).
