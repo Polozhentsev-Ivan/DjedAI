@@ -19,7 +19,7 @@ function precision(value: string): Precision | null {
 
 /**
  * The finest time any ISO value in the column carries, so 09:00 and 10:00 stay apart while a
- * column of plain dates (or midnights) shows dates only; null when the column holds no ISO values.
+ * column of plain dates (or unzoned midnights) shows dates only; null when the column holds no ISO values.
  */
 function columnPrecision(data: Data, index: number): Precision | null {
   let finest: Precision | null = null;
@@ -37,7 +37,7 @@ function timestampLabel(value: string, level: Precision): string | null {
   if (!match) return null;
   const [, year, month, day, hours = '00', minutes = '00', seconds = '00', fraction = '', offset] = match;
   const date = `${day}.${month}.${year}`;
-  if (level === 0) return date;
+  if (level === 0 && !offset) return date;
   const time = `${hours}:${minutes}${level >= 2 ? `:${seconds}` : ''}${level === 3 ? fraction : ''}`;
   const zone = offset === 'Z' ? ' UTC' : offset ? ` ${offset}` : '';
   return `${date} ${time}${zone}`;

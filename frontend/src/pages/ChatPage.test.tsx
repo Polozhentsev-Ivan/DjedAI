@@ -542,4 +542,18 @@ describe('chat answer blocks', () => {
     expect(within(table).getByText('01.01.2026')).toBeInTheDocument();
     expect(screen.getByText('r_fixture · 3 строки')).toBeInTheDocument();
   });
+
+  it('distinguishes midnight timestamps with different zones in a table block', async () => {
+    server.use(http.get(api('/results/r_zoned/data'), () => HttpResponse.json({
+      columns: ['hour', 'revenue'], rows: [['2026-10-25T00:00:00Z', 100], ['2026-10-25T00:00:00+03:00', 200]], row_count: 2, truncated: false,
+    } satisfies Schemas['ResultData'])));
+    savedChat([{ type: 'table', result_id: 'r_zoned' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    const [, utc, moscow] = within(table).getAllByRole('row');
+    expect(utc).toHaveTextContent('25.10.2026 00:00 UTC');
+    expect(utc).toHaveTextContent('100');
+    expect(moscow).toHaveTextContent('25.10.2026 00:00 +03:00');
+    expect(moscow).toHaveTextContent('200');
+  });
 });

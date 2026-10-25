@@ -300,6 +300,10 @@ describe('timestamps in result tables', () => {
     expect(cells(column(['2026-10-25T09:00:00Z', '2026-10-25T09:00:00+03:00']))).toEqual(['25.10.2026 09:00 UTC', '25.10.2026 09:00 +03:00']);
   });
 
+  it('preserves explicit zones even when every timestamp is midnight', () => {
+    expect(cells(column(['2026-10-25T00:00:00Z', '2026-10-25T00:00:00+03:00', '2026-10-25T00:00:00-05:30']))).toEqual(['25.10.2026 00:00 UTC', '25.10.2026 00:00 +03:00', '25.10.2026 00:00 -05:30']);
+  });
+
   it('keeps the hour on a time axis of a table chart and leaves other text alone', () => {
     const data: Schemas['ResultData'] = { columns: ['hour', 'note'], rows: [['2026-10-25T09:00:00', '2026-10-25T09:00:00']], row_count: 1, truncated: false };
     render(<ResultTable spec={{ chart_id: 'r', type: 'table', title: 'Часы', x: { field: 'hour', label: 'Час', kind: 'time' }, y: [{ field: 'note', label: 'Заметка' }] }} data={data} />);
