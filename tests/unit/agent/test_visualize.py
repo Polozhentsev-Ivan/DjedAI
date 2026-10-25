@@ -28,12 +28,14 @@ def _saved_result() -> ToolResult:
 
 
 def _chart(chart_type: str, chart_id: str = "ch_123") -> ChartSpec:
+    # Scatter plots both coordinates on value axes, so its X field must be numeric.
+    x = XAxis(field="value", kind="number") if chart_type == "scatter" else XAxis(field="category")
     return ChartSpec(
         chart_id=chart_id,
         result_id="r_1",
         type=chart_type,
         title=f"Test {chart_type}",
-        x=XAxis(field="category"),
+        x=x,
         y=[YMeasure(field="value")],
     )
 
@@ -270,6 +272,109 @@ def test_visualize_rejects_string_column_on_numeric_axis():
 
     assert result["charts"] == []
     assert result["answer_blocks"] == []
+
+
+def test_visualize_rejects_scatter_with_categorical_x():
+    """Scatter требует числовую ось X: строковую категорию рендерер не построит."""
+    scatter = ChartSpec(
+        chart_id="ch_scatter_text",
+        result_id="r_1",
+        type="scatter",
+        title="Точки",
+        x=XAxis(field="category"),
+        y=[YMeasure(field="value")],
+    )
+
+    result = _run_modify("test_vis_scatter_text", VisualizeResponse(charts=[scatter]))
+
+    assert result["charts"] == []
+    assert result["answer_blocks"] == []
+
+
+def test_visualize_rejects_number_kind_on_categorical_column():
+    """x.kind=number для строковой колонки даёт несовместимую спецификацию."""
+    wrong_kind = ChartSpec(
+        chart_id="ch_wrong_kind",
+        result_id="r_1",
+        type="bar",
+        title="Числовая категория",
+        x=XAxis(field="category", kind="number"),
+        y=[YMeasure(field="value")],
+    )
+
+    result = _run_modify("test_vis_wrong_kind", VisualizeResponse(charts=[wrong_kind]))
+
+    assert result["charts"] == []
+    assert result["answer_blocks"] == []
+
+
+def test_compose_uses_saved_facts_when_plan_is_empty():
+    """Смена представления объясняет сохранённые данные без нового расчёта."""
+    graph = build_agent_graph()
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(
+            status="success",
+            data=Understanding(intent="modify_previous", references=["r_1"]),
+        ),
+        ModelResponse(status="success", data=PlanResponse(plan=[])),
+        ModelResponse(status="success", data=VisualizeResponse(charts=[_chart("bar")])),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="A = 10, B = 20")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    result = graph.invoke(
+        {
+            "chat_id": "c1",
+            "dataset_id": "ds_1",
+            "messages": [Message(role="user", content="Смени вид и объясни те же суммы")],
+            "results": [_saved_result()],
+        },
+        config={"configurable": {"thread_id": "test_compose_saved", "client": client}},
+    )
+
+    assert result["charts"][0].result_id == "r_1"
+    assert result["answer_blocks"][-1].chart["result_id"] == "r_1"
+    compose_prompt = client.generate_typed_response.call_args_list[3].args[0]
+    assert "category" in compose_prompt
+    assert "A" in compose_prompt
+    assert "20" in compose_prompt
+
+
+def test_compose_falls_back_to_saved_history_when_no_chart_is_built():
+    """Без нового плана и без графика компоновщик всё равно получает факты."""
+    graph = build_agent_graph()
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(
+            status="success",
+            data=Understanding(intent="modify_previous", references=["r_1"]),
+        ),
+        ModelResponse(status="success", data=PlanResponse(plan=[])),
+        ModelResponse(status="success", data=VisualizeResponse(charts=[])),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="A = 10, B = 20")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    graph.invoke(
+        {
+            "chat_id": "c1",
+            "dataset_id": "ds_1",
+            "messages": [Message(role="user", content="Объясни те же суммы")],
+            "results": [_saved_result()],
+        },
+        config={"configurable": {"thread_id": "test_compose_history", "client": client}},
+    )
+
+    compose_prompt = client.generate_typed_response.call_args_list[3].args[0]
+    assert "category" in compose_prompt
+    assert "20" in compose_prompt
 
 
 def test_partial_plan_rerun_keeps_successful_results_for_compose_and_verify():
