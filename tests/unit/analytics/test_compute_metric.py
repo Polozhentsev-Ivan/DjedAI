@@ -264,6 +264,32 @@ def test_mixed_currencies_are_not_added(compute):
     assert split.metric.currency is None
 
 
+def test_currency_is_checked_on_the_filtered_population(compute):
+    # USD есть только у клиента 5: у клиента 3 все платежи в рублях
+    not_null = {"column": "payments.zakaz_id", "op": "not_null"}
+    customers = {o["zakaz_id"]: o["klient_id"] for o in ORDERS.values()}
+    for client, currency in (("3", "RUB"), ("5", "USD")):
+        result = compute(
+            "gross_payments",
+            filters=[not_null, {"column": "orders.klient_id", "op": "eq", "value": client}],
+        )
+        expected = sum(
+            float(p["summa"])
+            for p in PAYMENTS
+            if p["zakaz_id"] and customers[p["zakaz_id"]] == client and p["tip"] == "payment"
+        )
+        assert value(result) == pytest.approx(expected)
+        assert result.metric.currency == currency
+    assert value(
+        compute(
+            "gross_payments",
+            filters=[not_null, {"column": "orders.klient_id", "op": "eq", "value": "3"}],
+        )
+    ) == pytest.approx(7000.0)
+    mixed = compute("gross_payments", filters=[not_null])
+    assert mixed.error.code == "metric_mixed_currency"
+
+
 def test_conversion_depends_on_its_denominator(compute):
     orders = len(paid_orders())
     per_customer = compute("orders_per_customer")
