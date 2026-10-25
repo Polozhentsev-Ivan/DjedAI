@@ -64,6 +64,7 @@ Nginx/Compose и выбранный реальный API проверяются 
 
 Все десять типов `ChartSpec`, формат готовых результатов для histogram/box/heatmap
 и ручные примеры описаны в [рендерере графиков](../docs/chart-renderer.md).
+Блоки ответа в чате и их проверка на общей фикстуре — в [chat-blocks.md](../docs/chat-blocks.md).
 
 ```text
 schema/openapi.yaml   согласованный снимок API (источник TS-типов)

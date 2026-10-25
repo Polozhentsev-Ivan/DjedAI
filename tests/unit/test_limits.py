@@ -78,3 +78,21 @@ def test_timeout_interrupts_real_query_in_a_bounded_subprocess(monkeypatch):
         timeout=10,
     )
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    "threshold,parsed,expected",
+    [("0.95", 95, "integer"), ("0.95", 94, "text"), ("0.55", 55, "integer")],
+)
+def test_threshold_boundary_is_inclusive_and_exact(
+    tmp_path: Path, monkeypatch, threshold: str, parsed: int, expected: str
+):
+    # 0.55 * 100 во float даёт 55.00000000000001: ровно 55 из 100 должно проходить порог
+    monkeypatch.setenv("TYPE_PARSE_THRESHOLD", threshold)
+    source = tmp_path / "measure.csv"
+    rows = [str(n) for n in range(parsed)] + ["n/a"] * (100 - parsed)
+    source.write_text("amount\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    with duckdb.connect() as connection:
+        raw = load_raw_csv(connection, source, header=True)
+        view = create_typed_view(connection, raw)
+        assert view.columns[0].semantic_type == expected

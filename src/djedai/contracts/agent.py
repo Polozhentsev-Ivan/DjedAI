@@ -3,6 +3,7 @@ from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, Field
 
 from djedai.contracts.chart import ChartSpec
+from djedai.contracts.metrics import MetricDefinition, MetricSpec
 from djedai.contracts.tool_result import ToolResult
 
 
@@ -14,6 +15,8 @@ class Entities(BaseModel):
 class Clarification(BaseModel):
     question: str
     options: list[str]
+    # Кандидаты определений по порядку options: выбор варианта подтверждает определение (B2-9)
+    metric_candidates: list[MetricSpec] = Field(default_factory=list)
 
 
 class Understanding(BaseModel):
@@ -57,6 +60,8 @@ class Block(BaseModel):
     dashboard_id: str | None = None
     title: str | None = None
     items: list[str] = Field(default_factory=list)
+    # clarification: проверенный кандидат определения для варианта с тем же индексом (B2-9)
+    metric_candidates: list[MetricDefinition | None] = Field(default_factory=list)
 
 
 class AgentState(TypedDict, total=False):
@@ -73,6 +78,9 @@ class AgentState(TypedDict, total=False):
     # without recalculating and without polluting the current turn's facts.
     history_results: list[ToolResult]
     focus_result_ids: list[str]
+    # Blocks of the latest assistant response: "the second point" resolves to a
+    # specific table/chart without recalculating the data behind it.
+    previous_blocks: list[Block]
     charts: list[ChartSpec]
     answer_blocks: list[Block]
     retries: int

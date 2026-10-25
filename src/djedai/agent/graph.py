@@ -8,12 +8,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     AgentState,
     Block,
+    Clarification,
     ComposeResponse,
     Entities,
     PlanResponse,
@@ -22,6 +24,8 @@ from djedai.contracts.agent import (
     VisualizeResponse,
 )
 from djedai.contracts.chart import ChartSpec
+from djedai.contracts.metrics import MetricDefinition, metrics_prompt
+from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
@@ -34,6 +38,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         if catalog_loader is not None
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
+    metrics_loader = config.get("configurable", {}).get("metrics_loader")
+    if metrics_loader is not None:
+        catalog_prompt += "\n\n" + metrics_prompt(metrics_loader(state["dataset_id"]))
     # Results already in the state belong to earlier turns: keep them as history
     # before the per-turn results are cleared.
     history_results = list(state.get("history_results", []))
@@ -45,6 +52,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     return {
         "catalog_prompt": catalog_prompt,
         "history_results": history_results,
+        # Memory belongs to this chat only; the backend loads it by chat_id and owner.
+        "focus_result_ids": list(state.get("focus_result_ids", [])),
+        "previous_blocks": list(state.get("previous_blocks", [])),
         "results": [],
         "charts": [],
         "answer_blocks": [],
@@ -52,6 +62,18 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "compose_retries": 0,
         "is_verified": False,
     }
+
+
+def memory_context(state: AgentState) -> str:
+    """Собирает единый контекст диалога для understand/plan."""
+    messages = state.get("messages", [])
+    return conversation_context(
+        summary=state.get("history_summary"),
+        recent_messages=messages[:-1] if messages else [],
+        focus_result_ids=state.get("focus_result_ids", []),
+        results=[*state.get("history_results", []), *state.get("results", [])],
+        previous_blocks=state.get("previous_blocks", []),
+    )
 
 
 def understand(state: AgentState, config: RunnableConfig) -> dict:
@@ -67,7 +89,10 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         return {"understanding": Understanding(intent="off_topic", entities=Entities())}
 
     if client:
-        sys_prompt = load_prompt("understand").format(catalog=state.get("catalog_prompt"))
+        sys_prompt = load_prompt("understand").format(
+            catalog=state.get("catalog_prompt"),
+            history=memory_context(state),
+        )
         response = client.generate_typed_response(sys_prompt, last_msg, Understanding)
         if response.status == "success" and response.data:
             return {"understanding": response.data}
@@ -97,7 +122,10 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     )
 
     sys_prompt = load_prompt("plan").format(
-        catalog=state.get("catalog_prompt"), results=results_str, tools_registry=tools_desc
+        catalog=state.get("catalog_prompt"),
+        results=results_str,
+        tools_registry=tools_desc,
+        history=memory_context(state),
     )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
@@ -218,10 +246,22 @@ def chart_source_results(state: AgentState) -> list[ToolResult]:
     understanding = state.get("understanding")
     references = understanding.references if understanding else []
     history_results = state.get("history_results", [])
+    saved = {r.result_id: r for r in [*history_results, *state.get("results", [])]}
 
     if references:
-        saved = {r.result_id: r for r in history_results}
-        return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+        referenced = [
+            saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"
+        ]
+        if referenced:
+            return referenced
+
+    # Follow-up without an explicit reference: the conversation focus, not the
+    # arbitrary last result, is what the user is asking to show differently.
+    focus = state.get("focus_result_ids", [])
+    focused = [saved[result_id] for result_id in focus if result_id in saved]
+    focused = [result for result in focused if result.status == "ok"]
+    if focused:
+        return focused
 
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
 
@@ -247,8 +287,8 @@ def answer_results(state: AgentState) -> list[ToolResult]:
     """Результаты, по которым объясняется и проверяется ответ текущего хода.
 
     Если ход только изменил представление, берём сохранённые результаты,
-    на которые ссылаются графики и понимание запроса: без них компоновщик и
-    верификатор теряют факты, хотя новые вычисления не требуются.
+    на которые сослался пользователь или которые остаются в фокусе разговора.
+    Без этого верификатор и compose теряют факты предыдущего ответа.
     """
     current = active_results(state)
     if current:
@@ -278,8 +318,37 @@ def answer_results(state: AgentState) -> list[ToolResult]:
     references = understanding.references if understanding else []
     if references:
         return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+
+    # Text continuation without a new plan or explicit references: keep the
+    # conversation focus. Falling back to history_results[-1] would explain
+    # whichever result happened to be calculated last, not the selected one.
+    focus = state.get("focus_result_ids", [])
+    focused = [
+        saved[result_id]
+        for result_id in focus
+        if result_id in saved and saved[result_id].status == "ok"
+    ]
+    if focused:
+        return focused
+
     history_results = state.get("history_results", [])
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
+
+
+def updated_focus_result_ids(state: AgentState) -> list[str]:
+    """Обновляет «о чём сейчас разговор» без привязки к чужому чату."""
+    current_results = state.get("results", [])
+    plan_len = len(state.get("plan", []))
+    plan_results = current_results[-plan_len:] if plan_len > 0 else []
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
+    known = {result.result_id for result in [*state.get("history_results", []), *current_results]}
+    return next_focus_result_ids(
+        state.get("focus_result_ids", []),
+        plan_results=plan_results,
+        references=references,
+        available_ids=known,
+    )
 
 
 def describe_result_for_chart(result: ToolResult) -> dict:
@@ -421,12 +490,13 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
 
 
 def visualize(state: AgentState, config: RunnableConfig) -> dict:
+    focus = updated_focus_result_ids(state)
     if not wants_visualization(state):
-        return {"charts": []}
+        return {"charts": [], "focus_result_ids": focus}
 
     valid_results = chart_source_results(state)
     if not valid_results:
-        return {"charts": []}
+        return {"charts": [], "focus_result_ids": focus}
 
     results_summary = [describe_result_for_chart(result) for result in valid_results]
 
@@ -446,17 +516,21 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
     if client:
         response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
         if response.status == "success" and response.data:
-            return {"charts": sanitize_charts(response.data.charts, valid_results)}
+            return {
+                "charts": sanitize_charts(response.data.charts, valid_results),
+                "focus_result_ids": focus,
+            }
 
-    return {"charts": []}
+    return {"charts": [], "focus_result_ids": focus}
 
 
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
+    focus = updated_focus_result_ids(state)
 
     existing_blocks = state.get("answer_blocks", [])
     if any(b.type == "error" for b in existing_blocks):
-        return {"answer_blocks": existing_blocks}
+        return {"answer_blocks": existing_blocks, "focus_result_ids": focus}
 
     facts_and_data = []
     for r in answer_results(state):
@@ -499,7 +573,11 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         for c in charts:
             blocks.append(Block(type="chart", chart=c.model_dump(mode="json")))
 
-    return {"answer_blocks": blocks, "compose_retries": state.get("compose_retries", 0) + 1}
+    return {
+        "answer_blocks": blocks,
+        "compose_retries": state.get("compose_retries", 0) + 1,
+        "focus_result_ids": focus,
+    }
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:
@@ -578,11 +656,12 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     return {"is_verified": True}
 
 
-def clarify(state: AgentState) -> dict:
+def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
+    focus = list(state.get("focus_result_ids", []))
     existing = state.get("answer_blocks", [])
     # Do not suppress API errors if they are already present in the response blocks
     if any(b.type == "error" for b in existing):
-        return {"answer_blocks": existing}
+        return {"answer_blocks": existing, "focus_result_ids": focus}
 
     understanding = state.get("understanding")
     intent = understanding.intent if understanding else "invalid"
@@ -591,9 +670,17 @@ def clarify(state: AgentState) -> dict:
 
     if intent in ["ambiguous", "invalid"]:
         if understanding and understanding.clarification:
-            opts = "\n".join(f"- {opt}" for opt in understanding.clarification.options)
-            msg = f"{understanding.clarification.question}\n{opts}"
-            blocks.append(Block(type="clarification", markdown=msg))
+            # Options travel separately so the chat can render them as buttons.
+            blocks.append(
+                Block(
+                    type="clarification",
+                    markdown=understanding.clarification.question,
+                    options=understanding.clarification.options,
+                    metric_candidates=_checked_candidates(
+                        understanding.clarification, state, config
+                    ),
+                )
+            )
         else:
             if intent == "ambiguous":
                 msg = (
@@ -616,13 +703,156 @@ def clarify(state: AgentState) -> dict:
         )
         blocks.append(Block(type="error", markdown=msg))
 
+    elif (error := _metric_decision(state)) is not None:
+        # Расчёт метрики упёрся в решение пользователя: определение, валюту, период, JOIN.
+        text = error.message if not error.suggestion else f"{error.message}\n\n{error.suggestion}"
+        blocks.append(Block(type="clarification", markdown=text))
+
+    elif blockers := _quality_blockers(state):
+        # Неоднозначная дата или смешанные валюты в расчёте: решает пользователь (B2-10).
+        issue = blockers[0]
+        blocks.append(Block(type="clarification", markdown=issue.message, options=issue.options))
+
     else:
         blocks.append(Block(type="clarification", markdown="Пожалуйста, уточните ваш запрос."))
 
     return {
         "plan": [],
         "answer_blocks": blocks,
+        "focus_result_ids": focus,
     }
+
+
+# Ошибки compute_metric, которые решает только пользователь (B2-9): повторный план их не
+# исправит. Те же коды от run_sql сначала дают перепланирование на compute_metric.
+METRIC_DECISIONS = {
+    "metric_undefined",
+    "metric_definition_stale",
+    "metric_mixed_currency",
+    "metric_period_unsupported",
+    "metric_grain_violation",
+    "metric_rows_lost",
+}
+
+
+def _recent_results(state: AgentState) -> list[ToolResult]:
+    plan_len = len(state.get("plan", []))
+    return state.get("results", [])[-plan_len:] if plan_len > 0 else []
+
+
+def _metric_decision(state: AgentState) -> ToolError | None:
+    for result in reversed(state.get("results", [])):
+        if result.status == "error" and result.error and result.error.code in METRIC_DECISIONS:
+            return result.error
+    return None
+
+
+def _answered(state: AgentState) -> str:
+    """Текущий вопрос: выбор в уточнении действует только на вопрос, в котором сделан.
+
+    Чат сворачивает цепочку «вопрос — кнопки уточнений» в последнее сообщение, поэтому
+    старая кнопка из истории не снимает ограничение нового расчёта.
+    """
+    messages = state.get("messages", [])
+    return messages[-1].content if messages and messages[-1].role == "user" else ""
+
+
+def _quality_blockers(state: AgentState) -> list[QualityIssue]:
+    """Blocking-ограничения качества в последних результатах, на которые не ответили.
+
+    Варианты уточнения начинаются с «таблица.колонка:»; ответ с этой ссылкой в сообщениях
+    пользователя снимает блокировку, и расчёт идёт дальше с предупреждением.
+    """
+    answered = _answered(state)
+    found = []
+    for result in _recent_results(state):
+        if result.status == "error" or result.quality is None:
+            continue
+        for column in result.quality.columns:
+            if f"{column.table}.{column.column}:" in answered:
+                continue
+            found += [i for i in column.issues if i.severity == "blocking"]
+    return found
+
+
+def _checked_candidates(
+    clarification: Clarification, state: AgentState, config: RunnableConfig | None
+) -> list[MetricDefinition | None]:
+    """Кандидаты определений, совместимые с каталогом; несовместимый вариант — ``None``.
+
+    Кандидат от модели — только предложение: подтверждает его выбор пользователя.
+    Без каталога проверить нечего, и вариант не подтверждает определение.
+    """
+    configurable = (config or {}).get("configurable", {})
+    catalog_loader = configurable.get("catalog_loader")
+    candidates = clarification.metric_candidates[: len(clarification.options)]
+    if catalog_loader is None or not candidates:
+        return []
+    catalog = catalog_loader(state["dataset_id"])
+    metrics_loader = configurable.get("metrics_loader")
+    metrics = metrics_loader(state["dataset_id"]) if metrics_loader is not None else {}
+    checked: list[MetricDefinition | None] = []
+    for candidate in candidates:
+        proposal = MetricDefinition.model_validate(candidate.model_dump())  # status=proposed
+        try:
+            proposal.validate_against(catalog, metrics)
+        except ValueError:
+            checked.append(None)
+        else:
+            checked.append(proposal)
+    return checked
+
+
+def cite_metrics(state: AgentState) -> dict:
+    """Добавляет к проверенному ответу ограничения данных и версии определений метрик.
+
+    Оба блока собираются из результатов инструментов, а не из текста модели: если модель
+    промолчала о потерях типизации, пользователь всё равно их увидит (B2-10).
+    """
+    blocks = state.get("answer_blocks", [])
+    if any(b.type == "error" for b in blocks):
+        return {}
+    added = []
+    if limits := _quality_lines(state):
+        text = "**Ограничения данных.**\n" + "\n".join(f"- {line}" for line in limits)
+        added.append(Block(type="text", markdown=text))
+    lines = []
+    for result in answer_results(state):
+        if result.status == "error" or result.metric is None:
+            continue
+        lines += [f.text for f in result.facts if f.kind == "metric_definition"]
+    if lines:
+        text = "**Как посчитано.** " + " ".join(f"{line}." for line in dict.fromkeys(lines))
+        added.append(Block(type="text", markdown=text))
+    if not added:
+        return {}
+    return {"answer_blocks": [*blocks, *added]}
+
+
+def _quality_lines(state: AgentState) -> list[str]:
+    answered = _answered(state)
+    lines = []
+    for result in answer_results(state):
+        report = result.quality
+        if result.status == "error" or report is None:
+            continue
+        if report.lineage == "partial":
+            lines.append(
+                "Не все колонки расчёта удалось связать с данными: ограничения ниже могут "
+                "быть неполными."
+            )
+        for column in report.columns:
+            chosen = f"{column.table}.{column.column}:" in answered
+            for issue in column.issues:
+                if issue.severity == "info":
+                    continue
+                note = (
+                    " Выбор уточнён пользователем."
+                    if issue.severity == "blocking" and chosen
+                    else ""
+                )
+                lines.append(issue.message + note)
+    return list(dict.fromkeys(lines))
 
 
 def route_after_understand(state: AgentState) -> str:
@@ -634,21 +864,28 @@ def route_after_understand(state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
-    plan_len = len(state.get("plan", []))
-    recent_results = state.get("results", [])[-plan_len:] if plan_len > 0 else []
+    recent_results = _recent_results(state)
     has_errors = any(r.status == "error" for r in recent_results)
-
+    metric_errors = [
+        r
+        for r in recent_results
+        if r.status == "error" and r.error and r.error.code in METRIC_DECISIONS
+    ]
+    if any(r.tool == "compute_metric" for r in metric_errors):
+        return "clarify"
     if has_errors and state.get("retries", 0) <= 2:
         return "plan"
+    if metric_errors or _quality_blockers(state):
+        return "clarify"
     return "visualize"
 
 
 def route_after_verify(state: AgentState) -> str:
     if state.get("is_verified", True):
-        return END
+        return "cite_metrics"
     if state.get("compose_retries", 0) < 2:
         return "compose"
-    return END
+    return "cite_metrics"
 
 
 def build_agent_graph() -> StateGraph:
@@ -671,7 +908,9 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
-    workflow.add_node("clarify", observed("clarify", clarify, state_only=True))
+    workflow.add_node("clarify", observed("clarify", clarify))
+    # Без модели и данных: не отдельный этап хода для статусов и диагностики.
+    workflow.add_node("cite_metrics", cite_metrics)
 
     workflow.add_edge(START, "load_ctx")
     workflow.add_edge("load_ctx", "understand")
@@ -684,14 +923,21 @@ def build_agent_graph() -> StateGraph:
 
     # Dynamic loop for error correction
     workflow.add_conditional_edges(
-        "execute", route_after_execute, {"plan": "plan", "visualize": "visualize"}
+        "execute",
+        route_after_execute,
+        {"plan": "plan", "visualize": "visualize", "clarify": "clarify"},
     )
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")
 
     # Conditional edge to handle regeneration
-    workflow.add_conditional_edges("verify", route_after_verify, {"compose": "compose", END: END})
+    workflow.add_conditional_edges(
+        "verify",
+        route_after_verify,
+        {"compose": "compose", "cite_metrics": "cite_metrics"},
+    )
+    workflow.add_edge("cite_metrics", END)
 
     workflow.add_edge("clarify", END)
 

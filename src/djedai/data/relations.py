@@ -36,6 +36,7 @@ JOIN по этим колонкам без ``trim`` теряет строки.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from itertools import combinations
 from pathlib import Path
@@ -214,32 +215,54 @@ def join_impact(
 ) -> JoinImpact:
     """Число строк и суммы числовых колонок ``from`` до и после ``LEFT`` и ``INNER JOIN``.
 
-    JOIN не материализуется: каждая строка ``from`` весит столько, сколько строк ``to``
-    с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — исключается). Суммы
-    считаются в точном типе, как в профайлере; сумма без значений — ``None`` (SQL NULL).
-    CTE выбирают только ключ и меры под служебными именами ``_djedai_*``, поэтому колонки
-    таблиц (например, ``k`` или ``n``) с ними не пересекаются. Ключи должны быть одного
-    семейства типов (``_key_family``): иначе строковое сравнение расходится с JOIN.
+    Суммы считаются в точном типе, как в профайлере; сумма без значений — ``None`` (SQL NULL).
+    Ключи должны быть одного семейства типов (``_key_family``): иначе строковое сравнение
+    расходится с JOIN.
     """
-    measures = [c for c in from_table.columns if c.semantic_type in NUMERIC]
-    values = []
-    for column in measures:
+    measures = []
+    for column in from_table.columns:
+        if column.semantic_type not in NUMERIC:
+            continue
         wide = _wide_type(column.physical_type, column.semantic_type)
-        values.append(f"CAST({_ident(column.name)} AS {wide})" if wide else _ident(column.name))
-    selected = "".join(f", {v} AS _djedai_m{i}" for i, v in enumerate(values))
+        value = f"CAST({_ident(column.name)} AS {wide})" if wide else _ident(column.name)
+        measures.append((column.name, value))
+    return measure_join_impact(
+        connection, from_table.view_name, from_column, to_table, to_column, measures
+    )
+
+
+def measure_join_impact(
+    connection: duckdb.DuckDBPyConnection,
+    from_view: str,
+    from_column: str,
+    to_table: str,
+    to_column: str,
+    measures: Sequence[tuple[str, str]] = (),
+    where: str | None = None,
+) -> JoinImpact:
+    """``join_impact`` для произвольного представления: меры — пары (имя, SQL-выражение).
+
+    JOIN не материализуется: каждая строка ``from`` весит столько, сколько строк ``to``
+    с её ключом (при LEFT JOIN строка без пары весит 1, при INNER — исключается).
+    CTE выбирают только ключ и меры под служебными именами ``_djedai_*``, поэтому колонки
+    таблиц (например, ``k`` или ``n``) с ними не пересекаются. ``where`` — уже безопасный
+    SQL-предикат над строками ``from``: проверяется только расчётная популяция (B2-9).
+    """
+    selected = "".join(f", {value} AS _djedai_m{i}" for i, (_, value) in enumerate(measures))
     sums = "".join(
         # INNER: у строки без пары _djedai_n IS NULL, произведение NULL и в сумму не входит —
         # если пар нет совсем, сумма NULL, как у настоящего JOIN, а не 0
         f", sum(f._djedai_m{i}), sum(f._djedai_m{i} * coalesce(m._djedai_n, 1)), "
         f"sum(f._djedai_m{i} * m._djedai_n)"
-        for i in range(len(values))
+        for i in range(len(measures))
     )
+    population = f" WHERE {where}" if where else ""
     row = connection.execute(
         f"""WITH m AS (
                 SELECT {_key(to_column)} AS _djedai_k, count(*) AS _djedai_n
                 FROM {_ident(to_table)} WHERE {_key(to_column)} IS NOT NULL GROUP BY 1),
             f AS (SELECT {_key(from_column)} AS _djedai_k{selected}
-                FROM {_ident(from_table.view_name)})
+                FROM {_ident(from_view)}{population})
             SELECT count(*), coalesce(sum(coalesce(m._djedai_n, 1)), 0),
                 coalesce(sum(coalesce(m._djedai_n, 0)), 0),
                 count(*) FILTER (WHERE f._djedai_k IS NOT NULL AND m._djedai_n IS NULL),
@@ -256,8 +279,8 @@ def join_impact(
         null_key_rows=null_keys,
         max_fanout=fanout,
         sums=tuple(
-            SumChange(c.name, *(_json_value(v) for v in totals[3 * i : 3 * i + 3]))
-            for i, c in enumerate(measures)
+            SumChange(name, *(_json_value(v) for v in totals[3 * i : 3 * i + 3]))
+            for i, (name, _) in enumerate(measures)
         ),
     )
 

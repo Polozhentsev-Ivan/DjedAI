@@ -4,6 +4,7 @@ import { ChartCard } from './ChartCard';
 import { ChatMessage } from './ChatMessage';
 import { DataTable } from './DataTable';
 import { HowCalculated } from './HowCalculated';
+import { Markdown } from './Markdown';
 import { WidgetCard } from './WidgetCard';
 
 const how = { tool: "time_aggregate(table='orders')", columns: [{ label: 'Сумма', name: 'amount' }], sql: 'SELECT 1', stats: '120 000 строк' };
@@ -54,6 +55,12 @@ describe('HowCalculated', () => {
     await userEvent.click(screen.getByRole('button', { name: /Как посчитано/ }));
     expect(screen.getByText('SELECT 1')).toBeInTheDocument();
     expect(screen.getByText('120 000 строк')).toBeInTheDocument();
+  });
+
+  it('lists data limitations', () => {
+    render(<HowCalculated variant="panel" {...how} limitations={['4 из 100 значений не распознаны']} />);
+    expect(screen.getByText('Ограничения')).toBeInTheDocument();
+    expect(screen.getByText('4 из 100 значений не распознаны')).toBeInTheDocument();
   });
 
   it('shows the panel variant without a toggle', () => {
@@ -132,5 +139,20 @@ describe('WidgetCard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Удалить' }));
     expect(onRetry).toHaveBeenCalled();
     expect(onRemove).toHaveBeenCalled();
+  });
+});
+
+describe('Markdown', () => {
+  it('renders the agent subset as elements and keeps HTML as text', () => {
+    const { container } = render(<Markdown text={'## Итог\nВыручка выросла на **12%**, *см.* `orders`.\nВторая строка\n\n- первый\n- второй\n1. шаг\n\n<b>не HTML</b>'} />);
+    expect(screen.getByText('Итог')).toHaveClass('font-semibold');
+    expect(screen.getByText('12%').tagName).toBe('STRONG');
+    expect(screen.getByText('см.').tagName).toBe('EM');
+    expect(screen.getByText('orders').tagName).toBe('CODE');
+    expect(container.querySelector('p br')).not.toBeNull();
+    expect(container.querySelectorAll('ul li')).toHaveLength(2);
+    expect(container.querySelectorAll('ol li')).toHaveLength(1);
+    expect(container.querySelector('b')).toBeNull();
+    expect(screen.getByText('<b>не HTML</b>')).toBeInTheDocument();
   });
 });

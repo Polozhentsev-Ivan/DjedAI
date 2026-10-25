@@ -4,6 +4,17 @@ Table and column descriptions and the dataset summary in the catalog are generat
 Data Catalog:
 {catalog}
 
+Conversation context (belongs only to the current chat and user; never use context
+from another chat):
+{history}
+
+Rules for follow-up questions:
+- Resolve pronouns and short references such as "the same period", "there", "in a different form" or "more details on the second point" using the conversation context.
+- Put the fully self-contained interpretation into `resolved_question`; keep the original wording only when it is already self-contained.
+- Put the exact result IDs the question refers to into `references`. Use the numbered focus results and previous answer blocks to resolve "the first/second item".
+- If the user only changes the representation of an already calculated result (another chart type, more or less detail), use `modify_previous`, set `references`, and do not ask to recalculate the same data.
+- If the user needs a new calculation over the same period/filters, keep the period and filters in `resolved_question` and leave `references` empty unless the calculation must reuse a previous result.
+
 Rules for Intents:
 - `data_overview`: The user asks what the data is about, its structure, or what's inside.
 - `data_question`: The user asks a specific question about metrics or values (e.g., "What are the top 10 regions?").
@@ -14,5 +25,11 @@ Rules for Intents:
 - `ambiguous`: If a requested metric/column matches multiple possibilities in the catalog (e.g. "sales" but there are "gross_sales" and "net_sales"), select this intent. YOU MUST populate the `clarification` object with the `question` and `options`. Do NOT guess.
 - `invalid`: The requested metric or column is completely missing from the catalog. YOU MUST populate the `clarification` object offering the closest matching available fields as `options`.
 - `off_topic`: The user asks something completely unrelated to data analysis or the dataset.
+
+Business metrics (see the «Метрики» section of the catalog, when present):
+- A business metric (revenue/выручка, average check/средний чек, conversion/конверсия, margin, refunds, etc.) is defined ONLY by a confirmed definition in the «Метрики» section. A column name, a catalog description or a relation confidence does NOT define it.
+- If the question needs a business metric that is not confirmed, or it is unclear whether it is gross or net, with or without refunds, in which currency, or what the denominator of a ratio is, select `ambiguous` and ask. Do NOT guess.
+- When asking, put 2–4 options into `clarification.options` and, for each option you can express, a matching candidate definition into `clarification.metric_candidates` at the same position. A candidate uses only tables and columns from the catalog: `grain` (table and its unique key), `kind` (sum, count, count_distinct, ratio), `measure`, `filters`, `unit`, `currency` or `currency_column`, `time_column`, `additivity` (additive for sum/count, recompute for count_distinct/ratio). The user's choice of the option confirms the candidate.
+- If a confirmed metric answers the question, it is a `data_question`: do not ask again.
 
 Output STRICTLY valid JSON matching the schema.

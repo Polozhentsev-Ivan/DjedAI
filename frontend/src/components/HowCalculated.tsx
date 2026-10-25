@@ -14,6 +14,8 @@ export interface Calculation {
   columns: readonly CalculationColumn[];
   sql: string;
   stats?: string | undefined;
+  /** Data limitations of the result: typing losses, ambiguities, incomplete lineage. */
+  limitations?: readonly string[] | undefined;
 }
 
 interface HowCalculatedProps extends Calculation {
@@ -22,7 +24,7 @@ interface HowCalculatedProps extends Calculation {
   defaultOpen?: boolean | undefined;
 }
 
-function Body({ tool, columns, sql, stats, panel }: Calculation & { panel: boolean }) {
+function Body({ tool, columns, sql, stats, limitations, panel }: Calculation & { panel: boolean }) {
   const label = 'min-w-(--label-col) text-xs text-muted-foreground';
   return (
     <div className={cn('flex flex-col gap-3', panel ? 'px-2 pb-2 pt-1' : 'border-t border-border bg-secondary p-3.5')}>
@@ -44,6 +46,14 @@ function Body({ tool, columns, sql, stats, panel }: Calculation & { panel: boole
         <div className="flex flex-wrap items-baseline gap-2">
           <span className={label}>Обработано</span>
           <span className="tabular">{stats}</span>
+        </div>
+      )}
+      {limitations && limitations.length > 0 && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Ограничения</span>
+          <ul className="m-0 flex flex-1 list-disc flex-col gap-1 pl-4">
+            {limitations.map((line) => <li key={line}>{line}</li>)}
+          </ul>
         </div>
       )}
       <pre className="m-0 overflow-auto whitespace-pre rounded-sm bg-code px-3.5 py-3 font-mono text-xs leading-code text-foreground">{sql}</pre>

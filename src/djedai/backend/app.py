@@ -88,6 +88,7 @@ CONTRACT_UNION_SCHEMAS: dict[str, Any] = {
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Управление жизненным циклом приложения (запуск и завершение)."""
     from djedai.backend.dataset_service import DatasetService
+    from djedai.backend.metric_service import MetricService
 
     cfg = app.state.settings
     app.state.dataset_service = DatasetService(
@@ -103,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             query_timeout=cfg.clickhouse_query_timeout,
         ),
     )
+    app.state.metric_service = MetricService(app.state.session_factory, app.state.dataset_service)
     try:
         await app.state.dataset_service.recover_interrupted()
         yield

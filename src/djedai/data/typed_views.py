@@ -22,6 +22,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 import duckdb
 
@@ -425,11 +426,13 @@ def _infer_column(
             f"SELECT count(*) FILTER (WHERE {value} <> '' AND ({outcome.expr}) IS NOT NULL) "
             f"FROM {_ident(table)}"
         ).fetchone()[0]
-        if parsed < get_limits().type_parse_threshold * non_empty:
+        if not _meets_threshold(parsed, non_empty):
             outcome = _Reject(
                 "below_threshold",
                 {"candidate": outcome.semantic_type, "success_ratio": _ratio(parsed, non_empty)},
             )
+    if outcome is None:
+        outcome = _near_miss(stats)
     if not isinstance(outcome, _Candidate):
         reason = outcome or _Reject("text")
         semantic = "id" if reason.reason in ("id_leading_zeros", "id_name") else "text"
@@ -476,6 +479,29 @@ def _infer_column(
     return _Plan(typed, outcome.expr, entries)
 
 
+def _near_miss(stats: dict[str, int]) -> _Reject | None:
+    """Колонка не прошла порог, но больше половины значений — числа, даты или булевы.
+
+    Такая колонка остаётся текстом; журнал сохраняет кандидата и долю распознанных,
+    чтобы расчёт по ней мог предупредить о пороге, а не о «просто тексте».
+    """
+    total = stats["ne"]
+    candidates = {
+        "number": max(stats["num,"], stats["num."]),
+        "date": max(stats[f"fmt{i}"] for i in range(len(_TEMPORAL))),
+        "bool": stats["bool"],
+    }
+    kind, best = max(candidates.items(), key=lambda item: item[1])
+    if not total or best * 2 <= total:
+        return None
+    return _Reject("below_threshold", {"candidate": kind, "success_ratio": _ratio(best, total)})
+
+
+def _meets_threshold(count: int, total: int) -> bool:
+    """Доля ``count / total`` не ниже порога; сравнение точное, без ошибки float (0.55 * 100)."""
+    return count >= Decimal(str(get_limits().type_parse_threshold)) * total
+
+
 def _ratio(parsed: int, total: int) -> float:
     return round(parsed / total, 4) if total else 1.0
 
@@ -487,7 +513,7 @@ def _rename_entries(original: str, name: str) -> tuple[tuple[str, dict], ...]:
 
 
 def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
-    if stats["bool"] < get_limits().type_parse_threshold * stats["ne"]:
+    if not _meets_threshold(stats["bool"], stats["ne"]):
         return None
     value = f"lower(trim({column}))"
     true_list = ", ".join(map(_lit, TRUE_WORDS))
@@ -500,8 +526,7 @@ def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
 
 
 def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject | None:
-    need = get_limits().type_parse_threshold * stats["ne"]
-    fits = {d: stats[f"num{d}"] >= need for d in (",", ".")}
+    fits = {d: _meets_threshold(stats[f"num{d}"], stats["ne"]) for d in (",", ".")}
     if not any(fits.values()):
         return None
     if fits[","] and fits["."]:
@@ -526,11 +551,12 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
     )
     row = connection.execute(
         f"SELECT count(*) FILTER (WHERE {guard} AND contains({value}, '%')), "
+        f"count(*) FILTER (WHERE {guard} AND NOT contains({value}, '%')), "
         f"coalesce(max(length(regexp_extract({clean}, '\\.([0-9]+)$', 1))) "
         f"FILTER (WHERE {guard}), 0), "
         f"{currency_counts} FROM {_ident(table)}"
     ).fetchone()
-    percent, scale, per_currency = row[0], row[1], row[2:]
+    percent, without_percent, scale, per_currency = row[0], row[1], row[2], row[3:]
     currencies = [code for code, n in zip(CURRENCIES, per_currency, strict=True) if n]
     if len(currencies) > 1:
         return _Reject("mixed_currencies", {"currencies": currencies})
@@ -547,6 +573,9 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
         physical, action = f"DECIMAL(18,{scale})", f"parse_{semantic}"
         if currencies:
             detail["currency"] = currencies[0]
+        else:
+            # 15% и 0.15 в одной колонке: масштаб значений без знака не определить
+            detail["without_percent_sign"] = without_percent
         fmt = f"{separator}, {currencies[0]}" if currencies else f"{separator}, percent"
     elif is_int:
         semantic, physical, action, fmt = "integer", "BIGINT", "parse_integer", separator
@@ -559,7 +588,7 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
 def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | None:
     counts = [(stats[f"fmt{i}"], i) for i in range(len(_TEMPORAL))]
     best = max(count for count, _ in counts)
-    if best < get_limits().type_parse_threshold * stats["ne"]:
+    if not _meets_threshold(best, stats["ne"]):
         return None
     leaders = [i for count, i in counts if count == best]
     if len(leaders) > 1:
@@ -569,6 +598,22 @@ def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | 
     fmt, shape, kind = _TEMPORAL[leaders[0]]
     value = f"trim({column})"
     parsed = f"try_strptime({value}, {_lit(fmt)})"
+    detail: dict = {"format": fmt, "ambiguous_values": 0, "alternative_formats": []}
+    rivals = [i for count, i in counts if count and i != leaders[0]]
+    if rivals:
+        # формат выбран по большинству, но часть значений подходит и под другой (03/04/2026)
+        both = " OR ".join(
+            f"(regexp_full_match({value}, {_lit(_TEMPORAL[i][1])}) "
+            f"AND try_strptime({value}, {_lit(_TEMPORAL[i][0])}) IS NOT NULL)"
+            for i in rivals
+        )
+        ambiguous = connection.execute(
+            f"SELECT count(*) FILTER (WHERE regexp_full_match({value}, {_lit(shape)}) "
+            f"AND {parsed} IS NOT NULL AND ({both})) FROM {_ident(table)}"
+        ).fetchone()[0]
+        if ambiguous:
+            detail["ambiguous_values"] = ambiguous
+            detail["alternative_formats"] = [_TEMPORAL[i][0] for i in rivals]
     if kind == "date":
         expr, physical = (
             f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN CAST({parsed} AS DATE) END",
@@ -579,4 +624,4 @@ def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | 
             f"CASE WHEN regexp_full_match({value}, {_lit(shape)}) THEN {parsed} END",
             "TIMESTAMP",
         )
-    return _Candidate(f"parse_{kind}", physical, kind, fmt, expr, {"format": fmt})
+    return _Candidate(f"parse_{kind}", physical, kind, fmt, expr, detail)

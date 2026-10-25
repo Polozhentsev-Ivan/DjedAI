@@ -2,7 +2,9 @@ from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph
+from djedai.backend.chat_service import _block_to_message_block
 from djedai.contracts.agent import Clarification, Entities, Message, Understanding
+from djedai.contracts.message import ClarificationBlock
 
 
 def run_understand_scenario(
@@ -40,7 +42,12 @@ def test_clarify_ambiguous_with_options():
     block = result["answer_blocks"][0]
     assert block.type == "clarification"
     assert "Какую метрику считать продажами?" in block.markdown
-    assert "- Сумма заказа (amount)" in block.markdown
+    assert block.options == ["Сумма заказа (amount)", "Количество заказов"]
+    message_block = _block_to_message_block(block)
+    assert message_block == ClarificationBlock(
+        question="Какую метрику считать продажами?",
+        options=["Сумма заказа (amount)", "Количество заказов"],
+    )
 
 
 def test_clarify_invalid_field():
@@ -67,7 +74,7 @@ def test_clarify_invalid_field_with_options():
     block = result["answer_blocks"][0]
     assert block.type == "clarification"
     assert "не найдено. Возможно, вы имели в виду:" in block.markdown
-    assert "- Погода (weather)" in block.markdown
+    assert block.options == ["Погода (weather)", "Регион (region)"]
 
 
 def test_clarify_off_topic_capabilities():
