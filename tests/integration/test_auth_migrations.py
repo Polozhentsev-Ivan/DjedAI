@@ -161,7 +161,11 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
             )
             db.commit()
             create_dashboard(db, "dashboard", "legacy", "dataset", "Обзор")
-            db.add(ToolResultModel(result_id="result", owner_id="legacy", status="empty"))
+            db.execute(
+                ToolResultModel.__table__.insert().values(
+                    result_id="result", owner_id="legacy", status="empty"
+                )
+            )
             db.commit()
         command.upgrade(cfg, "head")
         with Session(engine) as db:
