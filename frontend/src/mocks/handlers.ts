@@ -170,7 +170,7 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
 
     http.post(api('/datasets/connect'), async ({ request }) => {
       const body = (await request.json()) as Schemas['ConnectRequest'];
-      if (!/^(postgresql|clickhouse):\/\//.test(body.dsn)) {
+      if (!/^(postgresql|clickhouse|https?):\/\//.test(body.dsn)) {
         return errorJson(422, { code: 'bad_dsn', message: 'Строка подключения не распознана', suggestion: 'Пример: postgresql://user:password@host:5432/db' });
       }
       uploads += 1;

@@ -1,7 +1,7 @@
 # Python-интерфейс блока данных — B1-10 / #62
 
 Дата: 24.10.2026. Документ фиксирует уже работающий фасад как согласованный
-интерфейс B1 для backend. Фасад реализован в #144 (CSV) и #103/#60 (PostgreSQL).
+интерфейс B1 для backend. Фасад реализован в #144 (CSV), #103/#60 (PostgreSQL) и #61 (ClickHouse).
 Формат каталога — `DatasetCatalog` из #59. Новых функций документ не добавляет.
 
 ## Фасад
@@ -16,7 +16,7 @@ data_dir, *, source_encryption_key=None)`. В приложении это `app.s
 | --- | --- | --- |
 | `await ingest_csv(owner_id, sources)` | `Sequence[CsvSource(path, original_name)]`, без HTTP | `DatasetUploadAccepted(dataset_id, status="processing")` |
 | `await ingest_uploads(owner_id, files)` | `Sequence[UploadFile]` (multipart-адаптер) | то же |
-| `await connect_db(owner_id, dsn, tables=None, *, kind="postgresql", name=None)` | DSN и необязательный список таблиц | то же |
+| `await connect_db(owner_id, dsn, tables=None, *, kind="postgresql", name=None)` | DSN и необязательный список таблиц; `kind` — `postgresql` или `clickhouse` | то же |
 | `get_catalog(owner_id, dataset_id)` | — | `DatasetCatalog` готового датасета |
 | `get_detail(owner_id, dataset_id)` / `list_for_owner(owner_id)` | — | `DatasetDetail` / `list[DatasetSummary]` |
 | `get_context(owner_id, dataset_id)` | — | `DatasetContext`: каталог и `open_connection()` для аналитики |
@@ -53,7 +53,7 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
 | Фасад: пустой список файлов (только Python), файл не `.csv`, некорректный DSN, пустой список таблиц, плохое имя | 422 | `http_422` |
 | Неизвестный или чужой `dataset_id` (любой метод чтения, SSE) | 404 | `not_found` |
 | Каталог или контекст ещё не готов, файл датасета недоступен | 409 | `conflict` |
-| `kind` не поддерживается (сейчас `clickhouse`) | 501 | `http_501` |
+| `kind` не поддерживается (Python-вызов с видом кроме `postgresql`/`clickhouse`) | 501 | `http_501` |
 | Не задан `SOURCE_ENCRYPTION_KEY`, сохранённый источник PostgreSQL недоступен | 503 | `unavailable` |
 | Сборка завершилась ошибкой | статус `error` | `dataset_processing_failed` в `DatasetDetail.error` |
 
@@ -63,7 +63,8 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
 `code="unauthorized"`. Чтобы узнать код ошибки сборки, после события `error`
 прочитайте `GET /api/datasets/{id}` (`get_detail`).
 
-Текст ошибки сборки — сообщение `CsvReadError` для CSV или общая фраза. DSN,
+Текст ошибки сборки — сообщение `CsvReadError` для CSV, сообщение о превышении
+порога ClickHouse ([#61](61-clickhouse.md#порог)) или общая фраза. DSN,
 пути, SQL и трассировки драйвера не попадают в ответы, SSE, каталог и логи.
 
 ## Контекст владельца
@@ -79,19 +80,13 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
 - [x] Заглушка для BE: не понадобилась, сразу сделана рабочая реализация (#144).
 - [x] CP1: `ingest_csv` + `get_catalog` для CSV (#53, #56, #59, #144).
 - [x] CP2: `connect_db` для PostgreSQL (#60, #103).
-- [ ] FINAL: ClickHouse (#61).
+- [x] FINAL: ClickHouse (#61).
 
-`ConnectRequest.kind` уже принимает `clickhouse`, поэтому менять HTTP-формат не
-придётся. Для #61 нужно:
-
-1. Добавить ветку `kind="clickhouse"` в `connect_db` с проверкой DSN и шифрованием
-   через `SourceSecrets`, сохранять `source_kind="clickhouse"`.
-2. В `_process` собирать каталог по метаданным и серверным профилям ClickHouse,
-   `source.kind="clickhouse"`.
-3. По [§7 решения PL-1](47-contracts-and-runtime.md#7-доступ-к-clickhouse-и-внешние-данные)
-   запросы выполняются в ClickHouse в его диалекте. Сейчас `DatasetContext.open_connection()`
-   возвращает DuckDB-соединение, поэтому контекст для CH нужно расширить вместе с
-   владельцами `run_sql` и агента.
+`connect_db(kind="clickhouse")` использует тот же формат запроса, статусы, ошибки и
+контекст владельца. Таблицы ClickHouse копируются в файл датасета в пределах порога,
+поэтому `DatasetContext.open_connection()` по-прежнему возвращает DuckDB-соединение и
+`run_sql`/агент не меняются. Выбор по объёму, порог и приёмка —
+[решение B1-9 / #61](61-clickhouse.md).
 
 Открытый вопрос: передавать ли в SSE `error` код `dataset_processing_failed`.
 Поле `SSEErrorData.code` для этого уже есть, но это изменение wire-формата SSE,

@@ -112,7 +112,7 @@ describe('SourcesPage', () => {
     await renderRoute('/sources');
     await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
     await userEvent.click(screen.getByRole('radio', { name: 'ClickHouse' }));
-    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveAttribute('placeholder', expect.stringContaining('clickhouse://'));
+    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveAttribute('placeholder', expect.stringContaining('host:8123'));
     await userEvent.click(screen.getByRole('button', { name: 'products' }));
     expect(screen.getByRole('button', { name: 'products' })).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(screen.getByRole('button', { name: 'orders' }));
@@ -122,7 +122,7 @@ describe('SourcesPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Строка подключения не распознана');
     await userEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
     await userEvent.clear(screen.getByLabelText('Строка подключения (DSN)'));
-    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'clickhouse://u:p@h:9000/db');
+    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'http://u:p@h:8123/db');
     await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
     expect(await within(screen.getByRole('table')).findByText('clickhouse_db')).toBeInTheDocument();
   });
