@@ -77,11 +77,22 @@ export function useUploadCsv() {
   });
 }
 
+// The DSN carries a password: its mutations leave the cache as soon as nothing observes
+// them (reset or unmount), so the secret lives no longer than the form shows it.
 export function useConnectDatabase() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: Schemas['ConnectRequest']) => request<Schemas['DatasetAccepted']>('/datasets/connect', { method: 'POST', json: body }),
     onSuccess: () => client.invalidateQueries({ queryKey: keys.datasets }),
+    gcTime: 0,
+  });
+}
+
+/** Lists tables of a read-only source before connecting; the server stores nothing. */
+export function useCheckDatabase() {
+  return useMutation({
+    mutationFn: (body: Schemas['SourceCheckRequest']) => request<Schemas['SourceCheckResult']>('/datasets/connect/check', { method: 'POST', json: body }),
+    gcTime: 0,
   });
 }
 

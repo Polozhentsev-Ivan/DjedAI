@@ -108,23 +108,71 @@ describe('SourcesPage', () => {
     expect(await screen.findByText('Обработка sales')).toBeInTheDocument();
   });
 
-  it('connects a database and reports a bad DSN', async () => {
-    await renderRoute('/sources');
+  it('checks a ClickHouse source, connects the chosen tables and forgets the DSN', async () => {
+    const sent: unknown[] = [];
+    const record = ({ request }: { request: Request }) => {
+      if (request.url.endsWith('/datasets/connect')) void request.clone().json().then((body) => sent.push(body));
+    };
+    server.events.on('request:start', record);
+    const { client } = await renderRoute('/sources');
     await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
     await userEvent.click(screen.getByRole('radio', { name: 'ClickHouse' }));
-    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveAttribute('placeholder', expect.stringContaining('clickhouse://'));
-    await userEvent.click(screen.getByRole('button', { name: 'products' }));
-    expect(screen.getByRole('button', { name: 'products' })).toHaveAttribute('aria-pressed', 'true');
-    await userEvent.click(screen.getByRole('button', { name: 'orders' }));
-    expect(screen.getByRole('button', { name: 'orders' })).toHaveAttribute('aria-pressed', 'false');
-    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'mysql://x');
+    const input = screen.getByLabelText('Строка подключения (DSN)');
+    expect(input).toHaveAttribute('placeholder', expect.stringContaining('host:8123'));
+    expect(screen.getByRole('button', { name: 'Проверить соединение' })).toBeDisabled();
+    await userEvent.type(input, 'http://reader:s3cret@h:8123/db');
+    await userEvent.click(screen.getByRole('button', { name: 'Проверить соединение' }));
+    expect(await screen.findByText(/Соединение установлено/)).toHaveTextContent('reader@db:5432/demo');
+    expect(screen.getByRole('button', { name: /sales/ })).toHaveTextContent('4 376');
+    await userEvent.click(screen.getByRole('button', { name: /sales/ }));
+    expect(screen.getByRole('button', { name: /sales/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /stores/ })).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
+    expect(await within(screen.getByRole('table')).findByText('clickhouse_db')).toBeInTheDocument();
+    expect(sent).toEqual([{ kind: 'clickhouse', dsn: 'http://reader:s3cret@h:8123/db', tables: ['sales'] }]);
+    server.events.removeListener('request:start', record);
+    // The DSN is gone from the form and from every cached mutation.
+    await waitFor(() => { expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveValue(''); });
+    await waitFor(() => { expect(JSON.stringify(client.getMutationCache().getAll().map((m) => m.state.variables))).not.toContain('s3cret'); });
+    const stored = [window.localStorage, window.sessionStorage].flatMap((storage) => Array.from({ length: storage.length }, (_, i) => storage.getItem(storage.key(i) ?? '')));
+    expect(JSON.stringify(stored)).not.toContain('s3cret');
+  });
+
+  it('connects every table when nothing is selected', async () => {
+    const sent: unknown[] = [];
+    const record = ({ request }: { request: Request }) => {
+      if (request.url.endsWith('/datasets/connect')) void request.clone().json().then((body) => sent.push(body));
+    };
+    server.events.on('request:start', record);
+    await renderRoute('/sources');
+    await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
+    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'postgresql://u:p@h:5432/db');
+    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
+    expect(await within(screen.getByRole('table')).findByText('postgres_db')).toBeInTheDocument();
+    server.events.removeListener('request:start', record);
+    expect(sent).toEqual([{ kind: 'postgres', dsn: 'postgresql://u:p@h:5432/db', tables: null }]);
+  });
+
+  it('reports failed checks, drops them on edit and reports a bad DSN on connect', async () => {
+    await renderRoute('/sources');
+    await userEvent.click(screen.getByRole('tab', { name: 'Подключить БД' }));
+    const input = screen.getByLabelText('Строка подключения (DSN)');
+    await userEvent.type(input, 'postgresql://u:wrong@h/db');
+    await userEvent.click(screen.getByRole('button', { name: 'Проверить соединение' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Неверный пользователь или пароль');
+    await userEvent.clear(input);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await userEvent.type(input, 'postgresql://u:p@h/db');
+    await userEvent.click(screen.getByRole('button', { name: 'Проверить соединение' }));
+    expect(await screen.findByRole('button', { name: /orders/ })).toBeInTheDocument();
+    await userEvent.type(input, 'x');
+    expect(screen.queryByRole('button', { name: /orders/ })).not.toBeInTheDocument();
+    await userEvent.clear(input);
+    await userEvent.type(input, 'mysql://x');
     await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Строка подключения не распознана');
     await userEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
-    await userEvent.clear(screen.getByLabelText('Строка подключения (DSN)'));
-    await userEvent.type(screen.getByLabelText('Строка подключения (DSN)'), 'clickhouse://u:p@h:9000/db');
-    await userEvent.click(screen.getByRole('button', { name: 'Подключить' }));
-    expect(await within(screen.getByRole('table')).findByText('clickhouse_db')).toBeInTheDocument();
+    expect(screen.getByLabelText('Строка подключения (DSN)')).toHaveValue('mysql://x');
   });
 
   it('shows the empty state and switches tabs from it', async () => {

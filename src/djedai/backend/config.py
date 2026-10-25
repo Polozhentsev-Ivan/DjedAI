@@ -47,6 +47,12 @@ class Settings(LimitSettings):
     results_data_dir: str = Field(default="./var/data/results", alias="RESULTS_DATA_DIR")
     datasets_data_dir: str = Field(default="./var/data/datasets", alias="DATASETS_DATA_DIR")
     source_encryption_key: SecretStr | None = Field(default=None, alias="SOURCE_ENCRYPTION_KEY")
+    # Порог материализации ClickHouse (#61): суммарно по выбранным таблицам источника.
+    clickhouse_max_rows: int = Field(default=5_000_000, ge=1, alias="CLICKHOUSE_MAX_ROWS")
+    clickhouse_max_bytes: int = Field(default=1_000_000_000, ge=1, alias="CLICKHOUSE_MAX_BYTES")
+    clickhouse_query_timeout: int = Field(
+        default=300, ge=1, le=3600, alias="CLICKHOUSE_QUERY_TIMEOUT_SECONDS"
+    )
 
     # Legacy bootstrap utility only; HTTP resource APIs always require verified sessions.
     cp1_local_mode: bool = Field(default=False, alias="CP1_LOCAL_MODE")
@@ -131,6 +137,9 @@ class Settings(LimitSettings):
         "results_data_dir",
         "datasets_data_dir",
         "source_encryption_key",
+        "clickhouse_max_rows",
+        "clickhouse_max_bytes",
+        "clickhouse_query_timeout",
         "cp1_local_mode",
         "cp1_local_user_id",
         "auth_rate_limit_requests",

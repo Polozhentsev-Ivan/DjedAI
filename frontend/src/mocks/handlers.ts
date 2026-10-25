@@ -168,9 +168,21 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       return HttpResponse.json({ dataset_id: id, status: 'processing' }, { status: 202 });
     }),
 
+    http.post(api('/datasets/connect/check'), async ({ request }) => {
+      const body = (await request.json()) as Schemas['SourceCheckRequest'];
+      if (!/^(postgresql|clickhouse|https?):\/\//.test(body.dsn)) {
+        return errorJson(422, { code: 'http_422', message: 'Проверьте строку подключения' });
+      }
+      if (body.dsn.includes('wrong')) return errorJson(422, { code: 'http_422', message: 'Неверный пользователь или пароль' });
+      const tables = body.kind === 'clickhouse'
+        ? [{ name: 'sales', row_count: 4376 }, { name: 'stores', row_count: 10 }]
+        : [{ name: 'orders', row_count: null }, { name: 'customers', row_count: null }];
+      return HttpResponse.json({ kind: body.kind, source: 'reader@db:5432/demo', tables, truncated: false });
+    }),
+
     http.post(api('/datasets/connect'), async ({ request }) => {
       const body = (await request.json()) as Schemas['ConnectRequest'];
-      if (!/^(postgresql|clickhouse):\/\//.test(body.dsn)) {
+      if (!/^(postgresql|clickhouse|https?):\/\//.test(body.dsn)) {
         return errorJson(422, { code: 'bad_dsn', message: 'Строка подключения не распознана', suggestion: 'Пример: postgresql://user:password@host:5432/db' });
       }
       uploads += 1;
