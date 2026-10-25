@@ -520,6 +520,20 @@ describe('chat answer blocks', () => {
     expect(screen.getByText('Показаны первые 2 из 3 строк.')).toBeInTheDocument();
   });
 
+  it('keeps the hour of timestamp rows apart in a table block', async () => {
+    server.use(http.get(api('/results/r_hourly/data'), () => HttpResponse.json({
+      columns: ['hour', 'revenue'], rows: [['2026-10-25T09:00:00', 100], ['2026-10-25T10:00:00', 200]], row_count: 2, truncated: false,
+    } satisfies Schemas['ResultData'])));
+    savedChat([{ type: 'table', result_id: 'r_hourly' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    const [, nine, ten] = within(table).getAllByRole('row');
+    expect(nine).toHaveTextContent('25.10.2026 09:00');
+    expect(nine).toHaveTextContent('100');
+    expect(ten).toHaveTextContent('25.10.2026 10:00');
+    expect(ten).toHaveTextContent('200');
+  });
+
   it('shows ISO dates of a table block in the Russian format', async () => {
     resultApi();
     savedChat([{ type: 'table', result_id: 'r_fixture' }]);
