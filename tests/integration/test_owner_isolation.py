@@ -166,6 +166,11 @@ def test_every_resource_route_requires_bearer_even_in_local_mode(owner_api: Owne
             "/api/datasets/connect",
             {"json": {"kind": "postgresql", "dsn": "postgresql://reader:private@db/test"}},
         ),
+        (
+            "POST",
+            "/api/datasets/connect/check",
+            {"json": {"kind": "clickhouse", "dsn": "http://reader:private@db:8123/test"}},
+        ),
         ("GET", "/api/datasets/missing", {}),
         ("GET", "/api/datasets/missing/catalog", {}),
         ("GET", "/api/datasets/missing/events", {}),

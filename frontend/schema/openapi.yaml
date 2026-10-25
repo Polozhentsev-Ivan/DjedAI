@@ -118,6 +118,22 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DatasetAccepted' }
         default: { $ref: '#/components/responses/Error' }
+  /datasets/connect/check:
+    post:
+      operationId: checkDatabase
+      summary: List tables of a read-only source before connecting; nothing is stored
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceCheckRequest' }
+      responses:
+        '200':
+          description: Reachable source (address without password) and its tables
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceCheckResult' }
+        default: { $ref: '#/components/responses/Error' }
   /datasets/{dataset_id}:
     parameters:
       - { name: dataset_id, in: path, required: true, schema: { type: string } }
@@ -365,6 +381,10 @@ components:
       $ref: './contracts.json#/components/schemas/DatasetUploadAccepted'
     ConnectRequest:
       $ref: './contracts.json#/components/schemas/ConnectRequest'
+    SourceCheckRequest:
+      $ref: './contracts.json#/components/schemas/SourceCheckRequest'
+    SourceCheckResult:
+      $ref: './contracts.json#/components/schemas/SourceCheckResult'
 
     SemanticType:
       type: string

@@ -113,7 +113,7 @@ docker volume rm djedai_demo-pg-data djedai_demo-ch-data
 | Подключение в DjedAI | `djedai_reader`: `SELECT`, `default_transaction_read_only = on` | `djedai_reader`: `SELECT` на `djedai_demo.*`, `readonly = 2` (CONST) — лимиты запроса задавать можно, запись и снятие `readonly` нет |
 | Администратор | `postgres` / `DEMO_PG_ADMIN_PASSWORD` | `djedai_admin` / `DEMO_CH_ADMIN_PASSWORD` |
 
-В UI или `POST /api/datasets/connect` PostgreSQL подключается строкой `postgresql://djedai_reader:<пароль>@demo-postgres:5432/djedai_demo`. Для ClickHouse адрес будет `http://djedai_reader:<пароль>@demo-clickhouse:8123/djedai_demo`, но до адаптера #61 подключение отвечает `501`; демо-БД от адаптера не зависит.
+В UI или `POST /api/datasets/connect` PostgreSQL подключается строкой `postgresql://djedai_reader:<пароль>@demo-postgres:5432/djedai_demo`. ClickHouse — `"kind":"clickhouse"` и строкой `http://djedai_reader:<пароль>@demo-clickhouse:8123/djedai_demo` ([#61](../docs/decisions/61-clickhouse.md)). Реальная приёмка подключения в одноразовом контейнере: `uv run --locked python scripts/test_clickhouse_isolation.py` (нужен Docker).
 
 ### Контрольные значения
 

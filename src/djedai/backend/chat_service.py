@@ -31,6 +31,7 @@ from djedai.backend.db.repositories import (
 from djedai.backend.db.repositories import (
     get_chat_messages,
     get_owned_tool_result,
+    load_tool_result,
     save_assistant_message,
     save_message,
     save_tool_result,
@@ -195,6 +196,25 @@ def _history_message(message: MessageModel) -> Message:
         )
     role = "user" if message.role == "user" else "assistant"
     return Message(role=role, content=content)
+
+
+def _message_result_ids(message: MessageModel) -> list[str]:
+    """Возвращает результаты, на которые ссылается сохранённое сообщение.
+
+    Помимо явно сохранённых result_ids учитываем блоки ответа: график или
+    таблица ссылаются на результат, даже если старый ответ его не сохранил.
+    """
+    result_ids = list(message.result_ids or [])
+    for block in message.blocks or []:
+        if not isinstance(block, dict):
+            continue
+        referenced = block.get("result_id")
+        chart = block.get("chart")
+        if not referenced and isinstance(chart, dict):
+            referenced = chart.get("result_id")
+        if referenced:
+            result_ids.append(referenced)
+    return result_ids
 
 
 def _block_to_message_block(block: Block) -> MessageBlock:
@@ -428,15 +448,27 @@ def stream_chat_turn(
         if is_cancelled and is_cancelled():
             return
         budget.check()
-        history = [
-            _history_message(message) for message in get_chat_messages(db, chat_model.chat_id)[-10:]
-        ]
+        history_messages = get_chat_messages(db, chat_model.chat_id)[-10:]
+        history = [_history_message(message) for message in history_messages]
         if chosen is not None:
             history = _with_chosen_metric(history, chosen)
+
+        history_results: list[ToolResult] = []
+        seen_result_ids = set()
+
+        for msg in history_messages:
+            for rid in _message_result_ids(msg):
+                if rid not in seen_result_ids:
+                    seen_result_ids.add(rid)
+                    res = load_tool_result(db, rid, storage_dir=runtime.results_storage_dir)
+                    if res is not None:
+                        history_results.append(res)
+
         state: dict[str, Any] = {
             "chat_id": chat_model.chat_id,
             "dataset_id": chat_model.dataset_id,
             "messages": history,
+            "history_results": history_results,
         }
 
         configurable: dict[str, Any] = {"thread_id": chat_model.chat_id, "budget": budget}
@@ -550,6 +582,7 @@ def stream_chat_turn(
             return
 
         message_blocks = [_block_to_message_block(block) for block in answer_blocks]
+        referenced_result_ids = []
         for block in message_blocks:
             referenced_result = (
                 block.result_id
@@ -558,18 +591,20 @@ def stream_chat_turn(
                 if isinstance(block, ChartBlock)
                 else None
             )
-            if (
-                referenced_result
-                and get_owned_tool_result(
-                    db,
-                    referenced_result,
-                    owner_id,
-                    chat_id=chat_model.chat_id,
-                    dataset_id=chat_model.dataset_id,
-                )
-                is None
-            ):
-                raise ValueError("Блок ответа ссылается на результат другого контекста")
+            if referenced_result:
+                referenced_result_ids.append(referenced_result)
+                if (
+                    get_owned_tool_result(
+                        db,
+                        referenced_result,
+                        owner_id,
+                        chat_id=chat_model.chat_id,
+                        dataset_id=chat_model.dataset_id,
+                    )
+                    is None
+                ):
+                    raise ValueError("Блок ответа ссылается на результат другого контекста")
+
             if isinstance(block, DashboardLinkBlock):
                 dashboard = db.get(DashboardModel, block.dashboard_id)
                 if (
@@ -579,7 +614,10 @@ def stream_chat_turn(
                 ):
                     raise ValueError("Блок ответа ссылается на дашборд другого контекста")
         result_ids = list(
-            dict.fromkeys(result.result_id for result in results if result.status != "error")
+            dict.fromkeys(
+                [result.result_id for result in results if result.status != "error"]
+                + referenced_result_ids
+            )
         )
         assistant = AssistantMessage(
             message_id=_new_id("m"),
