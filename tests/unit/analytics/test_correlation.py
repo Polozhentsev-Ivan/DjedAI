@@ -1,0 +1,344 @@
+"""Корреляции и лаги (B2-6): эталоны и заложенный лаг 5 дней."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import duckdb
+import numpy as np
+import pytest
+from scipy import stats
+
+from djedai.analytics.registry import TOOLS_REGISTRY, get_tools_for_llm
+from djedai.analytics.tools import correlation, lagged_correlation
+
+
+def _by_kind(result, kind):
+    return [f for f in result.facts if f.kind == kind]
+
+
+# ---------- корреляция ----------
+
+
+@pytest.fixture
+def corr_conn():
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE m (x DOUBLE, y DOUBLE, z DOUBLE, label VARCHAR)")
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=200)
+    y = 2.0 * x + rng.normal(scale=0.1, size=200)
+    z = rng.normal(size=200)  # независимый шум
+    rows = [(float(a), float(b), float(c), "row") for a, b, c in zip(x, y, z, strict=False)]
+    con.executemany("INSERT INTO m VALUES (?, ?, ?, ?)", rows)
+    return con
+
+
+def test_correlation_matches_scipy(corr_conn):
+    result = correlation("m", ["x", "y"], method="pearson", connection=corr_conn)
+    assert result.status == "ok"
+    row = next(r for r in result.data.rows if r[0] == "x" and r[1] == "y")
+    _, _, r, p, n = row
+    expected_r, expected_p = stats.pearsonr(
+        [v[0] for v in corr_conn.execute("SELECT x, y FROM m").fetchall()],
+        [v[1] for v in corr_conn.execute("SELECT x, y FROM m").fetchall()],
+    )
+    assert r == pytest.approx(expected_r, abs=1e-9)
+    assert p == pytest.approx(expected_p, abs=1e-9)
+    assert n == 200
+
+
+def test_correlation_reports_strength_and_direction(corr_conn):
+    result = correlation("m", ["x", "y"], connection=corr_conn)
+    metric = next(f for f in _by_kind(result, "metric") if f.values["a"] == "x")
+    assert metric.values["r"] > 0.9
+    assert "положительная" in metric.text and "сильная" in metric.text
+    assert _by_kind(result, "caveat")
+
+
+def test_correlation_no_link(corr_conn):
+    result = correlation("m", ["x", "z"], connection=corr_conn)
+    metric = next(f for f in _by_kind(result, "metric") if f.values["b"] == "z")
+    assert abs(metric.values["r"]) < 0.3
+
+
+def test_correlation_invalid_column(corr_conn):
+    result = correlation("m", ["x", "nope"], connection=corr_conn)
+    assert result.status == "error"
+    assert result.error.code == "invalid_column"
+
+
+def test_correlation_invalid_method(corr_conn):
+    result = correlation("m", ["x", "y"], method="magic", connection=corr_conn)
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_correlation_needs_two_columns(corr_conn):
+    result = correlation("m", ["x"], connection=corr_conn)
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_correlation_non_numeric_column(corr_conn):
+    result = correlation("m", ["x", "label"], connection=corr_conn)
+    assert result.status == "error"
+    assert result.error.code == "invalid_column"
+
+
+def test_correlation_empty_result(corr_conn):
+    result = correlation("m", ["x", "y"], filter="1=0", connection=corr_conn)
+    assert result.status == "empty"
+    assert _by_kind(result, "empty_result")
+
+
+# ---------- лаги ----------
+
+
+@pytest.fixture
+def lagged_conn():
+    """a(t) и b(t) = a(t-5) + шум: a опережает b на 5 дней."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(42)
+    n = 180
+    a = rng.normal(size=n).cumsum()
+    b = np.concatenate([np.zeros(5), a[:-5]]) + rng.normal(scale=0.1, size=n)
+    start = datetime(2024, 1, 1)
+    rows = [(start + timedelta(days=i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+    return con
+
+
+def test_lagged_finds_planted_5_days(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=10,
+        connection=lagged_conn,
+    )
+    assert result.status == "ok"
+    metric = _by_kind(result, "metric")[0]
+    assert metric.values["lag"] == 5
+    assert abs(metric.values["r"]) > 0.9
+    assert "опережают" in metric.text
+    assert _by_kind(result, "caveat")
+
+
+def test_lagged_negative_lag_when_b_leads(lagged_conn):
+    """a(t) = b(t-5) + шум: b опережает a на 5 дней → lag = -5."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(7)
+    n = 180
+    b = rng.normal(size=n).cumsum()
+    a = np.concatenate([np.zeros(5), b[:-5]]) + rng.normal(scale=0.1, size=n)
+    start = datetime(2024, 1, 1)
+    rows = [(start + timedelta(days=i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=10,
+        connection=con,
+    )
+    assert result.status == "ok"
+    assert _by_kind(result, "metric")[0].values["lag"] == -5
+
+
+def test_lagged_no_link(lagged_conn):
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(1)
+    n = 180
+    a = rng.normal(size=n)
+    b = rng.normal(size=n)
+    start = datetime(2024, 1, 1)
+    rows = [(start + timedelta(days=i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=10,
+        connection=con,
+    )
+    assert result.status == "ok"
+    best = _by_kind(result, "metric")[0].values
+    assert abs(best["r"]) < 0.5
+    assert "сильная" not in _by_kind(result, "metric")[0].text
+
+
+def test_lagged_invalid_freq(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="fortnight",
+        connection=lagged_conn,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_lagged_invalid_column(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "nope",
+        connection=lagged_conn,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_column"
+
+
+def test_lagged_non_numeric_column(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "ts",
+        connection=lagged_conn,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_column"
+
+
+def test_lagged_negative_max_lag(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        max_lag=-1,
+        connection=lagged_conn,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+
+
+def test_lagged_empty(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        filter="1=0",
+        connection=lagged_conn,
+    )
+    assert result.status == "empty"
+    assert _by_kind(result, "empty_result")
+
+
+def test_lagged_granger_is_optional_and_warns(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        include_granger=True,
+        connection=lagged_conn,
+    )
+    warnings = [f for f in result.facts if f.kind == "warning"]
+    assert not warnings, f"Granger упал: {warnings[0].text}"
+    assert result.status == "ok"
+
+    granger = _by_kind(result, "granger")
+    assert len(granger) == 1
+    text = granger[0].text
+
+    assert "предсказуемость" in text
+    assert "причинность" in text
+    assert "не причинность" in text
+    for word in ("влияет", "вызывает", "приводит к", "из-за", "определяет"):
+        assert word not in text, (word, text)
+
+
+def test_facts_have_no_causal_words(corr_conn, lagged_conn):
+    forbidden = ("влияет", "вызывает", "приводит к", "из-за")
+    for result in (
+        correlation("m", ["x", "y"], connection=corr_conn),
+        lagged_correlation(
+            "s",
+            "ts",
+            "a",
+            "b",
+            include_granger=True,
+            connection=lagged_conn,
+        ),
+    ):
+        for fact in result.facts:
+            for word in forbidden:
+                assert word not in fact.text, (word, fact.text)
+
+
+def test_facts_match_data_rows(lagged_conn):
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=10,
+        connection=lagged_conn,
+    )
+    metric = next(f for f in result.facts if f.kind == "metric")
+    k = metric.values["lag"]
+    row = next(r for r in result.data.rows if r[0] == k)
+    assert metric.values["r"] == pytest.approx(row[1])
+    assert metric.values["n"] == row[3]
+
+
+def test_correlation_facts_match_data(corr_conn):
+    result = correlation("m", ["x", "y", "z"], connection=corr_conn)
+    by_pair = {(r[0], r[1]): r for r in result.data.rows}
+    for fact in (f for f in result.facts if f.kind == "metric"):
+        a_, b_ = fact.values["a"], fact.values["b"]
+        _, _, r, p, n = by_pair[(a_, b_)]
+        assert fact.values["r"] == pytest.approx(r)
+        assert fact.values["p"] == pytest.approx(p)
+        assert fact.values["n"] == n
+
+
+def test_agent_call_examples_are_executable():
+    """Примеры из реестра не просто валидны, но и выполняются на мок-данных."""
+    from djedai.analytics.tools import _get_mock_connection
+
+    con = _get_mock_connection()
+    try:
+        for tool_name, fn in (
+            ("correlation", correlation),
+            ("lagged_correlation", lagged_correlation),
+        ):
+            definition = next(t for t in TOOLS_REGISTRY if t.name == tool_name)
+            schema = definition.parameters_model.model_json_schema()
+            examples = schema.get("examples", [])
+            assert examples, f"{tool_name}: нет examples в модели параметров"
+            for example in examples:
+                params = definition.parameters_model.model_validate(example).model_dump(
+                    exclude_none=True
+                )
+                result = fn(**params, connection=con)
+                assert result.status in {"ok", "empty"}, (example, result.error)
+    finally:
+        con.close()
+
+
+def test_registry_snapshot_matches():
+    """Снапшот EXPECTED_TOOLS совпадает с реальным содержимым реестра."""
+    from test_analytics_registry import EXPECTED_TOOLS
+
+    assert get_tools_for_llm() == EXPECTED_TOOLS

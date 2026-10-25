@@ -599,6 +599,179 @@ EXPECTED_TOOLS = [
             "type": "object",
         },
     },
+    {
+        "name": "correlation",
+        "description": (
+            "Считает попарные корреляции между числовыми колонками "
+            "(Pearson/Spearman/Kendall). Возвращает r, p-value и n для каждой пары. "
+            "Показывает статистическую связь, а не доказанную причинность."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {"table": "events", "columns": ["amount", "id"], "method": "pearson"},
+                {"table": "test", "columns": ["age", "id"], "method": "spearman", "min_n": 3},
+            ],
+            "properties": {
+                "table": {
+                    "description": "Имя таблицы",
+                    "title": "Table",
+                    "type": "string",
+                },
+                "columns": {
+                    "description": "Числовые колонки (минимум две)",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "title": "Columns",
+                    "type": "array",
+                },
+                "method": {
+                    "default": "pearson",
+                    "description": "Метод корреляции",
+                    "enum": ["pearson", "spearman", "kendall"],
+                    "title": "Method",
+                    "type": "string",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "min_n": {
+                    "default": 10,
+                    "description": "Минимальное число наблюдений для оценки",
+                    "minimum": 3,
+                    "title": "Min N",
+                    "type": "integer",
+                },
+            },
+            "required": ["table", "columns"],
+            "title": "CorrelationParams",
+            "type": "object",
+        },
+    },
+    {
+        "name": "lagged_correlation",
+        "description": (
+            "Кросс-корреляция двух числовых рядов по лагам. Находит сдвиг, при котором "
+            "|r| максимален. lag=k означает: a(t) сравнивается с b(t+k); положительный "
+            "лаг — a опережает b, отрицательный — b опережает a. Опционально тест "
+            "Грейнджера (потенциальная предсказуемость, не причинность)."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "a": "amount",
+                    "b": "id",
+                    "freq": "day",
+                    "max_lag": 7,
+                },
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "a": "amount",
+                    "b": "id",
+                    "freq": "day",
+                    "agg": "sum",
+                    "max_lag": 14,
+                    "include_granger": True,
+                },
+            ],
+            "properties": {
+                "table": {
+                    "description": "Имя таблицы",
+                    "title": "Table",
+                    "type": "string",
+                },
+                "time_col": {
+                    "description": "Колонка DATE или TIMESTAMP",
+                    "title": "Time Col",
+                    "type": "string",
+                },
+                "a": {
+                    "description": "Числовая колонка A",
+                    "title": "A",
+                    "type": "string",
+                },
+                "b": {
+                    "description": "Числовая колонка B",
+                    "title": "B",
+                    "type": "string",
+                },
+                "freq": {
+                    "default": "day",
+                    "description": "Частота агрегации",
+                    "enum": [
+                        "minute",
+                        "hour",
+                        "day",
+                        "week",
+                        "month",
+                        "quarter",
+                        "year",
+                    ],
+                    "title": "Freq",
+                    "type": "string",
+                },
+                "agg": {
+                    "default": "sum",
+                    "description": "Агрегация",
+                    "enum": [
+                        "count",
+                        "sum",
+                        "avg",
+                        "min",
+                        "max",
+                        "median",
+                        "stddev",
+                    ],
+                    "title": "Agg",
+                    "type": "string",
+                },
+                "max_lag": {
+                    "default": 14,
+                    "description": "Максимальный сдвиг в периодах",
+                    "maximum": 180,
+                    "minimum": 0,
+                    "title": "Max Lag",
+                    "type": "integer",
+                },
+                "min_n": {
+                    "default": 10,
+                    "description": "Минимальное число наблюдений на лаг",
+                    "minimum": 3,
+                    "title": "Min N",
+                    "type": "integer",
+                },
+                "method": {
+                    "default": "pearson",
+                    "description": "Метод корреляции",
+                    "enum": ["pearson", "spearman"],
+                    "title": "Method",
+                    "type": "string",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+                "include_granger": {
+                    "default": False,
+                    "description": (
+                        "Добавить тест Грейнджера (потенциальная предсказуемость, не причинность)"
+                    ),
+                    "title": "Include Granger",
+                    "type": "boolean",
+                },
+            },
+            "required": ["table", "time_col", "a", "b"],
+            "title": "LaggedCorrelationParams",
+            "type": "object",
+        },
+    },
 ]
 
 
