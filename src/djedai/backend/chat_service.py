@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -260,6 +261,33 @@ def _with_chosen_metric(history: list[Message], chosen: MetricDefinition) -> lis
     return [*history[:-1], Message(role="user", content=content.strip())]
 
 
+_QUALITY_OPTION = re.compile(r"^[^\s.:]+\.[^\s:]+: ")  # «таблица.колонка: …» (B2-10)
+
+
+def _with_quality_choice(messages: list[MessageModel], history: list[Message]) -> list[Message]:
+    """Ответ кнопкой на уточнение качества данных: исходный вопрос и выбранный вариант.
+
+    Вариант называет колонку («таблица.колонка: формат»), и по этой ссылке агент
+    понимает, что ограничение уже решено пользователем.
+    """
+    if len(messages) < 2 or not history:
+        return history
+    previous, answer = messages[-2], (messages[-1].content or "").strip()
+    options = {
+        option
+        for block in previous.blocks or []
+        if isinstance(block, dict) and block.get("type") == "clarification"
+        for option in block.get("options") or []
+    }
+    if previous.role != "assistant" or answer not in options or not _QUALITY_OPTION.match(answer):
+        return history
+    question = next(
+        (m.content for m in reversed(history[:-1]) if m.role == "user" and m.content), ""
+    )
+    content = f"{question}\nУточнение пользователя: {answer}."
+    return [*history[:-1], Message(role="user", content=content.strip())]
+
+
 def _agent_error(blocks: list[Block]) -> str | None:
     for block in blocks:
         if block.type == "error":
@@ -431,11 +459,12 @@ def stream_chat_turn(
         if is_cancelled and is_cancelled():
             return
         budget.check()
-        history = [
-            _history_message(message) for message in get_chat_messages(db, chat_model.chat_id)[-10:]
-        ]
+        recent = get_chat_messages(db, chat_model.chat_id)[-10:]
+        history = [_history_message(message) for message in recent]
         if chosen is not None:
             history = _with_chosen_metric(history, chosen)
+        else:
+            history = _with_quality_choice(recent, history)
         state: dict[str, Any] = {
             "chat_id": chat_model.chat_id,
             "dataset_id": chat_model.dataset_id,

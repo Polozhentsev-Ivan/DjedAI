@@ -21,6 +21,7 @@ from djedai.contracts.agent import (
     VerifyResponse,
 )
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
+from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
@@ -329,6 +330,11 @@ def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
         text = error.message if not error.suggestion else f"{error.message}\n\n{error.suggestion}"
         blocks.append(Block(type="clarification", markdown=text))
 
+    elif blockers := _quality_blockers(state):
+        # Неоднозначная дата или смешанные валюты в расчёте: решает пользователь (B2-10).
+        issue = blockers[0]
+        blocks.append(Block(type="clarification", markdown=issue.message, options=issue.options))
+
     else:
         blocks.append(Block(type="clarification", markdown="Пожалуйста, уточните ваш запрос."))
 
@@ -362,6 +368,28 @@ def _metric_decision(state: AgentState) -> ToolError | None:
     return None
 
 
+def _answered(state: AgentState) -> str:
+    return "\n".join(m.content for m in state.get("messages", []) if m.role == "user")
+
+
+def _quality_blockers(state: AgentState) -> list[QualityIssue]:
+    """Blocking-ограничения качества в последних результатах, на которые не ответили.
+
+    Варианты уточнения начинаются с «таблица.колонка:»; ответ с этой ссылкой в сообщениях
+    пользователя снимает блокировку, и расчёт идёт дальше с предупреждением.
+    """
+    answered = _answered(state)
+    found = []
+    for result in _recent_results(state):
+        if result.status == "error" or result.quality is None:
+            continue
+        for column in result.quality.columns:
+            if f"{column.table}.{column.column}:" in answered:
+                continue
+            found += [i for i in column.issues if i.severity == "blocking"]
+    return found
+
+
 def _checked_candidates(
     clarification: Clarification, state: AgentState, config: RunnableConfig | None
 ) -> list[MetricDefinition | None]:
@@ -391,19 +419,55 @@ def _checked_candidates(
 
 
 def cite_metrics(state: AgentState) -> dict:
-    """Добавляет к проверенному ответу версии определений метрик и их ограничения."""
+    """Добавляет к проверенному ответу ограничения данных и версии определений метрик.
+
+    Оба блока собираются из результатов инструментов, а не из текста модели: если модель
+    промолчала о потерях типизации, пользователь всё равно их увидит (B2-10).
+    """
     blocks = state.get("answer_blocks", [])
     if any(b.type == "error" for b in blocks):
         return {}
+    added = []
+    if limits := _quality_lines(state):
+        text = "**Ограничения данных.**\n" + "\n".join(f"- {line}" for line in limits)
+        added.append(Block(type="text", markdown=text))
     lines = []
     for result in state.get("results", []):
         if result.status == "error" or result.metric is None:
             continue
         lines += [f.text for f in result.facts if f.kind == "metric_definition"]
-    if not lines:
+    if lines:
+        text = "**Как посчитано.** " + " ".join(f"{line}." for line in dict.fromkeys(lines))
+        added.append(Block(type="text", markdown=text))
+    if not added:
         return {}
-    text = "**Как посчитано.** " + " ".join(f"{line}." for line in dict.fromkeys(lines))
-    return {"answer_blocks": [*blocks, Block(type="text", markdown=text)]}
+    return {"answer_blocks": [*blocks, *added]}
+
+
+def _quality_lines(state: AgentState) -> list[str]:
+    answered = _answered(state)
+    lines = []
+    for result in state.get("results", []):
+        report = result.quality
+        if result.status == "error" or report is None:
+            continue
+        if report.lineage == "partial":
+            lines.append(
+                "Не все колонки расчёта удалось связать с данными: ограничения ниже могут "
+                "быть неполными."
+            )
+        for column in report.columns:
+            chosen = f"{column.table}.{column.column}:" in answered
+            for issue in column.issues:
+                if issue.severity == "info":
+                    continue
+                note = (
+                    " Выбор уточнён пользователем."
+                    if issue.severity == "blocking" and chosen
+                    else ""
+                )
+                lines.append(issue.message + note)
+    return list(dict.fromkeys(lines))
 
 
 def route_after_understand(state: AgentState) -> str:
@@ -426,7 +490,7 @@ def route_after_execute(state: AgentState) -> str:
         return "clarify"
     if has_errors and state.get("retries", 0) <= 2:
         return "plan"
-    if metric_errors:
+    if metric_errors or _quality_blockers(state):
         return "clarify"
     return "visualize"
 
