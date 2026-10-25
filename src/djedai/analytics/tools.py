@@ -8,7 +8,7 @@ import numpy as np
 import sqlglot
 from sqlglot import exp
 
-from djedai.analytics.metrics import MetricContext, metric_guard
+from djedai.analytics.metrics import MetricContext, MetricError, metric_guard
 from djedai.analytics.queries import check_budget, check_dataset_table, execute_dataset_query
 from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
 from djedai.config import get_limits
@@ -242,7 +242,16 @@ def run_sql(
                     ),
                 )
 
-        if semantics is not None and (problem := metric_guard(parsed, semantics)):
+        try:
+            problem = metric_guard(parsed, semantics) if semantics is not None else None
+        except Exception:
+            # Непроверенный запрос к мере подтверждённой метрики не выполняется.
+            problem = MetricError(
+                "metric_guard_failed",
+                "Не удалось проверить, сохраняет ли запрос grain подтверждённых метрик.",
+                "Используйте compute_metric или упростите запрос.",
+            )
+        if problem is not None:
             return ToolResult(
                 result_id=str(uuid.uuid4()),
                 status="error",

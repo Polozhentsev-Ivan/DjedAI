@@ -251,23 +251,11 @@ def _compile_part(
                 grain_where.append(f"{_q(metric.time_column.column)} {op} {literal}")
 
     currency = metric.currency
-    if metric.currency_column is not None:
+    if metric.currency_column is not None and request.currency is not None:
         currency_ref = metric.currency_column
-        if request.currency is not None:
-            where.append(f"{column(currency_ref)} = {_literal(request.currency)}")
-            grain_where.append(f"{_q(currency_ref.column)} = {_literal(request.currency)}")
-            currency = request.currency
-        elif currency_ref not in request.group_by:
-            codes = _currencies(connection, grain, currency_ref.column, grain_where, allowed_tables)
-            if len(codes) > 1:
-                raise MetricError(
-                    "metric_mixed_currency",
-                    f"В «{metric.title}» смешаны валюты: {', '.join(codes)}. Суммы в разных "
-                    "валютах не складываются без курса.",
-                    f"Уточните валюту (currency: {', '.join(codes)}) или разбейте по "
-                    f"{currency_ref.table}.{currency_ref.column}.",
-                )
-            currency = codes[0] if codes else None
+        where.append(f"{column(currency_ref)} = {_literal(request.currency)}")
+        grain_where.append(f"{_q(currency_ref.column)} = {_literal(request.currency)}")
+        currency = request.currency
 
     checks = []
     for table, join in joins.items():
@@ -307,6 +295,34 @@ def _compile_part(
             )
         checks.append(check)
 
+    source = f"{_q(grain)} AS {_GRAIN_ALIAS}"
+    for table, join in joins.items():
+        relation = join.relation
+        # проверка выше гарантирует пару для каждой строки: LEFT JOIN не меняет число строк
+        source += (
+            f" LEFT JOIN {_q(table)} AS {join.alias} ON "
+            f"{_GRAIN_ALIAS}.{_q(relation.from_.column)} = {join.alias}.{_q(relation.to.column)}"
+        )
+    condition = " WHERE " + " AND ".join(f"({p})" for p in where) if where else ""
+
+    currency_ref = metric.currency_column
+    if (
+        currency_ref is not None
+        and request.currency is None
+        and currency_ref not in request.group_by
+    ):
+        # валюты всей расчётной популяции: с фильтрами измерений и периодом, как в расчёте
+        codes = _currencies(connection, column(currency_ref), source + condition, allowed_tables)
+        if len(codes) > 1:
+            raise MetricError(
+                "metric_mixed_currency",
+                f"В «{metric.title}» смешаны валюты: {', '.join(codes)}. Суммы в разных "
+                "валютах не складываются без курса.",
+                f"Уточните валюту (currency: {', '.join(codes)}) или разбейте по "
+                f"{currency_ref.table}.{currency_ref.column}.",
+            )
+        currency = codes[0] if codes else None
+
     keys: list[tuple[str, str]] = []
     used: set[str] = set()
     for ref in request.group_by:
@@ -327,16 +343,7 @@ def _compile_part(
     aggregate, formula = _aggregate(metric, column)
     select = [f"{expression} AS {_q(name)}" for name, expression in keys]
     select.append(f"{aggregate} AS {_q(VALUE_COLUMN)}")
-    sql = f"SELECT {', '.join(select)} FROM {_q(grain)} AS {_GRAIN_ALIAS}"
-    for table, join in joins.items():
-        relation = join.relation
-        # проверка выше гарантирует пару для каждой строки: LEFT JOIN не меняет число строк
-        sql += (
-            f" LEFT JOIN {_q(table)} AS {join.alias} ON "
-            f"{_GRAIN_ALIAS}.{_q(relation.from_.column)} = {join.alias}.{_q(relation.to.column)}"
-        )
-    if where:
-        sql += " WHERE " + " AND ".join(f"({p})" for p in where)
+    sql = f"SELECT {', '.join(select)} FROM {source}{condition}"
     if keys:
         positions = ", ".join(str(i + 1) for i in range(len(keys)))
         sql += f" GROUP BY {positions} ORDER BY {positions}"
@@ -386,18 +393,13 @@ def _ratio_currency(
 
 def _currencies(
     connection: duckdb.DuckDBPyConnection,
-    table: str,
     column: str,
-    where: Sequence[str],
+    population: str,
     allowed_tables: Collection[str] | None,
 ) -> list[str]:
-    condition = " AND ".join(f"({p})" for p in where)
-    sql = f"SELECT DISTINCT CAST({_q(column)} AS VARCHAR) FROM {_q(table)}"
-    if condition:
-        sql += f" WHERE {condition}"
-    rows = execute_dataset_query(
-        connection, sql + " ORDER BY 1", allowed_tables=allowed_tables
-    ).fetchall()
+    """Коды валют в строках ``population`` (FROM … WHERE … расчёта)."""
+    sql = f"SELECT DISTINCT CAST({column} AS VARCHAR) FROM {population} ORDER BY 1"
+    rows = execute_dataset_query(connection, sql, allowed_tables=allowed_tables).fetchall()
     # пустая валюта — тоже неизвестная валюта, а не «та же самая»
     return [row[0] if row[0] is not None else "не указана" for row in rows]
 
@@ -645,17 +647,18 @@ def metric_guard(query: exp.Expression, semantics: MetricContext) -> MetricError
         if not isinstance(select, exp.Select):
             continue
         sources = _sources(scope, catalog)
-        if len(sources) < 2:
-            continue
         for function in select.find_all(exp.AggFunc):
             if isinstance(function, _ORDER_INSENSITIVE) or _owner(function) is not select:
                 continue
             for column in function.find_all(exp.Column):
                 source = _column_source(column, sources, catalog)
-                metric = source and _carried_metric(source, column.name, measures, catalog)
+                if source is None:
+                    continue
+                metric, problem = _trace(source, column.name, measures, catalog)
                 if metric is None:
                     continue
-                problem = _fanout(select, sources, source, catalog)
+                # JOIN этого уровня или JOIN внутри CTE/подзапроса, отдающего строки меры
+                problem = _fanout(select, sources, source, catalog) or problem
                 if problem is not None:
                     code, detail = problem
                     return MetricError(
@@ -735,34 +738,119 @@ def _column_source(
 def _columns_of(source: _Source, catalog: DatasetCatalog) -> set[str]:
     if source.table is not None:
         return {c.name.casefold() for c in catalog.table(source.table).columns}
-    if source.scope is not None and isinstance(source.scope.expression, exp.Select):
-        return {name.casefold() for name in source.scope.expression.named_selects}
-    return set()
+    if source.scope is None:
+        return set()
+    branches = _branches(source.scope)
+    if not branches:
+        return set()
+    if renamed := _alias_columns(source.scope):
+        return set(renamed)
+    first = branches[0]
+    names = {
+        p.alias_or_name.casefold()
+        for p in first.expression.expressions
+        if not _is_star(p) and p.alias_or_name
+    }
+    inner = _sources(first, catalog)
+    for projection in first.expression.expressions:
+        if _is_star(projection):
+            table = _star_table(projection)
+            owners = [inner[table]] if table in inner else inner.values()
+            for owner in owners:
+                names |= _columns_of(owner, catalog)
+    return names
 
 
-def _carried_metric(
+def _branches(scope: Scope) -> list[Scope]:
+    """SELECT-ветки подзапроса: сам SELECT или все ветки UNION/INTERSECT/EXCEPT."""
+    if isinstance(scope.expression, exp.Select):
+        return [scope]
+    branches = []
+    for branch in scope.set_operation_scopes or []:
+        branches += _branches(branch)
+    return branches
+
+
+def _is_star(projection: exp.Expression) -> bool:
+    return isinstance(projection, exp.Star) or (
+        isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+    )
+
+
+def _alias_columns(scope: Scope) -> list[str]:
+    """Имена колонок из алиаса ``WITH e(x, y)`` или ``(SELECT …) AS e(x, y)``."""
+    alias = scope.expression.parent.args.get("alias") if scope.expression.parent else None
+    columns = alias.columns if isinstance(alias, exp.TableAlias) else []
+    return [c.name.casefold() for c in columns]
+
+
+def _star_table(projection: exp.Expression) -> str | None:
+    """Источник ``t.*`` (casefold); у голой ``*`` источника нет."""
+    if isinstance(projection, exp.Column) and projection.table:
+        return projection.table.casefold()
+    return None
+
+
+def _projections(scope: Scope, column: str) -> list[tuple[Scope, exp.Expression]]:
+    """Выражения, из которых подзапрос отдаёт колонку ``column``, по всем веткам.
+
+    Ветки UNION сопоставляются по позиции, как в SQL; ``*`` и ``t.*`` отдают колонку
+    источника с тем же именем.
+    """
+    branches = _branches(scope)
+    if not branches:
+        return []
+    named = _alias_columns(scope) or [
+        None if _is_star(p) else p.alias_or_name.casefold()
+        for p in branches[0].expression.expressions
+    ]
+    found = []
+    for branch in branches:
+        projections = branch.expression.expressions
+        if column.casefold() in named:
+            index = named.index(column.casefold())
+            if index < len(projections):
+                found.append((branch, projections[index].unalias()))
+            continue
+        for projection in projections:
+            if _is_star(projection):
+                found.append((branch, exp.column(column, table=_star_table(projection))))
+    return found
+
+
+def _trace(
     source: _Source,
     column: str,
     measures: Mapping[tuple[str, str], MetricDefinition],
     catalog: DatasetCatalog,
-) -> MetricDefinition | None:
-    """Метрика, мера которой попадает в ``source.column`` напрямую или через подзапрос."""
+) -> tuple[MetricDefinition | None, tuple[str, str] | None]:
+    """Метрика, мера которой попадает в ``source.column``, и fanout по пути к ней.
+
+    Мера проходит через CTE и подзапросы. Уровень, который отдаёт строки меры без
+    агрегата, проверяется своим JOIN-ом: размноженные там строки внешний SUM сложит.
+    Уровень с агрегатом меры проверяет основной цикл ``metric_guard`` как отдельный SELECT.
+    """
     if source.table is not None:
-        return measures.get((source.table.casefold(), column.casefold()))
-    if source.scope is None or not isinstance(source.scope.expression, exp.Select):
-        return None
-    select = source.scope.expression
-    inner = _sources(source.scope, catalog)
-    for projection in select.expressions:
-        if projection.alias_or_name.casefold() != column.casefold():
-            continue
-        for ref in projection.find_all(exp.Column):
+        return measures.get((source.table.casefold(), column.casefold())), None
+    if source.scope is None:
+        return None, None
+    found: MetricDefinition | None = None
+    for branch, expression in _projections(source.scope, column):
+        inner = _sources(branch, catalog)
+        aggregated = expression.find(exp.AggFunc) is not None
+        for ref in expression.find_all(exp.Column):
             owner = _column_source(ref, inner, catalog)
-            if owner is not None and (
-                metric := _carried_metric(owner, ref.name, measures, catalog)
-            ):
-                return metric
-    return None
+            if owner is None:
+                continue
+            metric, problem = _trace(owner, ref.name, measures, catalog)
+            if metric is None:
+                continue
+            found = found or metric
+            if not aggregated:
+                problem = _fanout(branch.expression, inner, owner, catalog) or problem
+                if problem is not None:
+                    return metric, problem
+    return found, None
 
 
 def _fanout(

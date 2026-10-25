@@ -74,6 +74,10 @@ def query(metrics_dataset):
     return run
 
 
+EXPANDED = (
+    "WITH expanded AS (SELECT o.summa_itogo FROM orders o "
+    "JOIN order_items i ON i.zakaz_id = o.zakaz_id) SELECT SUM(summa_itogo) FROM expanded"
+)
 NAIVE = (
     "SELECT SUM(o.summa_itogo) AS total FROM orders o JOIN order_items i ON i.zakaz_id = o.zakaz_id"
 )
@@ -108,6 +112,27 @@ FANOUT = {
     "SELECT SUM(o.summa_itogo) FROM orders o JOIN visits v ON v.klient_id = o.klient_id",
     "окно": "SELECT SUM(o.summa_itogo) OVER () FROM orders o "
     "JOIN order_items i ON i.zakaz_id = o.zakaz_id",
+    # JOIN уровнем ниже, SUM снаружи: размноженные строки приходят из CTE/подзапроса
+    "JOIN в CTE": EXPANDED,
+    "JOIN в подзапросе t.*": "SELECT SUM(x.summa_itogo) FROM (SELECT o.* FROM orders o "
+    "JOIN order_items i ON i.zakaz_id = o.zakaz_id) x",
+    "JOIN в CTE через *": "WITH e AS (SELECT * FROM orders o JOIN order_items i "
+    "USING (zakaz_id)) SELECT SUM(summa_itogo) FROM e",
+    "JOIN в CTE со списком колонок": "WITH e(x) AS (SELECT o.summa_itogo FROM orders o "
+    "JOIN order_items i ON i.zakaz_id = o.zakaz_id) SELECT SUM(x) FROM e",
+    "JOIN в подзапросе со списком колонок": "SELECT SUM(e.x) FROM (SELECT o.summa_itogo "
+    "FROM orders o JOIN order_items i ON i.zakaz_id = o.zakaz_id) AS e(x)",
+    "JOIN в CTE под алиасом": "WITH e AS (SELECT o.summa_itogo AS s FROM orders o "
+    "JOIN order_items i ON i.zakaz_id = o.zakaz_id) SELECT SUM(s) FROM e",
+    "JOIN двумя уровнями ниже": "WITH a AS (SELECT o.summa_itogo FROM orders o "
+    "JOIN order_items i ON i.zakaz_id = o.zakaz_id), b AS (SELECT summa_itogo FROM a) "
+    "SELECT SUM(summa_itogo) FROM b",
+    "JOIN в ветке UNION": "WITH u AS (SELECT summa_itogo FROM orders UNION ALL "
+    "SELECT o.summa_itogo FROM orders o JOIN order_items i ON i.zakaz_id = o.zakaz_id) "
+    "SELECT SUM(summa_itogo) FROM u",
+    "DISTINCT в CTE не исправляет fanout": "WITH e AS (SELECT DISTINCT o.zakaz_id, "
+    "o.summa_itogo FROM orders o JOIN order_items i ON i.zakaz_id = o.zakaz_id) "
+    "SELECT SUM(summa_itogo) FROM e",
 }
 
 
@@ -146,6 +171,13 @@ ALLOWED = {
     "JOIN order_items i ON i.zakaz_id = o.zakaz_id",
     "колонка без метрики": "SELECT SUM(i.cena) FROM order_items i "
     "JOIN orders o ON o.zakaz_id = i.zakaz_id",
+    "CTE без JOIN": "WITH e AS (SELECT * FROM orders) SELECT SUM(summa_itogo) FROM e",
+    "CTE с измерением N:1": "WITH e AS (SELECT o.summa_itogo, c.segment FROM orders o "
+    "JOIN customers c ON c.klient_id = o.klient_id) SELECT segment, SUM(summa_itogo) "
+    "FROM e GROUP BY 1",
+    "MAX на заказ до внешнего SUM": "WITH m AS (SELECT o.zakaz_id, MAX(o.summa_itogo) AS s "
+    "FROM orders o JOIN order_items i ON i.zakaz_id = o.zakaz_id GROUP BY 1) "
+    "SELECT SUM(s) FROM m",
 }
 
 
@@ -153,6 +185,18 @@ ALLOWED = {
 def test_grain_preserving_queries_pass(query, sql):
     result = query(sql)
     assert result.status == "ok", result.error
+
+
+def test_fanout_inside_cte_is_refused_not_inflated(query):
+    total = sum(float(o["summa_itogo"]) for o in ORDERS)
+    inflated = sum(float(o["summa_itogo"]) * ITEMS_PER_ORDER[o["zakaz_id"]] for o in ORDERS)
+    assert query(EXPANDED, guarded=False).data.rows == [[pytest.approx(inflated)]]
+    assert (total, inflated) == (pytest.approx(13200.0), pytest.approx(31900.0))
+    result = query(EXPANDED)
+    assert result.error.code == "metric_grain_violation"
+    assert "order_items.zakaz_id не уникален" in result.error.message.replace("i.", "order_items.")
+    per_order = query(ALLOWED["MAX на заказ до внешнего SUM"])
+    assert per_order.data.rows == [[pytest.approx(total)]]
 
 
 def test_allowed_dimension_query_matches_reference(query):
@@ -181,3 +225,13 @@ def test_registry_guards_run_sql_with_dataset_semantics(metrics_dataset):
         semantics=semantics,
     )
     assert result.error.code == "metric_grain_violation"
+
+
+def test_guard_failure_does_not_run_the_query(query, monkeypatch):
+    def broken(*_args):
+        raise AttributeError("unexpected SQL shape")
+
+    monkeypatch.setattr("djedai.analytics.tools.metric_guard", broken)
+    result = query(NAIVE)
+    assert result.error.code == "metric_guard_failed"
+    assert query(NAIVE, guarded=False).status == "ok"
