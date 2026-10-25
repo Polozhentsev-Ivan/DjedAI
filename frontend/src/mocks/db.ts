@@ -18,18 +18,20 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   tables: [
     {
       table_id: 'orders', raw_table: 'raw_orders', original_name: 'orders.csv', row_count: 120000,
+      description: 'Заказы интернет-магазина: сумма, скидка, статус и клиент',
       primary_key_candidates: ['order_id'], time_columns: ['payment_date'], duplicate_rows: 0,
       columns: [
-        { name: 'order_id', original_name: 'Номер заказа', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 120000, is_unique: true },
+        { name: 'order_id', original_name: 'Номер заказа', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 120000, is_unique: true, description: 'Уникальный номер заказа' },
         { name: 'payment_date', original_name: 'Дата оплаты', physical_type: 'DATE', semantic_type: 'date', role: 'time', null_ratio: 0.001, distinct_count: 304, is_unique: false, parse: { format: '%d.%m.%Y', success_ratio: 0.9999 } },
-        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: 'RUB' },
+        { name: 'amount', original_name: 'Сумма с НДС, руб', physical_type: 'DECIMAL(18,2)', semantic_type: 'money', role: 'measure', null_ratio: 0, distinct_count: 9811, is_unique: false, currency: 'RUB', description: 'Сумма заказа с НДС в рублях' },
         { name: 'discount', original_name: 'Скидка', physical_type: 'DOUBLE', semantic_type: 'percent', role: 'measure', null_ratio: 0.052, distinct_count: 21, is_unique: false },
         { name: 'status', original_name: 'Статус', physical_type: 'VARCHAR', semantic_type: 'category', role: 'dimension', null_ratio: 0, distinct_count: 4, is_unique: false },
-        { name: 'customer_id', original_name: 'Клиент', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: false },
+        { name: 'customer_id', original_name: 'Клиент', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: false, description: 'Клиент, оформивший заказ' },
       ],
     },
     {
       table_id: 'customers', raw_table: 'raw_customers', original_name: 'customers.csv', row_count: 450,
+      description: 'Справочник клиентов с регионом и датой регистрации',
       primary_key_candidates: ['id'], time_columns: ['registered_at'], duplicate_rows: 0,
       columns: [
         { name: 'id', original_name: 'ID клиента', physical_type: 'VARCHAR', semantic_type: 'id', role: 'id', null_ratio: 0, distinct_count: 450, is_unique: true },
@@ -42,11 +44,17 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   relations: [
     { from: { table: 'orders', column: 'customer_id' }, to: { table: 'customers', column: 'id' }, overlap: 0.998, jaccard: 0.998, cardinality: 'N:1', confidence: 'high' },
   ],
-  warnings: ['В колонке «Дата оплаты» 12 строк содержали нераспознанный текст; заменены на NULL. Исходные значения сохранены в raw'],
+  warnings: ['Модель не описала в customers: region'],
+  // The journal of typed views (src/djedai/data/typed_views.py): renames, parsing, unparsed values, kept text.
   transformations: [
-    { table: 'orders', column: 'amount', action: 'parse_money', detail: { currency: '₽', decimal: ',' } },
-    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: { format: '%d.%m.%Y' } },
-    { table: 'orders', column: 'status', action: 'detect_category', detail: { count: 4, values: ['оплачен', 'доставлен', 'отменён', 'возврат'] } },
+    { table: 'orders', column: 'order_id', action: 'rename_column', detail: { from: 'Номер заказа', to: 'order_id' } },
+    { table: 'orders', column: 'payment_date', action: 'rename_column', detail: { from: 'Дата оплаты', to: 'payment_date' } },
+    { table: 'orders', column: 'amount', action: 'rename_column', detail: { from: 'Сумма с НДС, руб', to: 'amount' } },
+    { table: 'orders', column: 'order_id', action: 'keep_text', detail: { reason: 'id_leading_zeros', examples_with_zeros: 120000 } },
+    { table: 'orders', column: 'status', action: 'keep_text', detail: { reason: 'text' } },
+    { table: 'orders', column: 'amount', action: 'parse_money', detail: { decimal_separator: ',', currency: 'RUB', type: 'DECIMAL(18,2)', non_empty: 120000, parsed: 120000, success_ratio: 1 } },
+    { table: 'orders', column: 'payment_date', action: 'parse_date', detail: { format: '%d.%m.%Y', type: 'DATE', non_empty: 119892, parsed: 119880, success_ratio: 0.9999 } },
+    { table: 'orders', column: 'payment_date', action: 'unparsed_values', detail: { count: 12, examples: ['не указана', 'потом'], target: 'date' } },
   ],
 };
 

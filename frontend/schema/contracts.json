@@ -976,6 +976,167 @@
         "title": "Column",
         "type": "object"
       },
+      "ColumnQuality": {
+        "additionalProperties": false,
+        "description": "Качество одной колонки typed view в популяции конкретного расчёта.",
+        "properties": {
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "column": {
+            "title": "Column",
+            "type": "string"
+          },
+          "raw_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Raw Table"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "transformation": {
+            "title": "Transformation",
+            "type": "string"
+          },
+          "target_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "id",
+                  "integer",
+                  "float",
+                  "money",
+                  "percent",
+                  "datetime",
+                  "date",
+                  "category",
+                  "text",
+                  "bool"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Type"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Format"
+          },
+          "usage": {
+            "items": {
+              "enum": [
+                "measure",
+                "filter",
+                "join_key",
+                "group",
+                "output"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Usage",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "population",
+              "table"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Boundary"
+          },
+          "rows": {
+            "minimum": 0,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "source_empty": {
+            "minimum": 0,
+            "title": "Source Empty",
+            "type": "integer"
+          },
+          "non_empty": {
+            "minimum": 0,
+            "title": "Non Empty",
+            "type": "integer"
+          },
+          "parse_failed": {
+            "minimum": 0,
+            "title": "Parse Failed",
+            "type": "integer"
+          },
+          "failed_ratio": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Failed Ratio",
+            "type": "number"
+          },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Examples",
+            "type": "array"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/QualityIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "table",
+          "column",
+          "original_name",
+          "transformation",
+          "usage",
+          "scope",
+          "rows",
+          "source_empty",
+          "non_empty",
+          "parse_failed",
+          "failed_ratio"
+        ],
+        "title": "ColumnQuality",
+        "type": "object"
+      },
       "ColumnRef": {
         "additionalProperties": false,
         "properties": {
@@ -1941,6 +2102,54 @@
         "title": "Fact",
         "type": "object"
       },
+      "JoinCheck": {
+        "additionalProperties": false,
+        "description": "Проверка JOIN grain-таблицы с измерением на данных: размножение и потери строк.",
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "to": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "rows_before": {
+            "minimum": 0,
+            "title": "Rows Before",
+            "type": "integer"
+          },
+          "rows_after": {
+            "minimum": 0,
+            "title": "Rows After",
+            "type": "integer"
+          },
+          "max_fanout": {
+            "minimum": 0,
+            "title": "Max Fanout",
+            "type": "integer"
+          },
+          "null_key_rows": {
+            "minimum": 0,
+            "title": "Null Key Rows",
+            "type": "integer"
+          },
+          "unmatched_rows": {
+            "minimum": 0,
+            "title": "Unmatched Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows_before",
+          "rows_after",
+          "max_fanout",
+          "null_key_rows",
+          "unmatched_rows"
+        ],
+        "title": "JoinCheck",
+        "type": "object"
+      },
       "MessageBlock": {
         "discriminator": {
           "mapping": {
@@ -1973,6 +2182,240 @@
             "$ref": "#/components/schemas/SuggestionsBlock"
           }
         ]
+      },
+      "MetricFilter": {
+        "additionalProperties": false,
+        "description": "Условие популяции; колонка — из таблицы grain или из таблицы по связи N:1 от неё.",
+        "properties": {
+          "column": {
+            "$ref": "#/components/schemas/ColumnRef"
+          },
+          "op": {
+            "enum": [
+              "eq",
+              "ne",
+              "in",
+              "not_in",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "is_null",
+              "not_null"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          }
+        },
+        "required": [
+          "column",
+          "op"
+        ],
+        "title": "MetricFilter",
+        "type": "object"
+      },
+      "MetricGrain": {
+        "additionalProperties": false,
+        "description": "Одна строка метрики — одна строка ``table`` с уникальным ``key``.",
+        "properties": {
+          "table": {
+            "minLength": 1,
+            "title": "Table",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table",
+          "key"
+        ],
+        "title": "MetricGrain",
+        "type": "object"
+      },
+      "MetricProvenance": {
+        "additionalProperties": false,
+        "description": "Происхождение расчёта: версия определения и применённые ограничения.",
+        "properties": {
+          "metric_id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "formula": {
+            "title": "Formula",
+            "type": "string"
+          },
+          "grain": {
+            "$ref": "#/components/schemas/MetricGrain"
+          },
+          "additivity": {
+            "enum": [
+              "additive",
+              "recompute"
+            ],
+            "title": "Additivity",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "money",
+              "count",
+              "ratio",
+              "number"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currency"
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/MetricFilter"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period Start"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period End"
+          },
+          "group_by": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnRef"
+            },
+            "title": "Group By",
+            "type": "array"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/MetricVersionRef"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/JoinCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metric_id",
+          "version",
+          "title",
+          "formula",
+          "grain",
+          "additivity",
+          "unit"
+        ],
+        "title": "MetricProvenance",
+        "type": "object"
+      },
+      "MetricVersionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "metric_id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "metric_id",
+          "version"
+        ],
+        "title": "MetricVersionRef",
+        "type": "object"
       },
       "ParseInfo": {
         "additionalProperties": false,
@@ -2008,6 +2451,92 @@
           "success_ratio"
         ],
         "title": "ParseInfo",
+        "type": "object"
+      },
+      "QualityIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "parse_losses",
+              "kept_as_text",
+              "ambiguous_date",
+              "ambiguous_separator",
+              "mixed_currency",
+              "percent_scale",
+              "percent_sum"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "blocking"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "title": "QualityIssue",
+        "type": "object"
+      },
+      "QualityReport": {
+        "additionalProperties": false,
+        "description": "Ограничения данных, на которых основан результат инструмента.",
+        "properties": {
+          "lineage": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Lineage",
+            "type": "string"
+          },
+          "unresolved": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved",
+            "type": "array"
+          },
+          "checked": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Checked",
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnQuality"
+            },
+            "title": "Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lineage"
+        ],
+        "title": "QualityReport",
         "type": "object"
       },
       "Relation": {
@@ -2821,6 +3350,30 @@
             "default": null,
             "description": "Время выполнения в миллисекундах",
             "title": "Duration Ms"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Версия определения метрики и применённые ограничения (B2-9)"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QualityReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Потери и неоднозначности преобразования использованных колонок (B2-10)"
           }
         },
         "required": [

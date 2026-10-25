@@ -237,13 +237,75 @@ describe('CatalogPage', () => {
     expect(await screen.findByText(/orders · 6 колонок · 120\s000 строк/)).toBeInTheDocument();
     expect(screen.getByText('money (₽)')).toBeInTheDocument();
     expect(screen.getByText('Связь с customers.id')).toBeInTheDocument();
-    expect(screen.getByText('3 информации')).toBeInTheDocument();
-    expect(screen.getByText('1 предупреждение')).toBeInTheDocument();
+    expect(screen.getByText('4 информации')).toBeInTheDocument();
+    expect(screen.getByText('2 предупреждения')).toBeInTheDocument();
+    expect(screen.getByText(/12 значений не распознаны как даты/)).toBeInTheDocument();
     expect(screen.getByRole('progressbar', { name: 'Совпадение ключей' })).toHaveAttribute('aria-valuenow', '99.8');
     await userEvent.click(screen.getByRole('tab', { name: /customers/ }));
     expect(screen.getByText('registered_at')).toBeInTheDocument();
+    expect(screen.getByText('Справочник клиентов с регионом и датой регистрации')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Задать вопрос в чате/ }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
+  });
+
+  it('shows table, column and dataset descriptions', async () => {
+    await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByText('Заказы и клиенты интернет-магазина за 2026 год')).toBeInTheDocument();
+    expect(screen.getByText('Заказы интернет-магазина: сумма, скидка, статус и клиент')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Структура таблицы orders' });
+    expect(within(table).getByText('Описание')).toBeInTheDocument();
+    expect(within(table).getByText('Сумма заказа с НДС в рублях')).toBeInTheDocument();
+    // «Скидка», «Статус» and «Дата оплаты» have no description.
+    expect(within(table).getAllByText('—').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('draws the relations graph and selects tables from it', async () => {
+    await renderRoute('/catalog/ds_orders');
+    const graph = await screen.findByRole('group', { name: 'Граф связей таблиц' });
+    expect(within(graph).getByRole('img', { name: 'orders.customer_id → customers.id: многие к одному, совпадение 99,8%, уверенность высокая' })).toBeInTheDocument();
+    expect(within(graph).getByText('N:1 · 99,8%')).toBeInTheDocument();
+    expect(graph.closest('section')).not.toHaveClass('min-[1180px]:col-span-2');
+    expect(within(graph).getByRole('button', { name: /Таблица orders/ })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(within(graph).getByRole('button', { name: /Таблица customers/ }));
+    expect(screen.getByRole('tab', { name: /customers/ })).toHaveAttribute('aria-selected', 'true');
+    within(graph).getByRole('button', { name: /Таблица orders/ }).focus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('tab', { name: /orders/ })).toHaveAttribute('aria-selected', 'true');
+    await userEvent.keyboard('a');
+    expect(screen.getByRole('tab', { name: /orders/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('keeps a large relations graph readable and scrollable', async () => {
+    const dataset = createDb().datasets[0]!;
+    const catalog = dataset.catalog!;
+    const base = catalog.tables![1]!;
+    const tables = [...catalog.tables!, ...Array.from({ length: 18 }, (_, i) => ({ ...base, table_id: `extra_${i}` }))];
+    server.use(http.get(api('/datasets/ds_orders'), () => HttpResponse.json({ ...dataset, catalog: { ...catalog, tables } })));
+    await renderRoute('/catalog/ds_orders');
+    const graph = await screen.findByRole('group', { name: 'Граф связей таблиц' });
+    expect(within(graph).getAllByRole('button', { name: /^Таблица / })).toHaveLength(20);
+    const width = Number(graph.getAttribute('viewBox')?.split(' ')[2]);
+    expect(width).toBeGreaterThan(480);
+    expect(parseFloat(graph.style.minWidth)).toBeGreaterThan(400);
+    expect(graph.style.maxWidth).toBe(`${width}px`);
+    expect(graph.parentElement).toHaveClass('overflow-x-auto');
+    expect(graph.closest('section')).toHaveClass('min-[1180px]:col-span-2');
+  });
+
+  it('shows a dataset without relations or descriptions', async () => {
+    const dataset = createDb().datasets[0]!;
+    const catalog = dataset.catalog!;
+    const bare = {
+      ...catalog, summary: null, relations: [],
+      tables: catalog.tables!.map((t) => ({ ...t, description: null, columns: t.columns.map((c) => ({ ...c, description: null })) })),
+    };
+    server.use(http.get(api('/datasets/ds_orders'), () => HttpResponse.json({ ...dataset, catalog: bare })));
+    await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByText('Связи между таблицами не найдены')).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Граф связей таблиц' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.queryByText('Заказы и клиенты интернет-магазина за 2026 год')).not.toBeInTheDocument();
+    expect(screen.queryByText('Сумма заказа с НДС в рублях')).not.toBeInTheDocument();
   });
 
   it('falls back to the active dataset', async () => {

@@ -71,6 +71,17 @@ from djedai.contracts.message import (
     TextBlock,
     TraceStep,
 )
+from djedai.contracts.metrics import (
+    JoinCheck,
+    MetricConfirmation,
+    MetricDefinition,
+    MetricFilter,
+    MetricGrain,
+    MetricProvenance,
+    MetricSpec,
+    MetricVersionRef,
+)
+from djedai.contracts.quality import ColumnQuality, QualityIssue, QualityReport
 from djedai.contracts.sse import (
     AgentStreamEvent,
     DatasetDoneData,
@@ -116,6 +127,19 @@ __all__ = [
     "TableSource",
     "TopValue",
     "Transformation",
+    # Определения бизнес-метрик
+    "JoinCheck",
+    "MetricConfirmation",
+    "MetricDefinition",
+    "MetricFilter",
+    "MetricGrain",
+    "MetricProvenance",
+    "MetricSpec",
+    "MetricVersionRef",
+    # Качество преобразования колонок расчёта
+    "ColumnQuality",
+    "QualityIssue",
+    "QualityReport",
     # Результаты инструментов
     "ChartHint",
     "Fact",

@@ -106,6 +106,18 @@ def model_app() -> FastAPI:
         elif name == "VerifyResponse":
             draft = re.search(r"Drafted Response:\n(.*?)\n\nRules:", system, re.DOTALL).group(1)
             value = {"is_valid": True, "issues": [], "corrected_markdown": draft}
+        elif name == "TableDescriptions":
+            # Deterministic Russian text from the profile, so the screen can be checked against it.
+            table = json.loads(question)
+            value = {
+                "table": f"Таблица {table['table']}",
+                "columns": [
+                    {"name": c["name"], "description": f"Колонка {c['original_name']}"}
+                    for c in table["columns"]
+                ],
+            }
+        elif name == "DatasetSummary":
+            value = {"summary": f"Датасет из {len(json.loads(question)['tables'])} таблиц"}
         else:
             raise ValueError(f"Unexpected response schema: {name}")
         return {
@@ -150,6 +162,7 @@ def main() -> None:
         results_data_dir=str(directory / "results"),
         # The browser suite logs many isolated accounts in from the same loopback IP.
         auth_rate_limit_requests=100,
+        catalog_descriptions=True,
         source_encryption_key=key_file.read_text(encoding="ascii"),
     )
     # The real client reads its existing environment contract, no runtime injection.

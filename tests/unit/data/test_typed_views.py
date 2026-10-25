@@ -343,3 +343,35 @@ def test_currency_is_replaced_when_view_is_rebuilt(con, tmp_path):
     view = create_typed_view(con, raw)
     create_typed_view(con, raw)  # повторный вызов заменяет записи журнала
     assert read_currencies(con) == {(view.view_name, "v"): "EUR"}
+
+
+def test_percent_values_without_sign_are_journaled(con, tmp_path):
+    _, column, _ = typed(con, tmp_path, ["15%", "20%", "0,15"])
+    assert column.semantic_type == "percent"
+    assert journal(con, "parse_percent")[0].detail["without_percent_sign"] == 1
+
+
+def test_percent_with_sign_everywhere_has_no_scale_note(con, tmp_path):
+    typed(con, tmp_path, ["15%", "20%"])
+    assert journal(con, "parse_percent")[0].detail["without_percent_sign"] == 0
+
+
+def test_date_format_chosen_by_majority_journals_ambiguous_values(con, tmp_path):
+    _, column, _ = typed(con, tmp_path, ["25/03/2026", "03/04/2026", "05/06/2026"])
+    assert column.format == "%d/%m/%Y"
+    detail = journal(con, "parse_date")[0].detail
+    assert detail["ambiguous_values"] == 2
+    assert detail["alternative_formats"] == ["%m/%d/%Y"]
+
+
+def test_unambiguous_dates_have_no_ambiguity_note(con, tmp_path):
+    typed(con, tmp_path, ["25.03.2026", "01.12.2025"])
+    assert journal(con, "parse_date")[0].detail["ambiguous_values"] == 0
+    assert journal(con, "parse_date")[0].detail["alternative_formats"] == []
+
+
+def test_column_just_below_threshold_keeps_candidate_and_ratio(con, tmp_path):
+    _, column, _ = typed(con, tmp_path, [str(n) for n in range(94)] + ["?"] * 6)
+    assert column.semantic_type == "text"
+    detail = journal(con, "keep_text")[0].detail
+    assert detail == {"reason": "below_threshold", "candidate": "number", "success_ratio": 0.94}

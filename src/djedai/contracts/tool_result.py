@@ -6,6 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from djedai.contracts.metrics import MetricProvenance
+from djedai.contracts.quality import QualityReport
+
 
 class ToolError(BaseModel):
     """Информация об ошибке выполнения инструмента."""
@@ -142,6 +145,13 @@ class ToolResult(BaseModel):
         default=None, description="ID исходного результата при цепочке расчётов"
     )
     duration_ms: int | None = Field(default=None, description="Время выполнения в миллисекундах")
+    metric: MetricProvenance | None = Field(
+        default=None, description="Версия определения метрики и применённые ограничения (B2-9)"
+    )
+    quality: QualityReport | None = Field(
+        default=None,
+        description="Потери и неоднозначности преобразования использованных колонок (B2-10)",
+    )
 
     @model_validator(mode="after")
     def check_status_error_consistency(self) -> ToolResult:

@@ -7,6 +7,8 @@
 - messages: сообщения с блоками и ссылками на результаты
 - results: аудит вызовов аналитических инструментов, параметры, SQL, статус и data_ref
 - dashboards: дашборды с перевычисляемыми виджетами
+- metric_definitions: версии подтверждённых определений бизнес-метрик (B2-9)
+- metric_proposals: кандидаты определений из уточнений агента до выбора пользователя
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from sqlalchemy import (
     String,
     Text,
     TypeDecorator,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -227,6 +230,8 @@ class ToolResultModel(Base):
     data_preview = Column(JSON, nullable=True)  # превью таблицы для небольших данных
     source_result_id = Column(String(64), nullable=True)
     duration_ms = Column(Integer, nullable=True)
+    metric = Column(JSON, nullable=True)  # MetricProvenance: версия определения метрики
+    quality = Column(JSON, nullable=True)  # QualityReport: потери типизации колонок расчёта
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
 
     # Связи
@@ -262,3 +267,58 @@ class DashboardModel(Base):
     owner = relationship("UserModel", back_populates="dashboards")
     dataset = relationship("DatasetModel", back_populates="dashboards")
     source_chat = relationship("ChatModel")
+
+
+class MetricDefinitionModel(Base):
+    """Неизменяемая версия определения бизнес-метрики датасета (B2-9).
+
+    Новая подтверждённая версия выводит предыдущую из употребления (``retired``), а не
+    перезаписывает её: старые результаты продолжают ссылаться на свою версию.
+    """
+
+    __tablename__ = "metric_definitions"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "metric_id", "version", name="uq_metric_version"),
+    )
+
+    id = Column(String(64), primary_key=True)
+    owner_id = Column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    dataset_id = Column(
+        String(64),
+        ForeignKey("datasets.dataset_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    metric_id = Column(String(64), nullable=False)
+    version = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False)  # confirmed, retired
+    definition = Column(JSON, nullable=False)  # сериализованный MetricDefinition
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+
+
+class MetricProposalModel(Base):
+    """Кандидат определения из варианта уточнения; подтверждается выбором варианта."""
+
+    __tablename__ = "metric_proposals"
+
+    id = Column(String(64), primary_key=True)
+    owner_id = Column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    dataset_id = Column(
+        String(64),
+        ForeignKey("datasets.dataset_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    message_id = Column(
+        String(64),
+        ForeignKey("messages.message_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    option = Column(Text, nullable=False)  # текст варианта, который отправит кнопка
+    definition = Column(JSON, nullable=False)  # MetricDefinition со status="proposed"
+    created_at = Column(UTCDateTime, default=_utc_now, nullable=False)

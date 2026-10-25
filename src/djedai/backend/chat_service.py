@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -21,6 +22,8 @@ from djedai.agent.config import get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.agent.memory import HISTORY_WINDOW, HistoryEntry, summarize_history
+from djedai.analytics.metrics import MetricContext
+from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dataset_service import DatasetContext
@@ -38,6 +41,7 @@ from djedai.backend.db.repositories import (
 )
 from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
+from djedai.backend.metric_service import MetricService
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -54,6 +58,7 @@ from djedai.contracts.message import (
     TextBlock,
     TraceStep,
 )
+from djedai.contracts.metrics import MetricDefinition
 from djedai.contracts.sse import (
     AgentStreamEvent,
     SSEBlockEvent,
@@ -94,6 +99,7 @@ class AgentRuntime:
     tool_dispatcher: Callable[[str, dict[str, Any]], ToolResult] | None = None
     catalog_loader: Callable[[str], DatasetCatalog] | None = None
     dataset_context: Callable[[str, str], DatasetContext] | None = None
+    metric_service: MetricService | None = None
     results_storage_dir: Path | str | None = None
     turn_timeout_seconds: float | None = None
     diagnostics: DiagnosticJournal | None = None
@@ -144,6 +150,7 @@ def get_agent_runtime(request: Request) -> AgentRuntime:
     return replace(
         runtime,
         dataset_context=request.app.state.dataset_service.get_context,
+        metric_service=getattr(request.app.state, "metric_service", None),
         results_storage_dir=request.app.state.settings.results_data_dir,
         turn_timeout_seconds=request.app.state.settings.agent_turn_timeout_seconds,
         diagnostics=request.app.state.diagnostics,
@@ -254,25 +261,6 @@ def _message_result_ids(message: MessageModel) -> list[str]:
     return result_ids
 
 
-def _message_result_ids(message: MessageModel) -> list[str]:
-    """Возвращает результаты, на которые ссылается сохранённое сообщение.
-
-    Помимо явно сохранённых result_ids учитываем блоки ответа: график или
-    таблица ссылаются на результат, даже если старый ответ его не сохранил.
-    """
-    result_ids = list(message.result_ids or [])
-    for block in message.blocks or []:
-        if not isinstance(block, dict):
-            continue
-        referenced = block.get("result_id")
-        chart = block.get("chart")
-        if not referenced and isinstance(chart, dict):
-            referenced = chart.get("result_id")
-        if referenced:
-            result_ids.append(referenced)
-    return result_ids
-
-
 def _block_to_message_block(block: Block) -> MessageBlock:
     """Преобразует блок агента в согласованный MessageBlock, не теряя будущие типы."""
     if block.type == "text":
@@ -304,6 +292,76 @@ def _block_to_message_block(block: Block) -> MessageBlock:
     if block.type == "suggestions":
         return SuggestionsBlock(items=block.items)
     return TextBlock(markdown=block.markdown or f"Блок «{block.type}» пока не поддерживается")
+
+
+def _metric_proposals(blocks: list[Block]) -> list[tuple[str, MetricDefinition]]:
+    """Пары «текст кнопки — кандидат» из уточнений, которые чат покажет кнопками."""
+    pairs = []
+    for block in blocks:
+        if block.type != "clarification" or not isinstance(
+            _block_to_message_block(block), ClarificationBlock
+        ):
+            continue
+        for option, candidate in zip(block.options, block.metric_candidates, strict=False):
+            if candidate is not None and option.strip():
+                pairs.append((option.strip(), candidate))
+    return pairs
+
+
+def _with_chosen_metric(history: list[Message], chosen: MetricDefinition) -> list[Message]:
+    """Ответ кнопкой — не вопрос: агенту нужен исходный вопрос и выбранное определение."""
+    if not history:
+        return history
+    question = next(
+        (m.content for m in reversed(history[:-1]) if m.role == "user" and m.content), ""
+    )
+    answer = history[-1].content
+    content = (
+        f"{question}\nУточнение пользователя: {answer}. Определение подтверждено: "
+        f"метрика {chosen.metric_id} v{chosen.version}, считать через compute_metric."
+    )
+    return [*history[:-1], Message(role="user", content=content.strip())]
+
+
+_QUALITY_OPTION = re.compile(r"^[^\s.:]+\.[^\s:]+: ")  # «таблица.колонка: …» (B2-10)
+
+
+def _with_quality_choice(messages: list[MessageModel], history: list[Message]) -> list[Message]:
+    """Ответы кнопками на уточнения качества данных: исходный вопрос и все выборы.
+
+    Расчёт может упереться в несколько неоднозначностей подряд (две даты): каждая кнопка
+    отвечает на своё уточнение, и агенту нужен исходный вопрос вместе со всей цепочкой.
+    Вариант называет колонку («таблица.колонка: формат»), и по этой ссылке агент
+    понимает, что ограничение решено пользователем в этом вопросе.
+    """
+    choices: list[str] = []
+    index = len(messages) - 1
+    while index >= 1 and _quality_choice(messages[index - 1], messages[index]):
+        choices.insert(0, (messages[index].content or "").strip())
+        index -= 2
+    if not choices or len(history) != len(messages):
+        return history
+    asked = index >= 0 and messages[index].role == "user"
+    question = (messages[index].content or "") if asked else ""  # иначе вышел из окна
+    keep = index if asked else index + 1
+    lines = [question, *(f"Уточнение пользователя: {choice}." for choice in choices)]
+    return [*history[:keep], Message(role="user", content="\n".join(lines).strip())]
+
+
+def _quality_choice(previous: MessageModel, message: MessageModel) -> bool:
+    answer = (message.content or "").strip()
+    options = {
+        option
+        for block in previous.blocks or []
+        if isinstance(block, dict) and block.get("type") == "clarification"
+        for option in block.get("options") or []
+    }
+    return (
+        previous.role == "assistant"
+        and message.role == "user"
+        and answer in options
+        and _QUALITY_OPTION.match(answer) is not None
+    )
 
 
 def _agent_error(blocks: list[Block]) -> str | None:
@@ -433,6 +491,16 @@ def stream_chat_turn(
             yield _error_event("model_unavailable")
             return
 
+        # Выбор варианта уточнения подтверждает приложенное к нему определение (B2-9).
+        chosen: MetricDefinition | None = None
+        metrics: dict[str, MetricDefinition] = {}
+        if runtime.metric_service is not None:
+            budget.check()
+            chosen = runtime.metric_service.confirm_choice(
+                owner_id, chat_model.dataset_id, chat_model.chat_id, text, user_message_id
+            )
+            metrics = runtime.metric_service.confirmed(owner_id, chat_model.dataset_id)
+
         if runtime.dataset_context is not None:
             budget.check()
             if is_cancelled and is_cancelled():
@@ -442,13 +510,20 @@ def stream_chat_turn(
                 raise ValueError("Каталог не относится к датасету чата")
             connection = resources.enter_context(context.open_connection())
             allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
+            semantics = MetricContext(context.catalog, metrics)
 
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                return execute_tool(
-                    tool, params, connection=connection, allowed_tables=allowed_tables
+                result = execute_tool(
+                    tool,
+                    params,
+                    connection=connection,
+                    allowed_tables=allowed_tables,
+                    semantics=semantics,
                 )
+                # Потери типизации в колонках именно этого расчёта (B2-10).
+                return assess(result, connection, context.catalog)
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:
@@ -463,6 +538,10 @@ def stream_chat_turn(
         all_messages = get_chat_messages(db, chat_model.chat_id)
         history_messages = all_messages[-HISTORY_WINDOW:]
         history = [_history_message(message) for message in history_messages]
+        if chosen is not None:
+            history = _with_chosen_metric(history, chosen)
+        else:
+            history = _with_quality_choice(history_messages, history)
         history_summary = summarize_history([_history_entry(item) for item in all_messages])
         history_summary = history_summary or chat_model.summary
         previous_focus = list(chat_model.focus_result_ids or [])
@@ -531,6 +610,8 @@ def stream_chat_turn(
             configurable["is_cancelled"] = is_cancelled
         if runtime.catalog_loader is not None:
             configurable["catalog_loader"] = runtime.catalog_loader
+        if runtime.metric_service is not None:
+            configurable["metrics_loader"] = lambda _dataset_id: metrics
 
         trace: list[TraceStep] = []
         results: list[ToolResult] = []
@@ -603,7 +684,7 @@ def stream_chat_turn(
                             )
                         )
 
-                if node in ("visualize", "compose", "verify", "clarify"):
+                if node in ("visualize", "compose", "verify", "clarify", "cite_metrics"):
                     node_update = data if isinstance(data, dict) else {}
                     if node in ("visualize", "compose", "clarify") and (
                         "focus_result_ids" in node_update
@@ -705,12 +786,20 @@ def stream_chat_turn(
                 "phase": "stage",
             }
         )
+        proposals = _metric_proposals(answer_blocks) if runtime.metric_service else []
         save_assistant_message(
             db,
             assistant,
             budget=budget,
             question_id=user_message_id,
             completed_turn=completed_turn,
+            also=(
+                lambda writer: runtime.metric_service.propose(
+                    writer, owner_id, chat_model.dataset_id, assistant.message_id, proposals
+                )
+            )
+            if proposals
+            else None,
             summary=next_summary,
             focus_result_ids=next_focus,
         )

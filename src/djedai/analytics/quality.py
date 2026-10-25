@@ -1,0 +1,691 @@
+"""Потери и неоднозначности типизации в колонках конкретного расчёта (B2-10, #168).
+
+``assess`` дополняет результат инструмента отчётом ``QualityReport``: какие колонки
+каталога использовал его SQL (``djedai.analytics.lineage``), сколько их значений не
+распознано именно в популяции расчёта и какие ограничения из журнала преобразований
+к ним относятся.
+
+Typed view превращает нераспознанное значение в NULL, и отличить его от исходного
+пропуска можно только по сырой таблице. Поэтому популяция пересчитывается отдельным
+запросом: копия scope расчёта (FROM, JOIN, WHERE; без GROUP BY и LIMIT), где typed view
+заменён подзапросом над ``raw_<имя>`` с флагами «значение было» и «значение не
+распознано». Флаги проходят через CTE и подзапросы до scope популяции. Строки без пары
+в LEFT JOIN не считаются ни пропусками, ни потерями.
+
+Если популяцию так не посчитать (коррелированный подзапрос, UNION внутри подзапроса,
+ключ JOIN, ошибка запроса), берётся профиль всей таблицы из журнала, а ``boundary``
+говорит, что это не число потерь в расчёте. Правила — в
+``docs/decisions/168-typing-losses.md``.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+import duckdb
+import sqlglot
+from sqlglot import exp
+from sqlglot.optimizer.scope import traverse_scope
+
+from djedai.analytics.lineage import ColumnUse, Lineage, trace
+from djedai.analytics.queries import check_budget
+from djedai.analytics.scope import parse_read_query
+from djedai.config import get_limits
+from djedai.contracts.catalog import Column, DatasetCatalog, Table
+from djedai.contracts.quality import (
+    ColumnQuality,
+    QualityIssue,
+    QualityReport,
+    QualityScope,
+    Severity,
+    Usage,
+)
+from djedai.contracts.tool_result import Fact, ToolResult
+from djedai.data.typed_views import _TEMPORAL
+from djedai.execution import TurnCancelled, TurnTimeout, query_timer
+
+logger = logging.getLogger(__name__)
+
+_PRESENT = "__djedai_present_"
+_FAILED = "__djedai_failed_"
+_RAW = "__djedai_raw_"
+_DROP_CLAUSES = ("group", "having", "order", "limit", "offset", "distinct", "qualify", "windows")
+_COMPUTED: frozenset[Usage] = frozenset({"measure", "filter", "group"})
+_TYPE_NAMES = {
+    "integer": "целое число",
+    "float": "число",
+    "money": "деньги",
+    "percent": "процент",
+    "date": "дата",
+    "datetime": "дата и время",
+    "bool": "да/нет",
+    "number": "число",
+}
+
+_DATE_ORDER = {
+    "%d/%m/%Y": "день/месяц/год",
+    "%m/%d/%Y": "месяц/день/год",
+    "%d-%m-%Y": "день-месяц-год",
+}
+
+BOUNDARY_JOIN = "посчитано по всей таблице: сколько строк потерял именно этот JOIN, неизвестно"
+BOUNDARY_PROFILE = "посчитано по всей таблице: сколько из этих значений попало в расчёт, неизвестно"
+
+
+@dataclass(frozen=True)
+class _Counts:
+    rows: int
+    source_empty: int
+    non_empty: int
+    failed: int
+    scope: QualityScope
+    boundary: str | None = None
+
+
+@dataclass
+class _Column:
+    table: Table
+    column: Column
+    action: str  # parse_* или keep_text
+    detail: dict
+    examples: list[str]
+    uses: list[ColumnUse] = field(default_factory=list)
+    counts: _Counts | None = None  # популяция мер, вывода и группировки
+    dropped: list[tuple[int, _Counts]] = field(default_factory=list)  # фильтры: строки и база
+    mixed_with: set[tuple[str, str | None]] = field(default_factory=set)  # другие валюты
+    mixed_in_measure: bool = False
+    ambiguity_boundary: str | None = None
+
+    @property
+    def usages(self) -> set[Usage]:
+        return {use.usage for use in self.uses}
+
+    @property
+    def name(self) -> str:
+        return f"«{self.column.original_name}» ({self.table.table_id}.{self.column.name})"
+
+
+def assess(
+    result: ToolResult, connection: duckdb.DuckDBPyConnection, catalog: DatasetCatalog
+) -> ToolResult:
+    """Результат с отчётом о качестве колонок его SQL и фактами для ответа."""
+    if result.status == "error" or not result.sql:
+        return result
+    try:
+        lineage = trace(parse_read_query(result.sql), catalog)
+    except (ValueError, sqlglot.errors.SqlglotError) as error:
+        lineage = Lineage(None, unresolved=[f"запрос не разобран: {error}"])
+    try:
+        report = quality_report(lineage, connection, catalog)
+    except (TurnTimeout, TurnCancelled):
+        raise
+    except Exception as error:  # проверка не должна терять результат, но и молчать
+        logger.exception("Проверка качества колонок не выполнена")
+        report = QualityReport(
+            lineage="partial", unresolved=[f"проверка качества не выполнена: {error}"]
+        )
+    facts = [*result.facts, *quality_facts(report)]
+    return result.model_copy(update={"quality": report, "facts": facts})
+
+
+def quality_report(
+    lineage: Lineage, connection: duckdb.DuckDBPyConnection, catalog: DatasetCatalog
+) -> QualityReport:
+    columns: dict[tuple[str, str], _Column] = {}
+    checked: list[str] = []
+    uses = list(lineage.uses)
+    if lineage.query is None:
+        # колонки не связать с запросом: проверяются все колонки упомянутых таблиц
+        for table_id in sorted(lineage.tables):
+            table = catalog.table(table_id)
+            for column in table.columns:
+                uses.append(ColumnUse(table_id, column.name, "output", None, 0, 0, column.name, ()))
+    for use in uses:
+        checked.append(f"{use.table}.{use.column}")
+        key = (use.table, use.column)
+        if key not in columns:
+            column = _column(catalog, use.table, use.column)
+            if column is None:
+                continue
+            columns[key] = column
+        columns[key].uses.append(use)
+    for column in columns.values():
+        _restore_ambiguities(column, connection)
+    if lineage.query is not None:
+        _count_populations(lineage, [c for c in columns.values() if _needs_count(c)], connection)
+    for column in columns.values():
+        if column.counts is None:
+            only_key = column.usages == {"join_key"}
+            column.counts = _profile(column, BOUNDARY_JOIN if only_key else BOUNDARY_PROFILE)
+    _mixed_currency_expressions(columns.values())
+    reported = []
+    for column in columns.values():
+        issues = _issues(column)
+        if issues:
+            reported.append(_quality(column, issues))
+    unresolved = [
+        *lineage.unresolved,
+        *[
+            f"{column.name}: {column.ambiguity_boundary}"
+            for column in columns.values()
+            if column.ambiguity_boundary
+        ],
+    ]
+    return QualityReport(
+        lineage="partial" if unresolved else "complete",
+        unresolved=unresolved,
+        checked=list(dict.fromkeys(checked)),
+        columns=reported,
+    )
+
+
+def quality_facts(report: QualityReport) -> list[Fact]:
+    facts = []
+    if report.lineage == "partial":
+        facts.append(
+            Fact(
+                text="Не все колонки расчёта удалось связать с данными: ограничения ниже "
+                "могут быть неполными",
+                kind="data_quality",
+                values={"lineage": "partial"},
+            )
+        )
+    for column in report.columns:
+        for issue in column.issues:
+            facts.append(
+                Fact(
+                    text=issue.message,
+                    kind="data_quality",
+                    values={
+                        "code": issue.code,
+                        "severity": issue.severity,
+                        "table": column.table,
+                        "column": column.column,
+                        "scope": column.scope,
+                        "rows": column.rows,
+                        "source_empty": column.source_empty,
+                        "non_empty": column.non_empty,
+                        "parse_failed": column.parse_failed,
+                        "failed_ratio": column.failed_ratio,
+                    },
+                )
+            )
+    return facts
+
+
+# --- колонки и журнал ---
+
+
+def _column(catalog: DatasetCatalog, table_id: str, name: str) -> _Column | None:
+    table = catalog.table(table_id)
+    if table is None or table.raw_table is None:
+        return None  # живой источник: типы задала БД, разбора не было
+    column = table.column(name)
+    if column is None:
+        return None
+    entries = [t for t in catalog.transformations if t.table == table_id and t.column == name]
+    decision = next(
+        (e for e in entries if e.action.startswith("parse_") or e.action == "keep_text"), None
+    )
+    unparsed = next((e for e in entries if e.action == "unparsed_values"), None)
+    return _Column(
+        table,
+        column,
+        decision.action if decision else "keep_text",
+        dict(decision.detail) if decision else {},
+        [str(v) for v in unparsed.detail.get("examples", [])] if unparsed else [],
+    )
+
+
+def _needs_count(column: _Column) -> bool:
+    detail = column.detail
+    return column.action.startswith("parse_") and detail.get("parsed", 0) < detail.get(
+        "non_empty", 0
+    )
+
+
+def _restore_ambiguities(column: _Column, connection: duckdb.DuckDBPyConnection) -> None:
+    """Recover optional journal diagnostics without changing persisted catalogs or views."""
+    percent = column.action == "parse_percent" and "without_percent_sign" not in column.detail
+    date = column.action in {"parse_date", "parse_datetime"} and (
+        "ambiguous_values" not in column.detail or "alternative_formats" not in column.detail
+    )
+    if not (percent or date):
+        return
+    try:
+        source = _quality_relation(connection, column.table, "legacy").sql(dialect="duckdb")
+        index = next(
+            i for i, item in enumerate(column.table.columns) if item.name == column.column.name
+        )
+        raw = _ref("legacy", f"{_RAW}{index}").sql(dialect="duckdb")
+        typed = _ref("legacy", column.column.name).sql(dialect="duckdb")
+        present = f"{typed} IS NOT NULL"
+        if percent:
+            (count,) = _fetch(
+                connection,
+                f"SELECT count(*) FILTER (WHERE {present} "
+                f"AND NOT contains(trim({raw}), '%')) FROM {source}",
+            )
+            column.detail["without_percent_sign"] = count
+        else:
+            chosen = column.column.parse.format if column.column.parse else None
+            if chosen not in {fmt for fmt, _, _ in _TEMPORAL}:
+                raise ValueError("unknown stored date format")
+            rivals = [(fmt, shape) for fmt, shape, _ in _TEMPORAL if fmt != chosen]
+            conditions = [
+                f"({present} AND regexp_full_match(trim({raw}), "
+                f"{exp.Literal.string(shape).sql(dialect='duckdb')}) "
+                f"AND try_strptime(trim({raw}), "
+                f"{exp.Literal.string(fmt).sql(dialect='duckdb')}) IS NOT NULL)"
+                for fmt, shape in rivals
+            ]
+            counts = ", ".join(
+                f"count(*) FILTER (WHERE {condition})"
+                for condition in [" OR ".join(conditions), *conditions]
+            )
+            row = _fetch(connection, f"SELECT {counts} FROM {source}")
+            column.detail["ambiguous_values"] = row[0]
+            column.detail["alternative_formats"] = [
+                fmt for (fmt, _), count in zip(rivals, row[1:], strict=True) if count
+            ]
+    except (duckdb.Error, sqlglot.errors.SqlglotError, KeyError, ValueError):
+        check_budget()
+        column.ambiguity_boundary = (
+            "в сохранённом журнале нет сведений о неоднозначности; исходные значения "
+            "проверить не удалось, масштаб процентов или порядок дня и месяца не проверены"
+        )
+
+
+def _profile(column: _Column, boundary: str) -> _Counts:
+    rows = column.table.row_count
+    non_empty = column.detail.get("non_empty")
+    if non_empty is None:
+        source_empty = round(column.column.null_ratio * rows)
+        return _Counts(rows, source_empty, rows - source_empty, 0, "table", boundary)
+    parsed = column.detail.get("parsed", non_empty)
+    return _Counts(rows, rows - non_empty, non_empty, non_empty - parsed, "table", boundary)
+
+
+# --- популяция расчёта ---
+
+
+def _count_populations(
+    lineage: Lineage, columns: list[_Column], connection: duckdb.DuckDBPyConnection
+) -> None:
+    jobs: dict[tuple[int, ColumnUse | None], list[tuple[_Column, ColumnUse]]] = defaultdict(list)
+    for column in columns:
+        for use in column.uses:
+            if use.boundary is not None or use.usage == "join_key":
+                continue
+            jobs[(use.target, use if use.usage == "filter" else None)].append((column, use))
+    for (target, filter_use), batch in jobs.items():
+        try:
+            sql = _population_sql(lineage, target, batch, filter_use, connection)
+            row = _fetch(connection, sql)
+        except (duckdb.Error, sqlglot.errors.SqlglotError, KeyError, ValueError) as error:
+            check_budget()
+            logger.warning("Популяцию для проверки качества посчитать не удалось: %s", error)
+            continue
+        for index, (column, _use) in enumerate(batch):
+            rows, non_empty, failed, dropped = row[index * 4 : index * 4 + 4]
+            counts = _Counts(rows, rows - non_empty, non_empty, failed, "population")
+            if filter_use is not None:
+                column.dropped.append((dropped, counts))
+            elif column.counts is None or counts.failed > column.counts.failed:
+                # одна колонка в нескольких популяциях: показываем худшую
+                column.counts = counts
+    for column in columns:
+        if column.counts is None and column.dropped and column.usages <= {"filter", "join_key"}:
+            # только фильтр: популяция — строки до этого фильтра
+            column.counts = max(column.dropped, key=lambda item: item[0])[1]
+        for use in column.uses:
+            if column.counts is None and use.boundary is not None:
+                column.counts = _profile(column, f"{use.boundary}; {BOUNDARY_PROFILE}")
+
+
+def _fetch(connection: duckdb.DuckDBPyConnection, sql: str) -> tuple:
+    check_budget()
+    timer = query_timer(get_limits().tool_timeout_seconds, connection.interrupt)
+    timer.start()
+    try:
+        return connection.execute(sql).fetchone()
+    finally:
+        timer.cancel()
+
+
+def _population_sql(
+    lineage: Lineage,
+    target: int,
+    batch: list[tuple[_Column, ColumnUse]],
+    filter_use: ColumnUse | None,
+    connection: duckdb.DuckDBPyConnection,
+) -> str:
+    tree = lineage.query.copy()
+    scopes = list(traverse_scope(tree))
+    if len(scopes) != len(lineage.scopes):
+        raise ValueError("копия запроса разобрана иначе")
+    replaced: set[tuple[int, str]] = set()
+    # алиас в scope популяции, флаги «было» и «не распознано», использование
+    flags: list[tuple[str, str, str, ColumnUse]] = []
+    for number, (column, use) in enumerate(batch):
+        entry = use.path[-1]
+        if (entry.scope, entry.alias) not in replaced:
+            node = scopes[entry.scope].sources[entry.alias]
+            node.replace(_quality_relation(connection, column.table, entry.alias))
+            replaced.add((entry.scope, entry.alias))
+        alias, present, failed = entry.alias, _PRESENT + use.column, _FAILED + use.column
+        for inner, outer in zip(reversed(use.path[1:]), reversed(use.path[:-1]), strict=True):
+            select = scopes[inner.scope].expression
+            names = (f"__djedai_p{number}", f"__djedai_f{number}")
+            select.select(
+                *(
+                    exp.alias_(_ref(alias, flag), name, quoted=True)
+                    for flag, name in zip((present, failed), names, strict=True)
+                ),
+                copy=False,
+            )
+            alias, (present, failed) = outer.alias, names
+        flags.append((alias, present, failed, use))
+
+    counted = scopes[target].expression.copy()
+    for clause in _DROP_CLAUSES:
+        counted.set(clause, None)
+    projections = []
+    for alias, present, failed, use in flags:
+        # FILTER агрегата сужает популяцию меры так же, как WHERE (SUM(x) FILTER (WHERE …))
+        restrict = _condition(use.condition) if use.condition else exp.true()
+        dropped_by: exp.Expression = exp.false()
+        if filter_use is not None and use.condition:
+            dropped_by, kept = _split(_conjuncts(_condition(use.condition)), use)
+            restrict = exp.and_(*kept) if kept else exp.true()
+        elif filter_use is not None:
+            dropped_by = _split_where(counted, use)
+        p, f = _ref(alias, present), _ref(alias, failed)
+        restrict = _coalesce_false(restrict)
+        projections += [
+            _count_if(exp.and_(exp.Not(this=exp.Is(this=p, expression=exp.null())), restrict)),
+            _count_if(exp.and_(p, restrict)),
+            _count_if(exp.and_(f, restrict)),
+            _count_if(exp.and_(f, restrict, exp.Not(this=_coalesce_false(dropped_by)))),
+        ]
+    counted.set("expressions", projections)
+    with_ = tree.args.get("with")
+    if with_ is not None and counted.args.get("with") is None:
+        counted.set("with", with_.copy())
+    return counted.sql("duckdb")
+
+
+def _split_where(select: exp.Select, use: ColumnUse) -> exp.Expression:
+    """Убирает из WHERE условия на колонку и возвращает их: строки, которые они отсекли."""
+    where = select.args.get("where")
+    if where is None:
+        raise ValueError("фильтр не в WHERE")
+    removed, kept = _split(_conjuncts(where.this), use)
+    select.set("where", exp.Where(this=exp.and_(*kept)) if kept else None)
+    return removed
+
+
+def _split(
+    conjuncts: list[exp.Expression], use: ColumnUse
+) -> tuple[exp.Expression, list[exp.Expression]]:
+    """Условия на колонку ``use`` (одним AND) и остальные условия."""
+    alias = use.path[0].alias
+    removed = [
+        c
+        for c in conjuncts
+        if any(col.table == alias and col.name == use.ref for col in c.find_all(exp.Column))
+    ]
+    if not removed:
+        raise ValueError("условия на колонку фильтра не найдены")
+    kept = [c for c in conjuncts if all(c is not r for r in removed)]
+    return exp.and_(*(c.copy() for c in removed)), kept
+
+
+def _conjuncts(condition: exp.Expression) -> list[exp.Expression]:
+    return list(condition.flatten()) if isinstance(condition, exp.And) else [condition]
+
+
+def _condition(sql: str) -> exp.Expression:
+    return exp.condition(sql, dialect="duckdb")
+
+
+def _quality_relation(
+    connection: duckdb.DuckDBPyConnection, table: Table, alias: str
+) -> exp.Expression:
+    """Подзапрос над сырой таблицей: колонки typed view и флаги «было» и «не распознано»."""
+    row = connection.execute(
+        "SELECT sql FROM duckdb_views() WHERE view_name = ? AND database_name = current_database()",
+        [table.table_id],
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"представление {table.table_id} не найдено")
+    view = sqlglot.parse_one(row[0], read="duckdb").expression.copy()
+    for index, column in enumerate(table.columns):
+        view.select(
+            exp.alias_(
+                exp.column(column.original_name, quoted=True), f"{_RAW}{index}", quoted=True
+            ),
+            copy=False,
+        )
+    flagged = exp.select("*").from_(view.subquery("t"))
+    for index, column in enumerate(table.columns):
+        raw = exp.column(f"{_RAW}{index}", table="t", quoted=True)
+        present = _coalesce_false(
+            exp.NEQ(this=exp.Trim(this=raw), expression=exp.Literal.string(""))
+        )
+        typed = exp.column(column.name, table="t", quoted=True)
+        flagged.select(
+            exp.alias_(present, _PRESENT + column.name, quoted=True),
+            exp.alias_(
+                exp.and_(present.copy(), exp.Is(this=typed, expression=exp.null())),
+                _FAILED + column.name,
+                quoted=True,
+            ),
+            copy=False,
+        )
+    return flagged.subquery(alias)
+
+
+def _coalesce_false(condition: exp.Expression) -> exp.Expression:
+    return exp.Coalesce(this=condition, expressions=[exp.false()])
+
+
+def _ref(alias: str, name: str) -> exp.Column:
+    return exp.column(name, table=alias, quoted=True)
+
+
+def _count_if(condition: exp.Expression) -> exp.Expression:
+    return exp.Filter(this=exp.Count(this=exp.Star()), expression=exp.Where(this=condition))
+
+
+# --- правила ---
+
+
+def _mixed_currency_expressions(columns: Iterable[_Column]) -> None:
+    """Отмечает денежные колонки разных валют, которые складываются в одном выражении."""
+    by_expression: dict[int, list[tuple[_Column, ColumnUse]]] = defaultdict(list)
+    for column in columns:
+        if column.column.semantic_type == "money":
+            for use in column.uses:
+                if use.usage in ("measure", "output"):
+                    by_expression[use.expression].append((column, use))
+    for members in by_expression.values():
+        currencies = {c.column.currency for c, _ in members}
+        if len(currencies) > 1:
+            for column, use in members:
+                column.mixed_with.update(
+                    (other.name, other.column.currency)
+                    for other, _ in members
+                    if other.column.currency != column.column.currency
+                )
+                column.mixed_in_measure |= use.usage == "measure"
+
+
+def _issues(column: _Column) -> list[QualityIssue]:
+    issues: list[QualityIssue] = []
+    usages, detail, name = column.usages, column.detail, column.name
+    counts = column.counts
+    computed = bool(usages & _COMPUTED)
+
+    ref = f"{column.table.table_id}.{column.column.name}:"
+
+    def add(code, severity: Severity, message: str, options: list[str] | None = None) -> None:
+        options = options if severity == "blocking" else []
+        issues.append(QualityIssue(code=code, severity=severity, message=message, options=options))
+
+    if column.ambiguity_boundary:
+        add(
+            "percent_scale" if column.action == "parse_percent" else "ambiguous_date",
+            "warning",
+            f"{name}: {column.ambiguity_boundary}.",
+        )
+
+    if column.action.startswith("parse_"):
+        target = _TYPE_NAMES.get(column.column.semantic_type, column.column.semantic_type)
+        if counts.failed and usages - {"filter", "join_key"}:
+            examples = (
+                f" Примеры нераспознанных значений в таблице: {', '.join(column.examples)}."
+                if column.examples
+                else ""
+            )
+            text = (
+                f"{name}: {counts.failed} из {counts.non_empty} непустых значений "
+                f"({_percent(counts.failed, counts.non_empty)}) не распознаны как {target} "
+                f"и не вошли в расчёт."
+            )
+            if counts.scope == "table":
+                text = (
+                    f"{name}: в таблице {counts.failed} из {counts.non_empty} непустых значений "
+                    f"({_percent(counts.failed, counts.non_empty)}) не распознаны как {target}; "
+                    f"{counts.boundary}."
+                )
+            add("parse_losses", "warning", text + examples)
+        if "join_key" in usages and (profile := _profile(column, BOUNDARY_JOIN)).failed:
+            # строки с нераспознанным ключом не находят пару, но сколько их в этом JOIN,
+            # не посчитать: соединение по такому ключу меняет саму популяцию
+            add(
+                "parse_losses",
+                "warning",
+                f"{name} — ключ JOIN: в таблице {profile.failed} из {profile.non_empty} "
+                f"непустых значений ({_percent(profile.failed, profile.non_empty)}) не "
+                f"распознаны как {target}, строки с ними не находят пару; {BOUNDARY_JOIN}.",
+            )
+        for dropped, base in column.dropped:
+            if dropped:
+                add(
+                    "parse_losses",
+                    "warning",
+                    f"{name}: фильтр по этой колонке отбросил строки, где исходное значение "
+                    f"есть, но не распознано: {dropped} из {base.non_empty} непустых.",
+                )
+    if column.action == "keep_text":
+        reason = detail.get("reason")
+        if reason == "below_threshold" and computed:
+            threshold = round(get_limits().type_parse_threshold * 100)
+            candidate = _TYPE_NAMES.get(detail.get("candidate"), detail.get("candidate"))
+            add(
+                "kept_as_text",
+                "warning",
+                f"{name} осталась текстом: как {candidate} распознано "
+                f"{_percent_ratio(detail.get('success_ratio', 0))} значений, ниже порога "
+                f"{threshold}%. Типизированного расчёта по ней нет.",
+            )
+        elif reason == "ambiguous_date" and usages:
+            candidates = detail.get("candidates", [])
+            add(
+                "ambiguous_date",
+                "blocking" if computed else "warning",
+                f"{name}: день и месяц не различить (подходят форматы {', '.join(candidates)}), "
+                f"даты остались текстом. Нужно уточнить формат.",
+                [f"{ref} {_DATE_ORDER.get(fmt, fmt)} ({fmt})" for fmt in candidates],
+            )
+        elif reason == "mixed_currencies" and computed:
+            currencies = detail.get("currencies", [])
+            add(
+                "mixed_currency",
+                "blocking" if "measure" in usages else "warning",
+                f"{name}: в колонке несколько валют ({', '.join(currencies)}), значения "
+                f"остались текстом и не складываются. Нужно выбрать валюту или считать по "
+                f"каждой отдельно.",
+                [f"{ref} считать по каждой валюте отдельно"]
+                + [f"{ref} только {currency}" for currency in currencies],
+            )
+    if detail.get("ambiguous_values"):
+        alternatives = ", ".join(detail.get("alternative_formats", []))
+        add(
+            "ambiguous_date",
+            "warning",
+            f"{name}: формат {detail.get('format')} выбран по большинству значений, но "
+            f"{detail['ambiguous_values']} из {detail.get('non_empty', '?')} подходят и под "
+            f"{alternatives}: день и месяц в них могли поменяться местами.",
+        )
+    if "ambiguous_separator" in str(detail.get("note", "")) and usages:
+        add(
+            "ambiguous_separator",
+            "warning",
+            f"{name}: одиночный разделитель («1,234») принят за десятичный; если это "
+            f"разделитель тысяч, значения в 1000 раз меньше.",
+        )
+    if detail.get("without_percent_sign") and usages:
+        add(
+            "percent_scale",
+            "warning",
+            f"{name}: {detail['without_percent_sign']} значений записаны без знака % "
+            f"(например, 0,15 рядом с 15%): их масштаб неизвестен, они взяты как есть.",
+        )
+    if column.column.semantic_type == "percent" and any(
+        use.aggregate == "sum" for use in column.uses
+    ):
+        add(
+            "percent_sum",
+            "warning",
+            f"{name}: проценты сложены; сумма процентов не является долей.",
+        )
+    if column.mixed_with:
+        others = ", ".join(f"{other} в {currency}" for other, currency in sorted(column.mixed_with))
+        add(
+            "mixed_currency",
+            "blocking" if column.mixed_in_measure else "warning",
+            f"{name} в {column.column.currency} складывается в одном выражении с {others}: "
+            f"курсов нет, такая сумма не имеет смысла.",
+            [
+                f"{ref} считать каждую валюту отдельно",
+                f"{ref} показать только {column.column.currency}",
+            ],
+        )
+    return issues
+
+
+def _quality(column: _Column, issues: list[QualityIssue]) -> ColumnQuality:
+    counts = column.counts
+    return ColumnQuality(
+        table=column.table.table_id,
+        column=column.column.name,
+        raw_table=column.table.raw_table,
+        original_name=column.column.original_name,
+        transformation=column.action,
+        target_type=column.column.semantic_type if column.action.startswith("parse_") else None,
+        format=column.column.parse.format if column.column.parse else None,
+        usage=sorted(column.usages),
+        scope=counts.scope,
+        boundary=counts.boundary,
+        rows=counts.rows,
+        source_empty=counts.source_empty,
+        non_empty=counts.non_empty,
+        parse_failed=counts.failed,
+        failed_ratio=round(counts.failed / counts.non_empty, 4) if counts.non_empty else 0.0,
+        examples=column.examples if counts.failed else [],
+        issues=issues,
+    )
+
+
+def _percent(part: int, total: int) -> str:
+    return _percent_ratio(part / total if total else 0.0)
+
+
+def _percent_ratio(ratio: float) -> str:
+    text = f"{ratio * 100:.1f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",") + "%"

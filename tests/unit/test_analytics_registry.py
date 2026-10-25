@@ -495,6 +495,110 @@ EXPECTED_TOOLS = [
             "type": "object",
         },
     },
+    {
+        "name": "compute_metric",
+        "description": (
+            "Считает подтверждённую бизнес-метрику по её определению: на своём grain, "
+            "с популяцией, валютой и календарём из определения. Для подтверждённых метрик "
+            "используйте его вместо run_sql. Неопределённая метрика, размножение строк JOIN, "
+            "потеря строк или смешанные валюты возвращают ошибку для уточнения."
+        ),
+        "parameters_schema": {
+            "$defs": {
+                "MetricFilterParam": {
+                    "properties": {
+                        "column": {
+                            "description": "Колонка вида таблица.колонка",
+                            "title": "Column",
+                            "type": "string",
+                        },
+                        "op": {
+                            "enum": [
+                                "eq",
+                                "ne",
+                                "in",
+                                "not_in",
+                                "gt",
+                                "gte",
+                                "lt",
+                                "lte",
+                                "is_null",
+                                "not_null",
+                            ],
+                            "title": "Op",
+                            "type": "string",
+                        },
+                        "value": {
+                            "default": None,
+                            "description": "Значение; для in/not_in — список",
+                            "title": "Value",
+                        },
+                    },
+                    "required": ["column", "op"],
+                    "title": "MetricFilterParam",
+                    "type": "object",
+                }
+            },
+            "examples": [
+                {
+                    "group_by": ["customers.segment"],
+                    "metric_id": "revenue",
+                    "period_end": "2024-01-01",
+                    "period_start": "2023-01-01",
+                    "time_grain": "month",
+                }
+            ],
+            "properties": {
+                "metric_id": {
+                    "description": "ID подтверждённой метрики из раздела «Метрики»",
+                    "title": "Metric Id",
+                    "type": "string",
+                },
+                "group_by": {
+                    "description": "Колонки разбивки вида таблица.колонка",
+                    "items": {"type": "string"},
+                    "title": "Group By",
+                    "type": "array",
+                },
+                "period_start": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Начало периода ISO, включительно",
+                    "title": "Period Start",
+                },
+                "period_end": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Конец периода ISO, не включительно",
+                    "title": "Period End",
+                },
+                "time_grain": {
+                    "anyOf": [
+                        {"enum": ["day", "week", "month", "quarter", "year"], "type": "string"},
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                    "description": "Разбивка по календарю метрики",
+                    "title": "Time Grain",
+                },
+                "currency": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Валюта, если метрика хранит валюту в колонке",
+                    "title": "Currency",
+                },
+                "filters": {
+                    "description": "Дополнительные условия вопроса",
+                    "items": {"$ref": "#/$defs/MetricFilterParam"},
+                    "title": "Filters",
+                    "type": "array",
+                },
+            },
+            "required": ["metric_id"],
+            "title": "ComputeMetricParams",
+            "type": "object",
+        },
+    },
 ]
 
 

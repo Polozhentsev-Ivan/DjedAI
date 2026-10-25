@@ -57,6 +57,12 @@ describe('HowCalculated', () => {
     expect(screen.getByText('120 000 строк')).toBeInTheDocument();
   });
 
+  it('lists data limitations', () => {
+    render(<HowCalculated variant="panel" {...how} limitations={['4 из 100 значений не распознаны']} />);
+    expect(screen.getByText('Ограничения')).toBeInTheDocument();
+    expect(screen.getByText('4 из 100 значений не распознаны')).toBeInTheDocument();
+  });
+
   it('shows the panel variant without a toggle', () => {
     render(<HowCalculated variant="panel" {...how} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();

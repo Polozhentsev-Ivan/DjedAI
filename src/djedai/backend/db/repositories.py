@@ -37,6 +37,8 @@ from djedai.backend.db.models import (
 from djedai.backend.db.session import budgeted_write
 from djedai.contracts.chat import ChatTurnState
 from djedai.contracts.message import AssistantMessage
+from djedai.contracts.metrics import MetricProvenance
+from djedai.contracts.quality import QualityReport
 from djedai.contracts.tool_result import (
     ChartHint,
     Fact,
@@ -565,6 +567,12 @@ def save_tool_result(
         else None
     )
     params_data = _sanitize_for_json(tool_result.params) if tool_result.params else {}
+    metric_data = (
+        tool_result.metric.model_dump(mode="json") if tool_result.metric is not None else None
+    )
+    quality_data = (
+        tool_result.quality.model_dump(mode="json") if tool_result.quality is not None else None
+    )
 
     if record is None:
         record = ToolResultModel(
@@ -582,6 +590,8 @@ def save_tool_result(
             data_preview=data_preview,
             source_result_id=tool_result.source_result_id,
             duration_ms=tool_result.duration_ms,
+            metric=metric_data,
+            quality=quality_data,
         )
         db.add(record)
     else:
@@ -600,6 +610,8 @@ def save_tool_result(
         record.data_preview = data_preview
         record.source_result_id = tool_result.source_result_id
         record.duration_ms = tool_result.duration_ms
+        record.metric = metric_data
+        record.quality = quality_data
 
     try:
         # The unique DB key claims this ID/owner before any shared file is touched.
@@ -745,6 +757,8 @@ def load_tool_result(
         sql=record.sql,
         source_result_id=record.source_result_id,
         duration_ms=record.duration_ms,
+        metric=MetricProvenance.model_validate(record.metric) if record.metric else None,
+        quality=QualityReport.model_validate(record.quality) if record.quality else None,
     )
 
 
@@ -933,6 +947,7 @@ def save_assistant_message(
     budget: ExecutionBudget | None = None,
     question_id: str | None = None,
     completed_turn: ChatTurnState | None = None,
+    also: Callable[[Session], None] | None = None,
     summary: str | None = None,
     focus_result_ids: list[str] | None = None,
 ) -> MessageModel:
@@ -941,6 +956,7 @@ def save_assistant_message(
     ``summary`` и ``focus_result_ids`` обновляются в той же транзакции, что и
     сообщение с терминальным статусом хода. При исчерпании бюджета или
     проигранном CAS откатывается всё вместе: память не опережает ответ.
+    ``also`` добавляет связанные записи (например, кандидатов метрик) в ту же транзакцию.
     """
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
@@ -960,6 +976,13 @@ def save_assistant_message(
                 chat.focus_result_ids = list(
                     dict.fromkeys(result_id for result_id in focus_result_ids if result_id)
                 )
+
+        def before_commit() -> None:
+            if also is not None:
+                also(session)
+            if budget is not None:
+                budget.check()
+
         return save_message(
             db=session,
             message_id=message.message_id,
@@ -970,7 +993,7 @@ def save_assistant_message(
             result_ids=message.result_ids,
             trace=trace_data,
             created_at=message.created_at,
-            before_commit=budget.check if budget is not None else None,
+            before_commit=before_commit if also is not None or budget is not None else None,
         )
 
     return budgeted_write(db, budget, write) if budget is not None else write(db)
