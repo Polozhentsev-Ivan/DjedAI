@@ -78,19 +78,47 @@ def july_facts(counts=None):
     ("answer", "expected"),
     [
         ("Изменение: -0.01%", "passed"),
+        ("Изменение: −0.01%", "passed"),
+        ("Изменение: −0,01%", "passed"),
         ("Изменение: -0.00935585%", "passed"),
+        ("Изменение: 0.01%", "failed"),
+        ("Изменение: −2%", "failed"),
         ("Изменение: 2%", "failed"),
         ("Сравнение выполнено", "failed"),
     ],
 )
-def test_july_percentage_uses_verified_counts_and_checks_answer(answer, expected):
+@pytest.mark.parametrize("include_percentage", [False, True])
+def test_july_percentage_uses_verified_counts_and_checks_answer(
+    answer, expected, include_percentage
+):
     actual = result(
         [["2025-07", 21377], ["2026-07", 21375]],
         facts=[Fact(text="SQL summary", kind="summary", values={"row_count": 2})],
     )
-    status, issues, details = evaluate_case(case(july_facts()), state(actual, answer))
+    graph_state = state(actual, answer)
+    if include_percentage:
+        graph_state["results"].append(
+            result([[-0.009355849745053095]]).model_copy(update={"result_id": "r_percentage"})
+        )
+    status, issues, details = evaluate_case(case(july_facts()), graph_state)
     assert status == expected, issues
     assert details["fact_checks"][1]["derivation"]["sources"] == ["july.counts"]
+
+
+@pytest.mark.parametrize("sign", ["-", "−"])
+@pytest.mark.parametrize(
+    ("source", "text", "expected"),
+    [
+        (500000, "{sign}500000 строк", "failed"),
+        (-500000, "{sign}500000 строк", "passed"),
+        (-500000, "{sign}500 тыс. строк", "passed"),
+        (6.35, "Изменение: {sign}6.35%", "failed"),
+        (-6.35, "Изменение: {sign}6.35%", "passed"),
+    ],
+)
+def test_numeric_claims_preserve_the_sign(source, text, expected, sign):
+    status, issues, _ = evaluate_case(case(), state(result([[source]]), text.format(sign=sign)))
+    assert status == expected, issues
 
 
 @pytest.mark.parametrize(

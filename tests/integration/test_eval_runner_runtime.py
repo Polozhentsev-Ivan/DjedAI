@@ -221,7 +221,12 @@ def test_percentage_is_derived_from_real_sql_counts_without_a_percentage_cell(tm
                 "abs_tolerance": 0.00005,
             },
         ]
-        for answer, expected in [("Изменение: -50%", "passed"), ("Изменение: 2%", "failed")]:
+        for answer, expected in [
+            ("Изменение: -50%", "passed"),
+            ("Изменение: −50%", "passed"),
+            ("Изменение: 50%", "failed"),
+            ("Изменение: 2%", "failed"),
+        ]:
             report = run(dataset, Model("run_sql", {"sql": sql}, answer), facts)
             assert report["status"] == expected, report["issues"]
             assert report["tool_results"][0]["data"]["rows"] == [["2025-07", 2], ["2026-07", 1]]

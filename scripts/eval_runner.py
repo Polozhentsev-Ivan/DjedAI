@@ -160,6 +160,8 @@ def _text_numbers(text: str) -> Iterator[Decimal]:
 
 def _claim_text(text: str) -> str:
     """Exclude calendar labels, identifiers and list markers, preserving numeric literals."""
+    # Normalize U+2212 before either numeric matcher can discard its sign.
+    text = text.replace("\N{MINUS SIGN}", "-")
     text = re.sub(r"(?m)^\s*\d+[.)]\s+", " ", text)
     # A numeric prefix in a SQL identifier is not a claim about the data. Bare
     # numbers, including backtick-formatted numbers, must remain checkable.
