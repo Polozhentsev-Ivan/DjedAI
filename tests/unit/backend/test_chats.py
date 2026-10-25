@@ -40,14 +40,16 @@ from djedai.backend.db.repositories import (
     create_dataset,
     get_chat_messages,
     get_or_create_user,
+    save_assistant_message,
     save_tool_result,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
 from djedai.backend.diagnostics import DiagnosticJournal, read_events
 from djedai.backend.sse import encode_sse_event
 from djedai.contracts.agent import Block
+from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.chat import ChatTurnState
-from djedai.contracts.message import MessageBlock
+from djedai.contracts.message import AssistantMessage, ChartBlock, MessageBlock
 from djedai.contracts.sse import AgentStreamEvent, SSEBlockEvent
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
 
@@ -339,6 +341,99 @@ def test_send_message_streams_events_and_saves_history(
     assert detail["messages"][0]["text"] == "Покажи выручку"
     assert detail["messages"][1]["blocks"] == [{"type": "text", "markdown": "Готово"}]
     assert detail["messages"][1]["result_ids"] == ["r_chat_ok"]
+
+
+def _reused_chart() -> ChartSpec:
+    return ChartSpec(
+        chart_id="ch_reused",
+        result_id="r_reused",
+        type="bar",
+        title="Категории",
+        x=XAxis(field="category"),
+        y=[YMeasure(field="value")],
+    )
+
+
+def test_chart_change_reuses_result_after_it_leaves_the_history_window(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Смена вида не теряет расчёт, когда исходный ответ ушёл из последних 10 сообщений."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    saved = ToolResult(
+        result_id="r_reused",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["category", "value"], rows=[["A", 10], ["B", 20]]),
+    )
+    chart = _reused_chart()
+    with factory() as db:
+        save_tool_result(db, saved, chat_id=chat_id, owner_id="u_chat", persist_data=False)
+
+    first = FakeGraph(
+        [
+            {"execute": {"results": [saved]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=first))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи категории"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    # Шесть смен вида без пересчёта: исходный ответ выходит за границу истории.
+    for _ in range(6):
+        graph = FakeGraph(
+            [{"compose": {"answer_blocks": [Block(type="chart", chart=chart.model_dump())]}}]
+        )
+        use_runtime(AgentRuntime(graph=graph))
+        response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи линейным"})
+        assert parse_sse(response.text)[-1][0] == "done"
+        assert [result.result_id for result in graph.calls[0][0]["history_results"]] == ["r_reused"]
+
+    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert messages[-1]["result_ids"] == ["r_reused"]
+    assert messages[-1]["blocks"][0]["chart"]["result_id"] == "r_reused"
+
+
+def test_history_loads_result_referenced_by_saved_chart_block(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Сохранённый график без result_ids всё равно приносит свой результат в следующий ход."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    chart = _reused_chart()
+    with factory() as db:
+        save_tool_result(
+            db,
+            ToolResult(
+                result_id="r_reused",
+                status="ok",
+                tool="run_sql",
+                data=ToolResultData(columns=["category", "value"], rows=[["A", 10], ["B", 20]]),
+            ),
+            chat_id=chat_id,
+            owner_id="u_chat",
+            persist_data=False,
+        )
+        save_assistant_message(
+            db,
+            AssistantMessage(
+                message_id="m_legacy_chart",
+                chat_id=chat_id,
+                created_at=datetime.now(UTC),
+                blocks=[ChartBlock(chart=chart)],
+                result_ids=[],
+            ),
+        )
+
+    graph = FakeGraph(
+        [{"compose": {"answer_blocks": [Block(type="chart", chart=chart.model_dump())]}}]
+    )
+    use_runtime(AgentRuntime(graph=graph))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи линейным"})
+
+    assert parse_sse(response.text)[-1][0] == "done"
+    assert [result.result_id for result in graph.calls[0][0]["history_results"]] == ["r_reused"]
 
 
 def test_send_message_streams_all_prepared_block_types(
