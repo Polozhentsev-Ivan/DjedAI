@@ -1,34 +1,30 @@
 import { Square } from 'lucide-react';
 import { useEffect, useState, type SubmitEvent } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useChatConversation } from '@/api/useChatConversation';
 import { useWorkspace } from '@/app/workspaceContext';
-import { ResultChart } from '@/charts/ResultChart';
 import { Button } from '@/components/Button';
 import { ChatMessage } from '@/components/ChatMessage';
-import { ChartCard } from '@/components/ChartCard';
+import { ChatBlocks } from '@/components/ChatBlocks';
 import { Icon } from '@/components/Icon';
 import { SavedResult } from '@/components/SavedResult';
 import { EmptyState, ErrorState, LoadingState } from '@/components/StateBlock';
 import { cn } from '@/lib/cn';
 
-function Blocks({ blocks }: { blocks: readonly Schemas['Block'][] }) {
-  return blocks.map((block, index) => {
-    if (block.type === 'text') return <div key={index} className="whitespace-pre-wrap">{block.markdown}</div>;
-    if (block.type === 'chart') return <ChartCard key={index} title={block.chart.title} subtitle={block.chart.subtitle ?? undefined}><ResultChart spec={block.chart} /></ChartCard>;
-    if (block.type === 'table') return <SavedResult key={index} id={block.result_id} />;
-    if (block.type === 'clarification') return <div key={index}>{block.question}<ul>{block.options.map((option) => <li key={option}>{option}</li>)}</ul></div>;
-    if (block.type === 'dashboard_link') return <Link key={index} to={`/dashboards/${encodeURIComponent(block.dashboard_id)}`}>{block.title}</Link>;
-    return null;
-  });
+interface AnswerProps {
+  blocks?: readonly Schemas['Block'][] | undefined;
+  resultIds?: readonly string[] | undefined;
+  onAsk: (text: string) => void;
+  disabled: boolean;
 }
 
-function Answer({ blocks = [], resultIds = [] }: { blocks?: readonly Schemas['Block'][] | undefined; resultIds?: readonly string[] | undefined }) {
-  const embedded = new Set(blocks.filter((block) => block.type === 'table').map((block) => block.result_id));
+function Answer({ blocks = [], resultIds = [], onAsk, disabled }: AnswerProps) {
+  // Each saved result keeps one provenance panel, including the ones a table block draws.
+  const tables = blocks.flatMap((block) => block.type === 'table' ? [block.result_id] : []);
   return <ChatMessage role="assistant">
-    <Blocks blocks={blocks} />
-    {[...new Set(resultIds)].filter((id) => !embedded.has(id)).map((id) => <SavedResult key={id} id={id} />)}
+    <ChatBlocks blocks={blocks} onAsk={onAsk} disabled={disabled} />
+    {[...new Set([...resultIds, ...tables])].map((id) => <SavedResult key={id} id={id} />)}
   </ChatMessage>;
 }
 
@@ -51,7 +47,6 @@ function QuestionForm({ ready, streaming, onSend, onStop }: { ready: boolean; st
   </form>;
 }
 
-/** CSV/text CP1 integration; the full interactive block renderer remains #86. */
 export function ChatPage() {
   const navigate = useNavigate();
   const { chatId } = useParams();
@@ -66,6 +61,9 @@ export function ChatPage() {
   const dataset = datasets.find((item) => item.dataset_id === activeDataset)?.name ?? '—';
   const ready = activeDataset !== null && (!chatId || history.isSuccess);
   const gutter = 'px-8';
+  const latest = messages.at(-1)?.message_id;
+  // Only the newest answer accepts a click: an older clarification no longer matches the conversation.
+  const answerProps = (id: string) => ({ onAsk: (text: string) => { void conversation.send(text); }, disabled: streaming || !ready || id !== latest });
 
   return (
     <div className="absolute inset-0 flex min-h-0 flex-col text-sm leading-normal tracking-sm text-foreground">
@@ -84,7 +82,7 @@ export function ChatPage() {
             <div className="text-base text-muted-foreground">Задайте вопрос к датасету {dataset}. Сохранённые результаты расчётов появятся под ответом.</div>
           </div>}
           {messages.map((message) => {
-            if (message.role !== 'user') return <Answer key={message.message_id} blocks={message.blocks} resultIds={message.result_ids} />;
+            if (message.role !== 'user') return <Answer key={message.message_id} blocks={message.blocks} resultIds={message.result_ids} {...answerProps(message.message_id)} />;
             const local = turns.find((value) => value.messageId === message.message_id);
             const state = message.turn;
             const terminal = state && state.status !== 'running';
@@ -102,7 +100,7 @@ export function ChatPage() {
                 <summary className="cursor-pointer">Технические сведения</summary>
                 <div className="mt-1 break-all font-mono">Код: {code ?? 'agent_error'}{state && <><br />Ход: {state.run_id}<br />Этап: {state.node}</>}</div>
               </details>}
-              {local && !error && !savedAnswer && local.blocks.length > 0 && <Answer blocks={local.blocks} resultIds={local.resultIds} />}
+              {local && !error && !savedAnswer && local.blocks.length > 0 && <Answer blocks={local.blocks} resultIds={local.resultIds} {...answerProps(message.message_id)} />}
             </div>;
           })}
         </div>
