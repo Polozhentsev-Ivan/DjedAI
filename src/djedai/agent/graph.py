@@ -312,6 +312,19 @@ def answer_results(state: AgentState) -> list[ToolResult]:
     references = understanding.references if understanding else []
     if references:
         return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+
+    # Text continuation without a new plan or explicit references: keep the
+    # conversation focus. Falling back to history_results[-1] would explain
+    # whichever result happened to be calculated last, not the selected one.
+    focus = state.get("focus_result_ids", [])
+    focused = [
+        saved[result_id]
+        for result_id in focus
+        if result_id in saved and saved[result_id].status == "ok"
+    ]
+    if focused:
+        return focused
+
     history_results = state.get("history_results", [])
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
 

@@ -206,6 +206,51 @@ def test_details_about_the_second_item_reuse_its_saved_result() -> None:
     assert result["focus_result_ids"] == ["r_second"]
 
 
+def test_text_continuation_uses_focus_before_last_history_result() -> None:
+    """Текстовое продолжение объясняет выбранный фокус, а не последний результат истории."""
+    graph = build_agent_graph()
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(
+            status="success",
+            data=Understanding(intent="modify_previous", references=[]),
+        ),
+        ModelResponse(status="success", data=PlanResponse(plan=[])),
+        ModelResponse(status="success", data=VisualizeResponse(charts=[])),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Подробности")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+    config = {"configurable": {"thread_id": "memory_text_focus", "client": client}}
+    result = graph.invoke(
+        {
+            "chat_id": "c_text_focus",
+            "dataset_id": "ds_text_focus",
+            "messages": [
+                Message(role="user", content="Посчитай два результата"),
+                Message(role="assistant", content="1 и 2"),
+                Message(role="user", content="Подробнее об этом"),
+            ],
+            "focus_result_ids": ["r_first"],
+            "history_results": [
+                _result("r_first", "Первый факт"),
+                _result("r_second", "Второй факт"),
+            ],
+        },
+        config=config,
+    )
+
+    compose_prompt = client.generate_typed_response.call_args_list[3].args[0]
+    verify_prompt = client.generate_typed_response.call_args_list[4].args[0]
+    assert "Первый факт" in compose_prompt
+    assert "Второй факт" not in compose_prompt
+    assert "Первый факт" in verify_prompt
+    assert "Второй факт" not in verify_prompt
+    assert result["focus_result_ids"] == ["r_first"]
+
+
 def test_corrected_plan_focus_excludes_superseded_successful_attempt() -> None:
     """Фокус — результаты финального плана, а не все успешные попытки."""
     graph = build_agent_graph()
