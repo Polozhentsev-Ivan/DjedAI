@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Protocol
 
 import duckdb
-from demo_dataset import ROOT
-from seed_demo_clickhouse import ClickHouseError, ClickHouseHttp
+from demo_dataset import DATABASE, ROOT
 
+from djedai.data.clickhouse import ClickHouseError, ClickHouseHttp
 from djedai.data.postgres import PostgresError, parse_dsn
 from djedai.data.typed_views import _lit
 
@@ -101,7 +101,7 @@ class ClickHouseBackend:
     name = "clickhouse"
 
     def __init__(self, url: str) -> None:
-        self._client = ClickHouseHttp.from_url(url)
+        self._client = ClickHouseHttp.from_url(url, default_database=DATABASE)
 
     def rows(self, sql: str) -> list[list[str]]:
         text = self._client.query(f"{sql} FORMAT TabSeparated")

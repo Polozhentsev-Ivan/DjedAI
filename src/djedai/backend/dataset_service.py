@@ -1,4 +1,4 @@
-"""Persistent owned CSV and read-only PostgreSQL dataset orchestration."""
+"""Persistent owned CSV, read-only PostgreSQL and ClickHouse dataset orchestration."""
 
 from __future__ import annotations
 
@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from djedai.backend.db.models import DatasetModel
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
 from djedai.contracts.catalog import DatasetCatalog
-from djedai.contracts.common import DatasetDetail, DatasetSummary, DatasetUploadAccepted
+from djedai.contracts.common import (
+    DatasetDetail,
+    DatasetSummary,
+    DatasetUploadAccepted,
+    SourceCheckResult,
+    SourceTable,
+)
 from djedai.contracts.sse import (
     DatasetDoneData,
     DatasetDoneEvent,
@@ -30,11 +36,16 @@ from djedai.contracts.sse import (
     SSEErrorData,
 )
 from djedai.contracts.tool_result import ToolError
+from djedai.data.clickhouse import ClickHouseError, ClickHouseLimits, SourceTooLargeError
+from djedai.data.clickhouse import parse_dsn as parse_clickhouse_dsn
 from djedai.data.csv_ingest import CsvReadError
 from djedai.data.descriptions import ModelClient
 from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
 from djedai.data.service import (
     CsvSource,
+    check_clickhouse_source,
+    check_postgres_source,
+    connect_clickhouse_dataset,
     connect_postgres_dataset,
     describe_dataset,
     ingest_csv_dataset,
@@ -42,6 +53,21 @@ from djedai.data.service import (
 from djedai.data.typed_views import _lit
 
 logger = logging.getLogger(__name__)
+# connect_db kinds: display name and stored source_kind
+_DB_SOURCES = {"postgresql": "PostgreSQL", "clickhouse": "ClickHouse"}
+_SOURCE_KINDS = {"postgresql": "postgres", "clickhouse": "clickhouse"}
+MAX_CHECKED_TABLES = 1000
+# Source check answers with one of these; driver text never reaches the client.
+_CHECK_ERRORS = (
+    ("пароль", "Неверный пользователь или пароль"),
+    ("не найдена", None),  # «база данных «x» не найдена» names only what the user typed
+    ("не разрешает подключение", "Сервер не разрешает подключение этому пользователю"),
+    (
+        "только для чтения",
+        "Учётная запись может изменять данные — подключите пользователя только для чтения",
+    ),
+    ("недоступен", "Сервер базы данных недоступен — проверьте адрес, порт и сеть"),
+)
 
 
 @dataclass(frozen=True)
@@ -98,6 +124,7 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
+        clickhouse_limits: ClickHouseLimits | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.data_dir = Path(data_dir).resolve()
@@ -105,6 +132,7 @@ class DatasetService:
         self._secrets = SourceSecrets(source_encryption_key)
         # None disables LLM descriptions; the factory is called once per build.
         self._description_client = description_client
+        self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
 
     def _path(self, relative: str) -> Path:
         path = (self.data_dir / relative).resolve()
@@ -266,7 +294,7 @@ class DatasetService:
         name: str | None = None,
     ) -> DatasetUploadAccepted:
         """Persist an encrypted source before queuing its owned, restartable build."""
-        if kind != "postgresql":
+        if kind not in _DB_SOURCES:
             raise HTTPException(status_code=501, detail="Этот источник пока не поддерживается")
         try:
             self._secrets.require_key()
@@ -275,10 +303,13 @@ class DatasetService:
                 status_code=503, detail="Шифрование источников не настроено"
             ) from None
         try:
-            parse_dsn(dsn)
-        except (PostgresError, ValueError):
+            if kind == "clickhouse":
+                parse_clickhouse_dsn(dsn)
+            else:
+                parse_dsn(dsn)
+        except (PostgresError, ClickHouseError, ValueError):
             raise HTTPException(
-                status_code=422, detail="Проверьте строку подключения PostgreSQL"
+                status_code=422, detail=f"Проверьте строку подключения {_DB_SOURCES[kind]}"
             ) from None
         if tables is not None and (
             not tables or any(not isinstance(table, str) or not table.strip() for table in tables)
@@ -288,15 +319,61 @@ class DatasetService:
             raise HTTPException(
                 status_code=422, detail="Имя датасета должно содержать 1–255 символов"
             )
-        dataset_id = await asyncio.to_thread(self._persist_postgres, owner_id, dsn, tables, name)
+        dataset_id = await asyncio.to_thread(
+            self._persist_db_source, owner_id, kind, dsn, tables, name
+        )
         self._start(owner_id, dataset_id)
         return DatasetUploadAccepted(dataset_id=dataset_id)
 
-    def _persist_postgres(
-        self, owner_id: str, dsn: str, tables: Sequence[str] | None, name: str | None
+    async def check_db(self, dsn: str, *, kind: str = "postgresql") -> SourceCheckResult:
+        """Probe a read-only source and list its tables without storing anything.
+
+        Errors are reduced to a few safe categories, so the check cannot be used to read
+        driver messages of arbitrary servers.
+        """
+        if kind not in _DB_SOURCES:
+            raise HTTPException(status_code=501, detail="Этот источник пока не поддерживается")
+        try:
+            self._secrets.require_key()
+        except SourceSecretError:
+            raise HTTPException(
+                status_code=503, detail="Шифрование источников не настроено"
+            ) from None
+        try:
+            info = parse_clickhouse_dsn(dsn) if kind == "clickhouse" else parse_dsn(dsn)
+        except (PostgresError, ClickHouseError, ValueError):
+            raise HTTPException(
+                status_code=422, detail=f"Проверьте строку подключения {_DB_SOURCES[kind]}"
+            ) from None
+        try:
+            if kind == "clickhouse":
+                check = await asyncio.to_thread(
+                    check_clickhouse_source, info, self._clickhouse_limits
+                )
+            else:
+                check = await asyncio.to_thread(check_postgres_source, info)
+        except (PostgresError, ClickHouseError) as error:
+            raise HTTPException(status_code=422, detail=_check_message(error.reason)) from None
+        return SourceCheckResult(
+            kind=_SOURCE_KINDS[kind],
+            source=check.source,
+            tables=[
+                SourceTable(name=name, row_count=rows)
+                for name, rows in check.tables[:MAX_CHECKED_TABLES]
+            ],
+            truncated=len(check.tables) > MAX_CHECKED_TABLES,
+        )
+
+    def _persist_db_source(
+        self,
+        owner_id: str,
+        kind: str,
+        dsn: str,
+        tables: Sequence[str] | None,
+        name: str | None,
     ) -> str:
         dataset_id = str(uuid4())
-        encrypted = self._secrets.encrypt(owner_id, dataset_id, dsn, tables)
+        encrypted = self._secrets.encrypt(owner_id, dataset_id, dsn, tables, kind=kind)
         directory = self._dataset_path(dataset_id, f"{dataset_id}/dataset.duckdb").parent
         directory.mkdir(parents=True)
         try:
@@ -305,8 +382,8 @@ class DatasetService:
                     DatasetModel(
                         dataset_id=dataset_id,
                         owner_id=owner_id,
-                        name=name.strip() if name is not None else "PostgreSQL",
-                        source_kind="postgres",
+                        name=name.strip() if name is not None else _DB_SOURCES[kind],
+                        source_kind=_SOURCE_KINDS[kind],
                         source_secret=encrypted,
                         status="processing",
                         duckdb_path=f"{dataset_id}/dataset.duckdb",
@@ -441,6 +518,20 @@ class DatasetService:
                     created_at=created_at,
                     progress=progress,
                 )
+            elif source_kind == "clickhouse":
+                if not secret:
+                    raise SourceSecretError("Источник не настроен")
+                source = self._secrets.decrypt(owner_id, dataset_id, secret, kind="clickhouse")
+                catalog = connect_clickhouse_dataset(
+                    source.dsn,
+                    source.tables,
+                    working,
+                    dataset_id=dataset_id,
+                    name=name,
+                    created_at=created_at,
+                    limits=self._clickhouse_limits,
+                    progress=progress,
+                )
             elif source_kind in {"csv", "csv_upload"}:
                 catalog = ingest_csv_dataset(
                     sources,
@@ -455,7 +546,7 @@ class DatasetService:
             if self._description_client is not None:
                 # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
                 progress(
-                    "relations" if source_kind == "postgres" else "profile",
+                    "relations" if source_kind in {"postgres", "clickhouse"} else "profile",
                     0.0,
                     "Описание данных",
                 )
@@ -479,7 +570,7 @@ class DatasetService:
             # Internal paths/SQL/stack traces must not leak through the JSON/SSE API.
             message = (
                 str(error)
-                if isinstance(error, CsvReadError)
+                if isinstance(error, CsvReadError | SourceTooLargeError)
                 else "Не удалось обработать источник. Проверьте подключение или файлы."
             )
             with self.session_factory() as db:
@@ -513,7 +604,9 @@ class DatasetService:
                 return list(
                     db.execute(
                         select(DatasetModel.owner_id, DatasetModel.dataset_id).where(
-                            DatasetModel.source_kind.in_(["csv", "csv_upload", "postgres"]),
+                            DatasetModel.source_kind.in_(
+                                ["csv", "csv_upload", "postgres", "clickhouse"]
+                            ),
                             DatasetModel.status.in_(["processing", "uploading", "profiling"]),
                         )
                     )
@@ -550,3 +643,10 @@ class DatasetService:
                 yield DatasetProgressEvent(data=DatasetProgressData.model_validate(progress))
                 previous = progress
             await asyncio.sleep(0.2)
+
+
+def _check_message(reason: str) -> str:
+    for marker, message in _CHECK_ERRORS:
+        if marker in reason:
+            return message or reason[:1].upper() + reason[1:]
+    return "Не удалось подключиться к источнику"

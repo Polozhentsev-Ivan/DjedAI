@@ -36,6 +36,21 @@ def test_ciphertext_cannot_be_transplanted_to_another_resource(owner, dataset) -
         store.decrypt(owner, dataset, ciphertext)
 
 
+def test_secret_is_bound_to_its_source_kind() -> None:
+    store = SourceSecrets(Fernet.generate_key().decode())
+    clickhouse = "http://reader:private-password@ch.internal:8123/business"
+    ciphertext = store.encrypt("alice", "dataset-a", clickhouse, None, kind="clickhouse")
+    assert store.decrypt("alice", "dataset-a", ciphertext, kind="clickhouse").dsn == clickhouse
+    with pytest.raises(SourceSecretError):
+        store.decrypt("alice", "dataset-a", ciphertext)
+    with pytest.raises(SourceSecretError):
+        store.decrypt(
+            "alice", "dataset-a", store.encrypt("alice", "dataset-a", DSN, None), kind="clickhouse"
+        )
+    with pytest.raises(SourceSecretError):
+        store.encrypt("alice", "dataset-a", DSN, None, kind="mysql")
+
+
 @pytest.mark.parametrize("key", [None, "", "invalid", "я" * 32])
 def test_missing_or_invalid_key_never_stores_plaintext(key) -> None:
     store = SourceSecrets(key)

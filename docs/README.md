@@ -9,6 +9,8 @@
 
 - [AUTH-4 / #104](decisions/104-browser-auth.md) — формы входа/регистрации, guard, выход и очистка личного workspace.
 
+- [B1-9 / #61](decisions/61-clickhouse.md) — ClickHouse: материализация в DuckDB с порогом по объёму, read-only подключение, изоляция владельцев и приёмка.
+
 - [B1-10 / #62](decisions/62-data-interface.md) — Python-интерфейс блока данных: `ingest_csv`/`connect_db`/`get_catalog`, статусы, ошибки, владелец и этап ClickHouse.
 
 - [AUTH-3 / #103 и PostgreSQL / #60](decisions/103-owner-isolation.md) — проверка владельца, SSE, SQL/файлы, ключ источников и границы следующих задач.

@@ -42,7 +42,9 @@ API предоставляет раздельный доступ к метада
 
 ## Подключения PostgreSQL
 
-`POST /api/datasets/connect` принимает `ConnectRequest`: `kind="postgres"`,
+`POST /api/datasets/connect/check` (`SourceCheckRequest`: `kind`, `dsn`) подключается только для чтения и возвращает адрес без пароля и таблицы источника; ничего не сохраняет, требует сессию и `SOURCE_ENCRYPTION_KEY`, ошибки сведены к безопасным категориям (#84).
+
+`POST /api/datasets/connect` принимает `ConnectRequest`: `kind="postgres"` или `"clickhouse"`,
 секретный `dsn`, необязательный список `tables` (`public.orders` и т.п.). Ответ
 202 возвращает ID обработки; статус, каталог и SSE используются те же, что у CSV.
 DSN шифруется серверным `SOURCE_ENCRYPTION_KEY` и связывается с владельцем/датасетом.
@@ -51,7 +53,9 @@ DSN шифруется серверным `SOURCE_ENCRYPTION_KEY` и связы�
 файл и повторно подключает PostgreSQL только для чтения; данные остаются в БД.
 Для PostgreSQL это отдельный DuckDB instance в памяти с read-only ATTACH файла
 датасета: параллельные контексты не разделяют `pg_src` и секрет подключения.
-ClickHouse пока отвечает 501 после проверки сессии.
+ClickHouse копируется в файл датасета при сборке, поэтому его контекст открывается
+как у CSV — read-only, без секрета и без обращений к источнику ([#61](../../../docs/decisions/61-clickhouse.md)).
+Пороги объёма — `CLICKHOUSE_MAX_ROWS`, `CLICKHOUSE_MAX_BYTES`, `CLICKHOUSE_QUERY_TIMEOUT_SECONDS`.
 
 БД приложения по умолчанию — SQLite (`sqlite:///./var/app.db`); пользователи и сессии используют её вместе с метаданными. DuckDB используется отдельно для аналитики. Сравнение СУБД, контракт сессий, миграции и условия перехода на PostgreSQL описаны в [решении AUTH-1](../../../docs/decisions/101-auth-storage.md).
 

@@ -121,6 +121,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/datasets/connect/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List tables of a read-only source before connecting; nothing is stored */
+        post: operations["checkDatabase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/datasets/{dataset_id}": {
         parameters: {
             query?: never;
@@ -563,6 +580,46 @@ export interface components {
             dsn: string;
             /** Tables */
             tables?: string[] | null;
+        };
+        /**
+         * SourceCheckRequest
+         * @description Database source to probe before connecting; nothing is stored.
+         */
+        SourceCheckRequest: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "postgres" | "clickhouse";
+            /**
+             * Dsn
+             * Format: password
+             */
+            dsn: string;
+        };
+        /**
+         * SourceCheckResult
+         * @description A reachable read-only source and its tables; the DSN and password are not echoed.
+         */
+        SourceCheckResult: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "postgres" | "clickhouse";
+            /**
+             * Source
+             * @description Адрес без пароля: user@host:port/database
+             */
+            source: string;
+            /** Tables */
+            tables: components["schemas"]["SourceTable"][];
+            /**
+             * Truncated
+             * @description Таблиц больше, чем показано
+             * @default false
+             */
+            truncated?: boolean;
         };
         /** @enum {string} */
         SemanticType: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
@@ -1270,6 +1327,19 @@ export interface components {
              * @constant
              */
             status?: "processing";
+        };
+        /**
+         * SourceTable
+         * @description A table offered for connection; ``name`` is passed back in ``ConnectRequest.tables``.
+         */
+        SourceTable: {
+            /** Name */
+            name: string;
+            /**
+             * Row Count
+             * @description Оценка числа строк, если источник её знает
+             */
+            row_count?: number | null;
         };
         /** DatasetSource */
         "schemas-DatasetSource": {
@@ -2408,6 +2478,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetUploadAccepted"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    checkDatabase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description Reachable source (address without password) and its tables */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCheckResult"];
                 };
             };
             default: components["responses"]["Error"];

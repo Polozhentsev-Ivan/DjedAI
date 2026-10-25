@@ -2,6 +2,7 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
+from decimal import Decimal
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -19,7 +20,9 @@ from djedai.contracts.agent import (
     PlanResponse,
     Understanding,
     VerifyResponse,
+    VisualizeResponse,
 )
+from djedai.contracts.chart import ChartSpec
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import ToolError, ToolResult
@@ -37,8 +40,17 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     metrics_loader = config.get("configurable", {}).get("metrics_loader")
     if metrics_loader is not None:
         catalog_prompt += "\n\n" + metrics_prompt(metrics_loader(state["dataset_id"]))
+    # Results already in the state belong to earlier turns: keep them as history
+    # before the per-turn results are cleared.
+    history_results = list(state.get("history_results", []))
+    known_ids = {result.result_id for result in history_results}
+    for result in state.get("results", []):
+        if result.result_id not in known_ids:
+            history_results.append(result)
+            known_ids.add(result.result_id)
     return {
         "catalog_prompt": catalog_prompt,
+        "history_results": history_results,
         "results": [],
         "charts": [],
         "answer_blocks": [],
@@ -164,7 +176,284 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     return {"results": existing_results + new_results}
 
 
-def visualize(state: AgentState) -> dict:
+CHART_INTENTS = {"visualize", "modify_previous", "dashboard"}
+
+# Signals that the user explicitly asked for a visualisation, even when the
+# intent was classified as a plain data question.
+CHART_REQUEST_WORDS = (
+    "chart",
+    "graph",
+    "plot",
+    "histogram",
+    "heatmap",
+    "scatter",
+    "pie",
+    "kpi",
+    "график",
+    "диаграмм",
+    "визуализ",
+    "гистограмм",
+    "теплов",
+    "столбчат",
+    "кругов",
+    "точечн",
+)
+
+
+def wants_visualization(state: AgentState) -> bool:
+    """Решает, нужно ли вообще тратить вызов модели на подбор графика."""
+    understanding = state.get("understanding")
+    if understanding is not None and understanding.intent in CHART_INTENTS:
+        return True
+    messages = state.get("messages", [])
+    text = messages[-1].content.lower() if messages and messages[-1].content else ""
+    return any(word in text for word in CHART_REQUEST_WORDS)
+
+
+def active_results(state: AgentState) -> list[ToolResult]:
+    """Все успешные результаты текущего хода, включая сохранённые с предыдущих попыток (ретраев)."""
+    return [r for r in state.get("results", []) if r.status == "ok"]
+
+
+def chart_source_results(state: AgentState) -> list[ToolResult]:
+    """Возвращает уже посчитанные результаты, по которым можно построить график."""
+    current_ok = active_results(state)
+    if current_ok:
+        return current_ok
+
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
+    history_results = state.get("history_results", [])
+
+    if references:
+        saved = {r.result_id: r for r in history_results}
+        return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+
+    return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
+
+
+def chart_result_ids(charts: list[ChartSpec]) -> list[str]:
+    """Возвращает result_id, на которые ссылаются построенные графики."""
+    return list(dict.fromkeys(chart.result_id for chart in charts if chart.result_id))
+
+
+def chart_block_result_ids(blocks: list[Block]) -> list[str]:
+    """Возвращает результат_id, на которые ссылаются блоки-графики ответа."""
+    result_ids = []
+    for block in blocks:
+        if block.type != "chart" or not block.chart:
+            continue
+        result_id = block.chart.get("result_id")
+        if result_id:
+            result_ids.append(result_id)
+    return list(dict.fromkeys(result_ids))
+
+
+def answer_results(state: AgentState) -> list[ToolResult]:
+    """Результаты, по которым объясняется и проверяется ответ текущего хода.
+
+    Если ход только изменил представление, берём сохранённые результаты,
+    на которые ссылаются графики и понимание запроса: без них компоновщик и
+    верификатор теряют факты, хотя новые вычисления не требуются.
+    """
+    current = active_results(state)
+    if current:
+        return current
+
+    saved = {
+        result.result_id: result
+        for result in state.get("history_results", []) + state.get("results", [])
+    }
+    referenced = [
+        *chart_result_ids(state.get("charts", [])),
+        *chart_block_result_ids(state.get("answer_blocks", [])),
+    ]
+    chart_results = [
+        saved[result_id]
+        for result_id in dict.fromkeys(referenced)
+        if result_id in saved and saved[result_id].status == "ok"
+    ]
+    if chart_results:
+        return chart_results
+
+    # Смена представления без нового плана: объясняем сохранённые результаты
+    # вместо того, чтобы терять факты текущего (пустого) шага.
+    if state.get("plan"):
+        return []
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
+    if references:
+        return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+    history_results = state.get("history_results", [])
+    return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
+
+
+def describe_result_for_chart(result: ToolResult) -> dict:
+    """Краткое описание результата для модели: поля, подсказка и пример строк."""
+    columns = []
+    for column in result.data.columns if result.data else []:
+        columns.append(column.model_dump(mode="json") if hasattr(column, "model_dump") else column)
+    rows = result.data.rows[:5] if result.data else []
+    return {
+        "result_id": result.result_id,
+        "tool": result.tool,
+        "columns": columns,
+        "sample_rows": rows,
+        "chart_hint": result.chart_hint.model_dump(mode="json") if result.chart_hint else None,
+        "facts": [fact.text for fact in result.facts],
+    }
+
+
+NUMERIC_TYPES = {
+    "INT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "TINYINT",
+    "SMALLINT",
+    "FLOAT",
+    "DOUBLE",
+    "REAL",
+    "DECIMAL",
+    "NUMERIC",
+    "MONEY",
+}
+
+
+def _column_info(column: object) -> tuple[str | None, str | None]:
+    """Возвращает имя и объявленный тип колонки результата."""
+    if isinstance(column, str):
+        return column, None
+    if isinstance(column, dict):
+        name = column.get("name")
+        return (name, column.get("type")) if name else (None, None)
+    name = getattr(column, "name", None)
+    return (name, getattr(column, "type", None)) if name else (None, None)
+
+
+def _values_are_numeric(rows: list[list[object]], index: int) -> bool | None:
+    """Определяет числовой тип по значениям, если метаданные колонки не заданы.
+
+    Возвращает None, когда значений нет и тип определить нельзя.
+    """
+    decided: bool | None = None
+    for row in rows:
+        if index >= len(row) or row[index] is None:
+            continue
+        value = row[index]
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            return False
+        decided = True
+    return decided
+
+
+def _is_numeric_type(column_type: str | None) -> bool:
+    """Совместим ли объявленный тип колонки с числовой осью."""
+    if not column_type:
+        return True  # If unknown, allow to avoid false positives
+    return any(numeric_type in str(column_type).upper() for numeric_type in NUMERIC_TYPES)
+
+
+def _column_is_numeric(rows: list[list[object]], index: int, column_type: str | None) -> bool:
+    """Числовая ли колонка: по объявленному типу, иначе по значениям строк."""
+    if column_type:
+        return _is_numeric_type(column_type)
+    # Инструменты могут возвращать только имена колонок, поэтому тип
+    # восстанавливаем по значениям.
+    return _values_are_numeric(rows, index) is not False
+
+
+def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
+    """Оставляет только графики, совместимые с сохранённым результатом.
+
+    Проверяются и ссылка на результат, и все поля спецификации (X, Y, цвет,
+    сортировка), и типы: значения Y всегда числовые, а ось X числовая там, где
+    её так читает рендерер (scatter и `x.kind = "number"`).
+    """
+    result_map = {r.result_id: r for r in results}
+    sanitized = []
+    seen_ids: set[str] = set()
+
+    for chart in charts:
+        res = result_map.get(chart.result_id)
+        if not res or not res.data:
+            continue
+
+        columns: dict[str, tuple[int, str | None]] = {}
+        for index, column in enumerate(res.data.columns):
+            name, column_type = _column_info(column)
+            if name is not None:
+                columns[name] = (index, column_type)
+
+        is_valid = True
+
+        # Проверка оси X (наличие и совместимость типа)
+        if chart.x:
+            column = columns.get(chart.x.field)
+            if column is None:
+                is_valid = False
+            else:
+                # Строковые категории нельзя откладывать по числовой оси:
+                # рендерер отклоняет такие спецификации (scatter и x.kind=number).
+                x_requires_numbers = chart.type == "scatter" or chart.x.kind == "number"
+                if x_requires_numbers and not _column_is_numeric(res.data.rows, *column):
+                    is_valid = False
+
+        # Проверка осей Y (наличие и числовой тип)
+        for y_measure in chart.y:
+            column = columns.get(y_measure.field)
+            if column is None:
+                is_valid = False
+                continue
+            if not _column_is_numeric(res.data.rows, *column):
+                is_valid = False
+
+        # Проверка color и sort
+        if chart.color and chart.color.field not in columns:
+            is_valid = False
+        if chart.sort and chart.sort.field not in columns:
+            is_valid = False
+
+        if not is_valid:
+            continue
+
+        chart_id = chart.chart_id
+        if not chart_id or chart_id == "string" or chart_id in seen_ids:
+            chart_id = f"ch_{uuid.uuid4().hex[:8]}"
+        seen_ids.add(chart_id)
+        sanitized.append(chart.model_copy(update={"chart_id": chart_id}))
+
+    return sanitized
+
+
+def visualize(state: AgentState, config: RunnableConfig) -> dict:
+    if not wants_visualization(state):
+        return {"charts": []}
+
+    valid_results = chart_source_results(state)
+    if not valid_results:
+        return {"charts": []}
+
+    results_summary = [describe_result_for_chart(result) for result in valid_results]
+
+    messages = state.get("messages", [])
+    last_msg = messages[-1].content if messages else ""
+    understanding = state.get("understanding")
+    user_prompt = understanding.resolved_question if understanding else None
+    user_prompt = user_prompt or last_msg or "Create appropriate visualizations."
+
+    sys_prompt = load_prompt("visualize").format(
+        query=user_prompt,
+        # Dates and decimals are not JSON-native but are valid tool result values.
+        results_summary=json.dumps(results_summary, ensure_ascii=False, indent=2, default=str),
+    )
+
+    client = config.get("configurable", {}).get("client")
+    if client:
+        response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
+        if response.status == "success" and response.data:
+            return {"charts": sanitize_charts(response.data.charts, valid_results)}
+
     return {"charts": []}
 
 
@@ -176,14 +465,13 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         return {"answer_blocks": existing_blocks}
 
     facts_and_data = []
-    for r in state.get("results", []):
-        if r.status == "ok":
-            entry = {"tool": r.tool}
-            if r.facts:
-                entry["facts"] = r.facts
-            if r.data:
-                entry["data"] = r.data
-            facts_and_data.append(entry)
+    for r in answer_results(state):
+        entry = {"tool": r.tool}
+        if r.facts:
+            entry["facts"] = r.facts
+        if r.data:
+            entry["data"] = r.data
+        facts_and_data.append(entry)
 
     sys_prompt = load_prompt("compose").format(facts=str(facts_and_data))
 
@@ -193,7 +481,6 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     )
     user_prompt = user_prompt or last_msg or "Explain the results."
 
-    # Hint for the retry iteration to explicitly fix hallucinations
     if state.get("compose_retries", 0) > 0:
         user_prompt += (
             "\n\nWARNING: Your previous response contained unverified or hallucinated numbers. "
@@ -213,29 +500,47 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
+    charts = state.get("charts", [])
+    if charts:
+        for c in charts:
+            blocks.append(Block(type="chart", chart=c.model_dump(mode="json")))
+
     return {"answer_blocks": blocks, "compose_retries": state.get("compose_retries", 0) + 1}
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:
-    """Final check of numbers in text vs data."""
+    """Final check of numbers in text and chart metadata vs data."""
     client = config.get("configurable", {}).get("client")
     blocks = state.get("answer_blocks", [])
 
-    text_blocks = [b for b in blocks if b.type == "text"]
-    if not text_blocks:
+    draft_parts = []
+    for b in blocks:
+        if b.type == "text" and b.markdown:
+            draft_parts.append(b.markdown)
+        elif b.type == "chart" and b.chart:
+            chart_dict = (
+                b.chart
+                if isinstance(b.chart, dict)
+                else (b.chart.model_dump() if hasattr(b.chart, "model_dump") else {})
+            )
+            if title := chart_dict.get("title"):
+                draft_parts.append(title)
+            if sub := chart_dict.get("subtitle"):
+                draft_parts.append(sub)
+
+    if not draft_parts:
         return {"is_verified": True}
 
-    draft = "\n\n".join(b.markdown for b in text_blocks if b.markdown)
+    draft = "\n\n".join(draft_parts)
 
     facts_and_data = []
-    for r in state.get("results", []):
-        if r.status == "ok":
-            entry = {"tool": r.tool}
-            if r.facts:
-                entry["facts"] = r.facts
-            if r.data:
-                entry["data"] = r.data
-            facts_and_data.append(entry)
+    for r in answer_results(state):
+        entry = {"tool": r.tool}
+        if r.facts:
+            entry["facts"] = r.facts
+        if r.data:
+            entry["data"] = r.data
+        facts_and_data.append(entry)
 
     if not facts_and_data:
         new_blocks = [b for b in blocks if b.type != "text"]
@@ -255,7 +560,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
             else:
                 # If we've reached max retries, accept the corrected/stripped markdown
                 if state.get("compose_retries", 0) >= 2:
-                    new_blocks = [b for b in blocks if b.type != "text"]
+                    new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
                     new_blocks.append(Block(type="text", markdown=v_data.corrected_markdown))
                     return {"is_verified": True, "answer_blocks": new_blocks}
                 else:
@@ -264,7 +569,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         else:
             # The API failed (timeout, 500, etc.).
             # We do not allow the publication of an unvalidated draft.
-            new_blocks = [b for b in blocks if b.type != "text"]
+            new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
             new_blocks.append(
                 Block(
                     type="error",
@@ -526,7 +831,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("understand", observed("understand", understand))
     workflow.add_node("plan", observed("plan", plan))
     workflow.add_node("execute", observed("execute", execute))
-    workflow.add_node("visualize", observed("visualize", visualize, state_only=True))
+    workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
     workflow.add_node("clarify", observed("clarify", clarify))

@@ -2818,6 +2818,102 @@
         "title": "SortSpec",
         "type": "object"
       },
+      "SourceCheckRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "postgres",
+              "clickhouse"
+            ],
+            "title": "Kind"
+          },
+          "dsn": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "format": "password",
+            "title": "Dsn",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "dsn"
+        ],
+        "title": "SourceCheckRequest",
+        "description": "Database source to probe before connecting; nothing is stored."
+      },
+      "SourceCheckResult": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "postgres",
+              "clickhouse"
+            ],
+            "title": "Kind"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Адрес без пароля: user@host:port/database"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/SourceTable"
+            },
+            "type": "array",
+            "title": "Tables"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "Таблиц больше, чем показано",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "source",
+          "tables"
+        ],
+        "title": "SourceCheckResult",
+        "description": "A reachable read-only source and its tables; the DSN and password are not echoed."
+      },
+      "SourceTable": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count",
+            "description": "Оценка числа строк, если источник её знает"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "SourceTable",
+        "description": "A table offered for connection; ``name`` is passed back in ``ConnectRequest.tables``."
+      },
       "SuggestionsBlock": {
         "additionalProperties": false,
         "description": "Подсказки для следующего шага анализа.",
