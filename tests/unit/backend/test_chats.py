@@ -1726,6 +1726,28 @@ def test_unconfigured_runtime_keeps_a_failed_question(chat_api):
     assert len(saved) == 1 and saved[0]["turn"]["code"] == "model_unavailable"
 
 
+def test_reasoning_configuration_failure_is_explained_and_persisted(chat_api):
+    from djedai.agent.reasoning import ReasoningConfigurationError
+
+    client, _, _ = chat_api
+    chat_id = _create_chat(client)
+    with patch(
+        "djedai.backend.chat_service.get_agent_client",
+        side_effect=ReasoningConfigurationError("unsupported", "private-key-and-dsn"),
+    ):
+        response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Вопрос"})
+    assert response.status_code == 200
+    terminal = parse_sse(response.text)[-1][1]
+    assert terminal["code"] == "model_configuration"
+    assert "MODEL_REASONING_SUPPORTED" in terminal["message"]
+    assert "private-key-and-dsn" not in response.text
+    saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert len(saved) == 1
+    assert saved[0]["turn"]["code"] == "model_configuration"
+    assert saved[0]["turn"]["message"] == terminal["message"]
+    assert "private-key-and-dsn" not in str(saved)
+
+
 def test_get_expires_orphaned_turn_but_preserves_legacy_messages(chat_api):
     client, factory, _ = chat_api
     chat_id = _create_chat(client)

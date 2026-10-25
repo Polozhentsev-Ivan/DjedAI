@@ -19,6 +19,7 @@ from djedai.agent.diagnostics import (
 from djedai.agent.reasoning import (
     PROVIDER_DEFAULT,
     REASONING_STAGES,
+    ReasoningConfigurationError,
     actual_reasoning_effort,
     normalize_reasoning_profile,
 )
@@ -46,6 +47,7 @@ class ModelResponse[T: BaseModel](BaseModel):
     error_type: ModelErrorType | None = None
     message: str | None = None
     raw_response: Any = None
+    http_status: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     finish_reason: str | None = None
@@ -75,11 +77,12 @@ class BIModelClient:
                 stage: effort for stage, effort in profile.items() if effort != PROVIDER_DEFAULT
             }
             if enabled:
-                raise ValueError(
+                raise ReasoningConfigurationError(
+                    "unsupported",
                     "MODEL_REASONING_SUPPORTED=false: endpoint/модель не поддерживает "
                     "reasoning_effort, но заданы режимы "
                     f"{enabled}. Укажите provider_default для всех стадий или "
-                    "поддерживающий reasoning endpoint."
+                    "поддерживающий reasoning endpoint.",
                 )
         self.client = OpenAI(
             api_key=api_key,
@@ -221,16 +224,24 @@ class BIModelClient:
             # OpenAI-compatible Chat Completions API.
             request["extra_body"] = {"reasoning_effort": reasoning_effort}
 
+        metadata: dict[str, Any] = {}
         try:
             response = self._request(**request)
 
             capture_usage(response.usage)
+            metadata = {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
+                "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                "finish_reason": response.choices[0].finish_reason,
+            }
 
             if response.choices[0].finish_reason == "length":
                 return ModelResponse(
                     status="error",
                     error_type="OUTPUT_LIMIT",
                     message="Model output token limit reached.",
+                    raw_response=response.choices[0].message.content,
+                    **metadata,
                 )
 
             raw_content = response.choices[0].message.content.strip()
@@ -246,9 +257,7 @@ class BIModelClient:
             return ModelResponse(
                 status="success",
                 data=validated_data,
-                prompt_tokens=response.usage.prompt_tokens if response.usage else None,
-                completion_tokens=response.usage.completion_tokens if response.usage else None,
-                finish_reason=response.choices[0].finish_reason,
+                **metadata,
             )
 
         except (TurnTimeout, TurnCancelled):
@@ -259,6 +268,7 @@ class BIModelClient:
                 error_type="INVALID_JSON",
                 message=str(e),
                 raw_response=raw_content if "raw_content" in locals() else None,
+                **metadata,
             )
         except ValidationError as e:
             return ModelResponse(
@@ -266,6 +276,7 @@ class BIModelClient:
                 error_type="SCHEMA_MISMATCH",
                 message=str(e),
                 raw_response=parsed_json if "parsed_json" in locals() else None,
+                **metadata,
             )
         except APITimeoutError:
             return ModelResponse(
@@ -278,10 +289,12 @@ class BIModelClient:
                 status="error",
                 error_type="SERVER_ERROR",
                 message=str(e),
+                http_status=getattr(e, "status_code", None),
             )
         except Exception as e:
             return ModelResponse(
                 status="error",
                 error_type="UNKNOWN_ERROR",
                 message=str(e),
+                **metadata,
             )

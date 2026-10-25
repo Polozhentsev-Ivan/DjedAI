@@ -8,11 +8,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import statistics
+import subprocess
 import sys
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -38,7 +42,7 @@ from djedai.agent.reasoning import (  # noqa: E402
     normalize_reasoning_profile,
 )
 from djedai.analytics.registry import execute_tool, get_tools_for_llm  # noqa: E402
-from djedai.config import ReasoningEffort  # noqa: E402
+from djedai.config import ReasoningEffort, get_limits  # noqa: E402
 from djedai.contracts.agent import (  # noqa: E402
     ComposeResponse,
     Message,
@@ -48,6 +52,7 @@ from djedai.contracts.agent import (  # noqa: E402
     VisualizeResponse,
 )
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
+from djedai.execution import ExecutionBudget, TurnTimeout  # noqa: E402
 
 # Fixed synthetic dataset. Expectations below are computed by hand from these
 # rows, not by the SQL under test.
@@ -91,6 +96,9 @@ class StageCase:
     expected_numbers: tuple[str, ...] = ()
     forbidden_numbers: tuple[str, ...] = ()
     expect_no_numbers: bool = False
+    expected_bindings: tuple[tuple[str, str], ...] = ()
+    expected_tables: tuple[str, ...] = ()
+    ordered_rows: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +111,8 @@ class TurnCase:
     forbidden_numbers: tuple[str, ...] = ()
     expect_no_numbers: bool = False
     requires_chart: bool = False
+    expected_bindings: tuple[tuple[str, str], ...] = ()
+    ordered_rows: bool = False
 
 
 def _tool_registry() -> str:
@@ -165,6 +175,7 @@ CASES: tuple[StageCase, ...] = (
         _understand_system(),
         "Сколько строк в orders?",
         "data_question",
+        expected_tables=("orders",),
     ),
     StageCase(
         "understand_ambiguous",
@@ -191,6 +202,7 @@ CASES: tuple[StageCase, ...] = (
         "Сумма amount по region в orders. Сортировка по region по возрастанию.",
         "sum_region",
         expected_rows=EXPECTED_SUM_REGION,
+        ordered_rows=True,
     ),
     StageCase(
         "plan_filter_join",
@@ -201,6 +213,7 @@ CASES: tuple[StageCase, ...] = (
         "Сортировка по segment по возрастанию.",
         "filter_join",
         expected_rows=EXPECTED_FILTER_JOIN,
+        ordered_rows=True,
     ),
     StageCase(
         "plan_missing",
@@ -218,6 +231,7 @@ CASES: tuple[StageCase, ...] = (
         "Сумма amount по currency в orders. Сортировка по currency по возрастанию.",
         "currency",
         expected_rows=EXPECTED_CURRENCY,
+        ordered_rows=True,
     ),
     StageCase(
         "plan_percentage",
@@ -233,7 +247,7 @@ CASES: tuple[StageCase, ...] = (
         "compose",
         ComposeResponse,
         _compose_system(COUNT_FACTS),
-        "Сколько строк? Ответь только числом 4 в одном текстовом блоке.",
+        "Сколько строк? Ответь только числом в одном текстовом блоке.",
         "count",
         expected_numbers=("4",),
     ),
@@ -245,6 +259,7 @@ CASES: tuple[StageCase, ...] = (
         "Назови суммы по валютам.",
         "currency",
         expected_numbers=("70", "5"),
+        expected_bindings=(("RUB", "70"), ("USD", "5")),
     ),
     StageCase(
         "compose_percentage",
@@ -295,13 +310,21 @@ CASES: tuple[StageCase, ...] = (
 )
 
 TURN_CASES: tuple[TurnCase, ...] = (
-    TurnCase("turn_count", "Сколько строк в orders?", "count", EXPECTED_COUNT, ("4",)),
+    TurnCase(
+        "turn_count",
+        "Сколько строк в orders? Ответь только числом.",
+        "count",
+        EXPECTED_COUNT,
+        ("4",),
+    ),
     TurnCase(
         "turn_sum_region",
         "Сумма amount по region в orders. Сортировка по region по возрастанию.",
         "sum_region",
         EXPECTED_SUM_REGION,
         ("30", "5", "40"),
+        expected_bindings=(("A", "30"), ("B", "5"), ("C", "40")),
+        ordered_rows=True,
     ),
     TurnCase(
         "turn_filter_join",
@@ -310,6 +333,8 @@ TURN_CASES: tuple[TurnCase, ...] = (
         "filter_join",
         EXPECTED_FILTER_JOIN,
         ("50", "20"),
+        expected_bindings=(("retail", "50"), ("wholesale", "20")),
+        ordered_rows=True,
     ),
     TurnCase(
         "turn_missing",
@@ -323,6 +348,8 @@ TURN_CASES: tuple[TurnCase, ...] = (
         "currency",
         EXPECTED_CURRENCY,
         ("70", "5"),
+        expected_bindings=(("RUB", "70"), ("USD", "5")),
+        ordered_rows=True,
     ),
     TurnCase(
         "turn_percentage",
@@ -375,7 +402,7 @@ def _number_key(value: str) -> Decimal:
 def numbers_in_text(text: str) -> set[Decimal]:
     """Extract numeric tokens for an independent comparison with expectations."""
     numbers = set()
-    for match in _NUMBER.finditer(text):
+    for match in _NUMBER.finditer(text.replace("\N{MINUS SIGN}", "-")):
         try:
             numbers.add(_number_key(match.group()))
         except InvalidOperation:
@@ -393,14 +420,14 @@ def _normalized(value: Any) -> Any:
     return value
 
 
-def rows_match(actual: list[list[Any]], expected: tuple[tuple[Any, ...], ...]) -> bool:
+def rows_match(
+    actual: list[list[Any]], expected: tuple[tuple[Any, ...], ...], *, ordered: bool = True
+) -> bool:
     if len(actual) != len(expected):
         return False
-    return all(
-        tuple(_normalized(value) for value in row)
-        == tuple(_normalized(value) for value in expected_row)
-        for row, expected_row in zip(actual, expected, strict=True)
-    )
+    left = [tuple(_normalized(value) for value in row) for row in actual]
+    right = [tuple(_normalized(value) for value in row) for row in expected]
+    return left == right if ordered else Counter(left) == Counter(right)
 
 
 def _missing_data(result: ToolResult) -> bool:
@@ -430,7 +457,7 @@ def _final_result_matches(result: ToolResult, case: StageCase | TurnCase) -> boo
     return (
         result.status == "ok"
         and result.data is not None
-        and rows_match(result.data.rows, case.expected_rows)
+        and rows_match(result.data.rows, case.expected_rows, ordered=case.ordered_rows)
     )
 
 
@@ -442,19 +469,94 @@ def plan_ok(plan: list[Any], case: StageCase | TurnCase) -> bool:
 
 
 def text_ok(text: str, case: StageCase | TurnCase) -> bool:
+    text = text.replace("\N{MINUS SIGN}", "-").strip()
+    if not text:
+        return False
     numbers = numbers_in_text(text)
     if case.expect_no_numbers:
-        return not numbers
+        return not numbers and bool(
+            re.search(
+                r"нет\s+данных|данн\w*\s+нет|данн\w*\s+отсутств\w*|"
+                r"отсутств\w*\s+данн\w*|пуст\w*\s+(?:таблиц|выборк|результат)|"
+                r"не\s+вернул|no\s+(?:data|rows)|empty",
+                text,
+                re.I,
+            )
+        )
     expected = {_number_key(number) for number in case.expected_numbers}
     forbidden = {_number_key(number) for number in case.forbidden_numbers}
-    return expected <= numbers and not (forbidden & numbers)
+    if numbers != expected or forbidden & numbers:
+        return False
+    if case.expected_bindings:
+        return _bindings_match(text, case.expected_bindings)
+    if re.search(r"\b(?:RUB|USD|руб\w*|доллар\w*)\b|[₽$]", text, re.I):
+        return False
+    scalar = text.strip("`*_ .!\n")
+    if case.expected in {"count", "corrected"}:
+        return not re.search(r"%|процент", text, re.I) and (
+            bool(_NUMBER.fullmatch(scalar))
+            or bool(re.search(r"строк|запис|заказ|количество|\bcount\b|\brows?\b", text, re.I))
+        )
+    if case.expected == "percentage":
+        return bool(_NUMBER.fullmatch(scalar)) or bool(re.search(r"%|процент", text, re.I))
+    return True
+
+
+def _bindings_match(text: str, bindings: tuple[tuple[str, str], ...]) -> bool:
+    """Check labeled numeric claims, including duplicates, without swapping categories.
+
+    Supported benchmark answers use label/value pairs (either order). Unknown
+    prose/extra numeric claims are rejected rather than treated as proved.
+    """
+    covered: set[int] = set()
+    separator = r"[\t \u00a0\u202f:*_=|()\[\]—–]{0,24}"
+    after = re.compile(rf"{separator}(?P<value>{_NUMBER.pattern})")
+    before = re.compile(rf"(?P<value>{_NUMBER.pattern}){separator}$")
+    for label, expected in bindings:
+        label_pattern = rf"(?<!\w){re.escape(label)}(?!\w)"
+        labels = list(re.finditer(label_pattern, text, re.I))
+        if not labels:
+            return False
+        for match in labels:
+            # A label's own following value wins over the preceding row/pair.
+            value = after.match(text, match.end()) or before.search(text[: match.start()])
+            if value is None or _number_key(value.group("value")) != _number_key(expected):
+                return False
+            covered.update(range(*value.span("value")))
+    return all(set(range(*match.span())) <= covered for match in _NUMBER.finditer(text))
 
 
 def semantic_ok(data: Any, case: StageCase) -> bool:
     if isinstance(data, Understanding):
         if case.expected == "ambiguous":
-            return data.intent == "ambiguous" and data.clarification is not None
-        return data.intent == "data_question"
+            clarification = data.clarification
+            labels = [
+                {
+                    name
+                    for name, pattern in [
+                        ("gross", r"gross_sales|валов\w*"),
+                        ("net", r"net_sales|чист\w*"),
+                    ]
+                    if re.search(pattern, option, re.I)
+                }
+                for option in (clarification.options if clarification else [])
+            ]
+            return bool(
+                data.intent == "ambiguous"
+                and clarification
+                and clarification.question.strip()
+                and len(labels) == 2
+                and {frozenset(label) for label in labels}
+                == {frozenset({"gross"}), frozenset({"net"})}
+            )
+        columns = {"order_id", "customer_id", "region", "amount", "currency", "discount_pct"}
+        columns |= {"orders." + name for name in columns}
+        return (
+            data.intent == "data_question"
+            and set(data.entities.tables) == set(case.expected_tables)
+            and all(column in columns for column in data.entities.columns)
+            and not data.references
+        )
     if isinstance(data, PlanResponse):
         return plan_ok(data.plan, case)
     if isinstance(data, ComposeResponse):
@@ -467,10 +569,49 @@ def semantic_ok(data: Any, case: StageCase) -> bool:
             return not data.is_valid and text_ok(data.corrected_markdown or "", case)
         return False
     if isinstance(data, VisualizeResponse):
-        return bool(data.charts) and all(
-            chart.result_id and chart.x and chart.y for chart in data.charts
+        source = ToolResult(
+            result_id="r_benchmark",
+            tool="run_sql",
+            status="ok",
+            data={
+                "columns": ["region", "total"],
+                "rows": [list(row) for row in EXPECTED_SUM_REGION],
+            },
         )
+        return charts_ok(data.charts, [source], EXPECTED_SUM_REGION)
     return False
+
+
+def charts_ok(
+    charts: list[Any], results: list[ToolResult], expected: tuple[tuple[Any, ...], ...]
+) -> bool:
+    """Validate chart sources/fields and the displayed labeled values independently."""
+    if not charts:
+        return False
+    sources = {result.result_id: result for result in results if result.status == "ok"}
+    for chart in charts:
+        if chart.type not in {"bar", "line", "area", "pie"}:
+            return False
+        source = sources.get(chart.result_id)
+        if not source or source.data is None or chart.x is None or len(chart.y) != 1:
+            return False
+        columns = source.data.columns
+        fields = [chart.x.field, chart.y[0].field]
+        optional = [chart.color.field] if chart.color else []
+        if chart.sort:
+            optional.append(chart.sort.field)
+        if any(field not in columns for field in [*fields, *optional]):
+            return False
+        indexes = [columns.index(field) for field in fields]
+        rows = [[row[index] for index in indexes] for row in source.data.rows]
+        if not all(
+            isinstance(row[1], (int, float, Decimal)) and not isinstance(row[1], bool)
+            for row in rows
+        ):
+            return False
+        if not rows_match(rows, expected, ordered=False):
+            return False
+    return True
 
 
 def _reasoning_for(client: Any, stage: str) -> ReasoningEffort:
@@ -517,8 +658,25 @@ def run_benchmark(
     profile_name: str = "custom",
     cases: tuple[StageCase, ...] = CASES,
     turn_cases: tuple[TurnCase, ...] = TURN_CASES,
+    turn_timeout_seconds: float | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     rows = []
+    turns = []
+
+    def checkpoint() -> None:
+        if on_progress is not None:
+            on_progress(
+                {
+                    "profile": profile_name,
+                    "model": client.model,
+                    "status": "running",
+                    "calls": list(rows),
+                    "turns": list(turns),
+                }
+            )
+
+    checkpoint()
     selected = [(case, turn) for turn in range(repeats) for case in cases]
     if context_lines:
         padding = "\n".join(
@@ -533,6 +691,7 @@ def run_benchmark(
                     _understand_system() + "\n" + padding,
                     "Сколько строк в orders?",
                     "data_question",
+                    expected_tables=("orders",),
                 ),
                 0,
             )
@@ -569,12 +728,14 @@ def run_benchmark(
                 "sql_ok": sql_ok,
                 "numbers_ok": numbers_ok,
                 "error_type": response.error_type,
+                "http_status": getattr(response, "http_status", None),
                 "prompt_tokens": response.prompt_tokens,
                 "completion_tokens": response.completion_tokens,
                 "finish_reason": response.finish_reason,
                 "reasoning_setting": setting,
                 "reasoning_effort": actual_reasoning_effort(setting),
                 "data": response.data.model_dump(mode="json") if valid else None,
+                "invalid_model_output": response.raw_response if not valid else None,
             }
         )
         print(
@@ -582,8 +743,8 @@ def run_benchmark(
             f"schema={valid} semantic={correct} {elapsed:.2f}s",
             flush=True,
         )
+        checkpoint()
 
-    turns = []
     graph = build_agent_graph() if turn_repeats and turn_cases else None
     if graph is not None:
         for turn_case in turn_cases:
@@ -594,6 +755,7 @@ def run_benchmark(
                     turn_case,
                     repeat=repeat,
                     profile_name=profile_name,
+                    turn_timeout_seconds=turn_timeout_seconds,
                 )
                 turns.append(turn)
                 print(
@@ -602,11 +764,13 @@ def run_benchmark(
                     f"total={turn['total_seconds']:.2f}s",
                     flush=True,
                 )
+                checkpoint()
 
     all_rows = [*rows, *turns]
     prompt_tokens = [row["prompt_tokens"] for row in rows if row["prompt_tokens"] is not None]
     prompt_tokens += [row["input_tokens"] for row in turns if row["input_tokens"] is not None]
     return {
+        "status": "completed",
         "profile": profile_name,
         "model": client.model,
         "reasoning": {stage: _reasoning_for(client, stage) for stage in REASONING_STAGES},
@@ -622,7 +786,25 @@ def run_benchmark(
         "max_prompt_tokens": max(prompt_tokens, default=0),
         "calls": rows,
         "turns": turns,
+        "stage_usage": usage_totals(rows, "prompt_tokens", "completion_tokens"),
+        "turn_usage": usage_totals(turns, "input_tokens", "output_tokens"),
     }
+
+
+def usage_totals(rows: list[dict[str, Any]], incoming: str, outgoing: str) -> dict[str, Any]:
+    """Known partial totals are labeled; an incomplete full total remains null."""
+    result: dict[str, Any] = {"calls": len(rows)}
+    for key, field in [("input_tokens", incoming), ("output_tokens", outgoing)]:
+        values = [row[field] for row in rows]
+        known = sum(value for value in values if value is not None)
+        missing = sum(value is None for value in values)
+        result[key] = known if not missing else None
+        result["known_" + key] = known
+        result["missing_" + key] = missing
+    result["complete"] = all(
+        result[key] == 0 for key in ["missing_input_tokens", "missing_output_tokens"]
+    )
+    return result
 
 
 def _turn_stage_latency(turns: list[dict[str, Any]]) -> dict[str, dict[str, float | None]]:
@@ -674,6 +856,7 @@ def _turn_model_calls(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "reasoning_tokens": event["reasoning_tokens"],
             "reasoning_setting": event["reasoning_setting"],
             "reasoning_effort": event["reasoning_effort"],
+            "attempts": event["attempts"],
         }
         for event in events
         if event["event"] == "model_call_finished"
@@ -742,6 +925,7 @@ def run_turn(
     *,
     repeat: int,
     profile_name: str,
+    turn_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
     run_id = f"benchmark-{profile_name}-{case.name}-{repeat}"
@@ -770,6 +954,11 @@ def run_turn(
             "catalog_loader": lambda _dataset_id: Catalog(),
             "tool_dispatcher": dispatcher,
             "diagnostics": diagnostics,
+            "budget": ExecutionBudget(
+                get_limits().agent_turn_timeout_seconds
+                if turn_timeout_seconds is None
+                else turn_timeout_seconds
+            ),
         }
     }
     state: dict[str, Any] = {}
@@ -785,7 +974,11 @@ def run_turn(
             config=config,
         )
     except Exception as exc:
-        error_type = type(exc).__name__
+        error_type = "TIMEOUT" if isinstance(exc, TurnTimeout) else type(exc).__name__
+        try:
+            state = graph.get_state(config).values or {}
+        except Exception:
+            pass
     total_seconds = perf_counter() - started
     if not diagnostics.finished:
         diagnostics.finish("error" if error_type else "success", error_type)
@@ -814,7 +1007,22 @@ def run_turn(
         numbers_ok = text_ok(text, case)
         semantic = bool(sql_ok) and bool(numbers_ok)
         if case.requires_chart:
-            semantic = semantic and bool(state.get("charts"))
+            chart_valid = charts_ok(
+                state.get("charts", []), state.get("results", []), case.expected_rows or ()
+            )
+            # A requested chart carries its values through result_id. Repeating
+            # every plotted value in prose is optional; actual text claims still
+            # must match the independent labeled expectations.
+            chart_text_case = TurnCase(
+                case.name,
+                case.question,
+                case.expected,
+                case.expected_rows,
+                case.expected_numbers,
+                expected_bindings=(("A", "30"), ("B", "5"), ("C", "40")),
+            )
+            numbers_ok = not numbers_in_text(text) or text_ok(text, chart_text_case)
+            semantic = bool(sql_ok) and bool(numbers_ok) and chart_valid
     if any(block.type == "error" for block in state.get("answer_blocks", [])):
         semantic = False
 
@@ -837,21 +1045,22 @@ def run_turn(
         "expected_numbers": list(case.expected_numbers),
         "charts": len(state.get("charts", [])),
         "calls": calls,
+        "trace": {
+            "understanding": understanding.model_dump(mode="json") if understanding else None,
+            "plan": [step.model_dump(mode="json") for step in state.get("plan", [])],
+            "results": [result.model_dump(mode="json") for result in state.get("results", [])],
+            "answer_blocks": [
+                block.model_dump(mode="json") for block in state.get("answer_blocks", [])
+            ],
+            "charts": [chart.model_dump(mode="json") for chart in state.get("charts", [])],
+            "is_verified": state.get("is_verified"),
+        },
     }
 
 
-def _case_success(report: dict[str, Any], case_name: str) -> bool | None:
+def _case_scores(report: dict[str, Any], case_name: str, field: str) -> tuple[int, int]:
     rows = [row for row in [*report["calls"], *report["turns"]] if row["case"] == case_name]
-    if not rows:
-        return None
-    return all(row["semantic_ok"] for row in rows)
-
-
-def _schema_success(report: dict[str, Any], case_name: str) -> bool | None:
-    rows = [row for row in [*report["calls"], *report["turns"]] if row["case"] == case_name]
-    if not rows:
-        return None
-    return all(row["schema_valid"] for row in rows)
+    return sum(bool(row[field]) for row in rows), len(rows)
 
 
 def compare_profiles(reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -869,17 +1078,37 @@ def compare_profiles(reports: list[dict[str, Any]]) -> dict[str, Any]:
         regressions = []
         schema_regressions = []
         initial_failures = []
+        case_comparisons = []
+        incomplete_cases = []
         for name in case_names:
-            baseline_ok = _case_success(baseline, name)
-            candidate_ok = _case_success(candidate, name)
-            if baseline_ok and candidate_ok is False:
+            baseline_ok, baseline_n = _case_scores(baseline, name, "semantic_ok")
+            candidate_ok, candidate_n = _case_scores(candidate, name, "semantic_ok")
+            baseline_schema, _ = _case_scores(baseline, name, "schema_valid")
+            candidate_schema, _ = _case_scores(candidate, name, "schema_valid")
+            if not baseline_n or candidate_n != baseline_n:
+                incomplete_cases.append(name)
+            if baseline_n and candidate_n and candidate_ok * baseline_n < baseline_ok * candidate_n:
                 regressions.append(name)
-            if baseline_ok is False:
+            if baseline_ok < baseline_n:
                 initial_failures.append(name)
-            baseline_schema = _schema_success(baseline, name)
-            candidate_schema = _schema_success(candidate, name)
-            if baseline_schema and candidate_schema is False:
+            if (
+                baseline_n
+                and candidate_n
+                and candidate_schema * baseline_n < baseline_schema * candidate_n
+            ):
                 schema_regressions.append(name)
+            case_comparisons.append(
+                {
+                    "case": name,
+                    "baseline_passed": baseline_ok,
+                    "baseline_n": baseline_n,
+                    "candidate_passed": candidate_ok,
+                    "candidate_n": candidate_n,
+                    "baseline_schema_valid": baseline_schema,
+                    "candidate_schema_valid": candidate_schema,
+                }
+            )
+        safe = not regressions and not schema_regressions and not incomplete_cases
         comparisons.append(
             {
                 "model": candidate["model"],
@@ -890,12 +1119,10 @@ def compare_profiles(reports: list[dict[str, Any]]) -> dict[str, Any]:
                 "baseline_initial_failures": initial_failures,
                 "baseline_median_total_seconds": baseline["turn_latency_seconds"]["median"],
                 "candidate_median_total_seconds": candidate["turn_latency_seconds"]["median"],
-                "safe_to_enable": not regressions
-                and not schema_regressions
-                and candidate["semantic_ok"] >= baseline["semantic_ok"],
-                "recommendation": "candidate_ok"
-                if not regressions and not schema_regressions
-                else "keep_baseline",
+                "case_comparisons": case_comparisons,
+                "incomplete_cases": incomplete_cases,
+                "safe_to_enable": safe,
+                "recommendation": "candidate_ok" if safe else "keep_baseline",
             }
         )
     return {"comparisons": comparisons}
@@ -945,6 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context-lines", type=int, default=200)
     parser.add_argument("--max-output-tokens", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--turn-timeout", type=float, default=None)
     parser.add_argument(
         "--reasoning-profile",
         action="append",
@@ -976,6 +1204,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.context_lines < 0
         or args.max_output_tokens < 1
         or args.timeout <= 0
+        or (args.turn_timeout is not None and args.turn_timeout <= 0)
     ):
         parser.error("Количество повторов, лимит ответа и timeout должны быть положительными")
     if args.skip_turns:
@@ -1003,17 +1232,37 @@ def main(argv: list[str] | None = None) -> int:
     if not key:
         parser.error("Не найден ключ модели в окружении или .env")
     report: dict[str, Any] = {
+        "report_version": 2,
+        "status": "running",
+        "source": source_fingerprint(),
         "created_at": datetime.now(UTC).isoformat(),
         "base_url": args.base_url,
         "max_output_tokens": args.max_output_tokens,
         "timeout_seconds": args.timeout,
         "repeats": args.repeats,
         "turn_repeats": args.turn_repeats,
+        "context_lines": args.context_lines,
+        "percentile_method": "nearest_rank: ceil(0.95*n), all outcomes included",
+        "turn_timeout_seconds": args.turn_timeout
+        if args.turn_timeout is not None
+        else get_limits().agent_turn_timeout_seconds,
+        "reasoning_supported": args.reasoning_supported,
         "profiles": profiles,
         "models": [],
         "comparison": {},
     }
+
+    def save() -> None:
+        report["updated_at"] = datetime.now(UTC).isoformat()
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.output.with_name(args.output.name + ".tmp")
+        temporary.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(args.output)
+
     try:
+        save()
         for profile_name, profile in profiles.items():
             for model in args.model:
                 client = BIModelClient(
@@ -1025,36 +1274,90 @@ def main(argv: list[str] | None = None) -> int:
                     reasoning=profile,
                     reasoning_supported=args.reasoning_supported,
                 )
+                position = len(report["models"])
+                report["models"].append({})
+
+                def progress(partial: dict[str, Any], index: int = position) -> None:
+                    report["models"][index] = partial
+                    save()
+
                 try:
-                    report["models"].append(
-                        run_benchmark(
-                            client,
-                            repeats=args.repeats,
-                            context_lines=args.context_lines,
-                            turn_repeats=args.turn_repeats,
-                            profile_name=profile_name,
-                        )
+                    report["models"][position] = run_benchmark(
+                        client,
+                        repeats=args.repeats,
+                        context_lines=args.context_lines,
+                        turn_repeats=args.turn_repeats,
+                        profile_name=profile_name,
+                        turn_timeout_seconds=report["turn_timeout_seconds"],
+                        on_progress=progress,
                     )
                 finally:
                     client.client.close()
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(
-                    json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
+                save()
         comparisons = []
         for model in args.model:
             model_reports = [item for item in report["models"] if item["model"] == model]
             comparison = compare_profiles(model_reports)
             comparisons.extend(comparison.get("comparisons", []))
         report["comparison"] = {"comparisons": comparisons}
-        args.output.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        report["status"] = "completed"
+        save()
         return 0
+    except KeyboardInterrupt:
+        report["status"] = "interrupted"
+        save()
+        return 130
     except Exception as error:
+        report["status"] = "failed"
+        report["error_type"] = type(error).__name__
+        save()
         detail = f": {error}" if isinstance(error, ValueError) else ""
         print(f"Benchmark failed: {type(error).__name__}{detail}", file=sys.stderr)
         return 1
+
+
+def source_fingerprint() -> dict[str, Any]:
+    files = [
+        *sorted((ROOT / "src/djedai").rglob("*.py")),
+        *sorted((ROOT / "prompts").glob("*.md")),
+        Path(__file__),
+        ROOT / "uv.lock",
+        ROOT / "pyproject.toml",
+        ROOT / ".python-version",
+    ]
+    hashes = {
+        path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in files
+    }
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, timeout=5
+        ).strip()
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=ROOT, text=True, timeout=5
+            )
+        )
+    except (OSError, subprocess.SubprocessError):
+        sha, dirty = None, None
+    fixture = json.dumps(
+        {
+            "orders": ORDERS,
+            "customers": CUSTOMERS,
+            "refunds": REFUNDS,
+            "sales": SALES,
+            "catalog": CATALOG,
+        },
+        ensure_ascii=False,
+        default=str,
+        sort_keys=True,
+    )
+    return {
+        "application_sha": sha,
+        "dirty": dirty,
+        "file_sha256": hashes,
+        "fixture_sha256": hashlib.sha256(fixture.encode()).hexdigest(),
+    }
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ class FakeClient:
                     },
                 }
             else:
-                data = {"intent": "data_question"}
+                data = {"intent": "data_question", "entities": {"tables": ["orders"]}}
         elif response_model is PlanResponse:
             data = {"plan": [{"tool": "run_sql", "args": {"sql": self._sql(question)}}]}
             if self.bad_plan is not None:

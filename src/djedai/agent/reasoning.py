@@ -12,6 +12,26 @@ REASONING_EFFORTS = frozenset(get_args(ReasoningEffort))
 PROVIDER_DEFAULT: ReasoningEffort = "provider_default"
 
 
+class ReasoningConfigurationError(ValueError):
+    """A configuration failure with a fixed, safe explanation for the HTTP API."""
+
+    def __init__(self, reason: str, detail: str | None = None) -> None:
+        messages = {
+            "unsupported": (
+                "MODEL_REASONING_SUPPORTED=false: явный режим reasoning не подтверждён "
+                "для выбранной модели и endpoint. Проверьте поддержку и настройку "
+                "MODEL_REASONING_SUPPORTED либо верните все MODEL_REASONING_* в provider_default."
+            ),
+            "invalid_stage": "Неизвестная стадия reasoning. Проверьте профиль MODEL_REASONING_*.",
+            "invalid_effort": (
+                "Недопустимая настройка MODEL_REASONING_*. Разрешены "
+                "provider_default, none, low, medium, high; MODEL_REASONING_SUPPORTED — true/false."
+            ),
+        }
+        self.public_message = messages[reason]
+        super().__init__(detail or self.public_message)
+
+
 def normalize_reasoning_profile(
     profile: Mapping[str, ReasoningEffort] | None = None,
 ) -> dict[str, ReasoningEffort]:
@@ -23,14 +43,16 @@ def normalize_reasoning_profile(
     normalized = {stage: PROVIDER_DEFAULT for stage in REASONING_STAGES}
     for stage, effort in (profile or {}).items():
         if stage not in normalized:
-            raise ValueError(
+            raise ReasoningConfigurationError(
+                "invalid_stage",
                 f"Неизвестная стадия reasoning: {stage!r}; "
-                f"допустимые стадии: {', '.join(REASONING_STAGES)}"
+                f"допустимые стадии: {', '.join(REASONING_STAGES)}",
             )
         if effort not in REASONING_EFFORTS:
-            raise ValueError(
+            raise ReasoningConfigurationError(
+                "invalid_effort",
                 f"Неизвестный режим reasoning для {stage}: {effort!r}; "
-                f"допустимые значения: {', '.join(sorted(REASONING_EFFORTS))}"
+                f"допустимые значения: {', '.join(sorted(REASONING_EFFORTS))}",
             )
         normalized[stage] = effort
     return normalized

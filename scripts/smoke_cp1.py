@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from sqlglot import exp  # noqa: E402
 
 from djedai.agent.client import BIModelClient, ModelResponse  # noqa: E402
+from djedai.agent.config import reasoning_profile  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
 from djedai.analytics.registry import execute_tool  # noqa: E402
 from djedai.backend.chat_service import AgentRuntime, stream_chat_turn  # noqa: E402
@@ -152,6 +153,8 @@ def model_client(args: argparse.Namespace) -> BIModelClient:
         model_name=args.model,
         timeout=limits.model_timeout_seconds,
         max_output_tokens=limits.model_max_output_tokens,
+        reasoning=reasoning_profile(limits),
+        reasoning_supported=limits.model_reasoning_supported,
     )
 
 
