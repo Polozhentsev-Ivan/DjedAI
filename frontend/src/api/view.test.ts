@@ -1,7 +1,7 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
 import {
   calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
-  journal, kpiView, missingCell, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
+  journal, kpiView, limitations, missingCell, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
 } from './view';
 
 // Intl separates digit groups with no-break spaces; \s matches them.
@@ -73,6 +73,20 @@ describe('result views', () => {
     expect(how.tool).toBe("time_aggregate(table='orders', freq='month')");
     expect(how.columns).toEqual([{ label: 'Дата оплаты', name: 'month' }, { label: 'Сумма с НДС, руб', name: 'revenue' }]);
     expect(calculation({ ...db.results.r_rev!, sql: null, data: null }).sql).toBe('—');
+  });
+
+  it('lists data limitations of a result', () => {
+    const issue = (severity: 'info' | 'warning' | 'blocking', message: string) => ({ code: 'parse_losses' as const, severity, message });
+    const column = {
+      table: 'orders', column: 'amount', original_name: 'Сумма', transformation: 'parse_number', usage: ['measure' as const],
+      scope: 'population' as const, rows: 103, source_empty: 3, non_empty: 100, parse_failed: 4, failed_ratio: 0.04,
+      issues: [issue('warning', '4 из 100 не распознаны'), issue('info', 'служебное')],
+    };
+    expect(limitations({ lineage: 'complete', columns: [column] })).toEqual(['4 из 100 не распознаны']);
+    expect(limitations({ lineage: 'partial', unresolved: ['x'], columns: [] })?.[0]).toMatch(/неполными/);
+    expect(limitations({ lineage: 'complete', columns: [] })).toBeUndefined();
+    expect(limitations(null)).toBeUndefined();
+    expect(calculation({ ...db.results.r_rev!, quality: { lineage: 'complete', columns: [column] } }).limitations).toHaveLength(1);
   });
 
   it('formats measures', () => {

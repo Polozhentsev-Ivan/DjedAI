@@ -140,7 +140,22 @@ export function calculation(result: Schemas['ToolResultMeta']): Calculation {
     columns: (result.data?.columns ?? []).map((c) => typeof c === 'string' ? { label: c, name: c } : { label: c.label ?? c.name, name: c.name }),
     sql: result.sql ?? '—',
     stats: result.data?.row_count == null ? undefined : `${rowsLabel(result.data.row_count)} в результате`,
+    limitations: limitations(result.quality),
   };
+}
+
+/** Data limitations behind a result (B2-10); informational notes stay out. */
+export function limitations(quality: Schemas['ToolResultMeta']['quality']): string[] | undefined {
+  if (!quality) return undefined;
+  const lines = quality.lineage === 'partial'
+    ? ['Не все колонки расчёта удалось связать с данными: ограничения могут быть неполными.']
+    : [];
+  for (const column of quality.columns ?? []) {
+    for (const issue of column.issues ?? []) {
+      if (issue.severity !== 'info') lines.push(issue.message);
+    }
+  }
+  return lines.length > 0 ? lines : undefined;
 }
 
 export function formatMeasure(value: unknown, format: Schemas['ChartMeasure']['format']): string {

@@ -1895,6 +1895,95 @@ export interface components {
             /** Checks */
             checks?: components["schemas"]["JoinCheck"][];
         };
+        /** QualityIssue */
+        QualityIssue: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "parse_losses" | "kept_as_text" | "ambiguous_date" | "ambiguous_separator" | "mixed_currency" | "percent_scale" | "percent_sum";
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "info" | "warning" | "blocking";
+            /** Message */
+            message: string;
+            /** Options */
+            options?: string[];
+        };
+        /**
+         * ColumnQuality
+         * @description Качество одной колонки typed view в популяции конкретного расчёта.
+         */
+        ColumnQuality: {
+            /** Table */
+            table: string;
+            /** Column */
+            column: string;
+            /**
+             * Raw Table
+             * @default null
+             */
+            raw_table?: string | null;
+            /** Original Name */
+            original_name: string;
+            /** Transformation */
+            transformation: string;
+            /**
+             * Target Type
+             * @default null
+             */
+            target_type?: ("id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool") | null;
+            /**
+             * Format
+             * @default null
+             */
+            format?: string | null;
+            /** Usage */
+            usage: ("measure" | "filter" | "join_key" | "group" | "output")[];
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "population" | "table";
+            /**
+             * Boundary
+             * @default null
+             */
+            boundary?: string | null;
+            /** Rows */
+            rows: number;
+            /** Source Empty */
+            source_empty: number;
+            /** Non Empty */
+            non_empty: number;
+            /** Parse Failed */
+            parse_failed: number;
+            /** Failed Ratio */
+            failed_ratio: number;
+            /** Examples */
+            examples?: string[];
+            /** Issues */
+            issues?: components["schemas"]["QualityIssue"][];
+        };
+        /**
+         * QualityReport
+         * @description Ограничения данных, на которых основан результат инструмента.
+         */
+        QualityReport: {
+            /**
+             * Lineage
+             * @enum {string}
+             */
+            lineage: "complete" | "partial";
+            /** Unresolved */
+            unresolved?: string[];
+            /** Checked */
+            checked?: string[];
+            /** Columns */
+            columns?: components["schemas"]["ColumnQuality"][];
+        };
         /**
          * ToolResult
          * @description Единый результат выполнения любого инструмента (B2, §4.3).
@@ -1973,6 +2062,11 @@ export interface components {
              * @default null
              */
             metric?: components["schemas"]["MetricProvenance"] | null;
+            /**
+             * @description Потери и неоднозначности преобразования использованных колонок (B2-10)
+             * @default null
+             */
+            quality?: components["schemas"]["QualityReport"] | null;
         };
         /**
          * WidgetToolCall

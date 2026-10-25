@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from djedai.contracts.metrics import MetricProvenance
+from djedai.contracts.quality import QualityReport
 
 
 class ToolError(BaseModel):
@@ -146,6 +147,10 @@ class ToolResult(BaseModel):
     duration_ms: int | None = Field(default=None, description="Время выполнения в миллисекундах")
     metric: MetricProvenance | None = Field(
         default=None, description="Версия определения метрики и применённые ограничения (B2-9)"
+    )
+    quality: QualityReport | None = Field(
+        default=None,
+        description="Потери и неоднозначности преобразования использованных колонок (B2-10)",
     )
 
     @model_validator(mode="after")

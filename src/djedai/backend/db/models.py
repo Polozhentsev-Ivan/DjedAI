@@ -231,6 +231,7 @@ class ToolResultModel(Base):
     source_result_id = Column(String(64), nullable=True)
     duration_ms = Column(Integer, nullable=True)
     metric = Column(JSON, nullable=True)  # MetricProvenance: версия определения метрики
+    quality = Column(JSON, nullable=True)  # QualityReport: потери типизации колонок расчёта
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
 
     # Связи

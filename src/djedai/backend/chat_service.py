@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -22,6 +23,7 @@ from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.agent.memory import HISTORY_WINDOW, HistoryEntry, summarize_history
 from djedai.analytics.metrics import MetricContext
+from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dataset_service import DatasetContext
@@ -321,6 +323,47 @@ def _with_chosen_metric(history: list[Message], chosen: MetricDefinition) -> lis
     return [*history[:-1], Message(role="user", content=content.strip())]
 
 
+_QUALITY_OPTION = re.compile(r"^[^\s.:]+\.[^\s:]+: ")  # «таблица.колонка: …» (B2-10)
+
+
+def _with_quality_choice(messages: list[MessageModel], history: list[Message]) -> list[Message]:
+    """Ответы кнопками на уточнения качества данных: исходный вопрос и все выборы.
+
+    Расчёт может упереться в несколько неоднозначностей подряд (две даты): каждая кнопка
+    отвечает на своё уточнение, и агенту нужен исходный вопрос вместе со всей цепочкой.
+    Вариант называет колонку («таблица.колонка: формат»), и по этой ссылке агент
+    понимает, что ограничение решено пользователем в этом вопросе.
+    """
+    choices: list[str] = []
+    index = len(messages) - 1
+    while index >= 1 and _quality_choice(messages[index - 1], messages[index]):
+        choices.insert(0, (messages[index].content or "").strip())
+        index -= 2
+    if not choices or len(history) != len(messages):
+        return history
+    asked = index >= 0 and messages[index].role == "user"
+    question = (messages[index].content or "") if asked else ""  # иначе вышел из окна
+    keep = index if asked else index + 1
+    lines = [question, *(f"Уточнение пользователя: {choice}." for choice in choices)]
+    return [*history[:keep], Message(role="user", content="\n".join(lines).strip())]
+
+
+def _quality_choice(previous: MessageModel, message: MessageModel) -> bool:
+    answer = (message.content or "").strip()
+    options = {
+        option
+        for block in previous.blocks or []
+        if isinstance(block, dict) and block.get("type") == "clarification"
+        for option in block.get("options") or []
+    }
+    return (
+        previous.role == "assistant"
+        and message.role == "user"
+        and answer in options
+        and _QUALITY_OPTION.match(answer) is not None
+    )
+
+
 def _agent_error(blocks: list[Block]) -> str | None:
     for block in blocks:
         if block.type == "error":
@@ -472,13 +515,15 @@ def stream_chat_turn(
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                return execute_tool(
+                result = execute_tool(
                     tool,
                     params,
                     connection=connection,
                     allowed_tables=allowed_tables,
                     semantics=semantics,
                 )
+                # Потери типизации в колонках именно этого расчёта (B2-10).
+                return assess(result, connection, context.catalog)
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:
@@ -495,6 +540,8 @@ def stream_chat_turn(
         history = [_history_message(message) for message in history_messages]
         if chosen is not None:
             history = _with_chosen_metric(history, chosen)
+        else:
+            history = _with_quality_choice(history_messages, history)
         history_summary = summarize_history([_history_entry(item) for item in all_messages])
         history_summary = history_summary or chat_model.summary
         previous_focus = list(chat_model.focus_result_ids or [])

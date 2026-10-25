@@ -15,14 +15,20 @@ pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("starting_revision", ["base", "e5b1c7a2d304", "f166metr0001"])
+@pytest.mark.parametrize(
+    "starting_revision",
+    ["base", "e5b1c7a2d304", "f166metr0001", "f168qual0001", "f191merge0001"],
+)
 def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_revision: str):
     url = f"sqlite:///{(tmp_path / 'branches.db').as_posix()}"
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
     cfg.set_main_option("sqlalchemy.url", url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f191merge0001"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f192merge0001"]
     command.upgrade(cfg, starting_revision)
+    has_metrics = starting_revision in {"f166metr0001", "f168qual0001", "f191merge0001"}
+    has_memory = starting_revision in {"e5b1c7a2d304", "f191merge0001"}
+    has_quality = starting_revision == "f168qual0001"
     engine = create_db_engine(url)
     try:
         if starting_revision != "base":
@@ -59,7 +65,7 @@ def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_r
                     created_at=now,
                     updated_at=now,
                 )
-                if starting_revision == "e5b1c7a2d304":
+                if has_memory:
                     chat["focus_result_ids"] = ["result"]
                 db.execute(chats.insert().values(**chat))
                 db.execute(
@@ -72,10 +78,12 @@ def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_r
                     )
                 )
                 result = dict(result_id="result", owner_id="owner", status="empty", created_at=now)
-                if starting_revision == "f166metr0001":
+                if has_metrics:
                     result["metric"] = {"metric_id": "revenue", "version": 1}
+                if has_quality:
+                    result["quality"] = {"lineage": "complete", "checked": ["orders.amount"]}
                 db.execute(results.insert().values(**result))
-                if starting_revision == "f166metr0001":
+                if has_metrics:
                     definitions = Table("metric_definitions", metadata, autoload_with=db)
                     proposals = Table("metric_proposals", metadata, autoload_with=db)
                     db.execute(
@@ -106,6 +114,7 @@ def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_r
         schema = inspect(engine)
         assert "focus_result_ids" in {c["name"] for c in schema.get_columns("chats")}
         assert "metric" in {c["name"] for c in schema.get_columns("results")}
+        assert "quality" in {c["name"] for c in schema.get_columns("results")}
         assert {"metric_definitions", "metric_proposals"} <= set(schema.get_table_names())
         if starting_revision != "base":
             metadata = MetaData()
@@ -115,15 +124,20 @@ def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_r
             with engine.connect() as db:
                 assert db.scalar(select(messages.c.content)) == "Question"
                 assert db.scalar(select(results.c.result_id)) == "result"
-                if starting_revision == "e5b1c7a2d304":
+                if has_memory:
                     assert db.scalar(select(chats.c.focus_result_ids)) == ["result"]
-                else:
+                if has_metrics:
                     assert db.scalar(select(results.c.metric)) == {
                         "metric_id": "revenue",
                         "version": 1,
                     }
                     assert db.scalar(select(definitions.c.definition)) == {"name": "Revenue"}
                     assert db.scalar(select(proposals.c.message_id)) == "question"
+                if has_quality:
+                    assert db.scalar(select(results.c.quality)) == {
+                        "lineage": "complete",
+                        "checked": ["orders.amount"],
+                    }
         command.downgrade(cfg, "e161chat0001")
         if starting_revision != "base":
             with engine.connect() as db:

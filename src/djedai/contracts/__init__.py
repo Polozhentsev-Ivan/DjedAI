@@ -81,6 +81,7 @@ from djedai.contracts.metrics import (
     MetricSpec,
     MetricVersionRef,
 )
+from djedai.contracts.quality import ColumnQuality, QualityIssue, QualityReport
 from djedai.contracts.sse import (
     AgentStreamEvent,
     DatasetDoneData,
@@ -135,6 +136,10 @@ __all__ = [
     "MetricProvenance",
     "MetricSpec",
     "MetricVersionRef",
+    # Качество преобразования колонок расчёта
+    "ColumnQuality",
+    "QualityIssue",
+    "QualityReport",
     # Результаты инструментов
     "ChartHint",
     "Fact",

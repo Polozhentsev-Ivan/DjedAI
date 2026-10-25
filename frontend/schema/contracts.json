@@ -976,6 +976,167 @@
         "title": "Column",
         "type": "object"
       },
+      "ColumnQuality": {
+        "additionalProperties": false,
+        "description": "Качество одной колонки typed view в популяции конкретного расчёта.",
+        "properties": {
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "column": {
+            "title": "Column",
+            "type": "string"
+          },
+          "raw_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Raw Table"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "transformation": {
+            "title": "Transformation",
+            "type": "string"
+          },
+          "target_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "id",
+                  "integer",
+                  "float",
+                  "money",
+                  "percent",
+                  "datetime",
+                  "date",
+                  "category",
+                  "text",
+                  "bool"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Type"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Format"
+          },
+          "usage": {
+            "items": {
+              "enum": [
+                "measure",
+                "filter",
+                "join_key",
+                "group",
+                "output"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Usage",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "population",
+              "table"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Boundary"
+          },
+          "rows": {
+            "minimum": 0,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "source_empty": {
+            "minimum": 0,
+            "title": "Source Empty",
+            "type": "integer"
+          },
+          "non_empty": {
+            "minimum": 0,
+            "title": "Non Empty",
+            "type": "integer"
+          },
+          "parse_failed": {
+            "minimum": 0,
+            "title": "Parse Failed",
+            "type": "integer"
+          },
+          "failed_ratio": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Failed Ratio",
+            "type": "number"
+          },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Examples",
+            "type": "array"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/QualityIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "table",
+          "column",
+          "original_name",
+          "transformation",
+          "usage",
+          "scope",
+          "rows",
+          "source_empty",
+          "non_empty",
+          "parse_failed",
+          "failed_ratio"
+        ],
+        "title": "ColumnQuality",
+        "type": "object"
+      },
       "ColumnRef": {
         "additionalProperties": false,
         "properties": {
@@ -2292,6 +2453,92 @@
         "title": "ParseInfo",
         "type": "object"
       },
+      "QualityIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "parse_losses",
+              "kept_as_text",
+              "ambiguous_date",
+              "ambiguous_separator",
+              "mixed_currency",
+              "percent_scale",
+              "percent_sum"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "blocking"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "title": "QualityIssue",
+        "type": "object"
+      },
+      "QualityReport": {
+        "additionalProperties": false,
+        "description": "Ограничения данных, на которых основан результат инструмента.",
+        "properties": {
+          "lineage": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Lineage",
+            "type": "string"
+          },
+          "unresolved": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved",
+            "type": "array"
+          },
+          "checked": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Checked",
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnQuality"
+            },
+            "title": "Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lineage"
+        ],
+        "title": "QualityReport",
+        "type": "object"
+      },
       "Relation": {
         "additionalProperties": false,
         "properties": {
@@ -3115,6 +3362,18 @@
             ],
             "default": null,
             "description": "Версия определения метрики и применённые ограничения (B2-9)"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QualityReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Потери и неоднозначности преобразования использованных колонок (B2-10)"
           }
         },
         "required": [
