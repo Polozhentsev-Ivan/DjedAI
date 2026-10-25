@@ -96,6 +96,14 @@ def test_naive_join_inflates_the_sum_and_is_refused(query):
 
 
 FANOUT = {
+    "переименованный o.* в CTE": "WITH e(id, customer, dt, total, status) AS ("
+    "SELECT o.* FROM orders o JOIN order_items i ON i.zakaz_id=o.zakaz_id) "
+    "SELECT SUM(total) FROM e",
+    "переименованный o.* в подзапросе": "SELECT SUM(e.total) FROM (SELECT o.* FROM orders o "
+    "JOIN order_items i ON i.zakaz_id=o.zakaz_id) e(id, customer, dt, total, status)",
+    "переименованный o.* через два CTE": "WITH a AS (SELECT o.* FROM orders o "
+    "JOIN order_items i ON i.zakaz_id=o.zakaz_id), e(id, customer, dt, total, status) AS "
+    "(SELECT * FROM a) SELECT SUM(total) FROM e",
     "DISTINCT не спасает": "SELECT COUNT(DISTINCT o.summa_itogo) FROM orders o "
     "JOIN order_items i ON i.zakaz_id = o.zakaz_id",
     "SUM DISTINCT": "SELECT SUM(DISTINCT o.summa_itogo) FROM orders o "
@@ -155,6 +163,8 @@ def test_inner_join_with_null_keys_is_refused(query):
 
 
 ALLOWED = {
+    "переименованный o.* без fanout": "WITH e(id, customer, dt, total, status) AS "
+    "(SELECT o.* FROM orders o) SELECT SUM(total) FROM e",
     "N:1 без потерь": "SELECT c.segment, SUM(o.summa_itogo) FROM orders o "
     "JOIN customers c ON c.klient_id = o.klient_id GROUP BY 1",
     "соединение через WHERE": "SELECT SUM(o.summa_itogo) FROM orders o, customers c "
@@ -197,6 +207,8 @@ def test_fanout_inside_cte_is_refused_not_inflated(query):
     assert "order_items.zakaz_id не уникален" in result.error.message.replace("i.", "order_items.")
     per_order = query(ALLOWED["MAX на заказ до внешнего SUM"])
     assert per_order.data.rows == [[pytest.approx(total)]]
+    aliased = query(ALLOWED["переименованный o.* без fanout"])
+    assert aliased.data.rows == [[pytest.approx(total)]]
 
 
 def test_allowed_dimension_query_matches_reference(query):

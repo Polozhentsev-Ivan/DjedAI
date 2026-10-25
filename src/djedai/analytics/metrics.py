@@ -28,6 +28,7 @@ from decimal import Decimal
 import duckdb
 from pydantic import ValidationError
 from sqlglot import exp
+from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from djedai.analytics.queries import execute_dataset_query
@@ -642,6 +643,16 @@ def metric_guard(query: exp.Expression, semantics: MetricContext) -> MetricError
     if not measures:
         return None
     catalog = semantics.catalog
+    # Resolve positional CTE/derived-table aliases only after expanding stars in
+    # catalog order. Keep the executable query untouched: this copy is for lineage.
+    query = qualify(
+        query.copy(),
+        schema={
+            table.table_id: {column.name: column.physical_type for column in table.columns}
+            for table in catalog.tables
+        },
+        dialect="duckdb",
+    )
     for scope in traverse_scope(query):
         select = scope.expression
         if not isinstance(select, exp.Select):
