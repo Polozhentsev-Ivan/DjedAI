@@ -110,7 +110,7 @@ describe('column views', () => {
     // The arrow starts at the right border of «orders» and ends at the left border of «customers».
     const half = graph.node.width / 2;
     expect(edge?.path).toBe(`M${from!.x + half},${from!.y} Q${(from!.x + to!.x) / 2},${from!.y} ${to!.x - half},${to!.y}`);
-    expect([edge?.labelX, edge?.labelY]).toEqual([(from!.x + to!.x) / 2, from!.y - 12]);
+    expect([edge?.labelX, edge?.labelY]).toEqual([(from!.x + to!.x) / 2, from!.y]);
   });
 
   it('keeps tables without relations and skips unknown or self references', () => {
@@ -131,12 +131,76 @@ describe('column views', () => {
       ...ordersCatalog.relations![0]!, from: { table: from, column: 'x' }, to: { table: to, column: 'id' }, cardinality, confidence,
     });
     const graph = relationGraph({ ...ordersCatalog, tables, relations: [link('a', 'b'), link('b', 'a', 'N:M', 'low'), link('a', 'b')] });
-    expect(graph.width).toBe(480);
+    expect(graph.width).toBeLessThanOrEqual(480);
     expect(new Set(graph.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(5);
     expect(new Set(graph.edges.map((e) => `${e.labelX},${e.labelY}`)).size).toBe(3);
     expect(graph.edges[1]).toMatchObject({ directed: false, weak: true });
     const four = relationGraph({ ...ordersCatalog, tables: tables.slice(0, 4), relations: [] });
     expect([four.width, four.height]).toEqual([360, 260]);
+  });
+
+  it('never lets table boxes overlap and keeps them inside the graph', () => {
+    const base = ordersCatalog.tables![1]!;
+    for (let count = 1; count <= 40; count += 1) {
+      const tables = Array.from({ length: count }, (_, i) => ({ ...base, table_id: `t${i}` }));
+      const { nodes, node, width, height } = relationGraph({ ...ordersCatalog, tables, relations: [] });
+      for (const [i, a] of nodes.entries()) {
+        expect(a.x - node.width / 2).toBeGreaterThanOrEqual(0);
+        expect(a.y - node.height / 2).toBeGreaterThanOrEqual(0);
+        expect(a.x + node.width / 2).toBeLessThanOrEqual(width);
+        expect(a.y + node.height / 2).toBeLessThanOrEqual(height);
+        for (const b of nodes.slice(i + 1)) {
+          const apart = Math.abs(a.x - b.x) >= node.width + 8 || Math.abs(a.y - b.y) >= node.height + 8;
+          expect(apart, `${count} tables: ${a.id} and ${b.id}`).toBe(true);
+        }
+      }
+    }
+    const twenty = relationGraph({ ...ordersCatalog, tables: Array.from({ length: 20 }, (_, i) => ({ ...base, table_id: `t${i}` })), relations: [] });
+    expect(twenty.width).toBeGreaterThan(480);
+  });
+
+  it('puts the hub of a star in the middle without overlaps', () => {
+    const base = ordersCatalog.tables![1]!;
+    const relation = ordersCatalog.relations![0]!;
+    for (const count of [4, 5, 12, 20, 30]) {
+      const tables = [{ ...base, table_id: 'customers' }, ...Array.from({ length: count - 1 }, (_, i) => ({ ...base, table_id: `orders_${i}` }))];
+      const relations = tables.slice(1).map((t) => ({ ...relation, from: { table: t.table_id, column: 'customer_id' } }));
+      const { nodes, node, width, height, edges } = relationGraph({ ...ordersCatalog, tables, relations });
+      const ring = nodes.slice(1).map((n) => n.y);
+      expect(nodes[0]?.id).toBe('customers');
+      expect(Math.abs(nodes[0]!.x - width / 2)).toBeLessThanOrEqual(1);
+      expect(nodes[0]!.y).toBeGreaterThan(Math.min(...ring));
+      expect(nodes[0]!.y).toBeLessThan(Math.max(...ring));
+      expect(height).toBeGreaterThan(0);
+      for (const [i, a] of nodes.entries()) {
+        for (const b of nodes.slice(i + 1)) {
+          expect(Math.abs(a.x - b.x) >= node.width + 8 || Math.abs(a.y - b.y) >= node.height + 8, `${count}: ${a.id} ${b.id}`).toBe(true);
+        }
+      }
+      expect(edges.every((e) => e.label === 'N:1 · 99,8%')).toBe(true);
+    }
+    // Two neighbours are not a star: no table moves to the middle.
+    const chain = relationGraph({ ...ordersCatalog, tables: ['a', 'b', 'c'].map((id) => ({ ...base, table_id: id })), relations: [
+      { ...relation, from: { table: 'a', column: 'x' }, to: { table: 'b', column: 'id' } },
+      { ...relation, from: { table: 'c', column: 'x' }, to: { table: 'b', column: 'id' } },
+      { ...relation, from: { table: 'b', column: 'x' }, to: { table: 'b', column: 'id' } },
+    ] });
+    // A ring of three: one box on top, two below, and no empty band under them.
+    const [top, ...bottom] = chain.nodes;
+    for (const n of bottom) {
+      expect(n.y).toBeGreaterThan(top!.y);
+      expect(chain.height - (n.y + chain.node.height / 2 + 8)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('keeps the label off an edge too short for it', () => {
+    const base = ordersCatalog.tables![1]!;
+    const relation = ordersCatalog.relations![0]!;
+    // Neighbours on a large ring sit close: the edge between them has no room for text.
+    const tables = Array.from({ length: 30 }, (_, i) => ({ ...base, table_id: `t${i}` }));
+    const graph = relationGraph({ ...ordersCatalog, tables, relations: [{ ...relation, from: { table: 't0', column: 'x' }, to: { table: 't1', column: 'id' } }] });
+    expect(graph.edges[0]).toMatchObject({ label: '' });
+    expect(graph.edges[0]?.title).toContain('совпадение 99,8%');
   });
 });
 

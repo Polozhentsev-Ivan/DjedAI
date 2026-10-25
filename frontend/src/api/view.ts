@@ -252,27 +252,73 @@ export interface RelationGraph {
 const NODE = { width: 120, height: 44 } as const;
 /** Gap between parallel edges of one table pair. */
 const BEND = 28;
-const LABEL_LIFT = 12;
 
-function layout(count: number): { width: number; height: number; at: (i: number) => [number, number] } {
-  if (count <= 2) {
+/** `count` boxes around an ellipse; `centred` adds one more box in its middle. */
+function layout(count: number, centred = false): { width: number; height: number; at: (i: number) => [number, number] } {
+  if (count <= 2 && !centred) {
     // Two boxes at the edges leave room for the label between them; the narrow card shows it near 1:1.
     const width = 340;
     const edge = NODE.width / 2 + 4;
     return { width, height: 90, at: (i) => [count === 1 ? width / 2 : i === 0 ? edge : width - edge, 45] };
   }
-  const width = count <= 4 ? 360 : 480;
-  const height = count <= 4 ? 260 : 340;
-  const rx = width / 2 - NODE.width / 2 - 8;
-  const ry = height / 2 - NODE.height / 2 - 8;
+  const point = (rx: number, ry: number, i: number): [number, number] => {
+    const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
+    return [rx * Math.cos(angle), ry * Math.sin(angle)];
+  };
+  // Start from the base ellipse and grow it until no two boxes (with a gap) overlap: many tables get a bigger graph.
+  let [rx, ry] = count <= 4 ? [112, 100] : [172, 140];
+  const boxes = () => [...Array.from({ length: count }, (_, i) => point(rx, ry, i)), ...(centred ? [[0, 0] as [number, number]] : [])];
+  // Spokes of a star also need room for their labels between the centre and the ring.
+  const cramped = () => centred && boxes().slice(0, count).some(([x, y]) => Math.hypot(x, y) - 2 * exit(x, y) < SPOKE_ROOM);
+  while (overlap(boxes()) || cramped()) [rx, ry] = [rx * GROWTH, ry * GROWTH];
+  // The graph is as big as its boxes, not the whole ellipse: three tables leave its bottom empty.
+  const placed = boxes();
+  const xs = placed.map(([x]) => x);
+  const ys = placed.map(([, y]) => y);
+  const [left, top] = [Math.min(...xs) - NODE.width / 2 - 8, Math.min(...ys) - NODE.height / 2 - 8];
   return {
-    width,
-    height,
+    width: Math.ceil(Math.max(...xs) + NODE.width / 2 + 8 - left),
+    height: Math.ceil(Math.max(...ys) + NODE.height / 2 + 8 - top),
     at: (i) => {
-      const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-      return [width / 2 + rx * Math.cos(angle), height / 2 + ry * Math.sin(angle)];
+      const [x, y] = i < count ? point(rx, ry, i) : [0, 0];
+      return [x - left, y - top];
     },
   };
+}
+
+/** Space kept between node boxes, viewBox units. */
+const NODE_GAP = 16;
+const GROWTH = 1.1;
+/** A table joined to this many others is the hub of a star and goes to the middle. */
+const HUB_DEGREE = 3;
+/** Shortest visible edge that still fits its label; shorter ones keep it in the title and the list. */
+const LABEL_ROOM = 70;
+/** Spokes of a star get room for the label plus clear line around it and the arrow. */
+const SPOKE_ROOM = 110;
+
+/** The table related to the most other tables, if it is a clear star centre. */
+function hub(catalog: Catalog): string | undefined {
+  const neighbours = new Map<string, Set<string>>();
+  for (const r of catalog.relations ?? []) {
+    if (r.from.table === r.to.table) continue;
+    neighbours.set(r.from.table, (neighbours.get(r.from.table) ?? new Set()).add(r.to.table));
+    neighbours.set(r.to.table, (neighbours.get(r.to.table) ?? new Set()).add(r.from.table));
+  }
+  const tables = new Set((catalog.tables ?? []).map((t) => t.table_id));
+  let best: [string, number] | undefined;
+  for (const [table, set] of neighbours) if (tables.has(table) && (!best || set.size > best[1])) best = [table, set.size];
+  return best && best[1] >= HUB_DEGREE ? best[0] : undefined;
+}
+
+function overlap(points: readonly (readonly [number, number])[]): boolean {
+  return points.some(([x, y], i) => points.slice(i + 1).some(([u, v]) =>
+    Math.abs(x - u) < NODE.width + NODE_GAP && Math.abs(y - v) < NODE.height + NODE_GAP));
+}
+
+/** Distance from the box centre to its border along (dx, dy). */
+function exit(dx: number, dy: number): number {
+  const length = Math.hypot(dx, dy);
+  return length * Math.min(NODE.width / 2 / Math.abs(dx), NODE.height / 2 / Math.abs(dy));
 }
 
 /** Where the ray from the box centre towards (dx, dy) leaves the box. */
@@ -286,9 +332,11 @@ const round = (n: number) => Math.round(n * 10) / 10;
 /** Tables as nodes, computed relations as edges from the many side to the unique key. */
 export function relationGraph(catalog: Catalog): RelationGraph {
   const tables = catalog.tables ?? [];
-  const { width, height, at } = layout(tables.length);
-  const nodes = tables.map((t, i) => {
-    const [x, y] = at(i);
+  const centre = hub(catalog);
+  const ring = tables.filter((t) => t.table_id !== centre).map((t) => t.table_id);
+  const { width, height, at } = layout(ring.length, centre !== undefined);
+  const nodes = tables.map((t) => {
+    const [x, y] = at(t.table_id === centre ? ring.length : ring.indexOf(t.table_id));
     return { id: t.table_id, rows: rowsLabel(t.row_count), x: round(x), y: round(y) };
   });
   const position = new Map(nodes.map((n) => [n.id, [n.x, n.y] as const]));
@@ -313,9 +361,9 @@ export function relationGraph(catalog: Catalog): RelationGraph {
       key: `${r.from.table}.${r.from.column}->${r.to.table}.${r.to.column}`,
       path: `M${round(start[0])},${round(start[1])} Q${round(control[0])},${round(control[1])} ${round(end[0])},${round(end[1])}`,
       labelX: round((start[0] + 2 * control[0] + end[0]) / 4),
-      // Above the line, so the label never covers the arrow.
-      labelY: round((start[1] + 2 * control[1] + end[1]) / 4 - LABEL_LIFT),
-      label: `${r.cardinality} · ${overlap}`,
+      // On the middle of the line: its card-coloured halo hides the line under the text, the arrow stays clear.
+      labelY: round((start[1] + 2 * control[1] + end[1]) / 4),
+      label: Math.hypot(end[0] - start[0], end[1] - start[1]) < LABEL_ROOM ? '' : `${r.cardinality} · ${overlap}`,
       title: `${r.from.table}.${r.from.column} → ${r.to.table}.${r.to.column}: ${CARDINALITY[r.cardinality].toLowerCase()}, совпадение ${overlap}, уверенность ${CONFIDENCE[r.confidence]}`,
       directed: r.cardinality !== 'N:M',
       weak: r.confidence === 'low',

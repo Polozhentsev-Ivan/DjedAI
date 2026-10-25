@@ -216,6 +216,7 @@ describe('CatalogPage', () => {
     const graph = await screen.findByRole('group', { name: 'Граф связей таблиц' });
     expect(within(graph).getByRole('img', { name: 'orders.customer_id → customers.id: многие к одному, совпадение 99,8%, уверенность высокая' })).toBeInTheDocument();
     expect(within(graph).getByText('N:1 · 99,8%')).toBeInTheDocument();
+    expect(graph.closest('section')).not.toHaveClass('min-[1180px]:col-span-2');
     expect(within(graph).getByRole('button', { name: /Таблица orders/ })).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(within(graph).getByRole('button', { name: /Таблица customers/ }));
     expect(screen.getByRole('tab', { name: /customers/ })).toHaveAttribute('aria-selected', 'true');
@@ -224,6 +225,23 @@ describe('CatalogPage', () => {
     expect(screen.getByRole('tab', { name: /orders/ })).toHaveAttribute('aria-selected', 'true');
     await userEvent.keyboard('a');
     expect(screen.getByRole('tab', { name: /orders/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('keeps a large relations graph readable and scrollable', async () => {
+    const dataset = createDb().datasets[0]!;
+    const catalog = dataset.catalog!;
+    const base = catalog.tables![1]!;
+    const tables = [...catalog.tables!, ...Array.from({ length: 18 }, (_, i) => ({ ...base, table_id: `extra_${i}` }))];
+    server.use(http.get(api('/datasets/ds_orders'), () => HttpResponse.json({ ...dataset, catalog: { ...catalog, tables } })));
+    await renderRoute('/catalog/ds_orders');
+    const graph = await screen.findByRole('group', { name: 'Граф связей таблиц' });
+    expect(within(graph).getAllByRole('button', { name: /^Таблица / })).toHaveLength(20);
+    const width = Number(graph.getAttribute('viewBox')?.split(' ')[2]);
+    expect(width).toBeGreaterThan(480);
+    expect(parseFloat(graph.style.minWidth)).toBeGreaterThan(400);
+    expect(graph.style.maxWidth).toBe(`${width}px`);
+    expect(graph.parentElement).toHaveClass('overflow-x-auto');
+    expect(graph.closest('section')).toHaveClass('min-[1180px]:col-span-2');
   });
 
   it('shows a dataset without relations or descriptions', async () => {

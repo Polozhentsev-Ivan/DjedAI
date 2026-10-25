@@ -8,8 +8,14 @@ interface RelationGraphProps {
   onSelect: (tableId: string) => void;
 }
 
+/** Smallest zoom of the graph: below it the 11px labels become unreadable. */
+const MIN_SCALE = 0.85;
+
 /** Longest table id that fits a node box at the graph font size. */
 const MAX_LABEL = 14;
+
+/** Backing behind an edge label: 11px mono glyphs are ~6.6 wide, plus padding. */
+const labelWidth = (label: string) => label.length * 6.6 + 8;
 
 const short = (id: string) => (id.length > MAX_LABEL ? `${id.slice(0, MAX_LABEL - 1)}…` : id);
 
@@ -27,7 +33,9 @@ export function RelationGraph({ graph, selected, onSelect }: RelationGraphProps)
       role="group"
       aria-label="Граф связей таблиц"
       viewBox={`0 0 ${graph.width} ${graph.height}`}
-      className="mx-auto block h-auto w-full max-w-[480px] text-muted-foreground"
+      // Small graphs fit the card; a large one keeps readable text and scrolls inside its container.
+      style={{ minWidth: Math.round(graph.width * MIN_SCALE), maxWidth: Math.max(480, graph.width) }}
+      className="mx-auto block h-auto w-full text-muted-foreground"
     >
       <defs>
         <marker id={arrow} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -45,17 +53,27 @@ export function RelationGraph({ graph, selected, onSelect }: RelationGraphProps)
             strokeDasharray={edge.weak ? '4 3' : undefined}
             markerEnd={edge.directed ? `url(#${arrow})` : undefined}
           />
-          <text
-            x={edge.labelX}
-            y={edge.labelY}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            paintOrder="stroke"
-            className="fill-secondary-foreground stroke-card font-mono text-[11px] font-semibold"
-            strokeWidth={4}
-          >
-            {edge.label}
-          </text>
+          {edge.label && (
+            <rect
+              x={edge.labelX - labelWidth(edge.label) / 2}
+              y={edge.labelY - 8}
+              width={labelWidth(edge.label)}
+              height={16}
+              rx={4}
+              className="fill-card"
+            />
+          )}
+          {edge.label && (
+            <text
+              x={edge.labelX}
+              y={edge.labelY}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              className="fill-secondary-foreground font-mono text-[11px] font-semibold"
+            >
+              {edge.label}
+            </text>
+          )}
         </g>
       ))}
       {graph.nodes.map((node) => {

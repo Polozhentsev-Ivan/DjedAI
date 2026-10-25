@@ -30,6 +30,8 @@ const cardHeader = 'flex flex-wrap items-baseline gap-2 border-b border-border p
 const cardTitle = 'text-base font-semibold tracking-body';
 /** Journal and relations sit side by side from 1180px, as in the mockup. */
 const twoColumns = 'grid grid-cols-1 gap-5 min-[1180px]:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]';
+/** A graph wider than this (many tables) takes the whole row instead of the side column. */
+const WIDE_GRAPH = 480;
 const SKELETON_ROWS = [['70%', '55%'], ['50%', '70%'], ['80%', '40%'], ['60%', '65%'], ['45%', '50%'], ['65%', '35%']] as const;
 
 function rowsOf(table: Schemas['CatalogTable'], relations: readonly Schemas['Relation'][]): Row[] {
@@ -143,11 +145,11 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
           {entries.length === 0 && <div className="px-5 py-4 text-muted-foreground">Данные загружены без преобразований</div>}
           {entries.map((entry) => <TransformLogItem key={entry.text} level={entry.level} text={entry.text} />)}
         </section>
-        <section className={card}>
+        <section className={cn(card, graph.width > WIDE_GRAPH && 'min-[1180px]:col-span-2')}>
           <h2 className={cn(cardTitle, 'border-b border-border px-5 py-4')}>Обнаруженные связи таблиц</h2>
           {relations.length === 0 && <div className="px-5 py-4 text-muted-foreground">Связи между таблицами не найдены</div>}
           {graph.edges.length > 0 && (
-            <div className="border-b border-border-subtle px-5 py-4">
+            <div className="overflow-x-auto border-b border-border-subtle px-5 py-4">
               <RelationGraph graph={graph} selected={table.table_id} onSelect={setTableId} />
             </div>
           )}
