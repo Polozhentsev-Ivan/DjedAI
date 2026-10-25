@@ -17,7 +17,7 @@ benchmark = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = benchmark
 spec.loader.exec_module(benchmark)
 
-from djedai.agent.client import BIModelClient  # noqa: E402
+from djedai.agent.client import BIModelClient, ModelResponse  # noqa: E402
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.contracts.agent import ComposeResponse, Understanding, VisualizeResponse  # noqa: E402
 
@@ -280,6 +280,58 @@ def test_complete_turn_trace_contains_inputs_to_the_quality_verdict():
     assert trace["plan"][0]["args"]["sql"].startswith("SELECT COUNT")
     assert trace["results"][-1]["data"]["rows"] == [[4]]
     assert trace["answer_blocks"][0]["markdown"] == "4"
+
+
+def test_ambiguous_turn_with_metric_candidates_uses_a_real_catalog():
+    class CandidateClient(_fake_helper().FakeClient):
+        def generate_typed_response(self, system, question, response_model, **kwargs):
+            if response_model is Understanding:
+                candidate = {
+                    "metric_id": "gross_sales",
+                    "title": "Валовые продажи",
+                    "kind": "sum",
+                    "grain": {"table": "sales", "key": "region"},
+                    "measure": {"table": "sales", "column": "gross_sales"},
+                    "additivity": "additive",
+                    "unit": "number",
+                }
+                invalid = {
+                    **candidate,
+                    "metric_id": "net_sales",
+                    "grain": {"table": "missing", "key": "region"},
+                    "measure": {"table": "missing", "column": "net_sales"},
+                }
+                return ModelResponse(
+                    status="success",
+                    data=Understanding.model_validate(
+                        {
+                            "intent": "ambiguous",
+                            "clarification": {
+                                "question": "Какие продажи?",
+                                "options": ["gross_sales", "net_sales"],
+                                "metric_candidates": [candidate, invalid],
+                            },
+                        }
+                    ),
+                )
+            return super().generate_typed_response(system, question, response_model, **kwargs)
+
+    ambiguous = next(item for item in benchmark.TURN_CASES if item.name == "turn_ambiguous")
+    turn = benchmark.run_turn(
+        benchmark.build_agent_graph(),
+        CandidateClient(),
+        ambiguous,
+        repeat=0,
+        profile_name="candidate-dto",
+    )
+    assert turn["error_type"] is None and turn["semantic_ok"] is True
+    candidates = turn["trace"]["answer_blocks"][0]["metric_candidates"]
+    assert candidates[0]["status"] == "proposed"
+    assert candidates[1] is None
+    with benchmark.make_connection() as connection:
+        catalog = benchmark.make_catalog(connection)
+    assert catalog.to_prompt() == benchmark.CATALOG
+    assert catalog.table("sales").column("region").is_unique
 
 
 def test_turn_deadline_applies_across_stages_and_preserves_the_last_checkpoint():

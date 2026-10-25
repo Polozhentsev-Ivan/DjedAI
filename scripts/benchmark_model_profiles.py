@@ -51,6 +51,7 @@ from djedai.contracts.agent import (  # noqa: E402
     VerifyResponse,
     VisualizeResponse,
 )
+from djedai.contracts.catalog import Column, DatasetCatalog, Table  # noqa: E402
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.execution import ExecutionBudget, TurnTimeout  # noqa: E402
 
@@ -393,6 +394,59 @@ def make_connection() -> duckdb.DuckDBPyConnection:
     )
     connection.executemany("INSERT INTO sales VALUES (?, ?, ?)", SALES)
     return connection
+
+
+class BenchmarkCatalog(DatasetCatalog):
+    def to_prompt(self) -> str:
+        # Keep the frozen A/B prompt; runtime consumers still get the real DTO.
+        return CATALOG
+
+
+def make_catalog(connection: duckdb.DuckDBPyConnection) -> DatasetCatalog:
+    """The graph also validates clarification candidates through catalog.table()."""
+    tables = []
+    for name in ("orders", "customers", "refunds", "sales"):
+        count = connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        distinct = connection.execute(
+            f'SELECT COUNT(*) FROM (SELECT DISTINCT * FROM "{name}")'
+        ).fetchone()[0]
+        columns = []
+        for column_name, physical_type, *_ in connection.execute(f'DESCRIBE "{name}"').fetchall():
+            column = '"' + column_name.replace('"', '""') + '"'
+            nulls, unique = connection.execute(
+                f"SELECT COUNT(*) FILTER (WHERE {column} IS NULL), "
+                f'COUNT(DISTINCT {column}) FROM "{name}"'
+            ).fetchone()
+            identifier = column_name.endswith("_id")
+            numeric = physical_type.startswith(("INTEGER", "DECIMAL"))
+            columns.append(
+                Column(
+                    name=column_name,
+                    original_name=column_name,
+                    physical_type=physical_type,
+                    semantic_type="id" if identifier else ("float" if numeric else "category"),
+                    role="id" if identifier else ("measure" if numeric else "dimension"),
+                    null_ratio=nulls / count if count else 0,
+                    distinct_count=unique,
+                    is_unique=bool(count) and unique == count and nulls == 0,
+                )
+            )
+        tables.append(
+            Table(
+                table_id=name,
+                original_name=name,
+                row_count=count,
+                duplicate_rows=count - distinct,
+                columns=columns,
+            )
+        )
+    return BenchmarkCatalog(
+        dataset_id="benchmark",
+        name="benchmark",
+        source={"kind": "csv_upload"},
+        created_at=datetime(2026, 10, 26, tzinfo=UTC),
+        tables=tables,
+    )
 
 
 def _number_key(value: str) -> Decimal:
@@ -943,11 +997,8 @@ def run_turn(
         run_id=run_id,
     )
 
-    class Catalog:
-        def to_prompt(self) -> str:
-            return CATALOG
-
     connection = make_connection()
+    catalog = make_catalog(connection)
 
     def dispatcher(tool: str, args: dict[str, Any]) -> ToolResult:
         return execute_tool(tool, args, connection=connection)
@@ -956,7 +1007,7 @@ def run_turn(
         "configurable": {
             "thread_id": run_id,
             "client": client,
-            "catalog_loader": lambda _dataset_id: Catalog(),
+            "catalog_loader": lambda _dataset_id: catalog,
             "tool_dispatcher": dispatcher,
             "diagnostics": diagnostics,
             "budget": ExecutionBudget(
