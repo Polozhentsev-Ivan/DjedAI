@@ -169,6 +169,8 @@ class ChatModel(Base):
     )
     title = Column(String(255), nullable=False, default="Новый чат")
     summary = Column(Text, nullable=True)
+    # «О чём сейчас разговор»: порядок важен для ссылок «первый/второй пункт».
+    focus_result_ids = Column(JSON, nullable=True)
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
     updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 

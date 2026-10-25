@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw/http';
 import { API_BASE, type Schemas } from '@/api/client';
@@ -10,6 +10,7 @@ import { server } from '@/test/server';
 import { dataError, displayData } from './data';
 import { measureLabel } from './format';
 import { ResultChart } from './ResultChart';
+import { ResultTable } from './ResultTable';
 import { isSupported, pieLegend, specOption } from './spec';
 import { SpecChart } from './SpecChart';
 import type { ChartTheme } from './theme';
@@ -271,5 +272,43 @@ describe('result data API', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Повторить' }));
     expect(await screen.findByRole('img')).toHaveAccessibleName(`${spec.title}. ${spec.subtitle}`);
     expect(calls).toBe(2);
+  });
+});
+
+describe('timestamps in result tables', () => {
+  const cells = (data: Schemas['ResultData'], spec: Parameters<typeof ResultTable>[0]['spec'] = { chart_id: 'r', type: 'table', title: 'Таблица' }, fields: string[] | undefined = []) => {
+    render(<ResultTable spec={spec} data={data} fields={fields} />);
+    return within(screen.getByRole('table')).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[0]?.textContent);
+  };
+  const column = (values: (string | null)[]): Schemas['ResultData'] => ({ columns: ['at'], rows: values.map((value) => [value]), row_count: values.length, truncated: false });
+
+  it('keeps the finest time any value in the column carries', () => {
+    expect(cells(column(['2026-10-25T09:00:00', '2026-10-25T10:00:00', null]))).toEqual(['25.10.2026 09:00', '25.10.2026 10:00', '—']);
+  });
+
+  it('adds seconds and fractions only when a value has them, for the whole column', () => {
+    expect(cells(column(['2026-10-25 09:00:00', '2026-10-25 09:00:30']))).toEqual(['25.10.2026 09:00:00', '25.10.2026 09:00:30']);
+    cleanup();
+    expect(cells(column(['2026-10-25T09:00:00.250', '2026-10-25T09:00:00.000']))).toEqual(['25.10.2026 09:00:00.250', '25.10.2026 09:00:00.000']);
+  });
+
+  it('shows dates only when every value is a date or a midnight', () => {
+    expect(cells(column(['2026-10-25', '2026-10-26T00:00:00']))).toEqual(['25.10.2026', '26.10.2026']);
+  });
+
+  it('shows the stored time with its offset instead of shifting it to the viewer zone', () => {
+    expect(cells(column(['2026-10-25T09:00:00Z', '2026-10-25T09:00:00+03:00']))).toEqual(['25.10.2026 09:00 UTC', '25.10.2026 09:00 +03:00']);
+  });
+
+  it('preserves explicit zones even when every timestamp is midnight', () => {
+    expect(cells(column(['2026-10-25T00:00:00Z', '2026-10-25T00:00:00+03:00', '2026-10-25T00:00:00-05:30']))).toEqual(['25.10.2026 00:00 UTC', '25.10.2026 00:00 +03:00', '25.10.2026 00:00 -05:30']);
+  });
+
+  it('keeps the hour on a time axis of a table chart and leaves other text alone', () => {
+    const data: Schemas['ResultData'] = { columns: ['hour', 'note'], rows: [['2026-10-25T09:00:00', '2026-10-25T09:00:00']], row_count: 1, truncated: false };
+    render(<ResultTable spec={{ chart_id: 'r', type: 'table', title: 'Часы', x: { field: 'hour', label: 'Час', kind: 'time' }, y: [{ field: 'note', label: 'Заметка' }] }} data={data} />);
+    const [hour, note] = within(screen.getByRole('table')).getAllByRole('cell');
+    expect(hour).toHaveTextContent('25.10.2026 09:00');
+    expect(note).toHaveTextContent('2026-10-25T09:00:00');
   });
 });

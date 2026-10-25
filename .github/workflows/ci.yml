@@ -62,7 +62,7 @@ jobs:
       - name: Test Python application
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Test auth migrations and persistence
-        run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py tests/integration/test_chat_turn_migrations.py
+        run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py tests/integration/test_chat_turn_migrations.py tests/integration/test_memory_metric_migrations.py
       - name: Test CP1 CSV and runtime integration
         run: uv run --locked pytest --strict-markers tests/integration/test_csv_dataset_service.py tests/integration/test_csv_dataset_api.py tests/integration/test_data_interface.py tests/integration/test_cp1_runtime.py
       - name: Test owned read-only PostgreSQL sources against a real server

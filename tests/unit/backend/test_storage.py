@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 import sys
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.db.models import (
     MessageModel,
@@ -54,6 +55,7 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.execution import ExecutionBudget, TurnTimeout
 
 
 def test_models_and_ownership_relationships() -> None:
@@ -1093,3 +1095,54 @@ def test_save_and_load_tool_result_empty_no_columns(tmp_path: Path) -> None:
         assert loaded.data.columns == []
         assert loaded.data.rows == []
         assert loaded.data.row_count == 0
+
+
+def test_chat_memory_rolls_back_with_a_late_assistant_save(tmp_path: Path) -> None:
+    """Память и ответ коммитятся вместе: при блокировке БД не сохраняется ничего."""
+    db_file = tmp_path / "atomic_memory.db"
+    engine = create_db_engine(f"sqlite:///{db_file.as_posix()}")
+    init_db(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as db:
+        user = get_or_create_user(db, "u_atomic", "atomic")
+        dataset = create_dataset(db, "ds_atomic", user.id, "Atomic DS")
+        chat = create_chat(db, "c_atomic", user.id, dataset.dataset_id)
+        chat_id = chat.chat_id
+        chat.summary = "Старое summary"
+        chat.focus_result_ids = ["r_old"]
+        db.commit()
+
+    blocker = sqlite3.connect(db_file, check_same_thread=False)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with factory() as db:
+            message = AssistantMessage(
+                message_id="m_late",
+                chat_id=chat_id,
+                role="assistant",
+                created_at=datetime.now(UTC),
+                blocks=[TextBlock(markdown="Поздний ответ")],
+                result_ids=["r_new"],
+            )
+            with pytest.raises(TurnTimeout):
+                save_assistant_message(
+                    db,
+                    message,
+                    budget=ExecutionBudget(0.2),
+                    summary="Новое summary",
+                    focus_result_ids=["r_new"],
+                )
+    finally:
+        blocker.rollback()
+        blocker.close()
+        engine.dispose()
+
+    check_engine = create_db_engine(f"sqlite:///{db_file.as_posix()}")
+    try:
+        with Session(check_engine) as db:
+            assert get_chat_messages(db, chat_id) == []
+            stored = get_chat(db, chat_id)
+            assert stored.summary == "Старое summary"
+            assert stored.focus_result_ids == ["r_old"]
+    finally:
+        check_engine.dispose()
