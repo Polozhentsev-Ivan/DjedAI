@@ -3433,3 +3433,546 @@ def lagged_correlation(
         timer.cancel()
         if connection is None:
             con.close()
+
+
+# ============================================================================
+# FORECAST
+# ============================================================================
+
+_FORECAST_METHODS = {"ets", "arima", "naive"}
+
+
+def _forecast_ets(y: np.ndarray, horizon: int, period: int | None, alpha: float):
+    """Holt-Winters additive. Интервалы — yhat ± z·σ_resid·sqrt(step)."""
+    import warnings
+
+    import numpy as np
+    from scipy import stats
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    n = len(y)
+    use_seasonal = period is not None and period >= 2 and n >= 2 * period
+    model = ExponentialSmoothing(
+        y,
+        trend="add",
+        seasonal="add" if use_seasonal else None,
+        seasonal_periods=period if use_seasonal else None,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit = model.fit()
+    point = np.asarray(fit.forecast(horizon), dtype=float)
+    resid = np.asarray(fit.resid, dtype=float)
+    resid = resid[~np.isnan(resid)]
+    std = float(np.std(resid, ddof=1)) if len(resid) >= 2 else 0.0
+    z = float(stats.norm.ppf(1 - alpha / 2))
+    steps = np.arange(1, horizon + 1, dtype=float)
+    half = z * std * np.sqrt(steps)
+    return point, point - half, point + half
+
+
+def _forecast_arima(y: np.ndarray, horizon: int, period: int | None, alpha: float):
+    """ARIMA(1,1,1); SARIMAX — только при достаточной длине и с fallback."""
+    import warnings
+
+    import numpy as np
+    from statsmodels.tsa.arima.model import ARIMA as _ARIMA
+
+    n = len(y)
+    # 4 полных сезона — минимум, ниже которого SARIMAX нестабилен.
+    use_seasonal = period is not None and period >= 2 and n >= 4 * period
+    if use_seasonal:
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                fit = SARIMAX(
+                    y,
+                    order=(1, 1, 1),
+                    seasonal_order=(1, 1, 1, period),
+                    enforce_stationarity=False,
+                    enforce_invertibility=False,
+                ).fit(disp=False)
+                if not fit.mle_retvals.get("converged", True):
+                    raise RuntimeError("SARIMAX не сошёлся")
+            except Exception:  # noqa: BLE001
+                use_seasonal = False
+    if not use_seasonal:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = _ARIMA(y, order=(1, 1, 1)).fit()
+
+    fc = fit.get_forecast(steps=horizon)
+    point = np.asarray(fc.predicted_mean, dtype=float)
+    ci = np.asarray(fc.conf_int(alpha=alpha), dtype=float)
+    return point, ci[:, 0], ci[:, 1]
+
+
+def _forecast_naive(y: np.ndarray, horizon: int, period: int | None, alpha: float):
+    """Сезонный naive: повторяем последний сезон, интервалы — как в ETS."""
+    import numpy as np
+    from scipy import stats
+
+    p = period if period and period >= 1 else 1
+    if len(y) <= p:
+        raise RuntimeError(f"для naive нужно > {p} наблюдений")
+    resid = y[p:] - y[:-p]
+    resid = resid[~np.isnan(resid)]
+    std = float(np.std(resid, ddof=1)) if len(resid) >= 2 else 0.0
+    point = np.array([y[-p + (h % p)] for h in range(horizon)], dtype=float)
+    z = float(stats.norm.ppf(1 - alpha / 2))
+    steps = np.arange(1, horizon + 1, dtype=float)
+    half = z * std * np.sqrt(steps)
+    return point, point - half, point + half
+
+
+def _dispatch_forecast(method: str, y: np.ndarray, horizon: int, period, alpha):
+    if method == "ets":
+        return _forecast_ets(y, horizon, period, alpha)
+    if method == "arima":
+        return _forecast_arima(y, horizon, period, alpha)
+    if method == "naive":
+        return _forecast_naive(y, horizon, period, alpha)
+    raise ValueError(f"Неизвестный метод: {method}")
+
+
+def _forecast_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
+    import numpy as np
+
+    a = np.asarray(actual, dtype=float)
+    p = np.asarray(predicted, dtype=float)
+    mask = ~(np.isnan(a) | np.isnan(p))
+    a, p = a[mask], p[mask]
+    if len(a) == 0:
+        return {"mae": None, "rmse": None, "mape": None, "n_holdout": 0}
+    mae = float(np.mean(np.abs(a - p)))
+    rmse = float(np.sqrt(np.mean((a - p) ** 2)))
+    mape = float(np.mean(np.abs((a - p) / a)) * 100) if np.all(a != 0) else None
+    return {"mae": mae, "rmse": rmse, "mape": mape, "n_holdout": int(len(a))}
+
+
+def forecast(
+    table: str,
+    time_col: str,
+    *,
+    horizon: int,
+    measure: str | None = None,
+    agg: str = "sum",
+    freq: str = "day",
+    period: int | None = None,
+    method: str = "ets",
+    alpha: float = 0.05,
+    holdout: int | None = None,
+    filter: str | None = None,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Прогноз показателя на горизонт с интервалами (B2-7).
+
+    Методы: ``ets`` (Holt-Winters), ``arima`` (ARIMA/SARIMAX), ``naive`` (сезонный naive).
+    ``alpha`` задаёт интервал: 0.05 → 95%. ``holdout`` — число последних точек
+    для валидации на отложенном периоде (MAE/RMSE/MAPE попадают в ``facts``).
+    """
+    import pandas as pd
+
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    params_dict = {
+        "table": table,
+        "time_col": time_col,
+        "measure": measure,
+        "agg": agg,
+        "freq": freq,
+        "horizon": horizon,
+        "period": period,
+        "method": method,
+        "alpha": alpha,
+        "holdout": holdout,
+        "filter": filter,
+    }
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+
+        # --- валидация параметров ---
+        if freq not in _FREQ_UNITS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая частота: '{freq}'.",
+                    suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if agg not in _AGG_FUNCS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая агрегация: '{agg}'.",
+                    suggestion=f"Допустимо: {sorted(_AGG_FUNCS)}",
+                )
+            )
+        if agg != "count" and measure is None:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Для agg='{agg}' обязателен measure.",
+                    suggestion="Укажите measure или agg='count'.",
+                )
+            )
+        if method not in _FORECAST_METHODS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимый метод: '{method}'.",
+                    suggestion=f"Допустимо: {sorted(_FORECAST_METHODS)}",
+                )
+            )
+        if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="horizon должен быть >= 1.",
+                )
+            )
+        if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not 0 < alpha < 1:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="alpha должен быть числом в интервале (0, 1).",
+                )
+            )
+        if holdout is not None and (
+            not isinstance(holdout, int) or isinstance(holdout, bool) or holdout < 1
+        ):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="holdout должен быть >= 1.",
+                )
+            )
+        if period is not None and (
+            not isinstance(period, int) or isinstance(period, bool) or period < 1
+        ):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="period должен быть целым >= 1.",
+                )
+            )
+        if period is None:
+            default = _STL_PERIOD_BY_FREQ.get(freq)
+            period = default if default and default >= 1 else None
+
+        # --- проверка колонок ---
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        if time_col not in all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка времени '{time_col}' не найдена.",
+                    suggestion=f"Доступно: {', '.join(all_cols)}",
+                )
+            )
+        if measure is not None and measure not in all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка метрики '{measure}' не найдена.",
+                )
+            )
+        time_dtype = (_column_type(con, table, time_col) or "").upper()
+        if "DATE" not in time_dtype and "TIMESTAMP" not in time_dtype:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка времени '{time_col}' должна быть DATE или TIMESTAMP.",
+                )
+            )
+        if measure is not None:
+            dtype = (_column_type(con, table, measure) or "").upper()
+            if not any(t in dtype for t in _NUMERIC_TYPES):
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{measure}' должна быть числовой (тип: {dtype}).",
+                    )
+                )
+
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        # --- сборка ряда ---
+        safe_table = _quote_id(table)
+        safe_time = _quote_id(time_col)
+        if agg == "count":
+            agg_expr = "COUNT(*)" if measure is None else f"COUNT({_quote_id(measure)})"
+        else:
+            agg_expr = f"{_AGG_FUNCS[agg]}({_quote_id(measure)})"
+        query = (
+            f"SELECT DATE_TRUNC('{freq}', CAST({safe_time} AS TIMESTAMP)) AS time_bucket, "
+            f"{agg_expr} AS value "
+            f"FROM {safe_table} "
+            f"WHERE {safe_time} IS NOT NULL{filter_sql} "
+            f"GROUP BY 1 ORDER BY 1"
+        )
+        raw = execute(query).fetchall()
+
+        if not raw:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="forecast",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=["time_bucket", "yhat", "yhat_lower", "yhat_upper"],
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[
+                    Fact(
+                        text="По заданным условиям нет данных для прогноза.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        df = pd.DataFrame(raw, columns=["time_bucket", "value"])
+        df["time_bucket"] = pd.to_datetime(df["time_bucket"])
+        df = df.set_index("time_bucket").sort_index()
+        # Выравниваем по календарю: пропущенные бакеты восстанавливаем,
+        # чтобы дальше работали периоды, а не позиции.
+        df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
+        if agg in ("sum", "count"):
+            df["value"] = df["value"].fillna(0.0)
+        elif df["value"].isna().any():
+            return _err(
+                error=ToolError(
+                    code="missing_data",
+                    message=(
+                        f"В ряду есть пропущенные бакеты; метод '{method}' требует полный ряд."
+                    ),
+                    suggestion="Используйте agg='sum' или agg='count'.",
+                )
+            )
+        series = df["value"].astype(float)
+
+        # --- достаточность истории ---
+        min_required = max(2 * (period or 1), 5)
+        if len(series) < min_required:
+            return _err(
+                error=ToolError(
+                    code="insufficient_data",
+                    message=(
+                        f"Для прогноза '{method}' нужно >= {min_required} наблюдений "
+                        f"(частота {freq}, период {period}), получено {len(series)}."
+                    ),
+                    suggestion=(
+                        "Расширьте диапазон, уменьшите частоту или выберите method='naive'."
+                    ),
+                )
+            )
+
+        facts: list[Fact] = []
+
+        # --- валидация на отложенном периоде ---
+        if holdout is not None:
+            if holdout >= len(series):
+                facts.append(
+                    Fact(
+                        text=(
+                            f"holdout={holdout} больше длины ряда ({len(series)}) — "
+                            f"валидация пропущена."
+                        ),
+                        kind="warning",
+                        values={"holdout": holdout, "n": len(series)},
+                    )
+                )
+            elif len(series) - holdout < min_required:
+                facts.append(
+                    Fact(
+                        text=(
+                            f"Для валидации при holdout={holdout} обучающая часть "
+                            f"({len(series) - holdout}) короче минимума "
+                            f"({min_required}) — валидация пропущена."
+                        ),
+                        kind="warning",
+                        values={"holdout": holdout, "train_size": len(series) - holdout},
+                    )
+                )
+            else:
+                train = series.iloc[:-holdout].to_numpy()
+                actual = series.iloc[-holdout:].to_numpy()
+                try:
+                    point_train, _, _ = _dispatch_forecast(
+                        method,
+                        train,
+                        holdout,
+                        period,
+                        alpha,
+                    )
+                    metrics = _forecast_metrics(actual, point_train)
+                    parts = [
+                        f"MAE = {round(metrics['mae'], 4)}",
+                        f"RMSE = {round(metrics['rmse'], 4)}",
+                    ]
+                    if metrics["mape"] is not None:
+                        parts.append(f"MAPE = {round(metrics['mape'], 2)}%")
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"Валидация на отложенном периоде "
+                                f"(последние {holdout} точек): " + ", ".join(parts) + "."
+                            ),
+                            kind="holdout_metrics",
+                            values=metrics,
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    facts.append(
+                        Fact(
+                            text=f"Валидация не выполнена: {type(e).__name__}: {e}",
+                            kind="warning",
+                            values={"error": type(e).__name__, "message": str(e)},
+                        )
+                    )
+
+        # --- основной прогноз ---
+        try:
+            point, lower, upper = _dispatch_forecast(
+                method,
+                series.to_numpy(),
+                horizon,
+                period,
+                alpha,
+            )
+        except Exception as e:  # noqa: BLE001
+            return _err(
+                error=ToolError(
+                    code="forecast_failed",
+                    message=f"Не удалось построить прогноз: {type(e).__name__}: {e}",
+                    suggestion="Попробуйте method='naive' или другую частоту/период.",
+                )
+            )
+
+        # --- метки прогноза: сдвиг на один шаг после последней точки истории ---
+        future_index = pd.date_range(
+            start=df.index[-1],
+            periods=horizon + 1,
+            freq=_PANDAS_FREQ[freq],
+        )[1:]
+
+        # --- факты ---
+        facts.append(
+            Fact(
+                text=(
+                    f"Прогноз методом '{method}' на {horizon} точек вперёд "
+                    f"(частота {freq}"
+                    + (f", период {period}" if period else "")
+                    + f"), интервал {round((1 - alpha) * 100)}%."
+                ),
+                kind="forecast_summary",
+                values={
+                    "method": method,
+                    "horizon": horizon,
+                    "freq": freq,
+                    "period": period,
+                    "alpha": alpha,
+                    "coverage": 1 - alpha,
+                },
+            )
+        )
+        facts.append(
+            Fact(
+                text=(
+                    "Прогноз — статистическая экстраполяция, а не гарантия. "
+                    "Интервал отражает неопределённость модели при допущении "
+                    "о стабильности прошлых закономерностей."
+                ),
+                kind="caveat",
+                values={},
+            )
+        )
+        facts.append(
+            Fact(
+                text=(
+                    f"Последняя точка горизонта: {round(float(point[-1]), 4)} "
+                    f"(интервал [{round(float(lower[-1]), 4)}; "
+                    f"{round(float(upper[-1]), 4)}])."
+                ),
+                kind="forecast_endpoint",
+                values={
+                    "yhat": float(point[-1]),
+                    "yhat_lower": float(lower[-1]),
+                    "yhat_upper": float(upper[-1]),
+                },
+            )
+        )
+
+        rows = [
+            [
+                future_index[i].isoformat()
+                if freq in {"hour", "minute"}
+                else future_index[i].strftime("%Y-%m-%d"),
+                float(point[i]),
+                float(lower[i]),
+                float(upper[i]),
+            ]
+            for i in range(horizon)
+        ]
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="forecast",
+            params=params_dict,
+            data=ToolResultData(
+                columns=["time_bucket", "yhat", "yhat_lower", "yhat_upper"],
+                rows=rows,
+                row_count=horizon,
+                truncated=False,
+            ),
+            facts=facts,
+            chart_hint=ChartHint(
+                type="line",
+                x="time_bucket",
+                y=["yhat", "yhat_lower", "yhat_upper"],
+            ),
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
