@@ -573,7 +573,7 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
         physical, action = f"DECIMAL(18,{scale})", f"parse_{semantic}"
         if currencies:
             detail["currency"] = currencies[0]
-        elif without_percent:
+        else:
             # 15% и 0.15 в одной колонке: масштаб значений без знака не определить
             detail["without_percent_sign"] = without_percent
         fmt = f"{separator}, {currencies[0]}" if currencies else f"{separator}, percent"
@@ -598,7 +598,7 @@ def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | 
     fmt, shape, kind = _TEMPORAL[leaders[0]]
     value = f"trim({column})"
     parsed = f"try_strptime({value}, {_lit(fmt)})"
-    detail: dict = {"format": fmt}
+    detail: dict = {"format": fmt, "ambiguous_values": 0, "alternative_formats": []}
     rivals = [i for count, i in counts if count and i != leaders[0]]
     if rivals:
         # формат выбран по большинству, но часть значений подходит и под другой (03/04/2026)

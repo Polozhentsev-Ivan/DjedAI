@@ -353,7 +353,7 @@ def test_percent_values_without_sign_are_journaled(con, tmp_path):
 
 def test_percent_with_sign_everywhere_has_no_scale_note(con, tmp_path):
     typed(con, tmp_path, ["15%", "20%"])
-    assert "without_percent_sign" not in journal(con, "parse_percent")[0].detail
+    assert journal(con, "parse_percent")[0].detail["without_percent_sign"] == 0
 
 
 def test_date_format_chosen_by_majority_journals_ambiguous_values(con, tmp_path):
@@ -366,7 +366,8 @@ def test_date_format_chosen_by_majority_journals_ambiguous_values(con, tmp_path)
 
 def test_unambiguous_dates_have_no_ambiguity_note(con, tmp_path):
     typed(con, tmp_path, ["25.03.2026", "01.12.2025"])
-    assert "ambiguous_values" not in journal(con, "parse_date")[0].detail
+    assert journal(con, "parse_date")[0].detail["ambiguous_values"] == 0
+    assert journal(con, "parse_date")[0].detail["alternative_formats"] == []
 
 
 def test_column_just_below_threshold_keeps_candidate_and_ratio(con, tmp_path):

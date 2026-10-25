@@ -44,6 +44,7 @@ from djedai.contracts.quality import (
     Usage,
 )
 from djedai.contracts.tool_result import Fact, ToolResult
+from djedai.data.typed_views import _TEMPORAL
 from djedai.execution import TurnCancelled, TurnTimeout, query_timer
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ class _Column:
     dropped: list[tuple[int, _Counts]] = field(default_factory=list)  # фильтры: строки и база
     mixed_with: set[tuple[str, str | None]] = field(default_factory=set)  # другие валюты
     mixed_in_measure: bool = False
+    ambiguity_boundary: str | None = None
 
     @property
     def usages(self) -> set[Usage]:
@@ -150,6 +152,8 @@ def quality_report(
                 continue
             columns[key] = column
         columns[key].uses.append(use)
+    for column in columns.values():
+        _restore_ambiguities(column, connection)
     if lineage.query is not None:
         _count_populations(lineage, [c for c in columns.values() if _needs_count(c)], connection)
     for column in columns.values():
@@ -162,9 +166,17 @@ def quality_report(
         issues = _issues(column)
         if issues:
             reported.append(_quality(column, issues))
+    unresolved = [
+        *lineage.unresolved,
+        *[
+            f"{column.name}: {column.ambiguity_boundary}"
+            for column in columns.values()
+            if column.ambiguity_boundary
+        ],
+    ]
     return QualityReport(
-        lineage="partial" if lineage.unresolved else "complete",
-        unresolved=lineage.unresolved,
+        lineage="partial" if unresolved else "complete",
+        unresolved=unresolved,
         checked=list(dict.fromkeys(checked)),
         columns=reported,
     )
@@ -233,6 +245,58 @@ def _needs_count(column: _Column) -> bool:
     return column.action.startswith("parse_") and detail.get("parsed", 0) < detail.get(
         "non_empty", 0
     )
+
+
+def _restore_ambiguities(column: _Column, connection: duckdb.DuckDBPyConnection) -> None:
+    """Recover optional journal diagnostics without changing persisted catalogs or views."""
+    percent = column.action == "parse_percent" and "without_percent_sign" not in column.detail
+    date = column.action in {"parse_date", "parse_datetime"} and (
+        "ambiguous_values" not in column.detail or "alternative_formats" not in column.detail
+    )
+    if not (percent or date):
+        return
+    try:
+        source = _quality_relation(connection, column.table, "legacy").sql(dialect="duckdb")
+        index = next(
+            i for i, item in enumerate(column.table.columns) if item.name == column.column.name
+        )
+        raw = _ref("legacy", f"{_RAW}{index}").sql(dialect="duckdb")
+        typed = _ref("legacy", column.column.name).sql(dialect="duckdb")
+        present = f"{typed} IS NOT NULL"
+        if percent:
+            (count,) = _fetch(
+                connection,
+                f"SELECT count(*) FILTER (WHERE {present} "
+                f"AND NOT contains(trim({raw}), '%')) FROM {source}",
+            )
+            column.detail["without_percent_sign"] = count
+        else:
+            chosen = column.column.parse.format if column.column.parse else None
+            if chosen not in {fmt for fmt, _, _ in _TEMPORAL}:
+                raise ValueError("unknown stored date format")
+            rivals = [(fmt, shape) for fmt, shape, _ in _TEMPORAL if fmt != chosen]
+            conditions = [
+                f"({present} AND regexp_full_match(trim({raw}), "
+                f"{exp.Literal.string(shape).sql(dialect='duckdb')}) "
+                f"AND try_strptime(trim({raw}), "
+                f"{exp.Literal.string(fmt).sql(dialect='duckdb')}) IS NOT NULL)"
+                for fmt, shape in rivals
+            ]
+            counts = ", ".join(
+                f"count(*) FILTER (WHERE {condition})"
+                for condition in [" OR ".join(conditions), *conditions]
+            )
+            row = _fetch(connection, f"SELECT {counts} FROM {source}")
+            column.detail["ambiguous_values"] = row[0]
+            column.detail["alternative_formats"] = [
+                fmt for (fmt, _), count in zip(rivals, row[1:], strict=True) if count
+            ]
+    except (duckdb.Error, sqlglot.errors.SqlglotError, KeyError, ValueError):
+        check_budget()
+        column.ambiguity_boundary = (
+            "в сохранённом журнале нет сведений о неоднозначности; исходные значения "
+            "проверить не удалось, масштаб процентов или порядок дня и месяца не проверены"
+        )
 
 
 def _profile(column: _Column, boundary: str) -> _Counts:
@@ -471,6 +535,13 @@ def _issues(column: _Column) -> list[QualityIssue]:
     def add(code, severity: Severity, message: str, options: list[str] | None = None) -> None:
         options = options if severity == "blocking" else []
         issues.append(QualityIssue(code=code, severity=severity, message=message, options=options))
+
+    if column.ambiguity_boundary:
+        add(
+            "percent_scale" if column.action == "parse_percent" else "ambiguous_date",
+            "warning",
+            f"{name}: {column.ambiguity_boundary}.",
+        )
 
     if column.action.startswith("parse_"):
         target = _TYPE_NAMES.get(column.column.semantic_type, column.column.semantic_type)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -22,7 +23,7 @@ from djedai.backend.app import create_app
 from djedai.backend.auth import hash_password
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
 from djedai.backend.config import Settings
-from djedai.backend.db.models import UserModel
+from djedai.backend.db.models import DatasetModel, UserModel
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.local_user import bootstrap_local_user
 from djedai.contracts.agent import (
@@ -106,6 +107,69 @@ def _turn(sql: str, text: str | None) -> list[ModelResponse]:
 
 def _markdown(message: dict) -> str:
     return "\n".join(b.get("markdown") or b.get("question") or "" for b in message["blocks"])
+
+
+def test_legacy_catalog_ambiguities_survive_restart(configured):
+    with _client(configured) as client:
+        upload = client.post(
+            "/api/datasets/upload",
+            files=[
+                (
+                    "files",
+                    (
+                        "legacy.csv",
+                        b"share;event_date\n15%;25/03/2026\n20%;03/04/2026\n0,15;05/06/2026\n",
+                        "text/csv",
+                    ),
+                )
+            ],
+        )
+        assert upload.status_code == 202, upload.text
+        dataset_id = upload.json()["dataset_id"]
+        assert "event: done" in client.get(f"/api/datasets/{dataset_id}/events").text
+        engine = create_db_engine(configured.app_database_url)
+        try:
+            with sessionmaker(bind=engine)() as db:
+                model = db.get(DatasetModel, dataset_id)
+                catalog = deepcopy(model.catalog)
+                for entry in catalog["transformations"]:
+                    for key in ("without_percent_sign", "ambiguous_values", "alternative_formats"):
+                        entry["detail"].pop(key, None)
+                model.catalog = catalog
+                db.commit()
+        finally:
+            engine.dispose()
+
+    model_client = MagicMock()
+    model_client.generate_typed_response.side_effect = _turn(
+        'SELECT AVG(share), MIN(event_date) FROM "legacy"', "Расчёт выполнен."
+    )
+    with _client(configured) as client:
+
+        def runtime(request: Request):
+            return replace(
+                AgentRuntime(graph=build_agent_graph(), client=model_client),
+                dataset_context=request.app.state.dataset_service.get_context,
+                metric_service=request.app.state.metric_service,
+                results_storage_dir=configured.results_data_dir,
+            )
+
+        client.app.dependency_overrides[get_agent_runtime] = runtime
+        chat_id = client.post("/api/chats", json={"dataset_id": dataset_id}).json()["chat_id"]
+        response = client.post(
+            f"/api/chats/{chat_id}/messages", json={"text": "Средняя доля и первая дата?"}
+        )
+        assert "event: done" in response.text, response.text
+
+    with _client(configured) as client:
+        answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
+        assert "масштаб неизвестен" in _markdown(answer)
+        assert "день и месяц" in _markdown(answer)
+        (result_id,) = answer["result_ids"]
+        result = client.get(f"/api/results/{result_id}").json()
+        assert {
+            issue["code"] for column in result["quality"]["columns"] for issue in column["issues"]
+        } == {"percent_scale", "ambiguous_date"}
 
 
 def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
