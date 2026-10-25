@@ -91,7 +91,8 @@ test('CSV → real HTTP model/SQL → result and history survive backend restart
   await page.goto('/chat');
   await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill('Сколько строк и какова сумма amount?');
   await page.getByRole('button', { name: 'Отправить', exact: true }).click();
-  await expect(page.getByText('Строк: 3; сумма: 50.', { exact: true })).toHaveCount(1);
+  // The real HTTP model stages, persistence and final refetch can exceed 5s on cold CI.
+  await expect(page.getByText('Строк: 3; сумма: 50.', { exact: true })).toHaveCount(1, { timeout: 15_000 });
   const chatUrl = page.url();
   const saved = page.locator('details[data-result-id]').first();
   await expect(saved).toBeVisible();
@@ -105,7 +106,7 @@ test('CSV → real HTTP model/SQL → result and history survive backend restart
   await stopBackend();
   await startBackend();
   await page.goto(chatUrl);
-  await expect(page.getByText('Строк: 3; сумма: 50.', { exact: true })).toHaveCount(1);
+  await expect(page.getByText('Строк: 3; сумма: 50.', { exact: true })).toHaveCount(1, { timeout: 15_000 });
   await expect(page.locator(`details[data-result-id="${resultId}"]`)).toBeVisible();
   expect(await (await apiGet(page, `/api/datasets/${first}`)).json()).toMatchObject({ status: 'ready' });
   expect(await (await apiGet(page, `/api/results/${resultId}/data`)).json()).toMatchObject({ rows: [[3, 50]] });
@@ -117,7 +118,7 @@ test('CSV → real HTTP model/SQL → result and history survive backend restart
   await page.getByRole('button', { name: /чат/i }).first().click();
   await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill('Сколько строк и какова сумма amount?');
   await page.getByRole('button', { name: 'Отправить', exact: true }).click();
-  await expect(page.getByText('Строк: 2; сумма: 18.', { exact: true })).toHaveCount(1);
+  await expect(page.getByText('Строк: 2; сумма: 18.', { exact: true })).toHaveCount(1, { timeout: 15_000 });
   expect(await (await apiGet(page, '/api/results/missing')).json()).toMatchObject({ error: { code: 'not_found' } });
   expect(await page.evaluate<number>('navigator.serviceWorker.getRegistrations().then(items => items.length)')).toBe(0);
 });
