@@ -104,7 +104,9 @@ def test_clickhouse_types():
 
 
 def test_clickhouse_url_parsing_hides_password():
-    client = ch.ClickHouseHttp.from_url("http://djedai_loader:p%40ss%3Aw@127.0.0.1:58123")
+    client = ch.ClickHouseHttp.from_url(
+        "http://djedai_loader:p%40ss%3Aw@127.0.0.1:58123", default_database=ch.DATABASE
+    )
     assert (client.user, client.password, client.port) == ("djedai_loader", "p@ss:w", 58123)
     assert client.database == "djedai_demo"
     assert (
@@ -161,7 +163,7 @@ def fake_clickhouse():
 
 def test_seed_clickhouse_recreates_tables_from_parquet(fake_clickhouse):
     url, calls = fake_clickhouse
-    counts = ch.seed(ch.ClickHouseHttp.from_url(url), DATA_DIR)
+    counts = ch.seed(ch.ClickHouseHttp.from_url(url, default_database=ch.DATABASE), DATA_DIR)
     assert counts == {name: info["rows"] for name, info in SPEC["tables"].items()}
     token = base64.b64encode(b"djedai_loader:secret!").decode()
     assert {call["auth"] for call in calls} == {f"Basic {token}"}
@@ -178,5 +180,5 @@ def test_clickhouse_errors_carry_server_text_without_password(fake_clickhouse):
     with pytest.raises(ch.ClickHouseError) as error:
         ch.ClickHouseHttp.from_url(url).query("SELECT fail")
     assert "Syntax error" in str(error.value) and "secret" not in str(error.value)
-    with pytest.raises(ch.ClickHouseError, match="не удалось подключиться"):
+    with pytest.raises(ch.ClickHouseError, match="недоступен"):
         ch.ClickHouseHttp.from_url("http://u:secret@127.0.0.1:1").query("SELECT 1")

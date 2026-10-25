@@ -81,7 +81,8 @@ def test_missing_key_bad_dsn_and_unimplemented_source_create_no_metadata(storage
         (service, dsn, [], {}, 422),
         (service, dsn, [""], {}, 422),
         (service, dsn, None, {"name": " "}, 422),
-        (service, dsn, None, {"kind": "clickhouse"}, 501),
+        (service, "clickhouse://reader@127.0.0.1/test", None, {"kind": "clickhouse"}, 422),
+        (service, dsn, None, {"kind": "mysql"}, 501),
     ):
         with pytest.raises(HTTPException) as error:
             asyncio.run(target.connect_db("alice", source, tables, **kwargs))
@@ -97,7 +98,7 @@ def test_encrypted_queued_source_is_owner_bound_and_driver_failure_is_safe(
     factory, _, _ = storage
     service = make_service(storage)
     dsn = "postgresql://reader:private-password@private-host:5432/business"
-    dataset_id = service._persist_postgres("alice", dsn, ["public.sales"], None)
+    dataset_id = service._persist_db_source("alice", "postgresql", dsn, ["public.sales"], None)
     with factory() as db:
         model = db.get(DatasetModel, dataset_id)
         assert model.connection is None
@@ -227,8 +228,8 @@ def test_real_sources_survive_restart_isolate_owners_and_read_live_without_copy(
 @live_postgres
 def test_real_interrupted_postgres_source_recovers_for_its_original_owner(storage) -> None:
     service = make_service(storage)
-    alice = service._persist_postgres("alice", DSN, ["stores"], "Recover Alice")
-    bob = service._persist_postgres("bob", DSN, ["products"], "Recover Bob")
+    alice = service._persist_db_source("alice", "postgresql", DSN, ["stores"], "Recover Alice")
+    bob = service._persist_db_source("bob", "postgresql", DSN, ["products"], "Recover Bob")
     restarted = make_service(storage)
 
     async def run():

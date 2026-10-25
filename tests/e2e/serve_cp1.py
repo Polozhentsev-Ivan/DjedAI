@@ -1,6 +1,8 @@
 """Real CP1 backend with an isolated, deterministic OpenAI-compatible model server.
 
 Used only by Playwright. Production runtime, SQL tools and storage are unchanged.
+``--clickhouse-port`` also serves the demo dataset from the fake ClickHouse of
+tests/fake_clickhouse.py for the database connection form (#84).
 """
 
 from __future__ import annotations
@@ -11,14 +13,17 @@ import re
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import uvicorn  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
+from cryptography.fernet import Fernet  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
@@ -128,9 +133,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--model-port", type=int, default=18081)
     parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--clickhouse-port", type=int, default=0, help="0 — без ClickHouse")
     args = parser.parse_args()
     directory = args.data_dir.resolve()
     directory.mkdir(parents=True, exist_ok=True)
+    # One test-only key per data directory, so connected sources survive a restart.
+    key_file = directory / "source.key"
+    if not key_file.exists():
+        key_file.write_text(Fernet.generate_key().decode(), encoding="ascii")
     settings = Settings(
         _env_file=None,
         app_env="test",
@@ -140,6 +150,7 @@ def main() -> None:
         results_data_dir=str(directory / "results"),
         # The browser suite logs many isolated accounts in from the same loopback IP.
         auth_rate_limit_requests=100,
+        source_encryption_key=key_file.read_text(encoding="ascii"),
     )
     # The real client reads its existing environment contract, no runtime injection.
     import os
@@ -161,7 +172,12 @@ def main() -> None:
     worker = threading.Thread(target=model.run, daemon=True)
     worker.start()
     try:
-        uvicorn.run(create_app(settings), host="127.0.0.1", port=args.port)
+        with ExitStack() as sources:
+            if args.clickhouse_port:
+                from fake_clickhouse import FakeClickHouse
+
+                sources.enter_context(FakeClickHouse(port=args.clickhouse_port).load_demo())
+            uvicorn.run(create_app(settings), host="127.0.0.1", port=args.port)
     finally:
         model.should_exit = True
         worker.join(timeout=3)
