@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
@@ -33,6 +34,7 @@ from djedai.contracts.agent import (
     PlanResponse,
     Understanding,
     VerifyResponse,
+    VisualizeResponse,
 )
 
 pytestmark = pytest.mark.integration
@@ -172,6 +174,45 @@ def test_legacy_catalog_ambiguities_survive_restart(configured):
         } == {"percent_scale", "ambiguous_date"}
 
 
+def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> None:
+    client_model = MagicMock()
+    client_model.generate_typed_response.side_effect = [
+        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 664."),
+        ok(Understanding(intent="modify_previous")),
+        ok(PlanResponse(plan=[])),
+        ok(VisualizeResponse(charts=[])),
+        ok(ComposeResponse(answer_blocks=[Block(type="text", markdown="Кратко: сумма — 5 664.")])),
+        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: сумма — 5 664.")),
+    ]
+    with _client(configured) as client:
+        upload = client.post("/api/datasets/upload", files=_files())
+        assert upload.status_code == 202, upload.text
+        dataset_id = upload.json()["dataset_id"]
+        assert "event: done\n" in client.get(f"/api/datasets/{dataset_id}/events").text
+
+        def runtime(request: Request) -> AgentRuntime:
+            return replace(
+                AgentRuntime(graph=build_agent_graph(), client=client_model),
+                dataset_context=request.app.state.dataset_service.get_context,
+                metric_service=request.app.state.metric_service,
+                results_storage_dir=configured.results_data_dir,
+            )
+
+        client.app.dependency_overrides[get_agent_runtime] = runtime
+        chat_id = client.post("/api/chats", json={"dataset_id": dataset_id}).json()["chat_id"]
+        send = f"/api/chats/{chat_id}/messages"
+        first = client.post(send, json={"text": "Сумма заказов?"})
+        assert "event: done" in first.text
+        followup = client.post(send, json={"text": "Объясни тот же результат короче."})
+        assert "event: done" in followup.text, followup.text
+        assert "event: tool_call" not in followup.text
+        assert "4 из 100" in followup.text
+        answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
+        assert "Кратко: сумма — 5 664." in _markdown(answer)
+        assert "**Ограничения данных.**" in _markdown(answer)
+        assert "4 из 100" in _markdown(answer)
+
+
 def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
     client_model = MagicMock()
     client_model.generate_typed_response.side_effect = [
@@ -240,14 +281,20 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
         assert DATE_OPTION in again["options"]
 
 
-def test_quality_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
+@pytest.mark.parametrize("starting_revision", ["f166metr0001", "f191merge0001", "f168qual0001"])
+def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    command.upgrade(cfg, "f166metr0001")
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f192merge0001"]
+    command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)
     try:
         assert "quality" in {c["name"] for c in inspect(engine).get_columns("results")}
+        assert {"summary", "focus_result_ids"} <= {
+            c["name"] for c in inspect(engine).get_columns("chats")
+        }
+        assert "metric_definitions" in inspect(engine).get_table_names()
         command.downgrade(cfg, "f166metr0001")
         assert "quality" not in {c["name"] for c in inspect(engine).get_columns("results")}
     finally:

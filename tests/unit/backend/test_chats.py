@@ -33,7 +33,7 @@ from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import AgentRuntime, get_agent_runtime, stream_chat_turn
 from djedai.backend.config import Settings, get_settings
-from djedai.backend.db.models import MessageModel, ToolResultModel
+from djedai.backend.db.models import ChatModel, MessageModel, ToolResultModel
 from djedai.backend.db.repositories import (
     create_chat,
     create_dashboard,
@@ -41,7 +41,9 @@ from djedai.backend.db.repositories import (
     get_chat_messages,
     get_or_create_user,
     save_assistant_message,
+    save_message,
     save_tool_result,
+    update_chat_memory,
 )
 from djedai.backend.db.session import create_db_engine, get_db, get_session_factory, init_db
 from djedai.backend.diagnostics import DiagnosticJournal, read_events
@@ -395,6 +397,53 @@ def test_chart_change_reuses_result_after_it_leaves_the_history_window(
     assert messages[-1]["blocks"][0]["chart"]["result_id"] == "r_reused"
 
 
+def test_focus_survives_text_refinements_after_its_message_leaves_window(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Сохранённый фокус загружается, даже когда его сообщение ушло из последних 10."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    saved = ToolResult(
+        result_id="r_kept",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["value"], rows=[[42]]),
+    )
+    with factory() as db:
+        save_tool_result(db, saved, chat_id=chat_id, owner_id="u_chat", persist_data=False)
+
+    first = FakeGraph(
+        [
+            {"execute": {"results": [saved]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="42")]}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=first))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Посчитай 42"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    # Six text-only refinements: no new results, so the original assistant
+    # message with r_kept drops out of the HISTORY_WINDOW.
+    for index in range(6):
+        graph = FakeGraph(
+            [{"compose": {"answer_blocks": [Block(type="text", markdown=f"Уточнение {index}")]}}]
+        )
+        use_runtime(AgentRuntime(graph=graph))
+        response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
+        assert parse_sse(response.text)[-1][0] == "done"
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert state["focus_result_ids"] == ["r_kept"]
+    assert [result.result_id for result in state["history_results"]] == ["r_kept"]
+    assert len(state["messages"]) == 10
+    assert all("42" not in message.content for message in state["messages"])
+
+
 def test_history_loads_result_referenced_by_saved_chart_block(
     chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
 ) -> None:
@@ -691,6 +740,10 @@ def test_sqlite_contention_never_saves_a_late_assistant(
     chat_id = _create_chat(client)
     with factory() as db:
         engine = db.get_bind()
+        chat = db.get(ChatModel, chat_id)
+        chat.summary = "Старое summary"
+        chat.focus_result_ids = ["r_old"]
+        db.commit()
     blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
     locked, finished = threading.Event(), threading.Event()
 
@@ -741,6 +794,9 @@ def test_sqlite_contention_never_saves_a_late_assistant(
                 blocker.rollback()
                 with factory() as db:
                     assert [m.role for m in get_chat_messages(db, chat_id)] == ["user"]
+                    chat = db.get(ChatModel, chat_id)
+                    assert chat.summary == "Старое summary"
+                    assert chat.focus_result_ids == ["r_old"]
                 recorded = read_events(directory)
                 assert recorded[-1]["status"] == "timeout"
                 assert not any(
@@ -1277,6 +1333,215 @@ async def test_stream_network_error_vs_event_error_distinguishable(
             assert "error" not in received_events
 
 
+def test_turn_receives_summary_focus_and_previous_blocks_then_persists_memory(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    started = datetime(2026, 10, 1, tzinfo=UTC)
+
+    with factory() as db:
+        old_result = ToolResult(
+            result_id="r_old",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["value"], rows=[[1]]),
+        )
+        save_tool_result(db, old_result, chat_id=chat_id, owner_id="u_chat", persist_data=False)
+        update_chat_memory(
+            db,
+            chat_id,
+            summary="Старое summary из хранилища",
+            focus_result_ids=["r_old"],
+        )
+        for index in range(11):
+            role = "user" if index % 2 == 0 else "assistant"
+            blocks = None
+            result_ids = None
+            if role == "assistant":
+                if index == 9:
+                    blocks = [{"type": "table", "result_id": "r_old", "columns": ["value"]}]
+                    result_ids = ["r_old"]
+                else:
+                    blocks = [{"type": "text", "markdown": f"Старый ответ {index}"}]
+            save_message(
+                db,
+                message_id=f"m_old_{index}",
+                chat_id=chat_id,
+                role=role,
+                content=f"Старое сообщение {index}",
+                blocks=blocks,
+                result_ids=result_ids,
+                created_at=started + timedelta(minutes=index),
+            )
+
+    new_result = ToolResult(
+        result_id="r_new",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["value"], rows=[[2]]),
+    )
+    graph = FakeGraph(
+        [
+            {"execute": {"results": [new_result]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="Новый ответ")]}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=graph))
+
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Новый вопрос"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert len(state["messages"]) == 10
+    assert state["messages"][-1].content == "Новый вопрос"
+    assert "Старое сообщение 0" in state["history_summary"]
+    assert state["focus_result_ids"] == ["r_old"]
+    assert [result.result_id for result in state["history_results"]] == ["r_old"]
+    assert state["previous_blocks"][0].type == "table"
+    assert state["previous_blocks"][0].result_id == "r_old"
+
+    with factory() as db:
+        chat = db.get(ChatModel, chat_id)
+        assert chat.summary is not None
+        assert "Старое сообщение 0" in chat.summary
+        assert chat.focus_result_ids == ["r_new"]
+
+    restored = client.get(f"/api/chats/{chat_id}").json()
+    assert len(restored["messages"]) == 13
+    assert restored["messages"][-1]["blocks"] == [{"type": "text", "markdown": "Новый ответ"}]
+
+
+def test_foreign_results_cannot_enter_chat_memory_context(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with factory() as db:
+        get_or_create_user(db, "u_other_memory", "other-memory")
+        create_dataset(db, "ds_other_memory", "u_other_memory", "Чужой датасет")
+        create_chat(db, "c_other_memory", "u_other_memory", "ds_other_memory")
+        create_chat(db, "c_sibling_memory", "u_chat", "ds_chat")
+        for result_id, owner_id, target_chat in (
+            ("r_foreign", "u_other_memory", "c_other_memory"),
+            ("r_sibling", "u_chat", "c_sibling_memory"),
+        ):
+            save_tool_result(
+                db,
+                ToolResult(result_id=result_id, status="ok", tool="run_sql"),
+                chat_id=target_chat,
+                owner_id=owner_id,
+                persist_data=False,
+            )
+            save_message(
+                db,
+                message_id=f"m_{result_id}",
+                chat_id=chat_id,
+                role="assistant",
+                content="Чужая ссылка",
+                result_ids=[result_id],
+            )
+        update_chat_memory(
+            db,
+            chat_id,
+            focus_result_ids=["r_foreign", "r_sibling"],
+        )
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Обычный вопрос"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert state["history_results"] == []
+    assert state["focus_result_ids"] == []
+
+
+def test_focus_loader_rejects_results_from_another_chat(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Явная загрузка фокуса не обходит проверки владельца, чата и датасета."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with factory() as db:
+        create_chat(db, "c_focus_sibling", "u_chat", "ds_chat")
+        save_tool_result(
+            db,
+            ToolResult(result_id="r_focus_sibling", status="ok", tool="run_sql"),
+            chat_id="c_focus_sibling",
+            owner_id="u_chat",
+            persist_data=False,
+        )
+        update_chat_memory(db, chat_id, focus_result_ids=["r_focus_sibling"])
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert state["history_results"] == []
+    assert state["focus_result_ids"] == []
+
+
+def test_two_chats_use_independent_summary_and_focus(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    client, factory, use_runtime = chat_api
+    first_chat = _create_chat(client)
+    second_chat = _create_chat(client)
+    with factory() as db:
+        for chat_id, result_id, summary in (
+            (first_chat, "r_first_chat", "Первый чат"),
+            (second_chat, "r_second_chat", "Второй чат"),
+        ):
+            save_tool_result(
+                db,
+                ToolResult(result_id=result_id, status="ok", tool="run_sql"),
+                chat_id=chat_id,
+                owner_id="u_chat",
+                persist_data=False,
+            )
+            save_message(
+                db,
+                message_id=f"m_{result_id}",
+                chat_id=chat_id,
+                role="assistant",
+                content="Сохранённый ответ",
+                result_ids=[result_id],
+            )
+            update_chat_memory(db, chat_id, summary=summary, focus_result_ids=[result_id])
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+
+    assert (
+        client.post(f"/api/chats/{first_chat}/messages", json={"text": "Вопрос 1"}).status_code
+        == 200
+    )
+    assert (
+        client.post(f"/api/chats/{second_chat}/messages", json={"text": "Вопрос 2"}).status_code
+        == 200
+    )
+
+    first_state = graph.calls[0][0]
+    second_state = graph.calls[1][0]
+    assert first_state["chat_id"] == first_chat
+    assert second_state["chat_id"] == second_chat
+    assert "Первый чат" in first_state["history_summary"]
+    assert "Второй чат" in second_state["history_summary"]
+    assert first_state["focus_result_ids"] == ["r_first_chat"]
+    assert second_state["focus_result_ids"] == ["r_second_chat"]
+    assert [result.result_id for result in first_state["history_results"]] == ["r_first_chat"]
+    assert [result.result_id for result in second_state["history_results"]] == ["r_second_chat"]
+
+    with factory() as db:
+        assert db.get(ChatModel, first_chat).focus_result_ids == ["r_first_chat"]
+        assert db.get(ChatModel, second_chat).focus_result_ids == ["r_second_chat"]
+
+
 def test_failed_questions_keep_distinct_durable_outcomes(chat_api):
     client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
@@ -1543,3 +1808,32 @@ def test_stage_persistence_uses_turn_budget_during_short_sqlite_contention(chat_
             stream.close()
     saved = client.get(f"/api/chats/{chat_id}").json()["messages"]
     assert saved[0]["turn"]["status"] == "success"
+
+
+def test_final_plan_focus_does_not_include_superseded_attempts(chat_api) -> None:
+    """Все попытки остаются в истории сообщения, но фокус берётся из графа."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    first = ToolResult(result_id="r_attempt", status="ok", tool="run_sql")
+    final = ToolResult(result_id="r_final", status="ok", tool="run_sql")
+    graph = FakeGraph(
+        [
+            {"execute": {"results": [first, final]}},
+            {
+                "compose": {
+                    "answer_blocks": [Block(type="text", markdown="Итог")],
+                    "focus_result_ids": ["r_final"],
+                }
+            },
+        ]
+    )
+    use_runtime(AgentRuntime(graph=graph))
+
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Покажи иначе"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    with factory() as db:
+        chat = db.get(ChatModel, chat_id)
+        assert chat.focus_result_ids == ["r_final"]
+        saved = get_chat_messages(db, chat_id)
+        assert saved[-1].result_ids == ["r_attempt", "r_final"]

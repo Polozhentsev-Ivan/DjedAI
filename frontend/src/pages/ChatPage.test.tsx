@@ -5,11 +5,13 @@ import type { Schemas } from '@/api/client';
 import { keys } from '@/api/queries';
 import { clearSession } from '@/api/session';
 import { createDb } from '@/mocks/db';
+import { chatFixture, fixtureEvent, fixtureResult, fixtureResultMeta } from '@/test/chatFixture';
 import { renderRoute } from '@/test/renderRoute';
 import { server, useScenario } from '@/test/server';
 
 const api = (path: string) => `http://localhost:3000/api${path}`;
-const answer = 'Выручка стабильно растёт: пик в июле — **3,4 млн ₽**.';
+// The mocked answer's markdown emphasis is rendered, not shown as asterisks.
+const answer = '3,4 млн ₽';
 const question = 'Сколько строк в моём CSV?';
 const encoder = new TextEncoder();
 
@@ -42,6 +44,7 @@ function liveStream() {
   return {
     ready: () => waitFor(() => { expect(stream).toBeDefined(); }),
     emit: (event: string, data: unknown) => { act(() => { stream?.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }); },
+    raw: (bytes: Uint8Array) => { act(() => { stream?.enqueue(bytes); }); },
     close: () => { act(() => { stream?.close(); }); },
     aborted: () => signal?.aborted,
     signal: () => signal,
@@ -59,9 +62,10 @@ describe('CP1 chat integration', () => {
     const { router } = await renderRoute('/chat');
     await ask();
     await waitFor(() => { expect(router.state.location.pathname).toMatch(/^\/chat\/c_/); });
-    expect(await screen.findByText(answer)).toBeInTheDocument();
+    expect(await screen.findByText(answer, { selector: 'strong' })).toBeInTheDocument();
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Остановить' })).not.toBeInTheDocument(); });
-    expect(screen.getAllByText(answer)).toHaveLength(1);
+    expect(screen.getAllByText(answer, { selector: 'strong' })).toHaveLength(1);
+    expect(screen.queryByText(/\*\*/)).not.toBeInTheDocument();
     expect(document.querySelectorAll('[data-role="user"]')).toHaveLength(1);
     expect(document.querySelector('[data-role="user"]')).toHaveTextContent(question);
     expect(calls).toHaveLength(1);
@@ -223,7 +227,7 @@ describe('CP1 chat integration', () => {
     expect(await screen.findByText('Какой период?')).toBeInTheDocument();
     expect(screen.getByText('Год')).toBeInTheDocument();
     expect(screen.getAllByText('Результат расчёта r_rev')).toHaveLength(1);
-    expect(screen.getByRole('link', { name: 'Сохранённый дашборд' })).toHaveAttribute('href', '/dashboards/d_q');
+    expect(screen.getByRole('link', { name: /Сохранённый дашборд/ })).toHaveAttribute('href', '/dashboards/d_q');
   });
 
   it('keeps three identical failed questions distinct after a reload and retries only the selected one', async () => {
@@ -398,5 +402,158 @@ describe('CP1 chat integration', () => {
     expect(screen.getAllByText(question)).toHaveLength(1);
     stream.emit('status', { node: 'understand', text: 'Разбираю второй вопрос…' });
     expect(await screen.findByRole('status')).toHaveTextContent('Разбираю второй вопрос…');
+  });
+});
+
+describe('chat answer blocks', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const resultApi = () => {
+    server.use(
+      http.get(api('/results/r_fixture'), () => HttpResponse.json(fixtureResultMeta)),
+      http.get(api('/results/r_fixture/data'), () => HttpResponse.json(fixtureResult)),
+    );
+  };
+  const savedChat = (blocks: Schemas['Block'][]) => {
+    const saved = createDb().chats[0]!;
+    saved.messages = [{ message_id: 'm_blocks', role: 'assistant', created_at: saved.created_at, blocks }];
+    server.use(http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)));
+    return saved;
+  };
+
+  it('streams every agreed block type from the shared fixture once, with status and done', async () => {
+    resultApi();
+    const stream = liveStream();
+    const saved = createDb().chats[0]!;
+    server.use(http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)));
+    await renderRoute('/chat/c_q1');
+    await ask();
+    await stream.ready();
+    stream.emit('status', fixtureEvent('status'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Считаю выручку…');
+    const [text, ...rest] = chatFixture.blocks;
+    stream.emit('block', text);
+    expect(await screen.findByText('12%', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.queryByText('Какую метрику считать продажами?')).not.toBeInTheDocument();
+    for (const block of rest) stream.emit('block', block);
+    expect(await screen.findByRole('img', { name: /Выручка по месяцам/ })).toBeInTheDocument();
+    expect(await screen.findByRole('table', { name: 'Таблица результата' })).toBeInTheDocument();
+    expect(screen.getByText('Какую метрику считать продажами?')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Сумма заказа' })).toBeDisabled();
+    expect(screen.getByRole('link', { name: /Квартальная статистика/ })).toHaveAttribute('href', '/dashboards/d_fixture');
+    expect(screen.getByRole('button', { name: 'Разбить по регионам' })).toBeDisabled();
+    saved.messages = [
+      { message_id: stream.messageId(), role: 'user', text: question, created_at: saved.created_at },
+      { message_id: 'm_fixture', role: 'assistant', blocks: chatFixture.blocks, result_ids: ['r_fixture'], created_at: saved.created_at },
+    ];
+    stream.emit('done', fixtureEvent('done'));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Сумма заказа' })).toBeEnabled(); });
+    expect(screen.getAllByText('Какую метрику считать продажами?')).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: /Квартальная статистика/ })).toHaveLength(1);
+    expect(screen.getAllByText('Результат расчёта r_fixture')).toHaveLength(1);
+    expect(stream.calls()).toBe(1);
+  });
+
+  it('assembles the fixture stream from network chunks cut inside events and UTF-8 characters', async () => {
+    resultApi();
+    const stream = liveStream();
+    await renderRoute('/chat/c_q1');
+    await ask();
+    await stream.ready();
+    const frame = (event: string, data: unknown) => `event: ${event}\r\ndata: ${JSON.stringify(data)}\r\n\r\n`;
+    const blocks = chatFixture.blocks.filter((block) => block.type === 'text' || block.type === 'clarification' || block.type === 'suggestions');
+    const body = encoder.encode(frame('status', fixtureEvent('status')) + blocks.map((block) => frame('block', block)).join(''));
+    // Odd-sized slices land inside multi-byte Cyrillic characters, field names and CRLF pairs.
+    for (let start = 0; start < body.length; start += 7) stream.raw(body.slice(start, start + 7));
+    expect(await screen.findByText('12%', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByText('Какую метрику считать продажами?')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Сравнить с прошлым годом' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Считаю выручку…');
+  });
+
+  it('sends a clarification option or a suggestion as the next question exactly once', async () => {
+    resultApi();
+    const saved = savedChat(chatFixture.blocks.filter((block) => block.type === 'clarification' || block.type === 'suggestions'));
+    const stream = liveStream();
+    await renderRoute('/chat/c_q1');
+    const option = await screen.findByRole('button', { name: 'Количество заказов' });
+    await waitFor(() => { expect(option).toBeEnabled(); });
+    await userEvent.click(option);
+    await stream.ready();
+    expect(stream.calls()).toBe(1);
+    expect(document.querySelector('[data-role="user"]')).toHaveTextContent('Количество заказов');
+    expect(screen.getByRole('button', { name: 'Разбить по регионам' })).toBeDisabled();
+    saved.messages.push(
+      { message_id: stream.messageId(), role: 'user', text: 'Количество заказов', created_at: saved.created_at },
+      { message_id: 'm_next', role: 'assistant', blocks: [{ type: 'suggestions', items: ['Разбить по регионам'] }], created_at: saved.created_at },
+    );
+    stream.emit('done', { message_id: 'm_next' });
+    // The older answer's buttons stay inactive; only the newest answer takes a click.
+    await waitFor(() => { expect(screen.getAllByRole('button', { name: 'Разбить по регионам' })[1]).toBeEnabled(); });
+    expect(screen.getAllByRole('button', { name: 'Разбить по регионам' })[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Количество заказов' })).toBeDisabled();
+  });
+
+  it('explains an unknown or broken block and still shows the rest of the answer', async () => {
+    savedChat([
+      { type: 'text', markdown: 'Перед незнакомым блоком' },
+      { type: 'heatmap_3d', data: [] } as unknown as Schemas['Block'],
+      { type: 'chart' } as unknown as Schemas['Block'],
+      { type: 'suggestions', items: ['Дальше'] },
+    ]);
+    await renderRoute('/chat/c_q1');
+    expect(await screen.findByText('Перед незнакомым блоком')).toBeInTheDocument();
+    const unsupported = screen.getAllByText('Этот тип ответа пока не поддерживается');
+    expect(unsupported).toHaveLength(2);
+    expect(screen.getByText(/Блок «heatmap_3d»/)).toBeInTheDocument();
+    expect(screen.getByText(/Блок «chart»/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Дальше' })).toBeInTheDocument();
+  });
+
+  it('draws a table block by result_id with its columns and row limit', async () => {
+    resultApi();
+    savedChat([{ type: 'table', result_id: 'r_fixture', columns: ['revenue'], limit: 2 }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    expect(within(table).queryByText('month')).not.toBeInTheDocument();
+    expect(within(table).getByText('revenue')).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')).toHaveLength(3);
+    expect(screen.getByText('Показаны первые 2 из 3 строк.')).toBeInTheDocument();
+  });
+
+  it('keeps the hour of timestamp rows apart in a table block', async () => {
+    server.use(http.get(api('/results/r_hourly/data'), () => HttpResponse.json({
+      columns: ['hour', 'revenue'], rows: [['2026-10-25T09:00:00', 100], ['2026-10-25T10:00:00', 200]], row_count: 2, truncated: false,
+    } satisfies Schemas['ResultData'])));
+    savedChat([{ type: 'table', result_id: 'r_hourly' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    const [, nine, ten] = within(table).getAllByRole('row');
+    expect(nine).toHaveTextContent('25.10.2026 09:00');
+    expect(nine).toHaveTextContent('100');
+    expect(ten).toHaveTextContent('25.10.2026 10:00');
+    expect(ten).toHaveTextContent('200');
+  });
+
+  it('shows ISO dates of a table block in the Russian format', async () => {
+    resultApi();
+    savedChat([{ type: 'table', result_id: 'r_fixture' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    expect(within(table).getByText('01.01.2026')).toBeInTheDocument();
+    expect(screen.getByText('r_fixture · 3 строки')).toBeInTheDocument();
+  });
+
+  it('distinguishes midnight timestamps with different zones in a table block', async () => {
+    server.use(http.get(api('/results/r_zoned/data'), () => HttpResponse.json({
+      columns: ['hour', 'revenue'], rows: [['2026-10-25T00:00:00Z', 100], ['2026-10-25T00:00:00+03:00', 200]], row_count: 2, truncated: false,
+    } satisfies Schemas['ResultData'])));
+    savedChat([{ type: 'table', result_id: 'r_zoned' }]);
+    await renderRoute('/chat/c_q1');
+    const table = await screen.findByRole('table', { name: 'Таблица результата' });
+    const [, utc, moscow] = within(table).getAllByRole('row');
+    expect(utc).toHaveTextContent('25.10.2026 00:00 UTC');
+    expect(utc).toHaveTextContent('100');
+    expect(moscow).toHaveTextContent('25.10.2026 00:00 +03:00');
+    expect(moscow).toHaveTextContent('200');
   });
 });

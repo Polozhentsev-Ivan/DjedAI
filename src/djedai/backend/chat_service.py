@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from djedai.agent.config import get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
+from djedai.agent.memory import HISTORY_WINDOW, HistoryEntry, summarize_history
 from djedai.analytics.metrics import MetricContext
 from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
@@ -188,7 +189,7 @@ def message_to_chat_message(message: MessageModel) -> ChatMessage:
     )
 
 
-def _history_message(message: MessageModel) -> Message:
+def _history_text(message: MessageModel) -> str:
     content = message.content or ""
     if not content and message.blocks:
         content = "\n".join(
@@ -196,8 +197,49 @@ def _history_message(message: MessageModel) -> Message:
             for block in message.blocks
             if isinstance(block, dict) and block.get("type") == "text"
         )
+    return content
+
+
+def _history_message(message: MessageModel) -> Message:
     role = "user" if message.role == "user" else "assistant"
-    return Message(role=role, content=content)
+    return Message(role=role, content=_history_text(message))
+
+
+def _history_entry(message: MessageModel) -> HistoryEntry:
+    blocks = tuple(block for block in (message.blocks or []) if isinstance(block, dict))
+    return HistoryEntry(
+        role=message.role,
+        text=_history_text(message),
+        result_ids=tuple(message.result_ids or []),
+        blocks=blocks,
+    )
+
+
+def _assistant_history_entry(blocks: list[Block], result_ids: list[str]) -> HistoryEntry:
+    """Нормализует ещё не сохранённый ответ для summary в той же транзакции."""
+    return HistoryEntry(
+        role="assistant",
+        result_ids=tuple(result_ids),
+        blocks=tuple(block.model_dump(mode="json") for block in blocks),
+    )
+
+
+def _previous_response_blocks(messages: list[MessageModel]) -> list[Block]:
+    """Блоки последнего ответа ассистента этого же чата."""
+    for message in reversed(messages):
+        if message.role != "assistant" or not message.blocks:
+            continue
+        blocks: list[Block] = []
+        for raw in message.blocks:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                blocks.append(Block.model_validate(raw))
+            except ValidationError:
+                continue
+        if blocks:
+            return blocks
+    return []
 
 
 def _message_result_ids(message: MessageModel) -> list[str]:
@@ -493,12 +535,29 @@ def stream_chat_turn(
         if is_cancelled and is_cancelled():
             return
         budget.check()
-        history_messages = get_chat_messages(db, chat_model.chat_id)[-10:]
+        all_messages = get_chat_messages(db, chat_model.chat_id)
+        history_messages = all_messages[-HISTORY_WINDOW:]
         history = [_history_message(message) for message in history_messages]
         if chosen is not None:
             history = _with_chosen_metric(history, chosen)
         else:
             history = _with_quality_choice(history_messages, history)
+        history_summary = summarize_history([_history_entry(item) for item in all_messages])
+        history_summary = history_summary or chat_model.summary
+        previous_focus = list(chat_model.focus_result_ids or [])
+        previous_blocks = _previous_response_blocks(all_messages[:-1])
+
+        def load_result(result_id: str) -> ToolResult | None:
+            # Explicit provenance checks keep results from another chat/user
+            # out of this chat's context, even if an ID appears in a message.
+            return load_tool_result(
+                db,
+                result_id,
+                storage_dir=runtime.results_storage_dir,
+                owner_id=owner_id,
+                chat_id=chat_model.chat_id,
+                dataset_id=chat_model.dataset_id,
+            )
 
         history_results: list[ToolResult] = []
         seen_result_ids = set()
@@ -507,15 +566,37 @@ def stream_chat_turn(
             for rid in _message_result_ids(msg):
                 if rid not in seen_result_ids:
                     seen_result_ids.add(rid)
-                    res = load_tool_result(db, rid, storage_dir=runtime.results_storage_dir)
+                    res = load_result(rid)
                     if res is not None:
                         history_results.append(res)
+
+        # Focus can outlive the message window: after several text-only
+        # refinements the message that introduced the result drops out of the
+        # last HISTORY_WINDOW messages. Load the saved focus explicitly with
+        # the same provenance checks instead of silently dropping it.
+        for rid in previous_focus:
+            if rid in seen_result_ids:
+                continue
+            seen_result_ids.add(rid)
+            res = load_result(rid)
+            if res is not None:
+                history_results.append(res)
+
+        # A stored focus may outlive a deleted result; never forward an ID that
+        # this chat/owner cannot resolve.
+        loaded_result_ids = {result.result_id for result in history_results}
+        previous_focus = [
+            result_id for result_id in previous_focus if result_id in loaded_result_ids
+        ]
 
         state: dict[str, Any] = {
             "chat_id": chat_model.chat_id,
             "dataset_id": chat_model.dataset_id,
             "messages": history,
+            "history_summary": history_summary,
             "history_results": history_results,
+            "focus_result_ids": previous_focus,
+            "previous_blocks": previous_blocks,
         }
 
         configurable: dict[str, Any] = {"thread_id": chat_model.chat_id, "budget": budget}
@@ -536,6 +617,7 @@ def stream_chat_turn(
         results: list[ToolResult] = []
         seen_results: set[str] = set()
         answer_blocks: list[Block] = []
+        stream_focus: list[str] | None = None
         started = perf_counter()
         previous = started
 
@@ -602,10 +684,14 @@ def stream_chat_turn(
                             )
                         )
 
-                if node in ("compose", "clarify", "verify", "cite_metrics"):
-                    compose_update = data if isinstance(data, dict) else {}
-                    if "answer_blocks" in compose_update:
-                        answer_blocks = compose_update["answer_blocks"] or []
+                if node in ("visualize", "compose", "verify", "clarify", "cite_metrics"):
+                    node_update = data if isinstance(data, dict) else {}
+                    if node in ("visualize", "compose", "clarify") and (
+                        "focus_result_ids" in node_update
+                    ):
+                        stream_focus = list(node_update["focus_result_ids"] or [])
+                    if "answer_blocks" in node_update:
+                        answer_blocks = node_update["answer_blocks"] or []
 
         budget.check()
         error_detail = _agent_error(answer_blocks)
@@ -666,6 +752,21 @@ def stream_chat_turn(
                 + referenced_result_ids
             )
         )
+        # The message keeps the history of every attempt, while the next turn's
+        # focus is the graph's final-plan focus. Never let an earlier successful
+        # attempt of a corrected plan override it.
+        known_result_ids = {
+            result.result_id for result in [*history_results, *results] if result.status == "ok"
+        }
+        if stream_focus is not None:
+            next_focus = [result_id for result_id in stream_focus if result_id in known_result_ids]
+        elif result_ids:
+            next_focus = [result_id for result_id in result_ids if result_id in known_result_ids]
+        else:
+            next_focus = previous_focus
+        history_entries = [_history_entry(item) for item in all_messages]
+        history_entries.append(_assistant_history_entry(answer_blocks, result_ids))
+        next_summary = summarize_history(history_entries) or history_summary
         assistant = AssistantMessage(
             message_id=_new_id("m"),
             chat_id=chat_model.chat_id,
@@ -699,6 +800,8 @@ def stream_chat_turn(
             )
             if proposals
             else None,
+            summary=next_summary,
+            focus_result_ids=next_focus,
         )
         if diagnostics is not None:
             diagnostics.finish("success")

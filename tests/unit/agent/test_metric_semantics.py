@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph, route_after_execute
+from djedai.agent.graph import build_agent_graph, cite_metrics, route_after_execute
 from djedai.analytics.metrics import MetricContext
 from djedai.analytics.registry import execute_tool
 from djedai.contracts.agent import (
@@ -160,6 +160,31 @@ def test_undefined_metric_from_plan_goes_to_clarification_without_replanning(dat
     assert block.type == "clarification"
     assert "«revenue» не определена" in block.markdown
     assert client.generate_typed_response.call_count == 2
+
+
+def test_saved_metric_definition_is_cited_without_another_computation(dataset):
+    connection, catalog = dataset
+    computed = execute_tool(
+        "compute_metric",
+        {"metric_id": "order_total"},
+        connection=connection,
+        allowed_tables={table.table_id for table in catalog.tables},
+        semantics=MetricContext(catalog, {"order_total": CONFIRMED}),
+    )
+    assert computed.status == "ok" and computed.metric.version == 3
+    answer = Block(type="text", markdown="Краткое объяснение прежнего результата.")
+    state = {
+        "plan": [],
+        "results": [],
+        "history_results": [computed],
+        "focus_result_ids": [computed.result_id],
+        "understanding": Understanding(intent="modify_previous"),
+        "answer_blocks": [answer],
+    }
+    text, citation = cite_metrics(state)["answer_blocks"]
+    assert text == answer
+    assert "«Сумма заказов» v3" in citation.markdown
+    assert "RUB" in citation.markdown
 
 
 def test_fanout_sql_is_replanned_to_compute_metric(dataset):

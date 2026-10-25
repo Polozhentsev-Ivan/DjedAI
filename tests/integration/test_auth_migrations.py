@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import delete, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -37,6 +38,12 @@ from djedai.backend.db.session import create_db_engine
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
 PRE_AUTH = "a5c2f58e6aea"
+
+
+def test_migration_chain_has_a_single_head(tmp_path: Path) -> None:
+    """Параллельные ветки миграций не должны давать Multiple head revisions."""
+    cfg = migration_config(f"sqlite:///{(tmp_path / 'heads.db').as_posix()}")
+    assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
 
 
 def migration_config(db_url: str) -> Config:
@@ -64,6 +71,7 @@ def test_migrations_create_schema_and_enforce_constraints(tmp_path: Path) -> Non
             "created_at",
             "updated_at",
         }
+        assert {"summary", "focus_result_ids"} <= {c["name"] for c in schema.get_columns("chats")}
         for table, column in [
             ("sessions", "user_id"),
             ("datasets", "owner_id"),
@@ -142,7 +150,16 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
                 )
             )
             db.commit()
-            create_chat(db, "chat", "legacy", "dataset")
+            db.execute(
+                ChatModel.__table__.insert().values(
+                    chat_id="chat",
+                    owner_id="legacy",
+                    dataset_id="dataset",
+                    title="Новый чат",
+                    summary=None,
+                )
+            )
+            db.commit()
             create_dashboard(db, "dashboard", "legacy", "dataset", "Обзор")
             db.add(ToolResultModel(result_id="result", owner_id="legacy", status="empty"))
             db.commit()
