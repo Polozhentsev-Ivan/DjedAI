@@ -70,6 +70,7 @@ _DATE_ORDER = {
     "%d-%m-%Y": "день-месяц-год",
 }
 
+BOUNDARY_JOIN = "посчитано по всей таблице: сколько строк потерял именно этот JOIN, неизвестно"
 BOUNDARY_PROFILE = "посчитано по всей таблице: сколько из этих значений попало в расчёт, неизвестно"
 
 
@@ -153,7 +154,8 @@ def quality_report(
         _count_populations(lineage, [c for c in columns.values() if _needs_count(c)], connection)
     for column in columns.values():
         if column.counts is None:
-            column.counts = _profile(column, BOUNDARY_PROFILE)
+            only_key = column.usages == {"join_key"}
+            column.counts = _profile(column, BOUNDARY_JOIN if only_key else BOUNDARY_PROFILE)
     _mixed_currency_expressions(columns.values())
     reported = []
     for column in columns.values():
@@ -302,7 +304,8 @@ def _population_sql(
     if len(scopes) != len(lineage.scopes):
         raise ValueError("копия запроса разобрана иначе")
     replaced: set[tuple[int, str]] = set()
-    flags: list[tuple[str, str, str]] = []  # алиас в scope популяции, флаг «было», «не распознано»
+    # алиас в scope популяции, флаги «было» и «не распознано», использование
+    flags: list[tuple[str, str, str, ColumnUse]] = []
     for number, (column, use) in enumerate(batch):
         entry = use.path[-1]
         if (entry.scope, entry.alias) not in replaced:
@@ -321,22 +324,28 @@ def _population_sql(
                 copy=False,
             )
             alias, (present, failed) = outer.alias, names
-        flags.append((alias, present, failed))
+        flags.append((alias, present, failed, use))
 
     counted = scopes[target].expression.copy()
     for clause in _DROP_CLAUSES:
         counted.set(clause, None)
-    condition: exp.Expression = exp.false()
-    if filter_use is not None:
-        condition = _split_filter(counted, filter_use)
     projections = []
-    for alias, present, failed in flags:
+    for alias, present, failed, use in flags:
+        # FILTER агрегата сужает популяцию меры так же, как WHERE (SUM(x) FILTER (WHERE …))
+        restrict = _condition(use.condition) if use.condition else exp.true()
+        dropped_by: exp.Expression = exp.false()
+        if filter_use is not None and use.condition:
+            dropped_by, kept = _split(_conjuncts(_condition(use.condition)), use)
+            restrict = exp.and_(*kept) if kept else exp.true()
+        elif filter_use is not None:
+            dropped_by = _split_where(counted, use)
         p, f = _ref(alias, present), _ref(alias, failed)
+        restrict = _coalesce_false(restrict)
         projections += [
-            _count_if(exp.Not(this=exp.Is(this=p, expression=exp.null()))),
-            _count_if(p),
-            _count_if(f),
-            _count_if(exp.and_(f, exp.Not(this=_coalesce_false(condition)))),
+            _count_if(exp.and_(exp.Not(this=exp.Is(this=p, expression=exp.null())), restrict)),
+            _count_if(exp.and_(p, restrict)),
+            _count_if(exp.and_(f, restrict)),
+            _count_if(exp.and_(f, restrict, exp.Not(this=_coalesce_false(dropped_by)))),
         ]
     counted.set("expressions", projections)
     with_ = tree.args.get("with")
@@ -345,23 +354,38 @@ def _population_sql(
     return counted.sql("duckdb")
 
 
-def _split_filter(select: exp.Select, use: ColumnUse) -> exp.Expression:
+def _split_where(select: exp.Select, use: ColumnUse) -> exp.Expression:
     """Убирает из WHERE условия на колонку и возвращает их: строки, которые они отсекли."""
     where = select.args.get("where")
     if where is None:
         raise ValueError("фильтр не в WHERE")
+    removed, kept = _split(_conjuncts(where.this), use)
+    select.set("where", exp.Where(this=exp.and_(*kept)) if kept else None)
+    return removed
+
+
+def _split(
+    conjuncts: list[exp.Expression], use: ColumnUse
+) -> tuple[exp.Expression, list[exp.Expression]]:
+    """Условия на колонку ``use`` (одним AND) и остальные условия."""
     alias = use.path[0].alias
-    conjuncts = list(where.this.flatten()) if isinstance(where.this, exp.And) else [where.this]
     removed = [
         c
         for c in conjuncts
         if any(col.table == alias and col.name == use.ref for col in c.find_all(exp.Column))
     ]
     if not removed:
-        raise ValueError("фильтр не в WHERE")
+        raise ValueError("условия на колонку фильтра не найдены")
     kept = [c for c in conjuncts if all(c is not r for r in removed)]
-    select.set("where", exp.Where(this=exp.and_(*kept)) if kept else None)
-    return exp.and_(*(c.copy() for c in removed))
+    return exp.and_(*(c.copy() for c in removed)), kept
+
+
+def _conjuncts(condition: exp.Expression) -> list[exp.Expression]:
+    return list(condition.flatten()) if isinstance(condition, exp.And) else [condition]
+
+
+def _condition(sql: str) -> exp.Expression:
+    return exp.condition(sql, dialect="duckdb")
 
 
 def _quality_relation(
@@ -468,6 +492,16 @@ def _issues(column: _Column) -> list[QualityIssue]:
                     f"{counts.boundary}."
                 )
             add("parse_losses", "warning", text + examples)
+        if "join_key" in usages and (profile := _profile(column, BOUNDARY_JOIN)).failed:
+            # строки с нераспознанным ключом не находят пару, но сколько их в этом JOIN,
+            # не посчитать: соединение по такому ключу меняет саму популяцию
+            add(
+                "parse_losses",
+                "warning",
+                f"{name} — ключ JOIN: в таблице {profile.failed} из {profile.non_empty} "
+                f"непустых значений ({_percent(profile.failed, profile.non_empty)}) не "
+                f"распознаны как {target}, строки с ними не находят пару; {BOUNDARY_JOIN}.",
+            )
         for dropped, base in column.dropped:
             if dropped:
                 add(

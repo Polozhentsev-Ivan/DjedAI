@@ -56,6 +56,9 @@ class ColumnUse:
     ref: str  # имя колонки в scope популяции (после переименований в CTE)
     path: tuple[Hop, ...]  # от target до таблицы; последний шаг — алиас таблицы
     boundary: str | None = None  # почему точное число в популяции не посчитать
+    # условие FILTER агрегата в scope популяции (SQL): мера считается только на его строках,
+    # а колонка из самого условия — фильтр (``usage="filter"``)
+    condition: str | None = None
 
 
 @dataclass
@@ -115,16 +118,19 @@ class _Tracer:
             if clause == "order":
                 continue
             aggregate = _aggregate(column, select)
+            condition, in_condition = _aggregate_filter(column, select)
             if clause == "expressions":
                 if passthrough:
                     continue
                 usage: Usage = "measure" if aggregate else _window_usage(column, select)
             else:
                 usage = "measure" if clause == "having" and aggregate else _CLAUSE_USAGE[clause]
+            if in_condition:
+                usage = "filter"
             expression = id(_clause_node(column, select))
             self._resolve(
                 index, scope, column.table, column.name, usage, aggregate, expression,
-                target=index, ref=column.name, path=(), boundary=boundary,
+                target=index, ref=column.name, path=(), boundary=boundary, condition=condition,
             )  # fmt: skip
 
     def _resolve(
@@ -141,6 +147,7 @@ class _Tracer:
         ref: str,
         path: tuple[Hop, ...],
         boundary: str | None,
+        condition: str | None = None,
     ) -> None:
         source = scope.sources.get(alias)
         if source is None:
@@ -181,6 +188,7 @@ class _Tracer:
                     ref,
                     path,
                     boundary,
+                    condition,
                 )
             )
             return
@@ -203,11 +211,14 @@ class _Tracer:
             for branch in branches:
                 select = branch.expression
                 for column in _columns_in(select.expressions[position], select):
+                    branch_condition, in_condition = _aggregate_filter(column, select)
                     self._resolve(
-                        self.index[id(branch)], branch, column.table, column.name, usage,
+                        self.index[id(branch)], branch, column.table, column.name,
+                        "filter" if in_condition else usage,
                         _aggregate(column, select) or aggregate, expression,
                         target=self.index[id(branch)], ref=column.name, path=(),
                         boundary="UNION внутри подзапроса: потери посчитаны по ветке",
+                        condition=branch_condition,
                     )  # fmt: skip
             return
         if not isinstance(inner, exp.Select):
@@ -222,20 +233,24 @@ class _Tracer:
         stops = bool(inner.args.get("group") or inner.args.get("distinct") or _has_aggregate(inner))
         for column in _columns_in(projection, inner):
             inner_aggregate = _aggregate(column, inner)
-            if stops or inner_aggregate:
+            inner_condition, in_condition = _aggregate_filter(column, inner)
+            if stops or inner_aggregate or in_condition:
                 # агрегат, GROUP BY или DISTINCT в подзапросе: популяция — его строки
                 inner_usage: Usage = "measure" if inner_aggregate else "group"
                 if usage == "measure" and not inner_aggregate:
                     inner_usage = "measure"
+                if in_condition:
+                    inner_usage = "filter"
                 self._resolve(
                     inner_index, source, column.table, column.name, inner_usage,
                     inner_aggregate or aggregate, id(projection), target=inner_index,
-                    ref=column.name, path=(), boundary=boundary,
+                    ref=column.name, path=(), boundary=boundary, condition=inner_condition,
                 )  # fmt: skip
             else:
                 self._resolve(
                     inner_index, source, column.table, column.name, usage, aggregate,
                     expression, target=target, ref=ref, path=path, boundary=boundary,
+                    condition=condition,
                 )  # fmt: skip
 
 
@@ -289,6 +304,17 @@ def _aggregate(column: exp.Column, select: exp.Select) -> str | None:
             return node.key
         node = node.parent
     return None
+
+
+def _aggregate_filter(column: exp.Column, select: exp.Select) -> tuple[str | None, bool]:
+    """Условие ``FILTER (WHERE …)`` агрегата вокруг колонки и стоит ли она в самом условии."""
+    node: exp.Expression = column
+    while node.parent is not None and node is not select:
+        parent = node.parent
+        if isinstance(parent, exp.Filter):
+            return parent.expression.this.sql("duckdb"), node is parent.expression
+        node = parent
+    return None, False
 
 
 def _has_aggregate(select: exp.Select) -> bool:

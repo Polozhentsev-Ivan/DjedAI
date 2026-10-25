@@ -186,3 +186,39 @@ def test_unknown_column_gives_partial_lineage_and_table_profile(quality_dataset)
     assert {c.column for c in assessed.quality.columns} == {"amount", "order_date"}
     assert all(c.scope == "table" for c in assessed.quality.columns)
     assert any("неполными" in f.text for f in assessed.facts)
+
+
+def test_join_key_losses_are_reported_with_table_boundary(query, quality_spec):
+    result = query("SELECT COUNT(*) FROM orders o JOIN orders p ON o.order_date = p.order_date")
+    quality = column(result, "order_date")
+    assert quality.usage == ["join_key"]
+    assert (quality.scope, quality.parse_failed) == ("table", len(quality_spec.bad_dates))
+    assert "JOIN" in quality.boundary
+    (issue,) = quality.issues
+    assert (issue.code, issue.severity) == ("parse_losses", "warning")
+    assert any(f.kind == "data_quality" for f in result.facts)
+
+
+@pytest.mark.parametrize(
+    ("condition", "rows", "failed"),
+    [("order_id >= 'o010'", 94, 0), ("region = 'north'", 52, 2)],
+)
+def test_aggregate_filter_limits_the_measure_population(query, condition, rows, failed):
+    filtered = query(f"SELECT SUM(amount) FILTER (WHERE {condition}) FROM orders")
+    where = query(f"SELECT SUM(amount) FROM orders WHERE {condition}")
+    assert filtered.data.rows == where.data.rows
+    if failed:
+        quality = column(filtered, "amount")
+        assert (quality.scope, quality.rows, quality.parse_failed) == ("population", rows, failed)
+        assert column(where, "amount").parse_failed == failed
+    else:
+        assert filtered.quality.columns == where.quality.columns == []
+
+
+def test_aggregate_filter_on_unparsed_dates_reports_dropped_rows(query, quality_spec):
+    result = query(
+        "SELECT COUNT(*) FILTER (WHERE order_date >= DATE '2024-01-01') FROM orders"
+    )
+    quality = column(result, "order_date")
+    assert quality.usage == ["filter"]
+    assert f"{len(quality_spec.bad_dates)} из 103 непустых" in quality.issues[0].message
