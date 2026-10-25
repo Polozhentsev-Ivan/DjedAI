@@ -265,27 +265,41 @@ _QUALITY_OPTION = re.compile(r"^[^\s.:]+\.[^\s:]+: ")  # «таблица.кол
 
 
 def _with_quality_choice(messages: list[MessageModel], history: list[Message]) -> list[Message]:
-    """Ответ кнопкой на уточнение качества данных: исходный вопрос и выбранный вариант.
+    """Ответы кнопками на уточнения качества данных: исходный вопрос и все выборы.
 
+    Расчёт может упереться в несколько неоднозначностей подряд (две даты): каждая кнопка
+    отвечает на своё уточнение, и агенту нужен исходный вопрос вместе со всей цепочкой.
     Вариант называет колонку («таблица.колонка: формат»), и по этой ссылке агент
-    понимает, что ограничение уже решено пользователем.
+    понимает, что ограничение решено пользователем в этом вопросе.
     """
-    if len(messages) < 2 or not history:
+    choices: list[str] = []
+    index = len(messages) - 1
+    while index >= 1 and _quality_choice(messages[index - 1], messages[index]):
+        choices.insert(0, (messages[index].content or "").strip())
+        index -= 2
+    if not choices or len(history) != len(messages):
         return history
-    previous, answer = messages[-2], (messages[-1].content or "").strip()
+    asked = index >= 0 and messages[index].role == "user"
+    question = (messages[index].content or "") if asked else ""  # иначе вышел из окна
+    keep = index if asked else index + 1
+    lines = [question, *(f"Уточнение пользователя: {choice}." for choice in choices)]
+    return [*history[:keep], Message(role="user", content="\n".join(lines).strip())]
+
+
+def _quality_choice(previous: MessageModel, message: MessageModel) -> bool:
+    answer = (message.content or "").strip()
     options = {
         option
         for block in previous.blocks or []
         if isinstance(block, dict) and block.get("type") == "clarification"
         for option in block.get("options") or []
     }
-    if previous.role != "assistant" or answer not in options or not _QUALITY_OPTION.match(answer):
-        return history
-    question = next(
-        (m.content for m in reversed(history[:-1]) if m.role == "user" and m.content), ""
+    return (
+        previous.role == "assistant"
+        and message.role == "user"
+        and answer in options
+        and _QUALITY_OPTION.match(answer) is not None
     )
-    content = f"{question}\nУточнение пользователя: {answer}."
-    return [*history[:-1], Message(role="user", content=content.strip())]
 
 
 def _agent_error(blocks: list[Block]) -> str | None:

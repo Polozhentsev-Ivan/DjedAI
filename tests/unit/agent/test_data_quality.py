@@ -23,6 +23,7 @@ from djedai.contracts.agent import (
 
 SUM = "SELECT SUM(amount) FROM orders"
 BY_DATE = "SELECT d_ambiguous, COUNT(*) FROM edges GROUP BY 1"
+OPTION = "edges.d_ambiguous: день/месяц/год (%d/%m/%Y)"
 
 
 def run(dataset, responses, messages):
@@ -111,3 +112,12 @@ def test_answered_format_lets_the_calculation_through_with_a_note(quality_datase
     assert text.markdown == "12 дат"
     assert "день и месяц не различить" in limits.markdown
     assert "Выбор уточнён пользователем." in limits.markdown
+
+
+def test_choice_from_an_earlier_question_does_not_answer_a_new_one(quality_dataset):
+    earlier = f"Сколько строк по датам?\nУточнение пользователя: {OPTION}."
+    responses = answer(BY_DATE, "не дойдёт")[:2]
+    result, _ = run(quality_dataset, responses, [earlier, "А сколько строк по датам сейчас?"])
+    (block,) = result["answer_blocks"]
+    assert block.type == "clarification"
+    assert "Выбор уточнён" not in (block.markdown or "")

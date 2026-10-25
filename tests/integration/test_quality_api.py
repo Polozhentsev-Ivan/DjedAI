@@ -117,6 +117,7 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
             "SELECT strptime(d_ambiguous, '%d/%m/%Y') AS d, COUNT(*) FROM edges GROUP BY 1",
             "12 дат.",
         ),
+        *_turn("SELECT d_ambiguous, COUNT(*) FROM edges GROUP BY 1", None),
     ]
     with _client(configured) as client:
         upload = client.post("/api/datasets/upload", files=_files())
@@ -162,9 +163,17 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
         last = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
         assert "12 дат." in _markdown(last)
         assert "Выбор уточнён пользователем." in _markdown(last)
-        understand_question = client_model.generate_typed_response.call_args_list[-4].args[1]
+        understand_question = client_model.generate_typed_response.call_args_list[6].args[
+            1
+        ]  # understand третьего хода
         assert understand_question.startswith("Сколько по датам?")
         assert DATE_OPTION in understand_question
+
+        # Выбор действует только на свой вопрос: новый вопрос по той же колонке уточняется.
+        assert "event: done" in client.post(send, json={"text": "А по датам снова?"}).text
+        again = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]["blocks"][0]
+        assert again["type"] == "clarification"
+        assert DATE_OPTION in again["options"]
 
 
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path) -> None:

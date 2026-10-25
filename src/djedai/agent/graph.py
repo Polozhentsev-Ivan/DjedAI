@@ -369,7 +369,13 @@ def _metric_decision(state: AgentState) -> ToolError | None:
 
 
 def _answered(state: AgentState) -> str:
-    return "\n".join(m.content for m in state.get("messages", []) if m.role == "user")
+    """Текущий вопрос: выбор в уточнении действует только на вопрос, в котором сделан.
+
+    Чат сворачивает цепочку «вопрос — кнопки уточнений» в последнее сообщение, поэтому
+    старая кнопка из истории не снимает ограничение нового расчёта.
+    """
+    messages = state.get("messages", [])
+    return messages[-1].content if messages and messages[-1].role == "user" else ""
 
 
 def _quality_blockers(state: AgentState) -> list[QualityIssue]:
