@@ -44,7 +44,7 @@ from djedai.contracts.quality import (
     Usage,
 )
 from djedai.contracts.tool_result import Fact, ToolResult
-from djedai.execution import query_timer
+from djedai.execution import TurnCancelled, TurnTimeout, query_timer
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,15 @@ def assess(
         lineage = trace(parse_read_query(result.sql), catalog)
     except (ValueError, sqlglot.errors.SqlglotError) as error:
         lineage = Lineage(None, unresolved=[f"запрос не разобран: {error}"])
-    report = quality_report(lineage, connection, catalog)
+    try:
+        report = quality_report(lineage, connection, catalog)
+    except (TurnTimeout, TurnCancelled):
+        raise
+    except Exception as error:  # проверка не должна терять результат, но и молчать
+        logger.exception("Проверка качества колонок не выполнена")
+        report = QualityReport(
+            lineage="partial", unresolved=[f"проверка качества не выполнена: {error}"]
+        )
     facts = [*result.facts, *quality_facts(report)]
     return result.model_copy(update={"quality": report, "facts": facts})
 

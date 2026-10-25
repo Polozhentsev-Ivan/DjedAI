@@ -21,6 +21,7 @@ from djedai.agent.config import get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.analytics.metrics import MetricContext
+from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dataset_service import DatasetContext
@@ -410,13 +411,15 @@ def stream_chat_turn(
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                return execute_tool(
+                result = execute_tool(
                     tool,
                     params,
                     connection=connection,
                     allowed_tables=allowed_tables,
                     semantics=semantics,
                 )
+                # Потери типизации в колонках именно этого расчёта (B2-10).
+                return assess(result, connection, context.catalog)
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:
