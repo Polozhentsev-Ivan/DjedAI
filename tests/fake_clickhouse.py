@@ -1,8 +1,9 @@
 """HTTP-сервер, отвечающий на запросы адаптера ClickHouse (#61) данными из DuckDB.
 
 Понимает только то, что отправляет ``djedai.data.clickhouse``: ``getSetting('readonly')``,
-``system.tables``/``system.columns``, ``count()`` и ``SELECT … FORMAT Parquet``. Проверяет
-пароль, режим ``readonly`` пользователя и лимит ``max_result_rows`` — как настоящий сервер.
+``system.settings``/``system.tables``/``system.columns``, ``count()`` и ``SELECT … FORMAT
+Parquet``. Проверяет пароль, режим ``readonly`` и ``max_result_rows`` с
+``result_overflow_mode``: при ``break`` отдаёт часть строк без ошибки, как настоящий сервер.
 Таблицы лежат в схеме DuckDB с именем базы ClickHouse.
 """
 
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -44,6 +46,10 @@ class FakeClickHouse:
         self.readonly = readonly  # профиль пользователя: "0", "1" или "2"
         self.honour_readonly = True  # False — сервер «забывает» readonly из запроса
         self.table_stats = True  # False — total_rows/total_bytes равны NULL, как у VIEW
+        # профиль пользователя на сервере; настройки запроса его переопределяют (кроме readonly=1)
+        self.profile: dict[str, str] = {"result_overflow_mode": "throw", "limit": "0"}
+        self.before_export: Callable[[str], None] | None = None  # вызов перед выгрузкой таблицы
+        self.export_rows: int | None = None  # отдать не больше N строк, сообщая полный count()
         self.calls: list[dict] = []
         self.connection = duckdb.connect()
         self.connection.execute(f'CREATE SCHEMA "{database}"')
@@ -104,6 +110,11 @@ class FakeClickHouse:
         if "getSetting('readonly')" in sql:
             value = params.get("readonly", self.readonly) if self.honour_readonly else "0"
             return 200, f"{value}\n".encode()
+        effective = {**self.profile, **params}
+        if "FROM system.settings" in sql:
+            names = re.findall(r"'([a-z_]+)'", sql)
+            lines = [json.dumps([n, effective[n]]) for n in names if n in effective]
+            return 200, "".join(f"{line}\n" for line in lines).encode()
         if "FROM system.tables" in sql:
             rows = con.execute(
                 "SELECT table_name, estimated_size FROM duckdb_tables() WHERE schema_name = ? "
@@ -127,19 +138,26 @@ class FakeClickHouse:
         source = _FROM.search(sql)
         if source is None or source[1] != self.database:
             return 400, b"Code: 62. DB::Exception: Syntax error"
-        rows = self._count(con, source[2])
-        limit = params.get("max_result_rows")
         if sql.startswith("SELECT count()"):
-            return 200, f"{rows}\n".encode()
+            return 200, f"{self._count(con, source[2])}\n".encode()
         if not sql.endswith(" FORMAT Parquet"):
             return 400, b"Code: 62. DB::Exception: Syntax error"
-        if limit is not None and rows > int(limit):
-            return 500, (
-                f"Code: 396. DB::Exception: Limit for result exceeded, max rows: {limit}. "
-                "(TOO_MANY_ROWS_OR_BYTES)"
-            ).encode()
+        if self.before_export is not None:
+            self.before_export(source[2])
+        rows = self._count(con, source[2])
+        limit = int(effective.get("max_result_rows", "0"))
+        keep = self.export_rows
+        if limit and rows > limit:
+            if effective["result_overflow_mode"] != "break":
+                return 500, (
+                    f"Code: 396. DB::Exception: Limit for result exceeded, max rows: {limit}. "
+                    "(TOO_MANY_ROWS_OR_BYTES)"
+                ).encode()
+            keep = limit if keep is None else min(keep, limit)
         query = sql.removesuffix(" FORMAT Parquet").replace(f"`{self.database}`.", "")
         query = query.replace("`", '"').replace("FROM ", f'FROM "{self.database}".', 1)
+        if keep is not None:
+            query += f" LIMIT {keep}"
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / "out.parquet"
             con.execute(f"COPY ({query}) TO '{target}' (FORMAT parquet)")

@@ -6,9 +6,12 @@
 представление ``<таблица>``, как у PostgreSQL. Дальше работают общий профайлер, поиск
 связей и все инструменты аналитики; SQL агента к ClickHouse не уходит.
 
-Объём ограничен до загрузки: суммарные строки и байты выбранных таблиц сверяются с
-``ClickHouseLimits``, а сервер получает те же лимиты с ``*_overflow_mode=throw`` —
-превышение даёт ошибку, а не усечённую копию под видом полной.
+Объём ограничен дважды: до загрузки суммарные строки и байты выбранных таблиц сверяются
+с ``ClickHouseLimits``, а каждая выгрузка получает от сервера не больше остатка общего
+порога и пересчитывается после загрузки — рост источника между подсчётом и выгрузкой не
+обходит порог. Профиль, при котором сервер может молча усечь ответ (``*_overflow_mode`` не
+``throw``, ``limit``/``offset``), отклоняется, а число загруженных строк сверяется с
+источником: усечённая копия не публикуется под видом полной.
 
 Запись запрещена дважды: каждый запрос идёт с ``readonly=2`` (или под пользователем с
 ``readonly=1``, которому настройки менять нельзя), и после подключения проверяется, что
@@ -72,6 +75,14 @@ _AS_TEXT = re.compile(r"U?Int(?:128|256)|IPv[46]")
 _WRAPPERS = re.compile(r"^(?:Nullable|LowCardinality)\((.*)\)$")
 # серверные лимиты *_overflow_mode=throw: TOO_MANY_ROWS, TOO_MANY_BYTES, TOO_MANY_ROWS_OR_BYTES
 _TOO_LARGE = re.compile(r"\(TOO_MANY_(?:ROWS|BYTES)\w*\)")
+# лимиты, при превышении которых режим break отдаёт часть строк как обычный ответ
+OVERFLOW_LIMITS = (
+    ("result_overflow_mode", ("max_result_rows", "max_result_bytes")),
+    ("read_overflow_mode", ("max_rows_to_read", "max_bytes_to_read")),
+    ("read_overflow_mode_leaf", ("max_rows_to_read_leaf", "max_bytes_to_read_leaf")),
+    ("timeout_overflow_mode", ("max_execution_time",)),
+)
+TRUNCATING_SETTINGS = ("limit", "offset")  # обрезают любой SELECT
 
 
 class ClickHouseError(Exception):
@@ -258,6 +269,13 @@ class ClickHouseSession:  # проверенное подключение и н�
 
 
 @dataclass(frozen=True)
+class MaterializedTable:  # загруженная таблица и её фактический объём
+    view: TypedView
+    rows: int
+    bytes: int
+
+
+@dataclass(frozen=True)
 class ClickHouseReport:  # итог подключения: источник, построенные представления
     source: str
     views: tuple[TypedView, ...]
@@ -274,7 +292,8 @@ def open_session(
     """Подключается и проверяет, что запросы выполняются только на чтение.
 
     Пользователю с ``readonly=1`` сервер не даёт менять настройки: тогда серверных
-    лимитов нет, и объём ограничивают только предварительный подсчёт и размер выгрузки.
+    лимитов нет, объём ограничивают подсчёт до и после выгрузки и её размер, а профиль
+    сервера должен исключать усечение ответа (``check_complete_results``).
     """
     client = parse_dsn(dsn) if isinstance(dsn, str) else dsn
     limits = limits or ClickHouseLimits()
@@ -290,11 +309,51 @@ def open_session(
             "max_rows_to_read": str(limits.max_rows),
             "max_bytes_to_read": str(limits.max_bytes),
             "read_overflow_mode": "throw",
+            "read_overflow_mode_leaf": "throw",
+            "timeout_overflow_mode": "throw",
+            "limit": "0",
+            "offset": "0",
         }
     session = ClickHouseSession(client, settings, limits)
     if session.query("SELECT getSetting('readonly')").strip() not in ("1", "2"):
         raise ClickHouseError("сервер не перевёл запросы в режим только для чтения")
+    check_complete_results(session)
     return session
+
+
+def check_complete_results(session: ClickHouseSession) -> None:
+    """Отклоняет профиль, при котором сервер может вернуть часть строк без ошибки.
+
+    Проверяются действующие настройки запроса (профиль пользователя и настройки сессии):
+    ``limit``/``offset`` должны быть 0, а у каждого заданного лимита — режим ``throw``.
+    """
+    names = [*TRUNCATING_SETTINGS]
+    for mode, limits in OVERFLOW_LIMITS:
+        names += [mode, *limits]
+    listed = ", ".join(_ch_literal(name) for name in names)
+    values = {
+        name: str(value)
+        for name, value in _rows(
+            session.query(
+                f"SELECT name, value FROM system.settings WHERE name IN ({listed}) "
+                "FORMAT JSONCompactEachRow"
+            )
+        )
+    }
+    problems = [
+        f"{name}={values[name]}" for name in TRUNCATING_SETTINGS if values.get(name, "0") != "0"
+    ]
+    for mode, limits in OVERFLOW_LIMITS:
+        limited = [name for name in limits if values.get(name, "0") not in ("0", "0.")]
+        if limited and values.get(mode, "throw") != "throw":
+            problems.append(f"{mode}={values[mode]} при {limited[0]}={values[limited[0]]}")
+    if problems:
+        raise ClickHouseError(
+            "профиль пользователя допускает усечённые ответы ("
+            + ", ".join(problems)
+            + "); задайте *_overflow_mode=throw и limit/offset=0 или подключите пользователя "
+            "с readonly=2"
+        )
 
 
 def list_tables(session: ClickHouseSession) -> list[ClickHouseTable]:
@@ -352,15 +411,7 @@ def measure(session: ClickHouseSession, tables: Sequence[ClickHouseTable]) -> li
     measured = []
     for table in tables:
         if table.rows < 0:
-            source = f"{_ch_ident(session.client.database)}.{_ch_ident(table.name)}"
-            try:
-                rows = int(session.query(f"SELECT count() FROM {source}").strip())
-            except SourceTooLargeError:
-                raise
-            except ClickHouseError as error:
-                raise ClickHouseError(error.reason, table.name) from None
-            except ValueError:
-                raise ClickHouseError("не удалось посчитать строки", table.name) from None
+            rows = _count_rows(session, table)
             table = ClickHouseTable(table.name, rows, max(table.bytes, 0), table.columns)
         measured.append(table)
     return measured
@@ -387,11 +438,20 @@ def materialize_table(
     session: ClickHouseSession,
     table: ClickHouseTable,
     folder: Path,
-) -> TypedView:
+    *,
+    max_rows: int | None = None,
+    max_bytes: int | None = None,
+) -> MaterializedTable:
     """Копирует таблицу в DuckDB и строит над ней представления; запись реестра атомарна.
 
     ``folder`` — каталог датасета для временного Parquet; файл удаляется в любом случае.
+    ``max_rows``/``max_bytes`` — остаток общего порога (по умолчанию весь порог): сервер
+    отдаёт не больше, загруженные строки пересчитываются. Копия, в которой строк меньше,
+    чем в источнике до и после выгрузки, отклоняется как неполная.
     """
+    limits = session.limits
+    max_rows = limits.max_rows if max_rows is None else max_rows
+    max_bytes = limits.max_bytes if max_bytes is None else max_bytes
     database = session.client.database
     relation = f"{database}.{table.name}"
     if not table.columns:
@@ -399,13 +459,22 @@ def materialize_table(
     select = ", ".join(_export(name, data_type) for name, data_type in table.columns)
     source = f"{_ch_ident(database)}.{_ch_ident(table.name)}"
     parquet = folder / f".clickhouse-{slugify(table.name)}.parquet"
+    settings = {**session.settings, **PARQUET_SETTINGS}
+    if session.settings:
+        # Результат — не больше остатка общего порога; лимиты чтения остаются общими, ведь
+        # представление может прочитать больше строк, чем вернёт. 0 у ClickHouse — «без
+        # лимита», поэтому исчерпанный остаток проверяется после загрузки.
+        settings |= {
+            "max_result_rows": str(max(max_rows, 1)),
+            "max_result_bytes": str(max(max_bytes, 1)),
+        }
     try:
-        session.client.download(
+        size = session.client.download(
             f"SELECT {select} FROM {source} FORMAT Parquet",
             parquet,
-            settings={**session.settings, **PARQUET_SETTINGS},
-            max_bytes=session.limits.max_bytes,
-            timeout=session.limits.query_timeout,
+            settings=settings,
+            max_bytes=max(max_bytes, 1),
+            timeout=limits.query_timeout,
         )
         _ensure_tables(connection)
         _ensure_sources(connection)
@@ -417,6 +486,20 @@ def materialize_table(
                 f"CREATE OR REPLACE TABLE {_ident(raw_table)} AS "
                 f"SELECT * FROM read_parquet({_lit(str(parquet))})"
             )
+            rows = connection.execute(f"SELECT count(*) FROM {_ident(raw_table)}").fetchone()[0]
+            if rows > max_rows:
+                raise SourceTooLargeError(
+                    f"источник больше порога загрузки ({limits.max_rows} строк на все "
+                    "таблицы) — уменьшите выбор таблиц"
+                )
+            if rows < table.rows:
+                # источник мог уменьшиться во время выгрузки: решает повторный подсчёт
+                now = _count_rows(session, table)
+                if rows < now:
+                    raise ClickHouseError(
+                        f"выгрузка неполная: получено {rows} строк из {now} — сервер мог "
+                        "усечь ответ; проверьте профиль пользователя и повторите подключение"
+                    )
             columns = connection.execute(
                 "SELECT column_name, data_type FROM duckdb_columns() "
                 "WHERE database_name = current_database() AND table_name = ? "
@@ -457,7 +540,9 @@ def materialize_table(
         raise ClickHouseError(f"не удалось загрузить таблицу ({error})", relation) from None
     finally:
         parquet.unlink(missing_ok=True)
-    return TypedView(raw_table, view_name, tuple(plan.column for plan in plans))
+    return MaterializedTable(
+        TypedView(raw_table, view_name, tuple(plan.column for plan in plans)), rows, size
+    )
 
 
 def connect_clickhouse(
@@ -476,8 +561,15 @@ def connect_clickhouse(
     selected = select_tables(list_tables(session), tables, session.client.database)
     selected = measure(session, selected)
     check_volume(selected, session.limits)
-    views = tuple(materialize_table(connection, session, table, folder) for table in selected)
-    return ClickHouseReport(source=session.client.describe(), views=views)
+    rows, size = session.limits.max_rows, session.limits.max_bytes
+    views = []
+    for table in selected:
+        loaded = materialize_table(
+            connection, session, table, folder, max_rows=rows, max_bytes=size
+        )
+        rows, size = rows - loaded.rows, size - loaded.bytes
+        views.append(loaded.view)
+    return ClickHouseReport(source=session.client.describe(), views=tuple(views))
 
 
 def _export(name: str, data_type: str) -> str:
@@ -514,6 +606,22 @@ def _raw_name(connection: duckdb.DuckDBPyConnection, database: str, table: str) 
     while candidate in taken:
         candidate, number = f"{base}_{number}", number + 1
     return candidate
+
+
+def _count_rows(session: ClickHouseSession, table: ClickHouseTable) -> int:
+    source = f"{_ch_ident(session.client.database)}.{_ch_ident(table.name)}"
+    try:
+        return int(session.query(f"SELECT count() FROM {source}").strip())
+    except SourceTooLargeError:
+        raise
+    except ClickHouseError as error:
+        raise ClickHouseError(error.reason, table.name) from None
+    except ValueError:
+        raise ClickHouseError("не удалось посчитать строки", table.name) from None
+
+
+def _ch_literal(text: str) -> str:
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _ch_ident(name: str) -> str:

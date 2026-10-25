@@ -107,6 +107,31 @@ class TestSession:
         assert session.settings == {}
         assert session.query("SELECT getSetting('readonly')").strip() == "1"
 
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            {"result_overflow_mode": "break", "max_result_rows": "2"},
+            {"read_overflow_mode": "break", "max_rows_to_read": "2"},
+            {"timeout_overflow_mode": "break", "max_execution_time": "1"},
+            {"limit": "3"},
+            {"offset": "1"},
+        ],
+    )
+    def test_profile_that_can_truncate_answers_is_rejected(self, fake, profile):
+        fake.readonly = "1"
+        fake.profile |= profile
+        with pytest.raises(ClickHouseError, match="допускает усечённые ответы"):
+            open_session(fake.url)
+
+    def test_break_with_no_limit_and_overridden_profile_are_accepted(self, fake):
+        fake.readonly = "1"
+        fake.profile |= {"result_overflow_mode": "break", "max_result_rows": "0"}
+        open_session(fake.url)
+        # readonly=2 переопределяет профиль сервера настройками сессии
+        fake.readonly = "2"
+        fake.profile |= {"result_overflow_mode": "break", "max_result_rows": "2", "limit": "3"}
+        assert open_session(fake.url).settings["limit"] == "0"
+
     def test_server_ignoring_read_only_is_rejected(self, fake):
         fake.readonly, fake.honour_readonly = "0", False
         with pytest.raises(ClickHouseError, match="только для чтения"):
@@ -193,6 +218,59 @@ class TestMaterialize:
             materialize_table(connection, session, sales, tmp_path)
             assert not connection.execute("SELECT * FROM duckdb_tables()").fetchall()
         assert not list(tmp_path.glob("*.parquet"))
+
+    @pytest.mark.parametrize("readonly", ["2", "1"])
+    def test_total_limit_counts_rows_that_appeared_after_the_precheck(
+        self, fake, tmp_path, readonly
+    ):
+        # ревью #61: 2 + 2 строки проходят порог 5, к выгрузке обе таблицы вырастают до 4
+        fake.readonly = readonly
+        for name in ("a", "b"):
+            fake.add_table(name, "SELECT * FROM range(2) AS t(n)")
+
+        def grow(table):
+            fake.connection.cursor().execute(
+                f'INSERT INTO "djedai_demo"."{table}" SELECT * FROM "djedai_demo"."{table}"'
+            )
+
+        fake.before_export = grow
+        with (
+            duckdb.connect() as connection,
+            pytest.raises(SourceTooLargeError, match="порога загрузки"),
+        ):
+            connect_clickhouse(connection, fake.url, ["a", "b"], tmp_path, ClickHouseLimits(5))
+        assert not list(tmp_path.glob("*.parquet"))
+
+    def test_rows_loaded_by_earlier_tables_reduce_the_server_limit(self, fake, tmp_path):
+        with duckdb.connect() as connection:
+            connect_clickhouse(
+                connection, fake.url, ["stores", "products"], tmp_path, ClickHouseLimits(60)
+            )
+        exports = [call for call in fake.calls if call["sql"].endswith("FORMAT Parquet")]
+        assert [call["params"]["max_result_rows"] for call in exports] == ["60", "50"]
+
+    def test_short_export_is_not_published_as_a_complete_table(self, fake, tmp_path):
+        # ревью #61: сервер сообщает 4376 строк, но без ошибки отдаёт Parquet с частью
+        fake.readonly = "1"
+        fake.export_rows = 2
+        with duckdb.connect() as connection:
+            with pytest.raises(
+                ClickHouseError, match="выгрузка неполная: получено 2 строк из 4376"
+            ):
+                connect_clickhouse(connection, fake.url, ["sales"], tmp_path)
+            assert connection.execute(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 'ch_%'"
+            ).fetchone() == (0,)
+        assert not list(tmp_path.glob("*.parquet"))
+
+    def test_source_that_shrinks_during_export_is_accepted(self, fake, tmp_path):
+        fake.before_export = lambda table: fake.connection.cursor().execute(
+            f'DELETE FROM "djedai_demo"."{table}" WHERE store_id > (SELECT min(store_id) '
+            f'FROM "djedai_demo"."{table}")'
+        )
+        with duckdb.connect() as connection:
+            connect_clickhouse(connection, fake.url, ["stores"], tmp_path)
+            assert connection.execute("SELECT count(*) FROM stores").fetchone() == (1,)
 
     def test_download_size_cap_removes_partial_file(self, fake, tmp_path):
         target = tmp_path / "out.parquet"
