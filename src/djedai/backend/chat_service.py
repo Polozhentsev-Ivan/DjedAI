@@ -449,6 +449,18 @@ def stream_chat_turn(
         previous_focus = list(chat_model.focus_result_ids or [])
         previous_blocks = _previous_response_blocks(all_messages[:-1])
 
+        def load_result(result_id: str) -> ToolResult | None:
+            # Explicit provenance checks keep results from another chat/user
+            # out of this chat's context, even if an ID appears in a message.
+            return load_tool_result(
+                db,
+                result_id,
+                storage_dir=runtime.results_storage_dir,
+                owner_id=owner_id,
+                chat_id=chat_model.chat_id,
+                dataset_id=chat_model.dataset_id,
+            )
+
         history_results: list[ToolResult] = []
         seen_result_ids = set()
 
@@ -456,18 +468,21 @@ def stream_chat_turn(
             for rid in _message_result_ids(msg):
                 if rid not in seen_result_ids:
                     seen_result_ids.add(rid)
-                    # Explicit provenance checks keep results from another chat/user
-                    # out of this chat's context, even if an ID appears in a message.
-                    res = load_tool_result(
-                        db,
-                        rid,
-                        storage_dir=runtime.results_storage_dir,
-                        owner_id=owner_id,
-                        chat_id=chat_model.chat_id,
-                        dataset_id=chat_model.dataset_id,
-                    )
+                    res = load_result(rid)
                     if res is not None:
                         history_results.append(res)
+
+        # Focus can outlive the message window: after several text-only
+        # refinements the message that introduced the result drops out of the
+        # last HISTORY_WINDOW messages. Load the saved focus explicitly with
+        # the same provenance checks instead of silently dropping it.
+        for rid in previous_focus:
+            if rid in seen_result_ids:
+                continue
+            seen_result_ids.add(rid)
+            res = load_result(rid)
+            if res is not None:
+                history_results.append(res)
 
         # A stored focus may outlive a deleted result; never forward an ID that
         # this chat/owner cannot resolve.

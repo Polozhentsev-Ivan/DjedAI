@@ -397,6 +397,53 @@ def test_chart_change_reuses_result_after_it_leaves_the_history_window(
     assert messages[-1]["blocks"][0]["chart"]["result_id"] == "r_reused"
 
 
+def test_focus_survives_text_refinements_after_its_message_leaves_window(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Сохранённый фокус загружается, даже когда его сообщение ушло из последних 10."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    saved = ToolResult(
+        result_id="r_kept",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["value"], rows=[[42]]),
+    )
+    with factory() as db:
+        save_tool_result(db, saved, chat_id=chat_id, owner_id="u_chat", persist_data=False)
+
+    first = FakeGraph(
+        [
+            {"execute": {"results": [saved]}},
+            {"compose": {"answer_blocks": [Block(type="text", markdown="42")]}},
+        ]
+    )
+    use_runtime(AgentRuntime(graph=first))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Посчитай 42"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    # Six text-only refinements: no new results, so the original assistant
+    # message with r_kept drops out of the HISTORY_WINDOW.
+    for index in range(6):
+        graph = FakeGraph(
+            [{"compose": {"answer_blocks": [Block(type="text", markdown=f"Уточнение {index}")]}}]
+        )
+        use_runtime(AgentRuntime(graph=graph))
+        response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
+        assert parse_sse(response.text)[-1][0] == "done"
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert state["focus_result_ids"] == ["r_kept"]
+    assert [result.result_id for result in state["history_results"]] == ["r_kept"]
+    assert len(state["messages"]) == 10
+    assert all("42" not in message.content for message in state["messages"])
+
+
 def test_history_loads_result_referenced_by_saved_chart_block(
     chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
 ) -> None:
@@ -1398,6 +1445,34 @@ def test_foreign_results_cannot_enter_chat_memory_context(
     use_runtime(AgentRuntime(graph=graph))
 
     response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Обычный вопрос"})
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    state = graph.calls[0][0]
+    assert state["history_results"] == []
+    assert state["focus_result_ids"] == []
+
+
+def test_focus_loader_rejects_results_from_another_chat(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    """Явная загрузка фокуса не обходит проверки владельца, чата и датасета."""
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    with factory() as db:
+        create_chat(db, "c_focus_sibling", "u_chat", "ds_chat")
+        save_tool_result(
+            db,
+            ToolResult(result_id="r_focus_sibling", status="ok", tool="run_sql"),
+            chat_id="c_focus_sibling",
+            owner_id="u_chat",
+            persist_data=False,
+        )
+        update_chat_memory(db, chat_id, focus_result_ids=["r_focus_sibling"])
+
+    graph = FakeGraph([{"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}])
+    use_runtime(AgentRuntime(graph=graph))
+
+    response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Продолжай"})
     assert parse_sse(response.text)[-1][0] == "done"
 
     state = graph.calls[0][0]

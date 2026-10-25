@@ -260,6 +260,11 @@ def chart_source_results(state: AgentState) -> list[ToolResult]:
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
 
 
+def chart_result_ids(charts: list[ChartSpec]) -> list[str]:
+    """Возвращает result_id, на которые ссылаются построенные графики."""
+    return list(dict.fromkeys(chart.result_id for chart in charts if chart.result_id))
+
+
 def chart_block_result_ids(blocks: list[Block]) -> list[str]:
     """Возвращает результат_id, на которые ссылаются блоки-графики ответа."""
     result_ids = []
@@ -287,23 +292,28 @@ def answer_results(state: AgentState) -> list[ToolResult]:
         result.result_id: result
         for result in state.get("history_results", []) + state.get("results", [])
     }
+    referenced = [
+        *chart_result_ids(state.get("charts", [])),
+        *chart_block_result_ids(state.get("answer_blocks", [])),
+    ]
+    chart_results = [
+        saved[result_id]
+        for result_id in dict.fromkeys(referenced)
+        if result_id in saved and saved[result_id].status == "ok"
+    ]
+    if chart_results:
+        return chart_results
+
+    # Смена представления без нового плана: объясняем сохранённые результаты
+    # вместо того, чтобы терять факты текущего (пустого) шага.
+    if state.get("plan"):
+        return []
     understanding = state.get("understanding")
     references = understanding.references if understanding else []
-
-    candidate_groups = [
-        references,
-        state.get("focus_result_ids", []),
-        chart_block_result_ids(state.get("answer_blocks", [])),
-    ]
-    for candidate_ids in candidate_groups:
-        matched = [
-            saved[result_id]
-            for result_id in candidate_ids
-            if result_id in saved and saved[result_id].status == "ok"
-        ]
-        if matched:
-            return matched
-    return []
+    if references:
+        return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+    history_results = state.get("history_results", [])
+    return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
 
 
 def updated_focus_result_ids(state: AgentState) -> list[str]:
@@ -381,17 +391,32 @@ def _values_are_numeric(rows: list[list[object]], index: int) -> bool | None:
     return decided
 
 
+def _is_numeric_type(column_type: str | None) -> bool:
+    """Совместим ли объявленный тип колонки с числовой осью."""
+    if not column_type:
+        return True  # If unknown, allow to avoid false positives
+    return any(numeric_type in str(column_type).upper() for numeric_type in NUMERIC_TYPES)
+
+
+def _column_is_numeric(rows: list[list[object]], index: int, column_type: str | None) -> bool:
+    """Числовая ли колонка: по объявленному типу, иначе по значениям строк."""
+    if column_type:
+        return _is_numeric_type(column_type)
+    # Инструменты могут возвращать только имена колонок, поэтому тип
+    # восстанавливаем по значениям.
+    return _values_are_numeric(rows, index) is not False
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
-    """Оставляет только графики, ссылающиеся на реальные сохранённые результаты и поля."""
+    """Оставляет только графики, совместимые с сохранённым результатом.
+
+    Проверяются и ссылка на результат, и все поля спецификации (X, Y, цвет,
+    сортировка), и типы: значения Y всегда числовые, а ось X числовая там, где
+    её так читает рендерер (scatter и `x.kind = "number"`).
+    """
     result_map = {r.result_id: r for r in results}
     sanitized = []
     seen_ids: set[str] = set()
-
-    def is_numeric_type(t: str | None) -> bool:
-        if not t:
-            return True  # If unknown, allow to avoid false positives
-        t_upper = str(t).upper()
-        return any(nt in t_upper for nt in NUMERIC_TYPES)
 
     for chart in charts:
         res = result_map.get(chart.result_id)
@@ -406,9 +431,17 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
 
         is_valid = True
 
-        # Проверка оси X
-        if chart.x and chart.x.field not in columns:
-            is_valid = False
+        # Проверка оси X (наличие и совместимость типа)
+        if chart.x:
+            column = columns.get(chart.x.field)
+            if column is None:
+                is_valid = False
+            else:
+                # Строковые категории нельзя откладывать по числовой оси:
+                # рендерер отклоняет такие спецификации (scatter и x.kind=number).
+                x_requires_numbers = chart.type == "scatter" or chart.x.kind == "number"
+                if x_requires_numbers and not _column_is_numeric(res.data.rows, *column):
+                    is_valid = False
 
         # Проверка осей Y (наличие и числовой тип)
         for y_measure in chart.y:
@@ -416,15 +449,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
             if column is None:
                 is_valid = False
                 continue
-            index, column_type = column
-            if column_type:
-                measure_is_numeric = is_numeric_type(column_type)
-            else:
-                # Инструменты возвращают только имена колонок, поэтому тип
-                # восстанавливаем по значениям: строковые категории нельзя
-                # откладывать по числовой оси.
-                measure_is_numeric = _values_are_numeric(res.data.rows, index) is not False
-            if not measure_is_numeric:
+            if not _column_is_numeric(res.data.rows, *column):
                 is_valid = False
 
         # Проверка color и sort
