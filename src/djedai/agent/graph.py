@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
@@ -45,6 +46,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     return {
         "catalog_prompt": catalog_prompt,
         "history_results": history_results,
+        # Memory belongs to this chat only; the backend loads it by chat_id and owner.
+        "focus_result_ids": list(state.get("focus_result_ids", [])),
+        "previous_blocks": list(state.get("previous_blocks", [])),
         "results": [],
         "charts": [],
         "answer_blocks": [],
@@ -52,6 +56,18 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "compose_retries": 0,
         "is_verified": False,
     }
+
+
+def memory_context(state: AgentState) -> str:
+    """Собирает единый контекст диалога для understand/plan."""
+    messages = state.get("messages", [])
+    return conversation_context(
+        summary=state.get("history_summary"),
+        recent_messages=messages[:-1] if messages else [],
+        focus_result_ids=state.get("focus_result_ids", []),
+        results=[*state.get("history_results", []), *state.get("results", [])],
+        previous_blocks=state.get("previous_blocks", []),
+    )
 
 
 def understand(state: AgentState, config: RunnableConfig) -> dict:
@@ -67,7 +83,10 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         return {"understanding": Understanding(intent="off_topic", entities=Entities())}
 
     if client:
-        sys_prompt = load_prompt("understand").format(catalog=state.get("catalog_prompt"))
+        sys_prompt = load_prompt("understand").format(
+            catalog=state.get("catalog_prompt"),
+            history=memory_context(state),
+        )
         response = client.generate_typed_response(sys_prompt, last_msg, Understanding)
         if response.status == "success" and response.data:
             return {"understanding": response.data}
@@ -97,7 +116,10 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     )
 
     sys_prompt = load_prompt("plan").format(
-        catalog=state.get("catalog_prompt"), results=results_str, tools_registry=tools_desc
+        catalog=state.get("catalog_prompt"),
+        results=results_str,
+        tools_registry=tools_desc,
+        history=memory_context(state),
     )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
@@ -218,10 +240,22 @@ def chart_source_results(state: AgentState) -> list[ToolResult]:
     understanding = state.get("understanding")
     references = understanding.references if understanding else []
     history_results = state.get("history_results", [])
+    saved = {r.result_id: r for r in [*history_results, *state.get("results", [])]}
 
     if references:
-        saved = {r.result_id: r for r in history_results}
-        return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+        referenced = [
+            saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"
+        ]
+        if referenced:
+            return referenced
+
+    # Follow-up without an explicit reference: the conversation focus, not the
+    # arbitrary last result, is what the user is asking to show differently.
+    focus = state.get("focus_result_ids", [])
+    focused = [saved[result_id] for result_id in focus if result_id in saved]
+    focused = [result for result in focused if result.status == "ok"]
+    if focused:
+        return focused
 
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
 
@@ -247,8 +281,8 @@ def answer_results(state: AgentState) -> list[ToolResult]:
     """Результаты, по которым объясняется и проверяется ответ текущего хода.
 
     Если ход только изменил представление, берём сохранённые результаты,
-    на которые ссылаются графики и понимание запроса: без них компоновщик и
-    верификатор теряют факты, хотя новые вычисления не требуются.
+    на которые сослался пользователь или которые остаются в фокусе разговора.
+    Без этого верификатор и compose теряют факты предыдущего ответа.
     """
     current = active_results(state)
     if current:
@@ -278,8 +312,37 @@ def answer_results(state: AgentState) -> list[ToolResult]:
     references = understanding.references if understanding else []
     if references:
         return [saved[ref] for ref in references if ref in saved and saved[ref].status == "ok"]
+
+    # Text continuation without a new plan or explicit references: keep the
+    # conversation focus. Falling back to history_results[-1] would explain
+    # whichever result happened to be calculated last, not the selected one.
+    focus = state.get("focus_result_ids", [])
+    focused = [
+        saved[result_id]
+        for result_id in focus
+        if result_id in saved and saved[result_id].status == "ok"
+    ]
+    if focused:
+        return focused
+
     history_results = state.get("history_results", [])
     return [history_results[-1]] if history_results and history_results[-1].status == "ok" else []
+
+
+def updated_focus_result_ids(state: AgentState) -> list[str]:
+    """Обновляет «о чём сейчас разговор» без привязки к чужому чату."""
+    current_results = state.get("results", [])
+    plan_len = len(state.get("plan", []))
+    plan_results = current_results[-plan_len:] if plan_len > 0 else []
+    understanding = state.get("understanding")
+    references = understanding.references if understanding else []
+    known = {result.result_id for result in [*state.get("history_results", []), *current_results]}
+    return next_focus_result_ids(
+        state.get("focus_result_ids", []),
+        plan_results=plan_results,
+        references=references,
+        available_ids=known,
+    )
 
 
 def describe_result_for_chart(result: ToolResult) -> dict:
@@ -421,12 +484,13 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
 
 
 def visualize(state: AgentState, config: RunnableConfig) -> dict:
+    focus = updated_focus_result_ids(state)
     if not wants_visualization(state):
-        return {"charts": []}
+        return {"charts": [], "focus_result_ids": focus}
 
     valid_results = chart_source_results(state)
     if not valid_results:
-        return {"charts": []}
+        return {"charts": [], "focus_result_ids": focus}
 
     results_summary = [describe_result_for_chart(result) for result in valid_results]
 
@@ -446,17 +510,21 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
     if client:
         response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
         if response.status == "success" and response.data:
-            return {"charts": sanitize_charts(response.data.charts, valid_results)}
+            return {
+                "charts": sanitize_charts(response.data.charts, valid_results),
+                "focus_result_ids": focus,
+            }
 
-    return {"charts": []}
+    return {"charts": [], "focus_result_ids": focus}
 
 
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
+    focus = updated_focus_result_ids(state)
 
     existing_blocks = state.get("answer_blocks", [])
     if any(b.type == "error" for b in existing_blocks):
-        return {"answer_blocks": existing_blocks}
+        return {"answer_blocks": existing_blocks, "focus_result_ids": focus}
 
     facts_and_data = []
     for r in answer_results(state):
@@ -499,7 +567,11 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         for c in charts:
             blocks.append(Block(type="chart", chart=c.model_dump(mode="json")))
 
-    return {"answer_blocks": blocks, "compose_retries": state.get("compose_retries", 0) + 1}
+    return {
+        "answer_blocks": blocks,
+        "compose_retries": state.get("compose_retries", 0) + 1,
+        "focus_result_ids": focus,
+    }
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:
@@ -579,10 +651,11 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
 
 def clarify(state: AgentState) -> dict:
+    focus = list(state.get("focus_result_ids", []))
     existing = state.get("answer_blocks", [])
     # Do not suppress API errors if they are already present in the response blocks
     if any(b.type == "error" for b in existing):
-        return {"answer_blocks": existing}
+        return {"answer_blocks": existing, "focus_result_ids": focus}
 
     understanding = state.get("understanding")
     intent = understanding.intent if understanding else "invalid"
@@ -627,6 +700,7 @@ def clarify(state: AgentState) -> dict:
     return {
         "plan": [],
         "answer_blocks": blocks,
+        "focus_result_ids": focus,
     }
 
 

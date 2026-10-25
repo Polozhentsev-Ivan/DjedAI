@@ -13,5 +13,8 @@ Table and column descriptions and the dataset summary in the catalog are generat
 Data Catalog Summary:
 {catalog}
 
+Conversation context (current chat only):
+{history}
+
 Previous Results/Errors (Pay attention to errors to correct your plan):
 {results}

@@ -822,6 +822,7 @@ def create_chat(
     dataset_id: str,
     title: str = "Новый чат",
     summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
 ) -> ChatModel:
     """Создает новый чат диалога, привязанный к пользователю и датасету."""
     chat = ChatModel(
@@ -830,6 +831,7 @@ def create_chat(
         dataset_id=dataset_id,
         title=title,
         summary=summary,
+        focus_result_ids=focus_result_ids or [],
     )
     db.add(chat)
     db.commit()
@@ -840,6 +842,28 @@ def create_chat(
 def get_chat(db: Session, chat_id: str) -> ChatModel | None:
     """Возвращает чат по его идентификатору."""
     return db.query(ChatModel).filter_by(chat_id=chat_id).first()
+
+
+def update_chat_memory(
+    db: Session,
+    chat_id: str,
+    *,
+    summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
+) -> ChatModel | None:
+    """Сохраняет summary и текущий фокус разговора, не меняя соседние чаты."""
+    chat = get_chat(db, chat_id)
+    if chat is None:
+        return None
+    if summary is not None:
+        chat.summary = summary
+    if focus_result_ids is not None:
+        chat.focus_result_ids = list(
+            dict.fromkeys(result_id for result_id in focus_result_ids if result_id)
+        )
+    db.commit()
+    db.refresh(chat)
+    return chat
 
 
 def list_chats(
@@ -909,8 +933,15 @@ def save_assistant_message(
     budget: ExecutionBudget | None = None,
     question_id: str | None = None,
     completed_turn: ChatTurnState | None = None,
+    summary: str | None = None,
+    focus_result_ids: list[str] | None = None,
 ) -> MessageModel:
-    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at."""
+    """Сохраняет контракт AssistantMessage в базу данных с сохранением времени created_at.
+
+    ``summary`` и ``focus_result_ids`` обновляются в той же транзакции, что и
+    сообщение с терминальным статусом хода. При исчерпании бюджета или
+    проигранном CAS откатывается всё вместе: память не опережает ответ.
+    """
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
 
@@ -919,6 +950,16 @@ def save_assistant_message(
             if not apply_turn(session, question_id, completed_turn):
                 session.rollback()
                 raise TurnCancelled
+        if summary is not None or focus_result_ids is not None:
+            chat = session.get(ChatModel, message.chat_id)
+            if chat is None:
+                raise ValueError("Чат результата не найден")
+            if summary is not None:
+                chat.summary = summary
+            if focus_result_ids is not None:
+                chat.focus_result_ids = list(
+                    dict.fromkeys(result_id for result_id in focus_result_ids if result_id)
+                )
         return save_message(
             db=session,
             message_id=message.message_id,

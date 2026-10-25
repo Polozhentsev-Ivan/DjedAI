@@ -73,6 +73,9 @@ class AgentState(TypedDict, total=False):
     # without recalculating and without polluting the current turn's facts.
     history_results: list[ToolResult]
     focus_result_ids: list[str]
+    # Blocks of the latest assistant response: "the second point" resolves to a
+    # specific table/chart without recalculating the data behind it.
+    previous_blocks: list[Block]
     charts: list[ChartSpec]
     answer_blocks: list[Block]
     retries: int
