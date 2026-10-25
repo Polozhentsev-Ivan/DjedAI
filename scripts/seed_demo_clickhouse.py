@@ -4,27 +4,25 @@
 в Parquet и отправляются в HTTP-интерфейс ClickHouse как ``INSERT … FORMAT Parquet``.
 Типы колонок переводятся из DuckDB в ClickHouse; повторный запуск пересоздаёт таблицы.
 Подключение — под ``djedai_loader`` из ``infra/clickhouse/roles.sql``, чтение в DjedAI — под
-``djedai_reader``. Клиентская библиотека не нужна: адаптер ClickHouse (#61) не требуется.
+``djedai_reader``. HTTP-клиент общий с адаптером ClickHouse (``djedai.data.clickhouse``).
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import os
 import re
 import sys
 import tempfile
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
 from demo_dataset import DATA_DIR, DATABASE, load_typed_dataset
 
+from djedai.data.clickhouse import ClickHouseError, ClickHouseHttp
 from djedai.data.typed_views import _ident, _lit
+
+__all__ = ["ClickHouseError", "ClickHouseHttp", "seed"]
 
 TIMEOUT = 60
 # типы typed views → ClickHouse; DECIMAL(p,s) разбирается отдельно
@@ -38,66 +36,6 @@ CH_TYPES = {
     "BOOLEAN": "Bool",
 }
 _DECIMAL = re.compile(r"DECIMAL\((\d+),\s*(\d+)\)")
-
-
-class ClickHouseError(RuntimeError):
-    """Ошибка ClickHouse или подключения; текст не содержит пароля."""
-
-
-@dataclass(frozen=True)
-class ClickHouseHttp:  # HTTP-интерфейс ClickHouse; пароль не попадает в repr и URL запроса
-    host: str
-    port: int
-    user: str
-    password: str = field(repr=False)
-    database: str = DATABASE
-    secure: bool = False
-
-    @classmethod
-    def from_url(cls, url: str) -> ClickHouseHttp:
-        """Разбирает ``http://user:password@host:8123[/database]``; спецсимволы пароля — %XX."""
-        parts = urllib.parse.urlsplit(url.strip())
-        if parts.scheme not in ("http", "https"):
-            raise ClickHouseError("адрес ClickHouse должен начинаться с http:// или https://")
-        if not parts.username or not parts.password:
-            raise ClickHouseError("в адресе ClickHouse нужны пользователь и пароль")
-        return cls(
-            host=parts.hostname or "localhost",
-            port=parts.port or (8443 if parts.scheme == "https" else 8123),
-            user=urllib.parse.unquote(parts.username),
-            password=urllib.parse.unquote(parts.password),
-            database=parts.path.strip("/") or DATABASE,
-            secure=parts.scheme == "https",
-        )
-
-    def describe(self) -> str:
-        """Адрес без пароля: ``user@host:port/database``."""
-        return f"{self.user}@{self.host}:{self.port}/{self.database}"
-
-    def query(self, sql: str, data: bytes | None = None) -> str:
-        """Выполняет ``sql``; при ``data`` запрос идёт в URL, а тело — входные данные."""
-        params = {"database": self.database}
-        if data is not None:
-            params["query"] = sql
-        scheme = "https" if self.secure else "http"
-        url = f"{scheme}://{self.host}:{self.port}/?{urllib.parse.urlencode(params)}"
-        token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
-        request = urllib.request.Request(
-            url,
-            data=sql.encode() if data is None else data,
-            headers={"Authorization": f"Basic {token}"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-                return response.read().decode()
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace").strip()
-            raise ClickHouseError(f"ClickHouse {self.describe()}: {detail}") from None
-        except (urllib.error.URLError, OSError) as error:
-            reason = getattr(error, "reason", error)
-            message = f"не удалось подключиться к {self.describe()}: {reason}"
-            raise ClickHouseError(message) from None
 
 
 def ch_ident(name: str) -> str:
@@ -142,7 +80,11 @@ def seed(client: ClickHouseHttp, data_dir: Path) -> dict[str, int]:
                 target = f"{ch_ident(client.database)}.{ch_ident(view)}"
                 client.query(f"DROP TABLE IF EXISTS {target}")
                 client.query(create_table_sql(client.database, view, columns))
-                client.query(f"INSERT INTO {target} FORMAT Parquet", data=parquet.read_bytes())
+                client.query(
+                    f"INSERT INTO {target} FORMAT Parquet",
+                    data=parquet.read_bytes(),
+                    timeout=TIMEOUT,
+                )
                 counts[view] = int(client.query(f"SELECT count() FROM {target}"))
         return counts
     finally:
@@ -161,7 +103,7 @@ def main() -> None:
     if not args.url:
         parser.error("укажите --url или DJEDAI_DEMO_CH_LOADER_URL")
     try:
-        counts = seed(ClickHouseHttp.from_url(args.url), args.data_dir)
+        counts = seed(ClickHouseHttp.from_url(args.url, default_database=DATABASE), args.data_dir)
     except ClickHouseError as error:
         sys.exit(str(error))
     except duckdb.Error as error:

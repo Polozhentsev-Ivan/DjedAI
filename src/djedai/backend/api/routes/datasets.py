@@ -1,4 +1,4 @@
-"""Owned CSV/PostgreSQL datasets, catalogs and persistent profiling streams."""
+"""Owned CSV/PostgreSQL/ClickHouse datasets, catalogs and persistent profiling streams."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from djedai.contracts.common import (
     DatasetDetail,
     DatasetSummary,
     DatasetUploadAccepted,
+    SourceCheckRequest,
+    SourceCheckResult,
 )
 from djedai.contracts.sse import DatasetErrorEvent, SSEErrorData
 
@@ -54,6 +56,17 @@ async def connect_dataset(
         owner_id,
         payload.dsn.get_secret_value(),
         payload.tables,
+        kind="postgresql" if payload.kind == "postgres" else payload.kind,
+    )
+
+
+@router.post("/connect/check", response_model=SourceCheckResult)
+async def check_connection(
+    payload: SourceCheckRequest, _owner_id: OwnerDep, service: DatasetServiceDep
+) -> SourceCheckResult:
+    """List tables of a read-only source before connecting; requires a session, stores nothing."""
+    return await service.check_db(
+        payload.dsn.get_secret_value(),
         kind="postgresql" if payload.kind == "postgres" else payload.kind,
     )
 

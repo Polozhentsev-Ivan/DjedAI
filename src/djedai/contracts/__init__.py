@@ -43,6 +43,9 @@ from djedai.contracts.common import (
     DatasetSummary,
     ErrorResponse,
     HealthCheck,
+    SourceCheckRequest,
+    SourceCheckResult,
+    SourceTable,
 )
 from djedai.contracts.dashboard import (
     Dashboard,
@@ -99,6 +102,9 @@ from djedai.contracts.tool_result import (
 
 __all__ = [
     "ConnectRequest",
+    "SourceCheckRequest",
+    "SourceCheckResult",
+    "SourceTable",
     # Каталог
     "Column",
     "ColumnStats",

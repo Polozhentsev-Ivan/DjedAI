@@ -190,18 +190,20 @@ def test_csv_python_and_http_entry_points_share_ids_catalogs_and_errors(
             assert response.status_code == 422
             assert response.json()["error"]["code"] == "invalid_request"
 
-        # ClickHouse is part of the agreed request format but not implemented yet (#61).
+        # ClickHouse (#61) validates its DSN like PostgreSQL; other kinds stay unimplemented.
         with pytest.raises(HTTPException) as error:
             client.portal.call(
                 partial(service.connect_db, "local", "clickhouse://ro@ch/db", kind="clickhouse")
             )
-        assert error.value.status_code == 501
+        assert error.value.status_code == 422
         response = client.post(
             "/api/datasets/connect", json={"kind": "clickhouse", "dsn": "clickhouse://ro@ch/db"}
         )
-        assert response.status_code == 501
-        assert response.json()["error"]["code"] == "http_501"
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "http_422"
         assert "clickhouse://" not in response.text
+        mysql = partial(service.connect_db, "local", "mysql://ro:pw@db/x", kind="mysql")
+        assert _python_error(lambda: client.portal.call(mysql)) == 501
         listed = {item["dataset_id"] for item in client.get("/api/datasets").json()}
         assert listed == {http_id, python_id, "queued"}
 
