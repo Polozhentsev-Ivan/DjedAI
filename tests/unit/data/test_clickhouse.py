@@ -143,11 +143,11 @@ class TestSession:
         wrong = fake.url.replace("reader-secret%21", "wrong-secret")
         with pytest.raises(ClickHouseError) as error:
             open_session(wrong)
-        assert "Authentication failed" in str(error.value)
+        assert "неверный пользователь или пароль" in str(error.value)
         assert "wrong-secret" not in str(error.value)
 
     def test_unreachable_server(self):
-        with pytest.raises(ClickHouseError, match="не удалось подключиться") as error:
+        with pytest.raises(ClickHouseError, match="недоступен") as error:
             open_session("http://u:hidden@127.0.0.1:1/db?connect_timeout=1")
         assert "hidden" not in str(error.value)
 

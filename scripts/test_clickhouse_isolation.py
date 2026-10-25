@@ -35,6 +35,7 @@ TEST_PATHS = (
     "tests/integration/test_demo_databases.py::test_demo_database_matches_expectations[clickhouse]",
     "tests/integration/test_owned_clickhouse.py",
     "tests/integration/test_clickhouse_owner_api.py",
+    "tests/integration/test_source_check.py::test_live_clickhouse_tables",
 )
 LABEL = "org.djedai.clickhouse-acceptance"
 OTHER_DATABASE = "djedai_demo_other"

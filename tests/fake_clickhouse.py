@@ -41,9 +41,11 @@ class FakeClickHouse:
         user: str = "djedai_reader",
         password: str = "reader-secret!",
         readonly: str = "2",
+        port: int = 0,
     ) -> None:
         self.database, self.user, self.password = database, user, password
         self.readonly = readonly  # профиль пользователя: "0", "1" или "2"
+        self.port = port  # 0 — свободный порт
         self.honour_readonly = True  # False — сервер «забывает» readonly из запроса
         self.table_stats = True  # False — total_rows/total_bytes равны NULL, как у VIEW
         # профиль пользователя на сервере; настройки запроса его переопределяют (кроме readonly=1)
@@ -90,7 +92,7 @@ class FakeClickHouse:
             def log_message(self, *args):
                 pass
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self
 
@@ -103,7 +105,10 @@ class FakeClickHouse:
     def answer(self, sql: str, params: dict[str, str], auth: str) -> tuple[int, bytes]:
         token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
         if auth != f"Basic {token}":
-            return 516, f"Code: 516. DB::Exception: {self.user}: Authentication failed".encode()
+            return 516, (
+                f"Code: 516. DB::Exception: {self.user}: Authentication failed: password is "
+                "incorrect, or there is no user with such name. (AUTHENTICATION_FAILED)"
+            ).encode()
         if "readonly" in params and self.readonly == "1":
             return 500, b"Code: 164. DB::Exception: Cannot modify 'readonly' setting. (READONLY)"
         con = self.connection.cursor()

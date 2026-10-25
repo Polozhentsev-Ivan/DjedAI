@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from djedai.backend.db.models import DatasetModel
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
 from djedai.contracts.catalog import DatasetCatalog
-from djedai.contracts.common import DatasetDetail, DatasetSummary, DatasetUploadAccepted
+from djedai.contracts.common import (
+    DatasetDetail,
+    DatasetSummary,
+    DatasetUploadAccepted,
+    SourceCheckResult,
+    SourceTable,
+)
 from djedai.contracts.sse import (
     DatasetDoneData,
     DatasetDoneEvent,
@@ -37,6 +43,8 @@ from djedai.data.descriptions import ModelClient
 from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
 from djedai.data.service import (
     CsvSource,
+    check_clickhouse_source,
+    check_postgres_source,
     connect_clickhouse_dataset,
     connect_postgres_dataset,
     describe_dataset,
@@ -48,6 +56,18 @@ logger = logging.getLogger(__name__)
 # connect_db kinds: display name and stored source_kind
 _DB_SOURCES = {"postgresql": "PostgreSQL", "clickhouse": "ClickHouse"}
 _SOURCE_KINDS = {"postgresql": "postgres", "clickhouse": "clickhouse"}
+MAX_CHECKED_TABLES = 1000
+# Source check answers with one of these; driver text never reaches the client.
+_CHECK_ERRORS = (
+    ("пароль", "Неверный пользователь или пароль"),
+    ("не найдена", None),  # «база данных «x» не найдена» names only what the user typed
+    ("не разрешает подключение", "Сервер не разрешает подключение этому пользователю"),
+    (
+        "только для чтения",
+        "Учётная запись может изменять данные — подключите пользователя только для чтения",
+    ),
+    ("недоступен", "Сервер базы данных недоступен — проверьте адрес, порт и сеть"),
+)
 
 
 @dataclass(frozen=True)
@@ -304,6 +324,45 @@ class DatasetService:
         )
         self._start(owner_id, dataset_id)
         return DatasetUploadAccepted(dataset_id=dataset_id)
+
+    async def check_db(self, dsn: str, *, kind: str = "postgresql") -> SourceCheckResult:
+        """Probe a read-only source and list its tables without storing anything.
+
+        Errors are reduced to a few safe categories, so the check cannot be used to read
+        driver messages of arbitrary servers.
+        """
+        if kind not in _DB_SOURCES:
+            raise HTTPException(status_code=501, detail="Этот источник пока не поддерживается")
+        try:
+            self._secrets.require_key()
+        except SourceSecretError:
+            raise HTTPException(
+                status_code=503, detail="Шифрование источников не настроено"
+            ) from None
+        try:
+            info = parse_clickhouse_dsn(dsn) if kind == "clickhouse" else parse_dsn(dsn)
+        except (PostgresError, ClickHouseError, ValueError):
+            raise HTTPException(
+                status_code=422, detail=f"Проверьте строку подключения {_DB_SOURCES[kind]}"
+            ) from None
+        try:
+            if kind == "clickhouse":
+                check = await asyncio.to_thread(
+                    check_clickhouse_source, info, self._clickhouse_limits
+                )
+            else:
+                check = await asyncio.to_thread(check_postgres_source, info)
+        except (PostgresError, ClickHouseError) as error:
+            raise HTTPException(status_code=422, detail=_check_message(error.reason)) from None
+        return SourceCheckResult(
+            kind=_SOURCE_KINDS[kind],
+            source=check.source,
+            tables=[
+                SourceTable(name=name, row_count=rows)
+                for name, rows in check.tables[:MAX_CHECKED_TABLES]
+            ],
+            truncated=len(check.tables) > MAX_CHECKED_TABLES,
+        )
 
     def _persist_db_source(
         self,
@@ -584,3 +643,10 @@ class DatasetService:
                 yield DatasetProgressEvent(data=DatasetProgressData.model_validate(progress))
                 previous = progress
             await asyncio.sleep(0.2)
+
+
+def _check_message(reason: str) -> str:
+    for marker, message in _CHECK_ERRORS:
+        if marker in reason:
+            return message or reason[:1].upper() + reason[1:]
+    return "Не удалось подключиться к источнику"

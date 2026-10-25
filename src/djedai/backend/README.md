@@ -42,6 +42,8 @@ API предоставляет раздельный доступ к метада
 
 ## Подключения PostgreSQL
 
+`POST /api/datasets/connect/check` (`SourceCheckRequest`: `kind`, `dsn`) подключается только для чтения и возвращает адрес без пароля и таблицы источника; ничего не сохраняет, требует сессию и `SOURCE_ENCRYPTION_KEY`, ошибки сведены к безопасным категориям (#84).
+
 `POST /api/datasets/connect` принимает `ConnectRequest`: `kind="postgres"` или `"clickhouse"`,
 секретный `dsn`, необязательный список `tables` (`public.orders` и т.п.). Ответ
 202 возвращает ID обработки; статус, каталог и SSE используются те же, что у CSV.

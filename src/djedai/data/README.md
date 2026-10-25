@@ -88,7 +88,7 @@
 
 ## Датасеты владельца и API
 
-`backend.dataset_service.DatasetService` связывает файловый конвейер с постоянным хранилищем приложения. `ingest_uploads(owner_id, files)` и `ingest_csv(owner_id, sources)` сохраняют исходные CSV; `connect_db(owner_id, dsn, tables=None, kind="postgresql", name=None)` сохраняет настройки PostgreSQL или ClickHouse (`kind="clickhouse"`) и ставит обработку в очередь. Методы асинхронные и возвращают `DatasetUploadAccepted` со статусом `processing`. Публикуется только полностью построенный датасет: представления, профили и каталог должны быть готовы для всех выбранных таблиц.
+`backend.dataset_service.DatasetService` связывает файловый конвейер с постоянным хранилищем приложения. `ingest_uploads(owner_id, files)` и `ingest_csv(owner_id, sources)` сохраняют исходные CSV; `connect_db(owner_id, dsn, tables=None, kind="postgresql", name=None)` сохраняет настройки PostgreSQL или ClickHouse (`kind="clickhouse"`) и ставит обработку в очередь; `check_db(dsn, kind=...)` заранее показывает таблицы источника, ничего не сохраняя (`service.check_postgres_source` / `check_clickhouse_source`). Методы асинхронные и возвращают `DatasetUploadAccepted` со статусом `processing`. Публикуется только полностью построенный датасет: представления, профили и каталог должны быть готовы для всех выбранных таблиц.
 
 HTTP-подключение использует действующую Bearer-сессию:
 

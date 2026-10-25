@@ -180,5 +180,5 @@ def test_clickhouse_errors_carry_server_text_without_password(fake_clickhouse):
     with pytest.raises(ch.ClickHouseError) as error:
         ch.ClickHouseHttp.from_url(url).query("SELECT fail")
     assert "Syntax error" in str(error.value) and "secret" not in str(error.value)
-    with pytest.raises(ch.ClickHouseError, match="не удалось подключиться"):
+    with pytest.raises(ch.ClickHouseError, match="недоступен"):
         ch.ClickHouseHttp.from_url("http://u:secret@127.0.0.1:1").query("SELECT 1")
