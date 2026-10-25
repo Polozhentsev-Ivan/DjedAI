@@ -367,3 +367,10 @@ def test_date_format_chosen_by_majority_journals_ambiguous_values(con, tmp_path)
 def test_unambiguous_dates_have_no_ambiguity_note(con, tmp_path):
     typed(con, tmp_path, ["25.03.2026", "01.12.2025"])
     assert "ambiguous_values" not in journal(con, "parse_date")[0].detail
+
+
+def test_column_just_below_threshold_keeps_candidate_and_ratio(con, tmp_path):
+    _, column, _ = typed(con, tmp_path, [str(n) for n in range(94)] + ["?"] * 6)
+    assert column.semantic_type == "text"
+    detail = journal(con, "keep_text")[0].detail
+    assert detail == {"reason": "below_threshold", "candidate": "number", "success_ratio": 0.94}

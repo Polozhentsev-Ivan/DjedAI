@@ -431,6 +431,8 @@ def _infer_column(
                 "below_threshold",
                 {"candidate": outcome.semantic_type, "success_ratio": _ratio(parsed, non_empty)},
             )
+    if outcome is None:
+        outcome = _near_miss(stats)
     if not isinstance(outcome, _Candidate):
         reason = outcome or _Reject("text")
         semantic = "id" if reason.reason in ("id_leading_zeros", "id_name") else "text"
@@ -475,6 +477,24 @@ def _infer_column(
             ),
         )
     return _Plan(typed, outcome.expr, entries)
+
+
+def _near_miss(stats: dict[str, int]) -> _Reject | None:
+    """Колонка не прошла порог, но больше половины значений — числа, даты или булевы.
+
+    Такая колонка остаётся текстом; журнал сохраняет кандидата и долю распознанных,
+    чтобы расчёт по ней мог предупредить о пороге, а не о «просто тексте».
+    """
+    total = stats["ne"]
+    candidates = {
+        "number": max(stats["num,"], stats["num."]),
+        "date": max(stats[f"fmt{i}"] for i in range(len(_TEMPORAL))),
+        "bool": stats["bool"],
+    }
+    kind, best = max(candidates.items(), key=lambda item: item[1])
+    if not total or best * 2 <= total:
+        return None
+    return _Reject("below_threshold", {"candidate": kind, "success_ratio": _ratio(best, total)})
 
 
 def _meets_threshold(count: int, total: int) -> bool:
