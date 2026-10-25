@@ -64,6 +64,12 @@ _TYPE_NAMES = {
     "number": "число",
 }
 
+_DATE_ORDER = {
+    "%d/%m/%Y": "день/месяц/год",
+    "%m/%d/%Y": "месяц/день/год",
+    "%d-%m-%Y": "день-месяц-год",
+}
+
 BOUNDARY_PROFILE = "посчитано по всей таблице: сколько из этих значений попало в расчёт, неизвестно"
 
 
@@ -436,8 +442,11 @@ def _issues(column: _Column) -> list[QualityIssue]:
     counts = column.counts
     computed = bool(usages & _COMPUTED)
 
-    def add(code, severity: Severity, message: str) -> None:
-        issues.append(QualityIssue(code=code, severity=severity, message=message))
+    ref = f"{column.table.table_id}.{column.column.name}:"
+
+    def add(code, severity: Severity, message: str, options: list[str] | None = None) -> None:
+        options = options if severity == "blocking" else []
+        issues.append(QualityIssue(code=code, severity=severity, message=message, options=options))
 
     if column.action.startswith("parse_"):
         target = _TYPE_NAMES.get(column.column.semantic_type, column.column.semantic_type)
@@ -480,20 +489,24 @@ def _issues(column: _Column) -> list[QualityIssue]:
                 f"{threshold}%. Типизированного расчёта по ней нет.",
             )
         elif reason == "ambiguous_date" and usages:
-            formats = ", ".join(detail.get("candidates", []))
+            candidates = detail.get("candidates", [])
             add(
                 "ambiguous_date",
                 "blocking" if computed else "warning",
-                f"{name}: день и месяц не различить (подходят форматы {formats}), даты "
-                f"остались текстом. Нужно уточнить формат.",
+                f"{name}: день и месяц не различить (подходят форматы {', '.join(candidates)}), "
+                f"даты остались текстом. Нужно уточнить формат.",
+                [f"{ref} {_DATE_ORDER.get(fmt, fmt)} ({fmt})" for fmt in candidates],
             )
         elif reason == "mixed_currencies" and computed:
-            currencies = ", ".join(detail.get("currencies", []))
+            currencies = detail.get("currencies", [])
             add(
                 "mixed_currency",
                 "blocking" if "measure" in usages else "warning",
-                f"{name}: в колонке несколько валют ({currencies}), значения остались текстом "
-                f"и не складываются. Нужно выбрать валюту или считать по каждой отдельно.",
+                f"{name}: в колонке несколько валют ({', '.join(currencies)}), значения "
+                f"остались текстом и не складываются. Нужно выбрать валюту или считать по "
+                f"каждой отдельно.",
+                [f"{ref} считать по каждой валюте отдельно"]
+                + [f"{ref} только {currency}" for currency in currencies],
             )
     if detail.get("ambiguous_values"):
         alternatives = ", ".join(detail.get("alternative_formats", []))
@@ -533,6 +546,10 @@ def _issues(column: _Column) -> list[QualityIssue]:
             "blocking" if column.mixed_in_measure else "warning",
             f"{name} в {column.column.currency} складывается в одном выражении с {others}: "
             f"курсов нет, такая сумма не имеет смысла.",
+            [
+                f"{ref} считать каждую валюту отдельно",
+                f"{ref} показать только {column.column.currency}",
+            ],
         )
     return issues
 

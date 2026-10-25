@@ -67,3 +67,17 @@ def test_percent_scale_and_sum_warn(issues):
 
 def test_single_separator_warns(issues):
     assert issues("SELECT SUM(sep) FROM edges") == {("sep", "ambiguous_separator"): "warning"}
+
+
+def test_blocking_issues_offer_answers_that_name_the_column(quality_dataset):
+    connection, catalog = quality_dataset
+    result = run_sql(
+        "SELECT d_ambiguous, COUNT(*) FROM edges GROUP BY 1",
+        connection=connection,
+        allowed_tables={t.table_id for t in catalog.tables},
+    )
+    (issue,) = assess(result, connection, catalog).quality.columns[0].issues
+    assert issue.options == [
+        "edges.d_ambiguous: день/месяц/год (%d/%m/%Y)",
+        "edges.d_ambiguous: месяц/день/год (%m/%d/%Y)",
+    ]

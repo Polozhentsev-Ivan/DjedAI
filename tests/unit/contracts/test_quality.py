@@ -70,3 +70,12 @@ def test_partial_lineage_names_what_was_not_resolved():
 def test_issue_requires_known_code():
     with pytest.raises(ValidationError):
         QualityIssue(code="unknown", severity="info", message="x")
+
+
+def test_blocking_issue_needs_two_options():
+    with pytest.raises(ValidationError, match="два варианта"):
+        QualityIssue(code="ambiguous_date", severity="blocking", message="x", options=["a"])
+    issue = QualityIssue(
+        code="ambiguous_date", severity="blocking", message="x", options=["a", "b"]
+    )
+    assert issue.options == ["a", "b"]

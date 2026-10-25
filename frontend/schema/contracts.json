@@ -2482,6 +2482,13 @@
             "minLength": 1,
             "title": "Message",
             "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
           }
         },
         "required": [

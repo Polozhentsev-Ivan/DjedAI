@@ -1839,6 +1839,8 @@ export interface components {
             severity: "info" | "warning" | "blocking";
             /** Message */
             message: string;
+            /** Options */
+            options?: string[];
         };
         /**
          * ColumnQuality

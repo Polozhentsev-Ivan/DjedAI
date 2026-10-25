@@ -46,6 +46,15 @@ class QualityIssue(_Model):
     code: QualityCode
     severity: Severity
     message: str = Field(min_length=1)  # понятное пользователю ограничение с числами
+    # варианты уточнения для blocking; каждый начинается с «таблица.колонка:», и ответ
+    # пользователя с этой ссылкой снимает блокировку
+    options: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _blocking_has_options(self) -> QualityIssue:
+        if self.severity == "blocking" and len(self.options) < 2:
+            raise ValueError("blocking-ограничению нужны минимум два варианта уточнения")
+        return self
 
 
 class ColumnQuality(_Model):
