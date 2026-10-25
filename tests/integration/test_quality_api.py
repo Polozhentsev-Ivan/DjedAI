@@ -1,0 +1,181 @@
+"""Потери типизации в ответе, сохранённом результате и после перезапуска (B2-10)."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi import Request
+from fastapi.testclient import TestClient
+from sqlalchemy import inspect
+from sqlalchemy.orm import sessionmaker
+
+from djedai.agent.client import ModelResponse
+from djedai.agent.graph import build_agent_graph
+from djedai.backend.app import create_app
+from djedai.backend.auth import hash_password
+from djedai.backend.chat_service import AgentRuntime, get_agent_runtime
+from djedai.backend.config import Settings
+from djedai.backend.db.models import UserModel
+from djedai.backend.db.session import create_db_engine
+from djedai.backend.local_user import bootstrap_local_user
+from djedai.contracts.agent import (
+    Block,
+    ComposeResponse,
+    PlannedCall,
+    PlanResponse,
+    Understanding,
+    VerifyResponse,
+)
+
+pytestmark = pytest.mark.integration
+ROOT = Path(__file__).resolve().parents[2]
+PASSWORD = "test-quality-password"
+DATE_OPTION = "edges.d_ambiguous: день/месяц/год (%d/%m/%Y)"
+
+
+def _alembic(url: str) -> Config:
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    cfg.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
+    return cfg
+
+
+@pytest.fixture
+def configured(tmp_path: Path):
+    url = f"sqlite:///{(tmp_path / 'api.db').as_posix()}"
+    command.upgrade(_alembic(url), "head")
+    engine = create_db_engine(url)
+    factory = sessionmaker(bind=engine)
+    bootstrap_local_user(factory, "local", username="local")
+    with factory() as db:
+        db.get(UserModel, "local").password_hash = hash_password(PASSWORD)
+        db.commit()
+    yield Settings(
+        _env_file=None,
+        cp1_local_mode=False,
+        app_database_url=url,
+        datasets_data_dir=str(tmp_path / "datasets"),
+        results_data_dir=str(tmp_path / "results"),
+    )
+    engine.dispose()
+
+
+@contextmanager
+def _client(settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/auth/login", json={"username": "local", "password": PASSWORD})
+        assert login.status_code == 200, login.text
+        client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+        yield client
+
+
+def _files() -> list[tuple[str, tuple[str, bytes, str]]]:
+    # 103 заказа: 3 без суммы, 4 с нераспознанной суммой; даты, где день ≤ 12
+    amounts = ["", "", ""] + ["abc", "n/a", "—", "x1"] + [f"{i},50" for i in range(8, 104)]
+    orders = "order_id;amount\n" + "".join(f"o{i};{a}\n" for i, a in enumerate(amounts, 1))
+    edges = "d_ambiguous;n\n" + "".join(f"{d:02}/{d % 12 + 1:02}/2026;{d}\n" for d in range(1, 13))
+    return [
+        ("files", ("orders.csv", orders.encode(), "text/csv")),
+        ("files", ("edges.csv", edges.encode(), "text/csv")),
+    ]
+
+
+def ok(data):
+    return ModelResponse(status="success", data=data)
+
+
+def _turn(sql: str, text: str | None) -> list[ModelResponse]:
+    responses = [
+        ok(Understanding(intent="data_question")),
+        ok(PlanResponse(plan=[PlannedCall(tool="run_sql", args={"sql": sql})])),
+    ]
+    if text is not None:
+        responses += [
+            ok(ComposeResponse(answer_blocks=[Block(type="text", markdown=text)])),
+            ok(VerifyResponse(is_valid=True, corrected_markdown=text)),
+        ]
+    return responses
+
+
+def _markdown(message: dict) -> str:
+    return "\n".join(b.get("markdown") or b.get("question") or "" for b in message["blocks"])
+
+
+def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
+    client_model = MagicMock()
+    client_model.generate_typed_response.side_effect = [
+        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 664."),
+        *_turn("SELECT d_ambiguous, COUNT(*) FROM edges GROUP BY 1", None),
+        *_turn(
+            "SELECT strptime(d_ambiguous, '%d/%m/%Y') AS d, COUNT(*) FROM edges GROUP BY 1",
+            "12 дат.",
+        ),
+    ]
+    with _client(configured) as client:
+        upload = client.post("/api/datasets/upload", files=_files())
+        assert upload.status_code == 202, upload.text
+        dataset_id = upload.json()["dataset_id"]
+        assert "event: done\n" in client.get(f"/api/datasets/{dataset_id}/events").text
+
+        def runtime(request: Request) -> AgentRuntime:
+            return replace(
+                AgentRuntime(graph=build_agent_graph(), client=client_model),
+                dataset_context=request.app.state.dataset_service.get_context,
+                metric_service=request.app.state.metric_service,
+                results_storage_dir=configured.results_data_dir,
+            )
+
+        client.app.dependency_overrides[get_agent_runtime] = runtime
+        chat_id = client.post("/api/chats", json={"dataset_id": dataset_id}).json()["chat_id"]
+        send = f"/api/chats/{chat_id}/messages"
+        assert "event: done" in client.post(send, json={"text": "Сумма заказов?"}).text
+
+    # Перезапуск: новое приложение читает сохранённые ответ и результат.
+    with _client(configured) as client:
+        messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        answer = messages[-1]
+        assert "**Ограничения данных.**" in _markdown(answer)
+        assert "4 из 100" in _markdown(answer)
+        (result_id,) = answer["result_ids"]
+        result = client.get(f"/api/results/{result_id}").json()
+        (amount,) = result["quality"]["columns"]
+        assert (amount["column"], amount["scope"]) == ("amount", "population")
+        assert (amount["rows"], amount["source_empty"], amount["non_empty"]) == (103, 3, 100)
+        assert amount["parse_failed"] == 4
+        assert amount["issues"][0]["code"] == "parse_losses"
+        assert any(f["kind"] == "data_quality" for f in result["facts"])
+
+        client.app.dependency_overrides[get_agent_runtime] = runtime
+        assert "event: done" in client.post(send, json={"text": "Сколько по датам?"}).text
+        clarification = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]["blocks"][0]
+        assert clarification["type"] == "clarification"
+        assert DATE_OPTION in clarification["options"]
+
+        assert "event: done" in client.post(send, json={"text": DATE_OPTION}).text
+        last = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
+        assert "12 дат." in _markdown(last)
+        assert "Выбор уточнён пользователем." in _markdown(last)
+        understand_question = client_model.generate_typed_response.call_args_list[-4].args[1]
+        assert understand_question.startswith("Сколько по датам?")
+        assert DATE_OPTION in understand_question
+
+
+def test_quality_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
+    cfg = _alembic(url)
+    command.upgrade(cfg, "f166metr0001")
+    command.upgrade(cfg, "head")
+    engine = create_db_engine(url)
+    try:
+        assert "quality" in {c["name"] for c in inspect(engine).get_columns("results")}
+        command.downgrade(cfg, "f166metr0001")
+        assert "quality" not in {c["name"] for c in inspect(engine).get_columns("results")}
+    finally:
+        engine.dispose()

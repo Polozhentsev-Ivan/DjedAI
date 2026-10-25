@@ -38,6 +38,7 @@ from djedai.backend.db.session import budgeted_write
 from djedai.contracts.chat import ChatTurnState
 from djedai.contracts.message import AssistantMessage
 from djedai.contracts.metrics import MetricProvenance
+from djedai.contracts.quality import QualityReport
 from djedai.contracts.tool_result import (
     ChartHint,
     Fact,
@@ -569,6 +570,9 @@ def save_tool_result(
     metric_data = (
         tool_result.metric.model_dump(mode="json") if tool_result.metric is not None else None
     )
+    quality_data = (
+        tool_result.quality.model_dump(mode="json") if tool_result.quality is not None else None
+    )
 
     if record is None:
         record = ToolResultModel(
@@ -587,6 +591,7 @@ def save_tool_result(
             source_result_id=tool_result.source_result_id,
             duration_ms=tool_result.duration_ms,
             metric=metric_data,
+            quality=quality_data,
         )
         db.add(record)
     else:
@@ -606,6 +611,7 @@ def save_tool_result(
         record.source_result_id = tool_result.source_result_id
         record.duration_ms = tool_result.duration_ms
         record.metric = metric_data
+        record.quality = quality_data
 
     try:
         # The unique DB key claims this ID/owner before any shared file is touched.
@@ -752,6 +758,7 @@ def load_tool_result(
         source_result_id=record.source_result_id,
         duration_ms=record.duration_ms,
         metric=MetricProvenance.model_validate(record.metric) if record.metric else None,
+        quality=QualityReport.model_validate(record.quality) if record.quality else None,
     )
 
 
