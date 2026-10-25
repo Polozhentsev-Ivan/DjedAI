@@ -216,9 +216,7 @@ def test_aggregate_filter_limits_the_measure_population(query, condition, rows, 
 
 
 def test_aggregate_filter_on_unparsed_dates_reports_dropped_rows(query, quality_spec):
-    result = query(
-        "SELECT COUNT(*) FILTER (WHERE order_date >= DATE '2024-01-01') FROM orders"
-    )
+    result = query("SELECT COUNT(*) FILTER (WHERE order_date >= DATE '2024-01-01') FROM orders")
     quality = column(result, "order_date")
     assert quality.usage == ["filter"]
     assert f"{len(quality_spec.bad_dates)} из 103 непустых" in quality.issues[0].message
