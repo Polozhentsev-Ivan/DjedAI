@@ -254,6 +254,25 @@ def _message_result_ids(message: MessageModel) -> list[str]:
     return result_ids
 
 
+def _message_result_ids(message: MessageModel) -> list[str]:
+    """Возвращает результаты, на которые ссылается сохранённое сообщение.
+
+    Помимо явно сохранённых result_ids учитываем блоки ответа: график или
+    таблица ссылаются на результат, даже если старый ответ его не сохранил.
+    """
+    result_ids = list(message.result_ids or [])
+    for block in message.blocks or []:
+        if not isinstance(block, dict):
+            continue
+        referenced = block.get("result_id")
+        chart = block.get("chart")
+        if not referenced and isinstance(chart, dict):
+            referenced = chart.get("result_id")
+        if referenced:
+            result_ids.append(referenced)
+    return result_ids
+
+
 def _block_to_message_block(block: Block) -> MessageBlock:
     """Преобразует блок агента в согласованный MessageBlock, не теряя будущие типы."""
     if block.type == "text":

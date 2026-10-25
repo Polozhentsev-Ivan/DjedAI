@@ -872,12 +872,18 @@ async def test_live_disconnect_or_logout_closes_model_request(
                         await anyio.sleep(0.01)
                 assert time.monotonic() - started < 2
                 assert len(endpoint.calls) == 1
-                with factory() as db:
-                    messages = get_chat_messages(db, chat_id)
-                    assert [m.role for m in messages] == ["user"]
-                    assert messages[0].turn["code"] == (
-                        "unauthorized" if logout else "stream_interrupted"
-                    )
+                # The model socket can close before the terminal state is committed.
+                with anyio.fail_after(2):
+                    while True:
+                        with factory() as db:
+                            messages = get_chat_messages(db, chat_id)
+                            assert [m.role for m in messages] == ["user"]
+                            if messages[0].turn["status"] != "running":
+                                break
+                        await anyio.sleep(0.01)
+                assert messages[0].turn["code"] == (
+                    "unauthorized" if logout else "stream_interrupted"
+                )
                 if logout:
                     login = await client.post(
                         "/api/auth/login",
