@@ -1,6 +1,7 @@
 """Controlled model endpoint shared by transport and live chat deadline tests.
 
-Also the orders/items/payments dataset shared by metric semantics tests (B2-9).
+Also the orders/items/payments dataset shared by metric semantics tests (B2-9) and
+the dataset with typing losses and ambiguities for data quality tests (B2-10).
 """
 
 import json
@@ -130,6 +131,93 @@ def metrics_dataset(tmp_path_factory):
         path,
         dataset_id="ds_metrics",
         name="metrics",
+        created_at=datetime.now(UTC),
+    )
+    with duckdb.connect(str(path), read_only=True) as connection:
+        yield connection, catalog
+
+
+# Датасет качества (B2-10): заказы 1–3 без суммы, 4–7 с нераспознанной суммой, у заказов
+# 10–11 нераспознанная дата; позиции есть только у заказов 1–60, по две на заказ.
+QUALITY_EMPTY = range(1, 4)
+QUALITY_FAILED = {4: "abc", 5: "n/a", 6: "—", 7: "x1"}
+QUALITY_BAD_DATES = {10: "скоро", 11: "31.02.2024"}
+QUALITY_ORDERS = 103
+QUALITY_ITEMS_UNTIL = 60
+
+
+def quality_orders() -> list[dict[str, str]]:
+    rows = []
+    for i in range(1, QUALITY_ORDERS + 1):
+        if i in QUALITY_EMPTY:
+            amount = ""
+        else:
+            amount = QUALITY_FAILED.get(i, f"{i},50")
+        date = QUALITY_BAD_DATES.get(i, f"{i % 28 + 1:02}.{1 if i <= 50 else 2:02}.2024")
+        region = "north" if i % 2 else "south"
+        rows.append(
+            {"order_id": f"o{i:03}", "region": region, "amount": amount, "order_date": date}
+        )
+    return rows
+
+
+def _write_quality_csvs(directory: Path) -> list[Path]:
+    def write(name: str, header: list[str], rows: list[list[str]]) -> Path:
+        path = directory / name
+        lines = [";".join(header), *(";".join(row) for row in rows)]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    orders = [list(row.values()) for row in quality_orders()]
+    items = [[f"o{i:03}", str(qty)] for i in range(1, QUALITY_ITEMS_UNTIL + 1) for qty in (1, 2)]
+    ambiguous_days = [f"{d:02}/{d % 12 + 1:02}/2026" for d in range(1, 13)]
+    edges = [
+        [
+            ambiguous_days[i % 12],  # день и месяц не различить
+            "25/03/2026" if i == 0 else ambiguous_days[i % 12],  # формат выбран по одной дате
+            "100 ₽" if i % 2 else "$5",  # две валюты
+            "0,15" if i == 0 else f"{i}%",  # одно значение без знака процента
+            f"{i + 1},234",  # одиночный разделитель
+            f"{i + 1} ₽",
+            f"${i + 1}",
+        ]
+        for i in range(20)
+    ]
+    thresholds = [[str(i) if i < 95 else "?", str(i) if i < 94 else "?"] for i in range(100)]
+    return [
+        write("orders.csv", ["order_id", "region", "amount", "order_date"], orders),
+        write("items.csv", ["order_id", "qty"], items),
+        write(
+            "edges.csv",
+            ["d_ambiguous", "d_partial", "price_mixed", "share", "sep", "rub", "usd"],
+            edges,
+        ),
+        write("thresholds.csv", ["v95", "v94"], thresholds),
+    ]
+
+
+@pytest.fixture
+def quality_spec() -> SimpleNamespace:
+    """Строки и номера заказов, из которых собран ``quality_dataset``: эталоны тестов."""
+    return SimpleNamespace(
+        orders=quality_orders(),
+        empty=QUALITY_EMPTY,
+        failed=QUALITY_FAILED,
+        bad_dates=QUALITY_BAD_DATES,
+        items_until=QUALITY_ITEMS_UNTIL,
+    )
+
+
+@pytest.fixture(scope="session")
+def quality_dataset(tmp_path_factory):
+    """Потери и неоднозначности типизации: соединение и каталог (B2-10)."""
+    directory = tmp_path_factory.mktemp("quality")
+    path = directory / "dataset.duckdb"
+    catalog = ingest_csv_dataset(
+        [CsvSource(p, p.name) for p in _write_quality_csvs(directory)],
+        path,
+        dataset_id="ds_quality",
+        name="quality",
         created_at=datetime.now(UTC),
     )
     with duckdb.connect(str(path), read_only=True) as connection:
