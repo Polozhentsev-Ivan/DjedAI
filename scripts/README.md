@@ -81,7 +81,7 @@ Python-команды запускаем в среде проекта через
   - Текущий профиль: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --reasoning-profile baseline --repeats 3 --turn-repeats 3 --context-lines 200`.
   - Сравнение: добавить `--reasoning-profile proposed --reasoning-supported`; без явного подтверждения поддержки клиент откажется запускаться с ненулевым режимом, а не проигнорирует его. Команда сохраняет `baseline` и `proposed` в одном отчёте и помечает регрессии.
   - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
-  - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`); `MODEL_REASONING_SUPPORTED=false` по умолчанию.
+  - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`). Поддержка `reasoning_effort` подтверждена для DeepInfra Qwen3.6-35B-A3B 25.10.2026; `MODEL_REASONING_SUPPORTED=false` остаётся безопасным значением шаблона при смене модели/endpoint.
   - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
