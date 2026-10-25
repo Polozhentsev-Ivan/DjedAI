@@ -215,6 +215,28 @@ def test_missing_usage_is_explicitly_a_partial_total():
     assert total["complete"] is False
 
 
+def test_another_claim_cannot_hide_behind_the_same_scalar_value():
+    assert not benchmark.text_ok("Всего 4 строки. Выручка 4.", case("compose_count"))
+
+
+def test_two_totally_failed_profiles_are_not_evidence_to_enable_a_candidate():
+    reports = [
+        {
+            "model": "offline",
+            "profile": profile,
+            "calls": [{"case": "count", "semantic_ok": False, "schema_valid": False}],
+            "turns": [],
+            "semantic_ok": 0,
+            "turn_latency_seconds": {"median": None},
+        }
+        for profile in ["baseline", "proposed"]
+    ]
+    comparison = benchmark.compare_profiles(reports)["comparisons"][0]
+    assert comparison["safe_to_enable"] is False
+    assert comparison["insufficient_evidence"] is True
+    assert comparison["recommendation"] == "keep_baseline"
+
+
 @pytest.mark.parametrize(
     "options,valid",
     [
@@ -284,6 +306,31 @@ def test_turn_deadline_applies_across_stages_and_preserves_the_last_checkpoint()
     assert turn["error_type"] == "TIMEOUT"
     assert not turn["schema_valid"] and not turn["semantic_ok"]
     assert turn["trace"]["understanding"]["intent"] == "data_question"
+
+
+def test_a_chart_in_an_interrupted_checkpoint_is_not_a_published_success():
+    from djedai.contracts.agent import VerifyResponse
+    from djedai.execution import current_budget
+
+    class SlowVerify(_fake_helper().FakeClient):
+        def generate_typed_response(self, system, question, response_model, **kwargs):
+            if response_model is VerifyResponse:
+                budget = current_budget()
+                budget.wait(budget.remaining + 0.1)
+            return super().generate_typed_response(system, question, response_model, **kwargs)
+
+    chart = next(item for item in benchmark.TURN_CASES if item.name == "turn_chart")
+    turn = benchmark.run_turn(
+        benchmark.build_agent_graph(),
+        SlowVerify(),
+        chart,
+        repeat=0,
+        profile_name="late-deadline",
+        turn_timeout_seconds=0.5,
+    )
+    assert turn["error_type"] == "TIMEOUT"
+    assert turn["charts"] == 1
+    assert turn["semantic_ok"] is False
 
 
 @pytest.mark.parametrize(

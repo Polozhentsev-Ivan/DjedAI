@@ -491,6 +491,11 @@ def text_ok(text: str, case: StageCase | TurnCase) -> bool:
         return _bindings_match(text, case.expected_bindings)
     if re.search(r"\b(?:RUB|USD|руб\w*|доллар\w*)\b|[₽$]", text, re.I):
         return False
+    if (
+        case.expected in {"count", "corrected", "percentage"}
+        and len(list(_NUMBER.finditer(text))) != 1
+    ):
+        return False
     scalar = text.strip("`*_ .!\n")
     if case.expected in {"count", "corrected"}:
         return not re.search(r"%|процент", text, re.I) and (
@@ -712,7 +717,7 @@ def run_benchmark(
         text = ""
         if valid and isinstance(response.data, ComposeResponse):
             text = "\n".join(block.markdown or "" for block in response.data.answer_blocks)
-        if valid and isinstance(response.data, VerifyResponse):
+        if valid and isinstance(response.data, VerifyResponse) and case.expected == "corrected":
             text = response.data.corrected_markdown or ""
         numbers_ok = text_ok(text, case) if valid and text else None
         setting = _reasoning_for(client, case.stage)
@@ -997,8 +1002,9 @@ def run_turn(
     if case.expected == "ambiguous":
         semantic = bool(
             understanding
-            and understanding.intent == "ambiguous"
-            and understanding.clarification is not None
+            and semantic_ok(
+                understanding, next(item for item in CASES if item.name == "understand_ambiguous")
+            )
         )
         numbers_ok = None
         sql_ok = None
@@ -1023,7 +1029,11 @@ def run_turn(
             )
             numbers_ok = not numbers_in_text(text) or text_ok(text, chart_text_case)
             semantic = bool(sql_ok) and bool(numbers_ok) and chart_valid
-    if any(block.type == "error" for block in state.get("answer_blocks", [])):
+    if (
+        error_type is not None
+        or (case.expected != "ambiguous" and state.get("is_verified") is not True)
+        or any(block.type == "error" for block in state.get("answer_blocks", []))
+    ):
         semantic = False
 
     input_tokens, output_tokens, reasoning_tokens = _turn_tokens(events)
@@ -1108,7 +1118,15 @@ def compare_profiles(reports: list[dict[str, Any]]) -> dict[str, Any]:
                     "candidate_schema_valid": candidate_schema,
                 }
             )
-        safe = not regressions and not schema_regressions and not incomplete_cases
+        insufficient_evidence = not case_names or not any(
+            _case_scores(baseline, name, "semantic_ok")[0] for name in case_names
+        )
+        safe = (
+            not regressions
+            and not schema_regressions
+            and not incomplete_cases
+            and not insufficient_evidence
+        )
         comparisons.append(
             {
                 "model": candidate["model"],
@@ -1121,6 +1139,7 @@ def compare_profiles(reports: list[dict[str, Any]]) -> dict[str, Any]:
                 "candidate_median_total_seconds": candidate["turn_latency_seconds"]["median"],
                 "case_comparisons": case_comparisons,
                 "incomplete_cases": incomplete_cases,
+                "insufficient_evidence": insufficient_evidence,
                 "safe_to_enable": safe,
                 "recommendation": "candidate_ok" if safe else "keep_baseline",
             }
