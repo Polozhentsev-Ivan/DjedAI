@@ -1,5 +1,6 @@
 import json
 import math
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Literal
@@ -15,7 +16,14 @@ from djedai.agent.diagnostics import (
     retry_started,
     retry_wait,
 )
+from djedai.agent.reasoning import (
+    PROVIDER_DEFAULT,
+    REASONING_STAGES,
+    actual_reasoning_effort,
+    normalize_reasoning_profile,
+)
 from djedai.agent.transport import attempt_lease
+from djedai.config import ReasoningEffort
 from djedai.execution import (
     ExecutionBudget,
     TurnCancelled,
@@ -53,12 +61,26 @@ class BIModelClient:
         max_output_tokens: int | None = None,
         max_retries: int = 1,
         retry_delay: float = 0.5,
+        reasoning: Mapping[str, ReasoningEffort] | None = None,
+        reasoning_supported: bool = False,
     ):
         endpoint = urlsplit(base_url)
         if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
             raise ValueError("MODEL_BASE_URL должен быть полным HTTP(S)-адресом")
         if not api_key.strip() or any(character in api_key for character in "\r\n"):
             raise ValueError("MODEL_API_KEY не должен быть пустым или содержать переносы строк")
+        profile = normalize_reasoning_profile(reasoning)
+        if not reasoning_supported:
+            enabled = {
+                stage: effort for stage, effort in profile.items() if effort != PROVIDER_DEFAULT
+            }
+            if enabled:
+                raise ValueError(
+                    "MODEL_REASONING_SUPPORTED=false: endpoint/модель не поддерживает "
+                    "reasoning_effort, но заданы режимы "
+                    f"{enabled}. Укажите provider_default для всех стадий или "
+                    "поддерживающий reasoning endpoint."
+                )
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -67,10 +89,22 @@ class BIModelClient:
             http_client=DiagnosticHttpClient(),
         )
         self.model = model_name
+        self.reasoning = profile
         self.max_output_tokens = max_output_tokens
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+
+    def reasoning_for(self, stage: str | None) -> ReasoningEffort:
+        """Return the configured effort for a stage; an omitted stage keeps the default."""
+        if stage is None:
+            return PROVIDER_DEFAULT
+        if stage not in REASONING_STAGES:
+            raise ValueError(
+                f"Неизвестная стадия reasoning: {stage!r}; "
+                f"допустимые стадии: {', '.join(REASONING_STAGES)}"
+            )
+        return self.reasoning[stage]
 
     def _request(self, **kwargs: Any) -> Any:
         budget = current_budget() or ExecutionBudget(
@@ -124,11 +158,26 @@ class BIModelClient:
         raise RuntimeError("Unreachable model retry state")
 
     def generate_typed_response[T: BaseModel](
-        self, system_prompt: str, user_prompt: str, response_model: type[T]
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        *,
+        stage: str | None = None,
     ) -> ModelResponse[T]:
-        with model_call(self.model, response_model.__name__) as call:
+        setting = self.reasoning_for(stage)
+        effort = actual_reasoning_effort(setting)
+        with model_call(
+            self.model,
+            response_model.__name__,
+            stage=stage,
+            reasoning_effort=effort,
+            reasoning_setting=setting,
+        ) as call:
             try:
-                result = self._generate_typed_response(system_prompt, user_prompt, response_model)
+                result = self._generate_typed_response(
+                    system_prompt, user_prompt, response_model, reasoning_effort=effort
+                )
             except (TurnTimeout, TurnCancelled) as exc:
                 if call:
                     call.finish("TIMEOUT" if isinstance(exc, TurnTimeout) else "CANCELLED")
@@ -142,7 +191,12 @@ class BIModelClient:
             return result
 
     def _generate_typed_response[T: BaseModel](
-        self, system_prompt: str, user_prompt: str, response_model: type[T]
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        *,
+        reasoning_effort: str | None = None,
     ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
 
@@ -151,17 +205,24 @@ class BIModelClient:
             "json_schema": {"name": response_model.__name__, "schema": schema_json, "strict": True},
         }
 
+        request: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": structured_format,
+            "temperature": 0.1,
+        }
+        if self.max_output_tokens:
+            request["max_tokens"] = self.max_output_tokens
+        if reasoning_effort is not None:
+            # DeepInfra documents reasoning_effort inside extra_body for the
+            # OpenAI-compatible Chat Completions API.
+            request["extra_body"] = {"reasoning_effort": reasoning_effort}
+
         try:
-            response = self._request(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format=structured_format,
-                temperature=0.1,
-                **({"max_tokens": self.max_output_tokens} if self.max_output_tokens else {}),
-            )
+            response = self._request(**request)
 
             capture_usage(response.usage)
 

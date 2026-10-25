@@ -136,11 +136,23 @@ class RunDiagnostics:
 
 
 class ModelCall:
-    def __init__(self, run: RunDiagnostics, model: str, schema: str) -> None:
+    def __init__(
+        self,
+        run: RunDiagnostics,
+        model: str,
+        schema: str,
+        *,
+        stage: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_setting: str = "provider_default",
+    ) -> None:
         self.run = run
         self.call_id = f"call_{uuid4().hex}"
         self.model = model
         self.schema = schema
+        self.stage = stage
+        self.reasoning_effort = reasoning_effort
+        self.reasoning_setting = reasoning_setting
         self.attempt = 0
         self.started = perf_counter()
         self.usage: dict[str, int | None] = {
@@ -151,7 +163,16 @@ class ModelCall:
         self.emit("model_call_started")
 
     def emit(self, event: str, **fields: Any) -> None:
-        self.run.emit(event, call_id=self.call_id, model=self.model, schema=self.schema, **fields)
+        self.run.emit(
+            event,
+            call_id=self.call_id,
+            model=self.model,
+            schema=self.schema,
+            stage=self.stage,
+            reasoning_effort=self.reasoning_effort,
+            reasoning_setting=self.reasoning_setting,
+            **fields,
+        )
 
     def capture_usage(self, usage: Any) -> None:
         if usage is not None:
@@ -192,9 +213,27 @@ class ModelCall:
 
 
 @contextmanager
-def model_call(model: str, schema: str) -> Iterator[ModelCall | None]:
+def model_call(
+    model: str,
+    schema: str,
+    *,
+    stage: str | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_setting: str = "provider_default",
+) -> Iterator[ModelCall | None]:
     run = _run.get()
-    call = ModelCall(run, model, schema) if run is not None else None
+    call = (
+        ModelCall(
+            run,
+            model,
+            schema,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            reasoning_setting=reasoning_setting,
+        )
+        if run is not None
+        else None
+    )
     token = _call.set(call)
     try:
         yield call

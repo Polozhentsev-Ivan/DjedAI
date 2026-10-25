@@ -77,11 +77,19 @@ class ModelTrace:
         self.path = path
 
     def generate_typed_response[T: BaseModel](
-        self, system_prompt: str, user_prompt: str, response_model: type[T]
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        *,
+        stage: str | None = None,
     ) -> ModelResponse[T]:
-        response = self.client.generate_typed_response(system_prompt, user_prompt, response_model)
+        response = self.client.generate_typed_response(
+            system_prompt, user_prompt, response_model, stage=stage
+        )
         record = {
             "schema": response_model.__name__,
+            "stage": stage,
             "status": response.status,
             "data": response.data.model_dump(mode="json") if response.data else None,
             "error_type": response.error_type,

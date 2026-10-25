@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Application-supported subset of DeepInfra reasoning_effort values.
+# provider_default additionally omits the parameter and keeps the provider/model
+# default behaviour.
+ReasoningEffort = Literal["provider_default", "none", "low", "medium", "high"]
 
 
 class LimitSettings(BaseSettings):
@@ -37,6 +42,28 @@ class LimitSettings(BaseSettings):
     )
     model_max_output_tokens: int = Field(default=2048, ge=1, alias="MODEL_MAX_OUTPUT_TOKENS")
     model_context_tokens: int = Field(default=8192, ge=1, alias="MODEL_CONTEXT_TOKENS")
+    # Reasoning is selected per stage. provider_default omits reasoning_effort
+    # entirely, so the previous profile keeps the provider/model default.
+    model_reasoning_understand: ReasoningEffort = Field(
+        default="provider_default", alias="MODEL_REASONING_UNDERSTAND"
+    )
+    model_reasoning_plan: ReasoningEffort = Field(
+        default="provider_default", alias="MODEL_REASONING_PLAN"
+    )
+    model_reasoning_visualize: ReasoningEffort = Field(
+        default="provider_default", alias="MODEL_REASONING_VISUALIZE"
+    )
+    model_reasoning_compose: ReasoningEffort = Field(
+        default="provider_default", alias="MODEL_REASONING_COMPOSE"
+    )
+    model_reasoning_verify: ReasoningEffort = Field(
+        default="provider_default", alias="MODEL_REASONING_VERIFY"
+    )
+    # DeepInfra accepts reasoning_effort only for models that expose reasoning.
+    # Default false: a non-default stage setting then fails at startup instead
+    # of being silently ignored by an endpoint/model that does not support it.
+    # Enable only after checking the selected model and endpoint.
+    model_reasoning_supported: bool = Field(default=False, alias="MODEL_REASONING_SUPPORTED")
 
     @field_validator("*", mode="before")
     @classmethod

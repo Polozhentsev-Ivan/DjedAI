@@ -27,7 +27,7 @@ class PlannedModel:
     def __init__(self, tool, args):
         self.tool, self.args = tool, args
 
-    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+    def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         if response_model.__name__ == "Understanding":
             value = {"intent": "data_question", "resolved_question": user_prompt}
         elif response_model.__name__ == "PlanResponse":

@@ -502,7 +502,7 @@ class FakeClient:
         self.error_type = error_type
         self.calls = 0
 
-    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+    def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         self.calls += 1
         if self.error_type:
             return ModelResponse(status="error", error_type=self.error_type, message="сбой")

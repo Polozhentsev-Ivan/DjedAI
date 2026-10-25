@@ -77,11 +77,12 @@ Python-команды запускаем в среде проекта через
   - `--download` скачивает закреплённую версию только при отсутствии файла; существующий кэш проверяется и не заменяется. Для локального файла флаг можно опустить.
   - Кэш CSV и JSON-отчёт должны находиться вне checkout. Статусы `structure_valid`, `verified` и `reference_mismatch` различаются; `agent_evaluation` остаётся `not_run`. Эта команда проверяет эталоны и не заменяет будущий eval агента #81.
 
-- `benchmark_model_profiles.py` — реальная серия Understand/Plan/Compose через API без пользовательских данных: отдельно считает валидность схем и корректность ответа/SQL, latency и prompt tokens. Ошибочный план записывает как неуспех, не обрывая серию. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
-  - Запуск: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --repeats 3 --context-lines 200`
+- `benchmark_model_profiles.py` — серия стадийных запросов и полных ходов через API без пользовательских данных. Отдельно считает валидность схемы, смысл, исполнение SQL, итоговые числа, время стадии и полного хода, токены. Поддерживает профили `baseline`/`proposed`, сравнение регрессий и запрет включения ускорения при ухудшении. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
+  - Текущий профиль: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --reasoning-profile baseline --repeats 3 --turn-repeats 3 --context-lines 200`.
+  - Сравнение: добавить `--reasoning-profile proposed --reasoning-supported`; без явного подтверждения поддержки клиент откажется запускаться с ненулевым режимом, а не проигнорирует его. Команда сохраняет `baseline` и `proposed` в одном отчёте и помечает регрессии.
   - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
-  - Сравнение: повторить `--model` для каждого профиля. `--base-url`, `--timeout`, `--max-output-tokens`, `--context-lines` задают параметры замера. Ограничение проекта — открытые веса до 80B суммарных параметров.
-  - Результаты и ограничения выбранного профиля: [протокол PL-1](../docs/model-profile-pl1.md). Это минимальная диагностика, не полный eval #81.
+  - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`); `MODEL_REASONING_SUPPORTED=false` по умолчанию.
+  - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
   - Запуск: `uv run python scripts/generate_synthetic_data.py`

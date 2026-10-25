@@ -1589,7 +1589,7 @@ def test_status_arrives_before_a_blocked_stage_finishes(chat_api, monkeypatch, n
     monkeypatch.setattr(agent_graph, node, held)
 
     class HeldClient:
-        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+        def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
             if response_model.__name__ == "Understanding":
                 data = {"intent": "ambiguous" if node == "clarify" else "data_question"}
             elif response_model.__name__ == "PlanResponse":

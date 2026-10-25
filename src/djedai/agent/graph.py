@@ -87,7 +87,9 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
             catalog=state.get("catalog_prompt"),
             history=memory_context(state),
         )
-        response = client.generate_typed_response(sys_prompt, last_msg, Understanding)
+        response = client.generate_typed_response(
+            sys_prompt, last_msg, Understanding, stage="understand"
+        )
         if response.status == "success" and response.data:
             return {"understanding": response.data}
         else:
@@ -129,7 +131,9 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     user_prompt = user_prompt or last_msg or "Generate execution plan."
 
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, PlanResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, PlanResponse, stage="plan"
+        )
         if response.status == "success" and response.data:
             return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
         return {
@@ -508,7 +512,9 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
 
     client = config.get("configurable", {}).get("client")
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, VisualizeResponse, stage="visualize"
+        )
         if response.status == "success" and response.data:
             return {
                 "charts": sanitize_charts(response.data.charts, valid_results),
@@ -554,7 +560,9 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         user_prompt += f"\nOriginal question and response requirements: {last_msg}"
 
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, ComposeResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, ComposeResponse, stage="compose"
+        )
         if response.status == "success" and response.data:
             blocks = response.data.answer_blocks
         else:
@@ -616,7 +624,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     if client:
         sys_prompt = load_prompt("verify").format(facts=str(facts_and_data), draft=draft)
         response = client.generate_typed_response(
-            sys_prompt, "Verify the numbers and formats.", VerifyResponse
+            sys_prompt,
+            "Verify the numbers and formats.",
+            VerifyResponse,
+            stage="verify",
         )
 
         if response.status == "success" and response.data:

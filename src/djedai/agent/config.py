@@ -4,7 +4,7 @@ from dotenv import dotenv_values, load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
 from djedai.agent.client import BIModelClient
-from djedai.config import get_limits
+from djedai.config import ReasoningEffort, get_limits
 
 
 class ModelConfig(BaseModel):
@@ -23,6 +23,18 @@ def data_sharing_allowed() -> bool:
     if value is None:
         value = dotenv_values().get("ALLOW_DATA_SHARING")
     return (value or "false").strip().lower() == "true"
+
+
+def reasoning_profile() -> dict[str, ReasoningEffort]:
+    """Возвращает проверенный режим reasoning для каждой стадии агента."""
+    limits = get_limits()
+    return {
+        "understand": limits.model_reasoning_understand,
+        "plan": limits.model_reasoning_plan,
+        "visualize": limits.model_reasoning_visualize,
+        "compose": limits.model_reasoning_compose,
+        "verify": limits.model_reasoning_verify,
+    }
 
 
 def get_agent_client() -> BIModelClient:
@@ -44,6 +56,8 @@ def get_agent_client() -> BIModelClient:
             max_output_tokens=limits.model_max_output_tokens,
             max_retries=limits.model_max_retries,
             retry_delay=limits.model_retry_delay_seconds,
+            reasoning=reasoning_profile(),
+            reasoning_supported=limits.model_reasoning_supported,
         )
     except ValidationError as e:
         raise ValueError(f"Отсутствует или неверна конфигурация модели: {e}") from e

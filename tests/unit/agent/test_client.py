@@ -39,6 +39,96 @@ def test_client_success_valid_json(client):
     assert response.error_type is None
 
 
+def test_client_omits_reasoning_parameter_for_provider_default(client):
+    client.client.chat.completions.create.return_value = create_mock_response(
+        '{"intent":"data_question"}'
+    )
+    client.generate_typed_response("sys", "user", Understanding, stage="plan")
+    request = client.client.chat.completions.create.call_args.kwargs
+    assert "extra_body" not in request
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high"])
+def test_client_sends_stage_reasoning_through_extra_body(mocker, effort):
+    mocker.patch("djedai.agent.client.OpenAI")
+    client = BIModelClient(
+        api_key="test",
+        base_url="http://test",
+        model_name="test-model",
+        reasoning={"understand": effort},
+        reasoning_supported=True,
+    )
+    client.client.chat.completions.create = MagicMock(
+        return_value=create_mock_response('{"intent":"data_question"}')
+    )
+
+    client.generate_typed_response("sys", "user", Understanding, stage="understand")
+
+    request = client.client.chat.completions.create.call_args.kwargs
+    assert request["extra_body"] == {"reasoning_effort": effort}
+
+
+def test_client_rejects_unknown_reasoning_stage(client):
+    with pytest.raises(ValueError, match="Неизвестная стадия reasoning"):
+        client.generate_typed_response("sys", "user", Understanding, stage="sql")
+
+
+def test_client_rejects_non_default_reasoning_by_default(mocker):
+    mocker.patch("djedai.agent.client.OpenAI")
+    with pytest.raises(ValueError, match="MODEL_REASONING_SUPPORTED=false"):
+        BIModelClient(
+            api_key="test",
+            base_url="http://test",
+            model_name="test-model",
+            reasoning={"compose": "high"},
+        )
+
+
+def test_client_allows_provider_default_on_unsupported_endpoint(mocker):
+    mocker.patch("djedai.agent.client.OpenAI")
+    client = BIModelClient(
+        api_key="test",
+        base_url="http://test",
+        model_name="test-model",
+        reasoning_supported=False,
+    )
+    assert client.reasoning == {
+        "understand": "provider_default",
+        "plan": "provider_default",
+        "visualize": "provider_default",
+        "compose": "provider_default",
+        "verify": "provider_default",
+    }
+
+
+def test_client_does_not_replace_rejected_reasoning_with_default(mocker):
+    mocker.patch("djedai.agent.client.OpenAI")
+    client = BIModelClient(
+        api_key="test",
+        base_url="http://test",
+        model_name="test-model",
+        reasoning={"verify": "high"},
+        reasoning_supported=True,
+    )
+    client.client.chat.completions.create = MagicMock(
+        side_effect=APIError(
+            message="reasoning_effort is not supported",
+            request=MagicMock(),
+            body={"error": {"message": "reasoning_effort is not supported"}},
+        )
+    )
+
+    response = client.generate_typed_response("sys", "user", Understanding, stage="verify")
+
+    assert response.status == "error"
+    assert response.error_type == "SERVER_ERROR"
+    assert "not supported" in response.message
+    assert client.client.chat.completions.create.call_count == 1
+    assert client.client.chat.completions.create.call_args.kwargs["extra_body"] == {
+        "reasoning_effort": "high"
+    }
+
+
 def test_client_records_usage_and_applies_output_cap(client):
     raw = create_mock_response('{"intent":"data_question"}').model_dump()
     raw["usage"] = {"prompt_tokens": 123, "completion_tokens": 15, "total_tokens": 138}
