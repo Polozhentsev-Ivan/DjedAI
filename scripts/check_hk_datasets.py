@@ -412,6 +412,8 @@ def check_catalog(manifest: dict, catalog: DatasetCatalog, reference: dict | Non
         "relations": relations,
         "self_references": self_refs,
         "warnings": catalog.warnings,
+        # Каталог целиком попадает в промпт агента: объём важен для контекста модели.
+        "prompt_chars": len(catalog.to_prompt()),
     }
 
 
@@ -731,7 +733,11 @@ def summarize(report: dict) -> list[str]:
                     f"| {file} | {item['row_count']} | {rows_ok} | {types or '—'} "
                     f"| {losses or '—'} | {key_ok} |"
                 )
-            lines += ["", f"Связей найдено: {len(checks['relations'])}."]
+            lines += [
+                "",
+                f"Связей найдено: {len(checks['relations'])}. "
+                f"Каталог в промпте агента: {checks['prompt_chars']} символов.",
+            ]
             for ref in checks["self_references"]:
                 lines.append(
                     f"- самоссылка {ref['table']}: {ref['from']} → {ref['to']}: "
