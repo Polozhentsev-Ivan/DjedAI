@@ -605,9 +605,7 @@ def test_reopen_and_refresh_after_restart(dashboard_env):
         assert snap["refreshed_at"] is None
 
         # Выполняем POST refresh после перезапуска
-        refresh_resp = restarted_client.post(
-            f"/api/dashboards/{dash_id}/refresh", headers=headers
-        )
+        refresh_resp = restarted_client.post(f"/api/dashboards/{dash_id}/refresh", headers=headers)
         assert refresh_resp.status_code == 200
         refreshed_snap = refresh_resp.json()
         assert refreshed_snap["refreshed_at"] is not None
@@ -763,9 +761,7 @@ def test_patch_dashboard_layout_persistence(dashboard_env):
             params={"sql": "SELECT 1"},
             data=ToolResultData(columns=["val"], rows=[[1]], row_count=1),
         )
-        save_tool_result(
-            db, res, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir
-        )
+        save_tool_result(db, res, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
 
     chart = {"chart_id": "c_lay", "result_id": "res_layout_test", "type": "kpi", "title": "Layout"}
     create_resp = client.post(

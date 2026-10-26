@@ -199,9 +199,7 @@ class DashboardService:
 
         if len(chain) == 1:
             rec = chain[0]
-            clean_params = {
-                k: v for k, v in (rec.params or {}).items() if k != "source_result_id"
-            }
+            clean_params = {k: v for k, v in (rec.params or {}).items() if k != "source_result_id"}
             tool_call = WidgetToolCall(tool=rec.tool or "run_sql", params=clean_params)
         else:
             steps: list[WidgetRecipeStep] = []
@@ -335,9 +333,9 @@ class DashboardService:
         budget_calls = self.settings.dashboard_max_tool_calls
         calls_count = 0
 
-        allowed_base_tables = {
-            t.original_name for t in catalog.tables
-        } | {t.table_id for t in catalog.tables}
+        allowed_base_tables = {t.original_name for t in catalog.tables} | {
+            t.table_id for t in catalog.tables
+        }
         new_snapshots: list[WidgetSnapshot] = []
 
         with context.open_connection() as connection:
@@ -414,9 +412,7 @@ class DashboardService:
                                 )
                             )
                         else:
-                            spec = ChartSpec(
-                                **chart_template.model_dump(), result_id=new_res_id
-                            )
+                            spec = ChartSpec(**chart_template.model_dump(), result_id=new_res_id)
                             new_snapshots.append(
                                 WidgetSnapshot(
                                     widget_id=w_snapshot.widget_id,
@@ -439,121 +435,120 @@ class DashboardService:
                         failure_error: ToolError | None = None
 
                         for step in steps:
-                          if calls_count >= budget_calls:
-                              recipe_failed = True
-                              failure_error = ToolError(
-                                  code="tool_budget_exceeded",
-                                  message=(
-                                      "Превышен лимит вызовов refresh "
-                                      f"(максимум {budget_calls})"
-                                  ),
-                                  suggestion="Уменьшите число виджетов на дашборде",
-                              )
-                              break
+                            if calls_count >= budget_calls:
+                                recipe_failed = True
+                                failure_error = ToolError(
+                                    code="tool_budget_exceeded",
+                                    message=(
+                                        f"Превышен лимит вызовов refresh (максимум {budget_calls})"
+                                    ),
+                                    suggestion="Уменьшите число виджетов на дашборде",
+                                )
+                                break
 
-                          step_allowed_tables = set(allowed_base_tables)
-                          registered_view = False
+                            step_allowed_tables = set(allowed_base_tables)
+                            registered_view = False
 
-                          if step.source_step_id is not None:
-                              parent_res = step_results.get(step.source_step_id)
-                              if parent_res is None or parent_res.status == "error":
-                                  recipe_failed = True
-                                  failure_error = (
-                                      parent_res.error
-                                      if parent_res and parent_res.error
-                                      else ToolError(
-                                          code="dependency_failed",
-                                          message=f"Шаг '{step.source_step_id}' завершился ошибкой",
-                                      )
-                                  )
-                                  break
+                            if step.source_step_id is not None:
+                                parent_res = step_results.get(step.source_step_id)
+                                if parent_res is None or parent_res.status == "error":
+                                    recipe_failed = True
+                                    failure_error = (
+                                        parent_res.error
+                                        if parent_res and parent_res.error
+                                        else ToolError(
+                                            code="dependency_failed",
+                                            message=f"Шаг '{step.source_step_id}' завершился ошибкой",
+                                        )
+                                    )
+                                    break
 
-                              # Безопасно регистрируем DataFrame в соединении DuckDB
-                              try:
-                                  df = None
-                                  if parent_res.data_ref:
-                                      pq_path = _resolve_data_ref_path(
-                                          parent_res.data_ref,
-                                          self.settings.results_data_dir,
-                                          expected_result_id=parent_res.result_id,
-                                      )
-                                      if pq_path.is_file():
-                                          with duckdb.connect() as reader_con:
-                                              escaped = _escape_sql_literal(pq_path.as_posix())
-                                              df = reader_con.execute(
-                                                  f"SELECT * FROM {escaped}"
-                                              ).df()
-                                  if df is None and parent_res.data:
-                                      cols = [
-                                          c.name if isinstance(c, ToolResultColumn) else str(c)
-                                          for c in parent_res.data.columns
-                                      ]
-                                      df = pd.DataFrame(parent_res.data.rows, columns=cols)
+                                # Безопасно регистрируем DataFrame в соединении DuckDB
+                                try:
+                                    df = None
+                                    if parent_res.data_ref:
+                                        pq_path = _resolve_data_ref_path(
+                                            parent_res.data_ref,
+                                            self.settings.results_data_dir,
+                                            expected_result_id=parent_res.result_id,
+                                        )
+                                        if pq_path.is_file():
+                                            with duckdb.connect() as reader_con:
+                                                escaped = _escape_sql_literal(pq_path.as_posix())
+                                                df = reader_con.execute(
+                                                    f"SELECT * FROM {escaped}"
+                                                ).df()
+                                    if df is None and parent_res.data:
+                                        cols = [
+                                            c.name if isinstance(c, ToolResultColumn) else str(c)
+                                            for c in parent_res.data.columns
+                                        ]
+                                        df = pd.DataFrame(parent_res.data.rows, columns=cols)
 
-                                  if df is not None:
-                                      connection.register("source_result", df)
-                                      registered_view = True
-                                      step_allowed_tables.add("source_result")
-                                  else:
-                                      recipe_failed = True
-                                      failure_error = ToolError(
-                                          code="dependency_data_missing",
-                                          message="Данные предыдущего шага недоступны",
-                                      )
-                                      break
-                              except Exception as e:
-                                  recipe_failed = True
-                                  failure_error = ToolError(
-                                      code="dependency_error",
-                                      message=f"Не удалось подключить данные шага: {str(e)}",
-                                  )
-                                  break
+                                    if df is not None:
+                                        connection.register("source_result", df)
+                                        registered_view = True
+                                        step_allowed_tables.add("source_result")
+                                    else:
+                                        recipe_failed = True
+                                        failure_error = ToolError(
+                                            code="dependency_data_missing",
+                                            message="Данные предыдущего шага недоступны",
+                                        )
+                                        break
+                                except Exception as e:
+                                    recipe_failed = True
+                                    failure_error = ToolError(
+                                        code="dependency_error",
+                                        message=f"Не удалось подключить данные шага: {str(e)}",
+                                    )
+                                    break
 
-                          calls_count += 1
-                          step_params = dict(step.call.params)
+                            calls_count += 1
+                            step_params = dict(step.call.params)
 
-                          try:
-                              step_res = execute_tool(
-                                  step.call.tool,
-                                  step_params,
-                                  connection=connection,
-                                  allowed_tables=step_allowed_tables,
-                                  semantics=semantics,
-                              )
-                          finally:
-                              if registered_view:
-                                  try:
-                                      connection.unregister("source_result")
-                                  except Exception:
-                                      pass
+                            try:
+                                step_res = execute_tool(
+                                    step.call.tool,
+                                    step_params,
+                                    connection=connection,
+                                    allowed_tables=step_allowed_tables,
+                                    semantics=semantics,
+                                )
+                            finally:
+                                if registered_view:
+                                    try:
+                                        connection.unregister("source_result")
+                                    except Exception:
+                                        pass
 
-                          new_step_id = f"r_{uuid4().hex[:16]}"
-                          parent_res = (
-                              step_results.get(step.source_step_id)
-                              if step.source_step_id
-                              else None
-                          )
-                          parent_res_id = parent_res.result_id if parent_res else None
-                          step_res = step_res.model_copy(
-                              update={"result_id": new_step_id, "source_result_id": parent_res_id}
-                          )
-                          save_tool_result(
-                              db,
-                              step_res,
-                              chat_id=None,
-                              owner_id=owner_id,
-                              persist_data=True,
-                              storage_dir=self.settings.results_data_dir,
-                          )
-                          step_results[step.step_id] = step_res
+                            new_step_id = f"r_{uuid4().hex[:16]}"
+                            parent_res = (
+                                step_results.get(step.source_step_id)
+                                if step.source_step_id
+                                else None
+                            )
+                            parent_res_id = parent_res.result_id if parent_res else None
+                            step_res = step_res.model_copy(
+                                update={"result_id": new_step_id, "source_result_id": parent_res_id}
+                            )
+                            save_tool_result(
+                                db,
+                                step_res,
+                                chat_id=None,
+                                owner_id=owner_id,
+                                persist_data=True,
+                                storage_dir=self.settings.results_data_dir,
+                            )
+                            step_results[step.step_id] = step_res
 
-                          if step_res.status == "error":
-                              recipe_failed = True
-                              failure_error = step_res.error or ToolError(
-                                  code="step_failed",
-                                  message=f"Ошибка на шаге '{step.step_id}'",
-                              )
-                              break
+                            if step_res.status == "error":
+                                recipe_failed = True
+                                failure_error = step_res.error or ToolError(
+                                    code="step_failed",
+                                    message=f"Ошибка на шаге '{step.step_id}'",
+                                )
+                                break
 
                         if recipe_failed:
                             new_snapshots.append(

@@ -369,9 +369,7 @@ def _resolve_data_ref_path(
 # ============================================================================
 
 
-def _get_dashboard_result_ids_for_dataset(
-    db: Session, owner_id: str, dataset_id: str
-) -> set[str]:
+def _get_dashboard_result_ids_for_dataset(db: Session, owner_id: str, dataset_id: str) -> set[str]:
     """Возвращает множество всех result_id (включая шаги-предки) для дашбордов датасета."""
     dashboards = (
         db.query(DashboardModel)
@@ -383,7 +381,7 @@ def _get_dashboard_result_ids_for_dataset(
     )
     valid_ids: set[str] = set()
     for dash in dashboards:
-        for w in (dash.widgets or []):
+        for w in dash.widgets or []:
             if not isinstance(w, dict):
                 continue
             candidates: list[str] = []
