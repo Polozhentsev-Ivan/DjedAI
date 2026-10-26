@@ -158,6 +158,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/datasets/{dataset_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-profile a ready dataset into the next catalog revision
+         * @description The current revision stays usable until the new one is published; a failure is reported in DatasetDetail.refresh.
+         */
+        post: operations["refreshDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/datasets/{dataset_id}/freshness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Compare the source schema with the catalog now */
+        post: operations["checkDatasetFreshness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/datasets/{dataset_id}/events": {
         parameters: {
             query?: never;
@@ -530,6 +571,21 @@ export interface components {
              * @description Дата создания
              */
             created_at: string;
+            /**
+             * @description Ревизия каталога; null — ещё не собран или собран до #169
+             * @default null
+             */
+            revision?: components["schemas"]["CatalogRevision"] | null;
+            /**
+             * @description Последняя проверка источника относительно каталога
+             * @default null
+             */
+            freshness?: components["schemas"]["SourceFreshness"] | null;
+            /**
+             * @description Идущая или неудавшаяся перепрофилировка
+             * @default null
+             */
+            refresh?: components["schemas"]["DatasetRefresh"] | null;
         };
         /** DatasetDetail */
         DatasetDetail: {
@@ -559,10 +615,125 @@ export interface components {
              * @description Дата создания
              */
             created_at: string;
+            /**
+             * @description Ревизия каталога; null — ещё не собран или собран до #169
+             * @default null
+             */
+            revision?: components["schemas"]["CatalogRevision"] | null;
+            /**
+             * @description Последняя проверка источника относительно каталога
+             * @default null
+             */
+            freshness?: components["schemas"]["SourceFreshness"] | null;
+            /**
+             * @description Идущая или неудавшаяся перепрофилировка
+             * @default null
+             */
+            refresh?: components["schemas"]["DatasetRefresh"] | null;
             catalog: components["schemas"]["DatasetCatalog"] | null;
             error: components["schemas"]["ToolError"] | null;
         };
         DatasetAccepted: components["schemas"]["DatasetUploadAccepted"];
+        /** CatalogRevision */
+        CatalogRevision: {
+            /** Number */
+            number: number;
+            /**
+             * Profiled At
+             * Format: date-time
+             */
+            profiled_at: string;
+            /** Schema Fingerprint */
+            schema_fingerprint: string;
+            /** Source Fingerprint */
+            source_fingerprint: string;
+            /** Transform Version */
+            transform_version: string;
+        };
+        /** SourceFreshness */
+        SourceFreshness: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fresh" | "aged" | "drifted" | "incompatible" | "unknown";
+            /**
+             * Profiled At
+             * @default null
+             */
+            profiled_at?: string | null;
+            /**
+             * Checked At
+             * @default null
+             */
+            checked_at?: string | null;
+            /** Changes */
+            changes?: components["schemas"]["SchemaChange"][];
+            /**
+             * Reason
+             * @default null
+             */
+            reason?: string | null;
+        };
+        /**
+         * ReadProvenance
+         * @description Что и когда прочитал расчёт; копия ревизии, которую не меняет перепрофилировка.
+         */
+        ReadProvenance: {
+            /** Revision Known */
+            revision_known: boolean;
+            /**
+             * Dataset Id
+             * @default null
+             */
+            dataset_id?: string | null;
+            /**
+             * Catalog Revision
+             * @default null
+             */
+            catalog_revision?: number | null;
+            /**
+             * Schema Fingerprint
+             * @default null
+             */
+            schema_fingerprint?: string | null;
+            /**
+             * Source Fingerprint
+             * @default null
+             */
+            source_fingerprint?: string | null;
+            /**
+             * Transform Version
+             * @default null
+             */
+            transform_version?: string | null;
+            /**
+             * Read Mode
+             * @enum {string}
+             */
+            read_mode: "live" | "snapshot" | "saved_result" | "unknown";
+            /**
+             * Consistency
+             * @enum {string}
+             */
+            consistency: "turn_snapshot" | "independent" | "immutable" | "unknown";
+            /**
+             * Snapshot Id
+             * @default null
+             */
+            snapshot_id?: string | null;
+            /**
+             * Started At
+             * @default null
+             */
+            started_at?: string | null;
+            /**
+             * Finished At
+             * @default null
+             */
+            finished_at?: string | null;
+            freshness: components["schemas"]["SourceFreshness"];
+        };
         /**
          * ConnectRequest
          * @description Owned database source; credentials are write-only and never part of its catalog.
@@ -685,6 +856,8 @@ export interface components {
              */
             created_at: string;
             source: components["schemas"]["schemas-DatasetSource"];
+            /** @default null */
+            revision?: components["schemas"]["CatalogRevision"] | null;
             /**
              * Summary
              * @default null
@@ -1313,6 +1486,52 @@ export interface components {
              * @default null
              */
             files?: number | null;
+        };
+        /** SchemaChange */
+        SchemaChange: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "dropped_table" | "added_column" | "dropped_column" | "type_changed";
+            /** Table */
+            table: string;
+            /**
+             * Column
+             * @default null
+             */
+            column?: string | null;
+            /**
+             * Before
+             * @default null
+             */
+            before?: string | null;
+            /**
+             * After
+             * @default null
+             */
+            after?: string | null;
+        };
+        /**
+         * DatasetRefresh
+         * @description Идущая или неудавшаяся перепрофилировка; датасет при этом остаётся ready.
+         */
+        DatasetRefresh: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "error";
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Message
+             * @default null
+             */
+            message?: string | null;
         };
         /**
          * DatasetUploadAccepted
@@ -2067,6 +2286,11 @@ export interface components {
              * @default null
              */
             quality?: components["schemas"]["QualityReport"] | null;
+            /**
+             * @description Ревизия каталога, режим и время чтения источника (B1-11)
+             * @default null
+             */
+            read?: components["schemas"]["ReadProvenance"] | null;
         };
         /**
          * WidgetToolCall
@@ -2152,6 +2376,16 @@ export interface components {
             status: "ok" | "error" | "empty";
             /** @default null */
             error?: components["schemas"]["ToolError"] | null;
+            /**
+             * Read Started At
+             * @default null
+             */
+            read_started_at?: string | null;
+            /**
+             * Read Finished At
+             * @default null
+             */
+            read_finished_at?: string | null;
         };
         /**
          * DashboardSnapshot
@@ -2199,6 +2433,13 @@ export interface components {
              * @default null
              */
             refreshed_at?: string | null;
+            /**
+             * Consistency
+             * @description Согласованность чтений виджетов одного refresh
+             * @default independent
+             * @enum {string}
+             */
+            consistency?: "turn_snapshot" | "independent" | "immutable" | "unknown";
         };
         /**
          * TraceStep
@@ -2548,6 +2789,52 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    refreshDataset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Re-profiling started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    checkDatasetFreshness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Freshness of the source relative to the catalog revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceFreshness"];
+                };
             };
             default: components["responses"]["Error"];
         };
