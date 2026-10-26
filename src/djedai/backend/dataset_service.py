@@ -8,7 +8,7 @@ import shutil
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -539,75 +539,9 @@ class DatasetService:
     def _process(self, owner_id: str, dataset_id: str) -> None:
         try:
             with self.session_factory() as db:
-                model = self._owned(db, owner_id, dataset_id)
-                if model.status == "ready":
+                if self._owned(db, owner_id, dataset_id).status == "ready":
                     return
-                sources = []
-                for index, item in enumerate(model.raw_files or []):
-                    if item["path"] != f"{dataset_id}/raw/{index:04d}.csv":
-                        raise ValueError("Некорректный путь исходного CSV")
-                    sources.append(
-                        CsvSource(self._dataset_path(dataset_id, item["path"]), item["name"])
-                    )
-                target = self._database_path(model)
-                name, created_at, source_kind = model.name, model.created_at, model.source_kind
-                secret = model.source_secret
-            working = target.with_suffix(".building.duckdb")
-            self._dataset_path(dataset_id, working.relative_to(self.data_dir).as_posix())
-            # An interrupted build is discarded; retained raw files are authoritative.
-            working.unlink(missing_ok=True)
-            Path(str(working) + ".wal").unlink(missing_ok=True)
-
-            def progress(stage: str, fraction: float, message: str) -> None:
-                self._update_progress(owner_id, dataset_id, stage, fraction, message)
-
-            if source_kind == "postgres":
-                if not secret:
-                    raise SourceSecretError("Источник не настроен")
-                source = self._secrets.decrypt(owner_id, dataset_id, secret)
-                catalog = connect_postgres_dataset(
-                    source.dsn,
-                    source.tables,
-                    working,
-                    dataset_id=dataset_id,
-                    name=name,
-                    created_at=created_at,
-                    progress=progress,
-                )
-            elif source_kind == "clickhouse":
-                if not secret:
-                    raise SourceSecretError("Источник не настроен")
-                source = self._secrets.decrypt(owner_id, dataset_id, secret, kind="clickhouse")
-                catalog = connect_clickhouse_dataset(
-                    source.dsn,
-                    source.tables,
-                    working,
-                    dataset_id=dataset_id,
-                    name=name,
-                    created_at=created_at,
-                    limits=self._clickhouse_limits,
-                    progress=progress,
-                )
-            elif source_kind in {"csv", "csv_upload"}:
-                catalog = ingest_csv_dataset(
-                    sources,
-                    working,
-                    dataset_id=dataset_id,
-                    name=name,
-                    created_at=created_at,
-                    progress=progress,
-                )
-            else:
-                raise ValueError("Неподдерживаемый источник")
-            if self._description_client is not None:
-                # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
-                progress(
-                    "relations" if source_kind in {"postgres", "clickhouse"} else "profile",
-                    0.0,
-                    "Описание данных",
-                )
-                catalog = self._describe(dataset_id, working, catalog)
-            working.replace(target)
+            catalog = self._build(owner_id, dataset_id, revision=1)
             with self.session_factory() as db:
                 model = db.scalar(
                     select(DatasetModel).where(
@@ -619,16 +553,11 @@ class DatasetService:
                     model.status = "ready"
                     model.error_message = None
                     model.progress = {"stage": "ready", "progress": 1.0, "message": "Готово"}
+                    model.freshness = _built_freshness(catalog)
                     db.commit()
         except Exception as error:
             # Driver exceptions can contain source credentials; never log their traceback.
             logger.warning("Dataset processing failed for owned dataset %s", dataset_id)
-            # Internal paths/SQL/stack traces must not leak through the JSON/SSE API.
-            message = (
-                str(error)
-                if isinstance(error, CsvReadError | SourceTooLargeError)
-                else "Не удалось обработать источник. Проверьте подключение или файлы."
-            )
             with self.session_factory() as db:
                 model = db.scalar(
                     select(DatasetModel).where(
@@ -637,8 +566,150 @@ class DatasetService:
                 )
                 if model is not None:
                     model.status = "error"
-                    model.error_message = message
+                    model.error_message = _build_error(error)
                     model.catalog = None
+                    db.commit()
+
+    def _build(self, owner_id: str, dataset_id: str, *, revision: int) -> DatasetCatalog:
+        """Build the dataset file from its retained source and publish it in place.
+
+        The file is built aside and replaced atomically, so connections opened earlier
+        keep reading the previous revision. The caller publishes the returned catalog.
+        """
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            sources = []
+            for index, item in enumerate(model.raw_files or []):
+                if item["path"] != f"{dataset_id}/raw/{index:04d}.csv":
+                    raise ValueError("Некорректный путь исходного CSV")
+                sources.append(
+                    CsvSource(self._dataset_path(dataset_id, item["path"]), item["name"])
+                )
+            target = self._database_path(model)
+            name, created_at, source_kind = model.name, model.created_at, model.source_kind
+            secret = model.source_secret
+            refreshing = model.status == "ready"
+        working = target.with_suffix(".building.duckdb")
+        self._dataset_path(dataset_id, working.relative_to(self.data_dir).as_posix())
+        # An interrupted build is discarded; retained raw files are authoritative.
+        working.unlink(missing_ok=True)
+        Path(str(working) + ".wal").unlink(missing_ok=True)
+
+        def progress(stage: str, fraction: float, message: str) -> None:
+            # A ready dataset keeps its public progress; re-profiling is reported separately.
+            if not refreshing:
+                self._update_progress(owner_id, dataset_id, stage, fraction, message)
+
+        common = {"dataset_id": dataset_id, "name": name, "created_at": created_at}
+        if source_kind == "postgres":
+            if not secret:
+                raise SourceSecretError("Источник не настроен")
+            source = self._secrets.decrypt(owner_id, dataset_id, secret)
+            catalog = connect_postgres_dataset(
+                source.dsn, source.tables, working, **common, revision=revision, progress=progress
+            )
+        elif source_kind == "clickhouse":
+            if not secret:
+                raise SourceSecretError("Источник не настроен")
+            source = self._secrets.decrypt(owner_id, dataset_id, secret, kind="clickhouse")
+            catalog = connect_clickhouse_dataset(
+                source.dsn,
+                source.tables,
+                working,
+                **common,
+                limits=self._clickhouse_limits,
+                revision=revision,
+                progress=progress,
+            )
+        elif source_kind in {"csv", "csv_upload"}:
+            catalog = ingest_csv_dataset(
+                sources, working, **common, revision=revision, progress=progress
+            )
+        else:
+            raise ValueError("Неподдерживаемый источник")
+        if self._description_client is not None:
+            # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
+            progress(
+                "relations" if source_kind in {"postgres", "clickhouse"} else "profile",
+                0.0,
+                "Описание данных",
+            )
+            catalog = self._describe(dataset_id, working, catalog)
+        working.replace(target)
+        return catalog
+
+    async def refresh(self, owner_id: str, dataset_id: str) -> DatasetDetail:
+        """Re-profile a ready dataset into the next catalog revision in the background.
+
+        The dataset stays ready with its current revision until the new one is
+        published; a failure keeps it and is reported in ``DatasetDetail.refresh``.
+        """
+        detail = await asyncio.to_thread(self._accept_refresh, owner_id, dataset_id)
+        self._start_refresh(owner_id, dataset_id)
+        return detail
+
+    def _accept_refresh(self, owner_id: str, dataset_id: str) -> DatasetDetail:
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            if model.status != "ready" or not model.catalog:
+                raise HTTPException(status_code=409, detail="Датасет ещё не готов к запросам")
+            if (model.refresh or {}).get("status") == "processing" or (
+                owner_id,
+                dataset_id,
+            ) in self._tasks:
+                raise HTTPException(status_code=409, detail="Перепрофилировка уже идёт")
+            if model.source_kind in {"postgres", "clickhouse"}:
+                try:
+                    self._secrets.require_key()
+                except SourceSecretError:
+                    raise HTTPException(
+                        status_code=503, detail="Шифрование источников не настроено"
+                    ) from None
+            model.refresh = DatasetRefresh(
+                status="processing", started_at=datetime.now(UTC)
+            ).model_dump(mode="json")
+            db.commit()
+            return self._detail(model)
+
+    def _start_refresh(self, owner_id: str, dataset_id: str) -> None:
+        key = (owner_id, dataset_id)
+        if key in self._tasks:
+            return
+        task = asyncio.create_task(asyncio.to_thread(self._refresh, owner_id, dataset_id))
+        self._tasks[key] = task
+        task.add_done_callback(lambda _: self._tasks.pop(key, None))
+
+    def _refresh(self, owner_id: str, dataset_id: str) -> None:
+        started_at = None
+        try:
+            with self.session_factory() as db:
+                model = self._owned(db, owner_id, dataset_id)
+                started_at = (model.refresh or {}).get("started_at")
+                current = DatasetCatalog.model_validate(model.catalog).revision
+            catalog = self._build(
+                owner_id, dataset_id, revision=current.number + 1 if current else 1
+            )
+            with self.session_factory() as db:
+                model = self._owned(db, owner_id, dataset_id)
+                model.catalog = catalog.model_dump(mode="json")
+                model.freshness = _built_freshness(catalog)
+                model.refresh = None
+                db.commit()
+        except Exception as error:
+            logger.warning("Dataset re-profiling failed for owned dataset %s", dataset_id)
+            with self.session_factory() as db:
+                model = db.scalar(
+                    select(DatasetModel).where(
+                        DatasetModel.dataset_id == dataset_id, DatasetModel.owner_id == owner_id
+                    )
+                )
+                if model is not None:
+                    # The previous revision stays published and usable.
+                    model.refresh = DatasetRefresh(
+                        status="error",
+                        started_at=started_at or datetime.now(UTC),
+                        message=_build_error(error),
+                    ).model_dump(mode="json")
                     db.commit()
 
     def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
@@ -668,8 +739,23 @@ class DatasetService:
                     )
                 )
 
+        def refreshing() -> list[tuple[str, str]]:
+            with self.session_factory() as db:
+                rows = db.execute(
+                    select(DatasetModel.owner_id, DatasetModel.dataset_id, DatasetModel.refresh)
+                    .where(DatasetModel.status == "ready")
+                    .where(DatasetModel.refresh.is_not(None))
+                )
+                return [
+                    (owner, dataset)
+                    for owner, dataset, state in rows
+                    if (state or {}).get("status") == "processing"
+                ]
+
         for owner_id, dataset_id in await asyncio.to_thread(pending):
             self._start(owner_id, dataset_id)
+        for owner_id, dataset_id in await asyncio.to_thread(refreshing):
+            self._start_refresh(owner_id, dataset_id)
 
     async def close(self) -> None:
         # to_thread cannot be stopped safely; finish writes before disposing the engine.
@@ -699,6 +785,21 @@ class DatasetService:
                 yield DatasetProgressEvent(data=DatasetProgressData.model_validate(progress))
                 previous = progress
             await asyncio.sleep(0.2)
+
+
+def _build_error(error: Exception) -> str:
+    # Internal paths/SQL/stack traces must not leak through the JSON/SSE API.
+    if isinstance(error, CsvReadError | SourceTooLargeError):
+        return str(error)
+    return "Не удалось обработать источник. Проверьте подключение или файлы."
+
+
+def _built_freshness(catalog: DatasetCatalog) -> dict:
+    """A just-built catalog matches its source by construction."""
+    revision = catalog.revision
+    return SourceFreshness(
+        state="fresh", profiled_at=revision.profiled_at, checked_at=revision.profiled_at
+    ).model_dump(mode="json")
 
 
 def _freshness(model: DatasetModel, catalog: DatasetCatalog | None) -> SourceFreshness | None:

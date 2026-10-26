@@ -84,6 +84,14 @@ def get_dataset_catalog(
     return service.get_catalog(owner_id, dataset_id)
 
 
+@router.post("/{dataset_id}/refresh", response_model=DatasetDetail, status_code=202)
+async def refresh_dataset(
+    dataset_id: str, owner_id: OwnerDep, service: DatasetServiceDep
+) -> DatasetDetail:
+    """Re-profile from the retained source; the current revision stays usable meanwhile."""
+    return await service.refresh(owner_id, dataset_id)
+
+
 @router.post("/{dataset_id}/freshness", response_model=SourceFreshness)
 def check_dataset_freshness(
     dataset_id: str, owner_id: OwnerDep, service: DatasetServiceDep
