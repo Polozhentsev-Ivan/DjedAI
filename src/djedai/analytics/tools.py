@@ -521,7 +521,7 @@ def describe_column(
         # --- Частоты (табличное представление) + факты ---
         freqs = con.execute(
             f"SELECT {safe_col}, COUNT(*) FROM {safe_table} "
-            f"GROUP BY {safe_col} ORDER BY COUNT(*) DESC LIMIT 10"
+            f"GROUP BY {safe_col} ORDER BY COUNT(*) DESC, {safe_col} LIMIT 10"
         ).fetchall()
 
         freq_rows = [[val, cnt] for val, cnt in freqs]
@@ -628,7 +628,8 @@ def value_counts(
                     error=ToolError(code="invalid_filter", message="Некорректный фильтр"),
                 )
 
-        query += f" GROUP BY {safe_col} ORDER BY cnt DESC LIMIT {top_n}"
+        # Равные частоты упорядочены по значению: иначе состав top_n меняется от запуска.
+        query += f" GROUP BY {safe_col} ORDER BY cnt DESC, {safe_col} LIMIT {top_n}"
 
         if allowed_tables is not None:
             validate_dataset_query(parse_read_query(query), allowed_tables)
@@ -1064,7 +1065,7 @@ def find_duplicates(
             f"WHERE 1=1{filter_sql} "
             f"GROUP BY {group_positions} "
             f"HAVING COUNT(*) > 1 "
-            f"ORDER BY duplicate_count DESC "
+            f"ORDER BY duplicate_count DESC, {group_positions} "
             f"LIMIT {effective_limit + 1}"
         )
 
@@ -2325,7 +2326,10 @@ def segment_profile(
             f"SELECT {', '.join(select_parts)} FROM {safe_table} "
             f"WHERE 1=1{filter_sql} GROUP BY {group_positions}"
         )
-        query = f"{base_query} ORDER BY {_quote_id(size_column)} DESC LIMIT {effective_limit + 1}"
+        query = (
+            f"{base_query} ORDER BY {_quote_id(size_column)} DESC, {group_positions} "
+            f"LIMIT {effective_limit + 1}"
+        )
         summary_columns = ["COUNT(*)", f"COALESCE(SUM({_quote_id(size_column)}), 0)"]
         for aliases in measure_columns:
             mean_alias = _quote_id(aliases[0])
