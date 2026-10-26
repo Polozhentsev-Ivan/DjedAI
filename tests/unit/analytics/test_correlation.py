@@ -342,3 +342,114 @@ def test_registry_snapshot_matches():
     from test_analytics_registry import EXPECTED_TOOLS
 
     assert get_tools_for_llm() == EXPECTED_TOOLS
+
+
+def test_lagged_aligns_by_calendar_not_row():
+    """Пропуски календаря не должны менять единицы лага."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(0)
+    n = 100
+    a = rng.normal(size=n)
+    b = np.concatenate([np.zeros(5), a[:-5]])
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=2 * i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=12,
+        connection=con,
+    )
+    assert result.status == "ok"
+    metric = _by_kind(result, "metric")[0]
+    # с reindex сетка — каждый день, сдвиг b[i] = a[i-5] на позициях
+    # соответствует 10 календарным дням
+    assert metric.values["lag"] == 10
+    assert abs(metric.values["r"]) > 0.9
+
+
+def test_correlation_uses_full_population_not_first_5000():
+    """SQL_MAX_ROWS не должен подменять вход статистики."""
+    from scipy import stats
+
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "CREATE TABLE big AS "
+        "SELECT i::DOUBLE x, "
+        "CASE WHEN i < 5000 THEN i::DOUBLE ELSE -i::DOUBLE END y "
+        "FROM range(10000) t(i)"
+    )
+    result = correlation("big", ["x", "y"], connection=con)
+    assert result.status == "ok"
+
+    full = con.execute("SELECT x, y FROM big").fetchall()
+    expected_r, expected_p = stats.pearsonr([r[0] for r in full], [r[1] for r in full])
+
+    row = next(r for r in result.data.rows if r[0] == "x" and r[1] == "y")
+    assert row[2] == pytest.approx(expected_r, abs=1e-9)
+    assert row[4] == 10000
+    # контроль: направление действительно отрицательное
+    assert row[2] < 0
+    assert any("отрицательная" in f.text for f in _by_kind(result, "metric"))
+
+
+@pytest.mark.parametrize("tool_name", ["correlation", "lagged_correlation"])
+def test_cancellation_stops_cpu_work_early(monkeypatch, tool_name):
+    """Отмена во время CPU-работы останавливает цикл, а не ждёт конца.
+
+    Раньше check_budget не вызывался внутри NumPy/SciPy-циклов, и после отмены
+    успевали выполниться все пары/лаги. Тест подменяет check_budget: второй вызов
+    бросает TurnCancelled и проверяет, что дальше цикл не идёт.
+    """
+    from djedai.execution import TurnCancelled
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE m (ts TIMESTAMP, a DOUBLE, b DOUBLE, c DOUBLE, d DOUBLE)")
+    rng = np.random.default_rng(0)
+    base = datetime(2024, 1, 1)
+    rows = [
+        (
+            base + timedelta(days=i),
+            float(rng.normal()),
+            float(rng.normal()),
+            float(rng.normal()),
+            float(rng.normal()),
+        )
+        for i in range(50)
+    ]
+    con.executemany("INSERT INTO m VALUES (?, ?, ?, ?, ?)", rows)
+
+    calls = {"n": 0}
+
+    def cancelling_check():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise TurnCancelled("cancelled after first step")
+
+    monkeypatch.setattr("djedai.analytics.tools.check_budget", cancelling_check)
+
+    with pytest.raises(TurnCancelled):
+        if tool_name == "correlation":
+            # 4 колонки → 6 пар, но после первой отмены цикл должен прерваться
+            correlation("m", ["a", "b", "c", "d"], connection=con)
+        else:
+            # 3 лага (−1, 0, +1); после первого — отмена
+            lagged_correlation(
+                "m",
+                "ts",
+                "a",
+                "b",
+                freq="day",
+                max_lag=1,
+                include_granger=True,
+                connection=con,
+            )
+
+    # ровно два вызова: первый пропустил одну итерацию, второй бросил
+    assert calls["n"] == 2

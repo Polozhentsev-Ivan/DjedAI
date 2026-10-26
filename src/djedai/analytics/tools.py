@@ -3018,14 +3018,8 @@ def correlation(
 
         safe_table = _quote_id(table)
         safe_cols = [_quote_id(c) for c in columns]
-        limit = get_limits().sql_max_rows
-        query = (
-            f"SELECT {', '.join(safe_cols)} FROM {safe_table} "
-            f"WHERE 1=1{filter_sql} LIMIT {limit + 1}"
-        )
+        query = f"SELECT {', '.join(safe_cols)} FROM {safe_table} WHERE 1=1{filter_sql}"
         raw = execute(query).fetchall()
-        truncated = len(raw) > limit
-        raw = raw[:limit]
 
         if not raw:
             return ToolResult(
@@ -3058,6 +3052,7 @@ def correlation(
         facts: list[Fact] = []
         for i, c1 in enumerate(columns):
             for c2 in columns[i + 1 :]:
+                check_budget()
                 r, p, n = _corr_coefficient(arr[:, i], arr[:, index[c2]], method)
                 rows.append([c1, c2, r, p, n])
                 if n < min_n:
@@ -3099,7 +3094,7 @@ def correlation(
                 columns=["from", "to", "r", "p_value", "n"],
                 rows=rows,
                 row_count=len(rows),
-                truncated=truncated,
+                truncated=False,
             ),
             facts=facts,
             chart_hint=ChartHint(type="heatmap", x="from", y=["to"]),
@@ -3296,7 +3291,8 @@ def lagged_correlation(
         df = pd.DataFrame(raw, columns=["time_bucket", "a", "b"])
         df["time_bucket"] = pd.to_datetime(df["time_bucket"])
         df = df.set_index("time_bucket").sort_index()
-        # sum/count — отсутствующий бакет = 0; остальные — неизвестно
+        df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
+        # sum/count — отсутствующий бакет = 0; остальные — неизвестно (NaN)
         if agg in ("sum", "count"):
             df = df.fillna({"a": 0.0, "b": 0.0})
 
@@ -3305,6 +3301,7 @@ def lagged_correlation(
         rows: list[list] = []
         best = {"lag": None, "r": float("nan"), "p": float("nan"), "n": 0}
         for k in lags:
+            check_budget()
             # lag=k: a(t) vs b(t+k) => b.shift(-k)
             shifted = df["b"].shift(-k).to_numpy(dtype=float)
             r, p, n = _corr_coefficient(a_vals, shifted, method)
@@ -3374,6 +3371,7 @@ def lagged_correlation(
                 )
             else:
                 try:
+                    check_budget()
                     from statsmodels.tsa.stattools import grangercausalitytests
 
                     sub = df[["b", "a"]].dropna()
@@ -3393,12 +3391,14 @@ def lagged_correlation(
                                 values={"p": pvals[best_g], "lag": best_g},
                             )
                         )
+                except (TurnCancelled, TurnTimeout):
+                    raise
                 except Exception as e:  # noqa: BLE001
                     facts.append(
                         Fact(
-                            text=f"Granger не рассчитан: {e}",
+                            text=f"Granger не рассчитан: {type(e).__name__}: {e}",
                             kind="warning",
-                            values={},
+                            values={"error": type(e).__name__, "message": str(e)},
                         )
                     )
 
