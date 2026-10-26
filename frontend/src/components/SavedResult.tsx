@@ -1,5 +1,5 @@
 import { apiUrl } from '@/api/client';
-import { useResult, useResultData } from '@/api/queries';
+import { useDataset, useResult, useResultData } from '@/api/queries';
 import { calculation, formatMeasure } from '@/api/view';
 import { HowCalculated } from './HowCalculated';
 import { ErrorState, LoadingState } from './StateBlock';
@@ -8,6 +8,8 @@ import { ErrorState, LoadingState } from './StateBlock';
 export function SavedResult({ id }: { id: string }) {
   const meta = useResult(id);
   const data = useResultData(id);
+  // The current revision tells a result computed on an older catalog apart (B1-11).
+  const dataset = useDataset(meta.data?.read?.dataset_id ?? null);
   return (
     <details className="rounded-md border border-border text-sm" data-result-id={id}>
       <summary className="cursor-pointer px-3.5 py-2.5 font-semibold">Результат расчёта {id}</summary>
@@ -19,7 +21,7 @@ export function SavedResult({ id }: { id: string }) {
         {meta.isPending && <LoadingState size="compact" title="Загружаем сохранённый результат…" />}
         {meta.isError && <ErrorState size="inline" title="Не удалось прочитать результат" text={meta.error.message} onAction={() => { void meta.refetch(); }} />}
         {meta.data && <>
-          <HowCalculated variant="panel" {...calculation(meta.data)} />
+          <HowCalculated variant="panel" {...calculation(meta.data, dataset.data?.revision)} />
           {meta.data.source_result_id && <div>Исходный результат: <a href={apiUrl(`/results/${encodeURIComponent(meta.data.source_result_id)}`)}>{meta.data.source_result_id}</a></div>}
           {meta.data.error && <ErrorState size="inline" title={meta.data.error.message} text={meta.data.error.suggestion ?? undefined} actionLabel="" />}
         </>}

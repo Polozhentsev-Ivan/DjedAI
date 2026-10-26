@@ -14,6 +14,11 @@ const ordersCatalog: Schemas['DatasetCatalog'] = {
   name: 'orders_2026',
   created_at: '2026-10-18T13:52:00',
   source: { kind: 'csv_upload' },
+  revision: {
+    number: 1, profiled_at: '2026-10-18T13:53:00Z', transform_version: '2026.10.1',
+    schema_fingerprint: '5f0c2b7d9a4e81c36b0e7f2a1d94c8e3b6a5f7d2c1e0b9a8f7e6d5c4b3a29180',
+    source_fingerprint: 'a3c1e5f7092b4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6',
+  },
   summary: 'Заказы и клиенты интернет-магазина за 2026 год',
   tables: [
     {
@@ -62,6 +67,9 @@ function readyDataset(catalog: Schemas['DatasetCatalog'], rows: number): Dataset
   return {
     dataset_id: catalog.dataset_id, name: catalog.name, source: { ...catalog.source, files: catalog.tables?.length ?? 0 }, status: 'ready',
     table_count: catalog.tables?.length ?? 0, row_count: rows, created_at: catalog.created_at, catalog, error: null,
+    revision: catalog.revision ?? null,
+    freshness: catalog.revision ? { state: 'fresh', profiled_at: catalog.revision.profiled_at, checked_at: null, changes: [], reason: null } : null,
+    refresh: null,
   };
 }
 
@@ -94,6 +102,14 @@ FROM   orders
 GROUP  BY month
 ORDER  BY month;`,
   facts: [{ text: 'Пик продаж — июль', kind: 'peak' }], duration_ms: 800,
+  read: {
+    revision_known: true, dataset_id: 'ds_orders', catalog_revision: 1, transform_version: '2026.10.1',
+    schema_fingerprint: '5f0c2b7d9a4e81c36b0e7f2a1d94c8e3b6a5f7d2c1e0b9a8f7e6d5c4b3a29180',
+    source_fingerprint: 'a3c1e5f7092b4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6',
+    read_mode: 'snapshot', consistency: 'immutable', snapshot_id: 'r1',
+    started_at: '2026-10-18T14:05:00Z', finished_at: '2026-10-18T14:05:01Z',
+    freshness: { state: 'fresh', profiled_at: '2026-10-18T13:53:00Z', checked_at: null, changes: [], reason: null },
+  },
 };
 
 const regionsResult: ToolResultMeta = {

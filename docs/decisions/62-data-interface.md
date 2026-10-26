@@ -20,9 +20,11 @@ data_dir, *, source_encryption_key=None)`. В приложении это `app.s
 | `await check_db(dsn, *, kind="postgresql")` | DSN; ничего не сохраняет (#84) | `SourceCheckResult`: адрес без пароля и таблицы, имена которых принимает `connect_db` |
 | `get_catalog(owner_id, dataset_id)` | — | `DatasetCatalog` готового датасета |
 | `get_detail(owner_id, dataset_id)` / `list_for_owner(owner_id)` | — | `DatasetDetail` / `list[DatasetSummary]` |
-| `get_context(owner_id, dataset_id)` | — | `DatasetContext`: каталог и `open_connection()` для аналитики |
+| `get_context(owner_id, dataset_id)` | — | `DatasetContext`: каталог, `open_connection()` для аналитики и `open_reader()` со свежестью источника и происхождением чтения (#169) |
+| `await refresh(owner_id, dataset_id)` | — | `DatasetDetail` с `refresh.status="processing"`: перепрофилировка в следующую ревизию каталога, датасет остаётся `ready` (#169) |
+| `check_freshness(owner_id, dataset_id)` | — | `SourceFreshness`: схема источника сейчас относительно каталога; ничего не пересчитывается (#169) |
 | `events(owner_id, dataset_id)` | — | async-поток `progress`, затем одно `done` или `error` |
-| `recover_interrupted()` / `close()` | — | перезапуск незавершённых сборок / ожидание фоновых задач |
+| `recover_interrupted()` / `close()` | — | перезапуск незавершённых сборок и перепрофилировок / ожидание фоновых задач |
 
 Методы приёма вызываются в event loop приложения: фоновая сборка привязана к нему.
 До возврата `ingest_csv` копирует файлы в собственное хранилище, поэтому вызывающий
@@ -53,7 +55,8 @@ HTTP-клиент получает `ErrorResponse{error: ToolError}` из обр
 | HTTP: запрос не прошёл схему — нет поля `files`, пустой или слишком длинный `dsn`, `kind` не из `postgres`/`clickhouse`, больше 100 таблиц | 422 | `invalid_request` |
 | Фасад: пустой список файлов (только Python), файл не `.csv`, некорректный DSN, пустой список таблиц, плохое имя | 422 | `http_422` |
 | Неизвестный или чужой `dataset_id` (любой метод чтения, SSE) | 404 | `not_found` |
-| Каталог или контекст ещё не готов, файл датасета недоступен | 409 | `conflict` |
+| Каталог или контекст ещё не готов, файл датасета недоступен, перепрофилировка уже идёт | 409 | `conflict` |
+| Схема PostgreSQL несовместима с каталогом: удалена таблица или колонка, изменился тип ([#169](169-catalog-revision.md)) | 409 | `catalog_stale` |
 | `kind` не поддерживается (Python-вызов с видом кроме `postgresql`/`clickhouse`) | 501 | `http_501` |
 | Не задан `SOURCE_ENCRYPTION_KEY`, сохранённый источник PostgreSQL недоступен | 503 | `unavailable` |
 | Сборка завершилась ошибкой | статус `error` | `dataset_processing_failed` в `DatasetDetail.error` |

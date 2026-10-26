@@ -172,6 +172,14 @@ def test_legacy_catalog_ambiguities_survive_restart(configured):
         assert {
             issue["code"] for column in result["quality"]["columns"] for issue in column["issues"]
         } == {"percent_scale", "ambiguous_date"}
+        # После перезапуска результат помнит ревизию и время своего чтения (B1-11).
+        read = result["read"]
+        assert (read["catalog_revision"], read["read_mode"], read["consistency"]) == (
+            1,
+            "snapshot",
+            "immutable",
+        )
+        assert read["started_at"] <= read["finished_at"]
 
 
 def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> None:
@@ -285,7 +293,7 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f192merge0001"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f169read0001"]
     command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)

@@ -116,6 +116,45 @@
         "title": "AssistantMessage",
         "type": "object"
       },
+      "CatalogRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "minimum": 1,
+            "title": "Number",
+            "type": "integer"
+          },
+          "profiled_at": {
+            "format": "date-time",
+            "title": "Profiled At",
+            "type": "string"
+          },
+          "schema_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Schema Fingerprint",
+            "type": "string"
+          },
+          "source_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Fingerprint",
+            "type": "string"
+          },
+          "transform_version": {
+            "minLength": 1,
+            "title": "Transform Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "profiled_at",
+          "schema_fingerprint",
+          "source_fingerprint",
+          "transform_version"
+        ],
+        "title": "CatalogRevision",
+        "type": "object"
+      },
       "ChartBlock": {
         "additionalProperties": false,
         "description": "Блок с декларативным описанием графика.",
@@ -1581,6 +1620,18 @@
             "default": null,
             "description": "Дата последнего пересчета",
             "title": "Refreshed At"
+          },
+          "consistency": {
+            "default": "independent",
+            "description": "Согласованность чтений виджетов одного refresh",
+            "enum": [
+              "turn_snapshot",
+              "independent",
+              "immutable",
+              "unknown"
+            ],
+            "title": "Consistency",
+            "type": "string"
           }
         },
         "required": [
@@ -1717,6 +1768,17 @@
           "source": {
             "$ref": "#/components/schemas/DatasetSource"
           },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogRevision"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "summary": {
             "anyOf": [
               {
@@ -1821,6 +1883,42 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogRevision"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ревизия каталога; null — ещё не собран или собран до #169"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Последняя проверка источника относительно каталога"
+          },
+          "refresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetRefresh"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Идущая или неудавшаяся перепрофилировка"
           },
           "catalog": {
             "anyOf": [
@@ -1943,6 +2041,43 @@
         "title": "DatasetProgressData",
         "type": "object"
       },
+      "DatasetRefresh": {
+        "additionalProperties": false,
+        "description": "Идущая или неудавшаяся перепрофилировка; датасет при этом остаётся ready.",
+        "properties": {
+          "status": {
+            "enum": [
+              "processing",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          }
+        },
+        "required": [
+          "status",
+          "started_at"
+        ],
+        "title": "DatasetRefresh",
+        "type": "object"
+      },
       "DatasetSource": {
         "additionalProperties": false,
         "properties": {
@@ -2017,6 +2152,42 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogRevision"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ревизия каталога; null — ещё не собран или собран до #169"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Последняя проверка источника относительно каталога"
+          },
+          "refresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetRefresh"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Идущая или неудавшаяся перепрофилировка"
           }
         },
         "required": [
@@ -2539,6 +2710,146 @@
         "title": "QualityReport",
         "type": "object"
       },
+      "ReadProvenance": {
+        "additionalProperties": false,
+        "description": "Что и когда прочитал расчёт; копия ревизии, которую не меняет перепрофилировка.",
+        "properties": {
+          "revision_known": {
+            "title": "Revision Known",
+            "type": "boolean"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dataset Id"
+          },
+          "catalog_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Revision"
+          },
+          "schema_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schema Fingerprint"
+          },
+          "source_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Fingerprint"
+          },
+          "transform_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transform Version"
+          },
+          "read_mode": {
+            "enum": [
+              "live",
+              "snapshot",
+              "saved_result",
+              "unknown"
+            ],
+            "title": "Read Mode",
+            "type": "string"
+          },
+          "consistency": {
+            "enum": [
+              "turn_snapshot",
+              "independent",
+              "immutable",
+              "unknown"
+            ],
+            "title": "Consistency",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/SourceFreshness"
+          }
+        },
+        "required": [
+          "revision_known",
+          "read_mode",
+          "consistency",
+          "freshness"
+        ],
+        "title": "ReadProvenance",
+        "type": "object"
+      },
       "Relation": {
         "additionalProperties": false,
         "properties": {
@@ -2763,6 +3074,68 @@
         "title": "SSEToolResultData",
         "type": "object"
       },
+      "SchemaChange": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "dropped_table",
+              "added_column",
+              "dropped_column",
+              "type_changed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "table": {
+            "minLength": 1,
+            "title": "Table",
+            "type": "string"
+          },
+          "column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Column"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After"
+          }
+        },
+        "required": [
+          "kind",
+          "table"
+        ],
+        "title": "SchemaChange",
+        "type": "object"
+      },
       "SendMessageRequest": {
         "additionalProperties": false,
         "description": "Запрос на отправку вопроса в чат.",
@@ -2884,6 +3257,72 @@
         ],
         "title": "SourceCheckResult",
         "description": "A reachable read-only source and its tables; the DSN and password are not echoed."
+      },
+      "SourceFreshness": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "fresh",
+              "aged",
+              "drifted",
+              "incompatible",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "profiled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profiled At"
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checked At"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SchemaChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "SourceFreshness",
+        "type": "object"
       },
       "SourceTable": {
         "properties": {
@@ -3374,6 +3813,18 @@
             ],
             "default": null,
             "description": "Потери и неоднозначности преобразования использованных колонок (B2-10)"
+          },
+          "read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ревизия каталога, режим и время чтения источника (B1-11)"
           }
         },
         "required": [
@@ -3896,6 +4347,32 @@
               }
             ],
             "default": null
+          },
+          "read_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Read Started At"
+          },
+          "read_finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Read Finished At"
           }
         },
         "required": [
