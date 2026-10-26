@@ -57,6 +57,7 @@ from djedai.data.typed_views import _ident, _lit  # noqa: E402
 
 STAGES = ("download", "reference", "csv", "queries", "postgres", "clickhouse")
 DEFAULT_STAGES = ("download", "reference", "csv", "queries")
+SOURCES = ("csv", "postgres", "clickhouse", "clickhouse_raised_limit")
 REPEATS = 3
 # Типы README → допустимые семантические типы каталога.
 ACCEPTED_TYPES = {
@@ -696,11 +697,13 @@ def load_clickhouse(manifest: dict, reference: Path, loader_url: str, folder: Pa
 def summarize(report: dict) -> list[str]:
     lines = [f"# HK_Datasets: прогон {report['started_at']}", ""]
     lines.append(f"Ревизия `{report['revision']}`, этапы: {', '.join(report['stages'])}.")
-    for source in ("csv", "postgres", "clickhouse"):
+    for source in SOURCES:
         run = report.get(source)
         if not run:
             continue
         lines += ["", f"## {source}", ""]
+        if run.get("max_rows"):
+            lines += [f"Лимит строк ClickHouse: {run['max_rows']}.", ""]
         if not run.get("ok"):
             lines.append(f"Ошибка: `{run.get('error')}` (RSS {run.get('rss_mb')} МБ)")
             continue
@@ -736,7 +739,7 @@ def summarize(report: dict) -> list[str]:
             lines += [
                 "",
                 f"Связей найдено: {len(checks['relations'])}. "
-                f"Каталог в промпте агента: {checks['prompt_chars']} символов.",
+                f"Каталог в промпте агента: {checks.get('prompt_chars', '—')} символов.",
             ]
             for ref in checks["self_references"]:
                 lines.append(
@@ -772,7 +775,7 @@ def compare(before_path: Path, after_path: Path) -> list[str]:
         "| Что | До | После |",
         "| --- | ---: | ---: |",
     ]
-    for source in ("csv", "postgres", "clickhouse"):
+    for source in SOURCES:
         a, b = before.get(source) or {}, after.get(source) or {}
         if not a and not b:
             continue
