@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "eval/hk_datasets_manifest.json"
 CACHE_DIR = ROOT / "artifacts/hk-datasets"
 CHUNK_BYTES = 4 * 1024 * 1024
+RETRIES = 6
 
 
 class DownloadError(RuntimeError):
@@ -59,6 +61,20 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _get_range(client: httpx.Client, url: str, offset: int, end: int) -> httpx.Response:
+    """GitVerse рвёт соединения при долгой загрузке; фрагмент запрашивается повторно."""
+    for attempt in range(RETRIES):
+        try:
+            response = client.get(url, headers={"Range": f"bytes={offset}-{end}"})
+            response.raise_for_status()
+            return response
+        except (httpx.TransportError, httpx.HTTPStatusError) as error:
+            if attempt == RETRIES - 1:
+                raise DownloadError(f"GitVerse недоступен: {error}") from error
+            time.sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
 def download(file: HkFile, cache: Path = CACHE_DIR) -> Path:
     """Скачивает закреплённый Git blob; докачка частями переживает обрывы GitVerse."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -69,8 +85,7 @@ def download(file: HkFile, cache: Path = CACHE_DIR) -> Path:
             offset = partial.stat().st_size if partial.exists() else 0
             while offset < file.size:
                 end = min(offset + CHUNK_BYTES, file.size) - 1
-                response = client.get(file.url, headers={"Range": f"bytes={offset}-{end}"})
-                response.raise_for_status()
+                response = _get_range(client, file.url, offset, end)
                 if response.status_code != 206:
                     raise DownloadError("GitVerse не поддержал докачку по Range")
                 if response.headers.get("content-range") != f"bytes {offset}-{end}/{file.size}":
