@@ -453,3 +453,91 @@ def test_cancellation_stops_cpu_work_early(monkeypatch, tool_name):
 
     # ровно два вызова: первый пропустил одну итерацию, второй бросил
     assert calls["n"] == 2
+
+
+def test_lagged_calendar_grid_is_bounded():
+    """Одна ошибочная дата не должна вызывать гигабайты аллокации.
+
+    Тимлид: 12 событий, одно с ts=1970-01-01, остальные 26.10.2026,
+    freq='minute' → ~30M бакетов. Ожидается понятная ошибка, а не OOM.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rows = [(datetime(1970, 1, 1), 1.0, 2.0)]
+    rows += [(datetime(2026, 10, 26, 12, i), float(i), float(i + 1)) for i in range(11)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="minute",
+        max_lag=2,
+        connection=con,
+    )
+    assert result.status == "error"
+    assert result.error.code == "invalid_parameter"
+    assert "бакет" in result.error.message
+    assert result.error.suggestion is not None
+    assert any(word in result.error.suggestion for word in ("Укрупните", "сузьте", "проверьте"))
+
+
+def test_lagged_calendar_grid_within_limit_still_works():
+    """Обычный ряд (1000 дней) проходит защиту и даёт корреляцию."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(0)
+    n = 1000
+    a = rng.normal(size=n)
+    b = np.concatenate([np.zeros(5), a[:-5]])
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        max_lag=10,
+        connection=con,
+    )
+    assert result.status == "ok"
+    metric = _by_kind(result, "metric")[0]
+    assert metric.values["lag"] == 5
+
+
+def test_lagged_calendar_grid_message_suggests_coarser_freq():
+    """Сообщение об ошибке предлагает конкретное действие."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rows = [(datetime(1970, 1, 1), 1.0, 2.0)] + [
+        (datetime(2026, 10, 26, 12, i), float(i), float(i + 1)) for i in range(11)
+    ]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="minute",
+        connection=con,
+    )
+    # совет предлагает именно укрупнить частоту — это то, что реально поможет
+    assert "day" in result.error.suggestion or "hour" in result.error.suggestion
+
+
+def test_estimate_calendar_buckets_upper_bound():
+    """Оценка сверху: не меньше фактического размера для реальных частот."""
+    from djedai.analytics.tools import _estimate_calendar_buckets
+
+    start = datetime(2024, 1, 1)
+    end = datetime(2024, 12, 31)
+    # day: 366 дней (2024 — високосный)
+    assert _estimate_calendar_buckets(start, end, "day") >= 366
+    # month: ~12 месяцев
+    assert 12 <= _estimate_calendar_buckets(start, end, "month") <= 14
+    # minute: заведомо больше, чем day
+    assert _estimate_calendar_buckets(start, end, "minute") > 500_000

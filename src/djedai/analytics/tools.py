@@ -80,6 +80,16 @@ _AGG_FUNCS = {
     "median": "MEDIAN",
     "stddev": "STDDEV_POP",
 }
+_FREQ_MIN_SECONDS = {
+    "minute": 60,
+    "hour": 3_600,
+    "day": 86_400,
+    "week": 7 * 86_400,
+    "month": 28 * 86_400,
+    "quarter": 89 * 86_400,
+    "year": 365 * 86_400,
+}
+_MAX_CALENDAR_BUCKETS = 200_000
 _ANOMALY_METHODS = {"iqr", "zscore", "mad", "stl-residual"}
 _DEFAULT_THRESHOLDS = {
     "iqr": 1.5,
@@ -3123,6 +3133,13 @@ def correlation(
 # ============================================================================
 
 
+def _estimate_calendar_buckets(start, end, freq: str) -> int:
+    """Оценка сверху числа бакетов между start и end для выбранной частоты."""
+    delta_seconds = (end - start).total_seconds()
+    unit = _FREQ_MIN_SECONDS[freq]
+    return int(delta_seconds // unit) + 1
+
+
 def _agg_expression(agg: str, column: str) -> str:
     if agg == "count":
         return f"COUNT({_quote_id(column)})"
@@ -3291,6 +3308,27 @@ def lagged_correlation(
         df = pd.DataFrame(raw, columns=["time_bucket", "a", "b"])
         df["time_bucket"] = pd.to_datetime(df["time_bucket"])
         df = df.set_index("time_bucket").sort_index()
+        # Защита от раздувания календарной сетки: одна ошибочная дата
+        # (например, 1970-01-01 рядом с 2026-10-26) при freq='minute'
+        # даёт десятки миллионов бакетов до первой CPU-проверки бюджета.
+        n_buckets = _estimate_calendar_buckets(df.index.min(), df.index.max(), freq)
+        if n_buckets > _MAX_CALENDAR_BUCKETS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"Календарная сетка частоты '{freq}' между "
+                        f"{df.index.min().isoformat()} и {df.index.max().isoformat()} "
+                        f"содержит около {n_buckets} бакетов "
+                        f"(лимит {_MAX_CALENDAR_BUCKETS})."
+                    ),
+                    suggestion=(
+                        "Укрупните частоту (например, 'day' вместо 'minute'), "
+                        "сузьте диапазон фильтром или проверьте колонку времени — "
+                        "возможно, в данных есть ошибочная дата вне основного периода."
+                    ),
+                )
+            )
         df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
         # sum/count — отсутствующий бакет = 0; остальные — неизвестно (NaN)
         if agg in ("sum", "count"):
