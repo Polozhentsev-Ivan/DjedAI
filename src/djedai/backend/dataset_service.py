@@ -199,10 +199,22 @@ class DatasetService:
         return resolved
 
     def _database_path(self, model: DatasetModel) -> Path:
-        relative = f"{model.dataset_id}/dataset.duckdb"
-        if model.duckdb_path != relative:
+        relative = model.duckdb_path or ""
+        if _revision_of(model.dataset_id, relative) is None:
             raise ValueError("Некорректный путь базы датасета")
         return self._dataset_path(model.dataset_id, relative)
+
+    def _remove_old_revisions(self, dataset_id: str, published: int) -> None:
+        """Keep the published file and the previous one for contexts taken before it."""
+        directory = self._dataset_path(dataset_id, _revision_file(dataset_id, 1)).parent
+        for path in directory.glob("dataset*.duckdb"):
+            number = _revision_of(dataset_id, f"{dataset_id}/{path.name}")
+            if number is not None and number < published - 1:
+                try:
+                    # An open read-only connection keeps reading the unlinked file.
+                    path.unlink()
+                except OSError:
+                    logger.warning("Old revision of owned dataset %s was not removed", dataset_id)
 
     @staticmethod
     def _owned(db: Session, owner_id: str, dataset_id: str) -> DatasetModel:
@@ -541,7 +553,7 @@ class DatasetService:
             with self.session_factory() as db:
                 if self._owned(db, owner_id, dataset_id).status == "ready":
                     return
-            catalog = self._build(owner_id, dataset_id, revision=1)
+            catalog, relative = self._build(owner_id, dataset_id, revision=1)
             with self.session_factory() as db:
                 model = db.scalar(
                     select(DatasetModel).where(
@@ -550,6 +562,7 @@ class DatasetService:
                 )
                 if model is not None:
                     model.catalog = catalog.model_dump(mode="json")
+                    model.duckdb_path = relative
                     model.status = "ready"
                     model.error_message = None
                     model.progress = {"stage": "ready", "progress": 1.0, "message": "Готово"}
@@ -570,11 +583,14 @@ class DatasetService:
                     model.catalog = None
                     db.commit()
 
-    def _build(self, owner_id: str, dataset_id: str, *, revision: int) -> DatasetCatalog:
-        """Build the dataset file from its retained source and publish it in place.
+    def _build(
+        self, owner_id: str, dataset_id: str, *, revision: int
+    ) -> tuple[DatasetCatalog, str]:
+        """Build the file of one catalog revision from the retained source.
 
-        The file is built aside and replaced atomically, so connections opened earlier
-        keep reading the previous revision. The caller publishes the returned catalog.
+        Every revision has its own immutable file: DuckDB reuses an open database
+        instance by path, so a file replaced in place would keep serving the previous
+        data. The caller publishes the returned catalog together with the relative path.
         """
         with self.session_factory() as db:
             model = self._owned(db, owner_id, dataset_id)
@@ -585,7 +601,8 @@ class DatasetService:
                 sources.append(
                     CsvSource(self._dataset_path(dataset_id, item["path"]), item["name"])
                 )
-            target = self._database_path(model)
+            relative = _revision_file(dataset_id, revision)
+            target = self._dataset_path(dataset_id, relative)
             name, created_at, source_kind = model.name, model.created_at, model.source_kind
             secret = model.source_secret
             refreshing = model.status == "ready"
@@ -636,7 +653,7 @@ class DatasetService:
             )
             catalog = self._describe(dataset_id, working, catalog)
         working.replace(target)
-        return catalog
+        return catalog, relative
 
     async def refresh(self, owner_id: str, dataset_id: str) -> DatasetDetail:
         """Re-profile a ready dataset into the next catalog revision in the background.
@@ -686,15 +703,18 @@ class DatasetService:
                 model = self._owned(db, owner_id, dataset_id)
                 started_at = (model.refresh or {}).get("started_at")
                 current = DatasetCatalog.model_validate(model.catalog).revision
-            catalog = self._build(
-                owner_id, dataset_id, revision=current.number + 1 if current else 1
-            )
+            # A catalog from before #169 was built into the r1 file.
+            number = (current.number if current else 1) + 1
+            catalog, relative = self._build(owner_id, dataset_id, revision=number)
             with self.session_factory() as db:
                 model = self._owned(db, owner_id, dataset_id)
+                # The catalog and its file change together: a context is always a pair.
                 model.catalog = catalog.model_dump(mode="json")
+                model.duckdb_path = relative
                 model.freshness = _built_freshness(catalog)
                 model.refresh = None
                 db.commit()
+            self._remove_old_revisions(dataset_id, number)
         except Exception as error:
             logger.warning("Dataset re-profiling failed for owned dataset %s", dataset_id)
             with self.session_factory() as db:
@@ -785,6 +805,24 @@ class DatasetService:
                 yield DatasetProgressEvent(data=DatasetProgressData.model_validate(progress))
                 previous = progress
             await asyncio.sleep(0.2)
+
+
+def _revision_file(dataset_id: str, number: int) -> str:
+    """The first build keeps the historical name; later revisions get their own file."""
+    return (
+        f"{dataset_id}/dataset.duckdb" if number == 1 else f"{dataset_id}/dataset.r{number}.duckdb"
+    )
+
+
+def _revision_of(dataset_id: str, relative: str) -> int | None:
+    if relative == f"{dataset_id}/dataset.duckdb":
+        return 1
+    prefix, suffix = f"{dataset_id}/dataset.r", ".duckdb"
+    if relative.startswith(prefix) and relative.endswith(suffix):
+        number = relative[len(prefix) : -len(suffix)]
+        if number.isdigit() and not number.startswith("0") and int(number) > 1:
+            return int(number)
+    return None
 
 
 def _build_error(error: Exception) -> str:

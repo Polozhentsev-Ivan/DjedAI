@@ -96,6 +96,70 @@ def test_csv_refresh_publishes_the_next_revision_while_old_reads_continue(storag
     assert (read.catalog_revision, read.read_mode, read.snapshot_id) == (2, "snapshot", "r2")
 
 
+def test_each_revision_reads_its_own_immutable_file(storage) -> None:
+    """Review of #201: DuckDB reuses an open instance by path, so a file replaced in
+    place kept serving the old data under the new catalog, and the other way round."""
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+    dataset_id = _csv_dataset(service)
+    with factory() as db:
+        raw = directory / db.get(DatasetModel, dataset_id).raw_files[0]["path"]
+    before_refresh = service.get_context("owner", dataset_id)
+
+    with service.get_context("owner", dataset_id).open_reader() as old:
+        assert _orders(old) == 2  # r1 stays open across the refresh
+        raw.write_bytes(ORDERS + b"003,30\n")
+        _refresh(service, "owner", dataset_id)
+
+        current = service.get_context("owner", dataset_id)
+        assert current.catalog.revision.number == 2
+        assert current.catalog.tables[0].row_count == 3
+        assert current.duckdb_path != before_refresh.duckdb_path
+        with current.open_reader() as new:
+            count, read = new.run(lambda: _orders(new))
+        assert (count, read.catalog_revision) == (3, 2)
+
+        # A context taken before the refresh keeps its pair: r1 catalog, r1 file.
+        with before_refresh.open_reader() as late:
+            count, read = late.run(lambda: _orders(late))
+        assert (count, read.catalog_revision) == (2, 1)
+        assert _orders(old) == 2
+
+    # Only the previous revision is kept for such late readers; older ones are removed.
+    _refresh(service, "owner", dataset_id)
+    third = service.get_context("owner", dataset_id)
+    assert third.catalog.revision.number == 3
+    files = sorted(path.name for path in third.duckdb_path.parent.glob("dataset*.duckdb"))
+    assert files == ["dataset.r2.duckdb", "dataset.r3.duckdb"]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "{id}/dataset.r1.duckdb",
+        "{id}/dataset.r02.duckdb",
+        "{id}/dataset.r2.building.duckdb",
+        "{id}/dataset.r2.duckdb/../dataset.duckdb",
+        "other/dataset.r2.duckdb",
+    ],
+    ids=["r1 alias", "leading zero", "unfinished build", "traversal", "another dataset"],
+)
+def test_only_published_revision_files_are_accepted(storage, relative) -> None:
+    factory, directory = storage
+    service = DatasetService(factory, directory)
+    dataset_id = _csv_dataset(service)
+    with factory() as db:
+        db.get(DatasetModel, dataset_id).duckdb_path = relative.format(id=dataset_id)
+        db.commit()
+    with pytest.raises(HTTPException) as denied:
+        service.get_context("owner", dataset_id)
+    assert denied.value.status_code == 409
+
+
+def _orders(reader) -> int:
+    return reader.connection.execute("SELECT count(*) FROM orders").fetchone()[0]
+
+
 def test_failed_refresh_keeps_the_published_revision(storage) -> None:
     factory, directory = storage
     service = DatasetService(factory, directory)
@@ -180,8 +244,9 @@ def test_catalog_before_revisioning_is_reported_unknown(storage) -> None:
         _, read = reader.run(lambda: None)
     assert (read.revision_known, read.catalog_revision, read.read_mode) == (False, None, "snapshot")
 
+    # The file built before revisioning is r1: the next build gets its own path as r2.
     _refresh(service, "owner", dataset_id)
-    assert service.get_detail("owner", dataset_id).revision.number == 1
+    assert service.get_detail("owner", dataset_id).revision.number == 2
 
 
 # --- Live PostgreSQL -------------------------------------------------------------------
