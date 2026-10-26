@@ -35,6 +35,7 @@ TEST_PATHS = (
     "tests/integration/test_postgres_owner_api.py",
     "tests/integration/test_data_interface.py",
     "tests/integration/test_source_check.py::test_live_postgres_tables",
+    "tests/integration/test_catalog_revision.py",
 )
 LABEL = "org.djedai.postgres-acceptance"
 

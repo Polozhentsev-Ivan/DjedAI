@@ -144,10 +144,12 @@ try {
       assert.equal(asked?.text, question);
       assert.equal(asked?.turn?.status, 'success');
       assert.equal(asked.turn.assistant_message_id, assistant.message_id);
-      const answer = assistant.blocks.filter((b) => b.type === 'text').map((b) => b.markdown).join('\n');
-      const match = answer.match(/COUNT\s*=\s*(\d+)\s*;\s*SUM\s*=\s*(-?\d+(?:\.\d+)?)/i);
-      assert(match, `Unexpected answer format: ${answer}`);
+      const answerMarkdown = assistant.blocks.filter((b) => b.type === 'text').map((b) => b.markdown).join('\n');
+      const match = answerMarkdown.match(/COUNT\s*=\s*(\d+)\s*;\s*SUM\s*=\s*(-?\d+(?:\.\d+)?)/i);
+      assert(match, `Unexpected answer format: ${answerMarkdown}`);
       assert.deepEqual({ n: Number(match[1]), total: Number(match[2]) }, oracle);
+      // Provenance is a separate Markdown block, not part of the plain numeric answer.
+      const answer = match[0];
       await page.getByText(answer, { exact: true }).waitFor();
       assert.equal(await page.getByText(answer, { exact: true }).count(), 1);
       const results = [];

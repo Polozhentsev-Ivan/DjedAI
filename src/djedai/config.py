@@ -32,6 +32,8 @@ class LimitSettings(BaseSettings):
     sql_max_rows: int = Field(default=5000, ge=1, alias="SQL_MAX_ROWS")
     tool_timeout_seconds: float = Field(default=30, gt=0, alias="TOOL_TIMEOUT_SECONDS")
     dashboard_max_tool_calls: int = Field(default=20, ge=1, alias="DASHBOARD_MAX_TOOL_CALLS")
+    # Профиль живого PostgreSQL старше порога — ограничение «aged» в ответе (B1-11)
+    catalog_max_age_hours: float = Field(default=24, gt=0, alias="CATALOG_MAX_AGE_HOURS")
     model_timeout_seconds: float = Field(default=60, gt=0, le=600, alias="MODEL_TIMEOUT_SECONDS")
     agent_turn_timeout_seconds: float = Field(
         default=120, gt=0, le=600, alias="AGENT_TURN_TIMEOUT_SECONDS"

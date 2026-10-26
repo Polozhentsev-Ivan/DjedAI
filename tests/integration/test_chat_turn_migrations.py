@@ -8,8 +8,8 @@ from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from djedai.backend.db.models import ChatModel, MessageModel
-from djedai.backend.db.repositories import create_dataset, get_or_create_user
+from djedai.backend.db.models import ChatModel, DatasetModel, MessageModel
+from djedai.backend.db.repositories import get_or_create_user
 from djedai.backend.db.session import create_db_engine
 
 pytestmark = pytest.mark.integration
@@ -26,9 +26,13 @@ def test_chat_turn_upgrade_and_downgrade_preserve_history(tmp_path):
     try:
         with Session(engine) as db:
             get_or_create_user(db, "owner", "legacy")
-            create_dataset(db, "ds", "owner", "CSV")
             # Seed the historical revision with only the columns it actually had:
-            # chat memory columns appear in a later migration.
+            # dataset freshness and chat memory columns appear in later migrations.
+            db.execute(
+                DatasetModel.__table__.insert().values(
+                    dataset_id="ds", owner_id="owner", name="CSV", source_kind="csv"
+                )
+            )
             db.execute(
                 ChatModel.__table__.insert().values(
                     chat_id="chat",

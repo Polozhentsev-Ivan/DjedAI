@@ -248,6 +248,13 @@ describe('CatalogPage', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
   });
 
+  it('shows the catalog revision and re-profiles the dataset', async () => {
+    await renderRoute('/catalog/ds_orders');
+    expect(await screen.findByText(/^Каталог r1 · профиль от .* · схема источника совпадает с каталогом$/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Перепрофилировать' }));
+    expect(await screen.findByText(/^Каталог r2 · профиль от /)).toBeInTheDocument();
+  });
+
   it('shows table, column and dataset descriptions', async () => {
     await renderRoute('/catalog/ds_orders');
     expect(await screen.findByText('Заказы и клиенты интернет-магазина за 2026 год')).toBeInTheDocument();
