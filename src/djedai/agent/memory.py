@@ -12,6 +12,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from djedai.agent.data_policy import DataContext, DataTransferPolicy
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.tool_result import ToolResult
 
@@ -122,29 +123,36 @@ def conversation_context(
     focus_result_ids: Sequence[str],
     results: Sequence[ToolResult],
     previous_blocks: Sequence[Block] = (),
+    policy: DataTransferPolicy | None = None,
 ) -> str:
-    """Текст для промптов: summary, последние реплики, фокус и структура ответа."""
+    """Текст для промптов: summary, последние реплики, фокус и структура ответа.
+
+    Политика по умолчанию — безопасная restricted: строки прошлых результатов не
+    попадают в контекст, но метаданные и факты остаются. Вызывающий узел передаёт
+    политику клиента, чтобы режим был единым на весь ход.
+    """
+    policy = policy or DataTransferPolicy.restricted()
     sections: list[str] = []
     if summary:
-        sections.append(f"Краткая история старой части диалога:\n{summary}")
+        sections.append(f"Краткая история старой части диалога:\n{policy.sanitize_text(summary)}")
 
     recent = [
         f"{'Пользователь' if message.role == 'user' else 'Ассистент'}: "
-        f"{compact_text(message.content, CONTEXT_LINE_CHARS)}"
+        f"{policy.sanitize_text(compact_text(message.content, CONTEXT_LINE_CHARS))}"
         for message in recent_messages[-HISTORY_WINDOW:]
         if message.content.strip()
     ]
     if recent:
         sections.append("Последние сообщения диалога:\n" + "\n".join(recent))
 
-    focus = _focus_descriptions(focus_result_ids, results)
+    focus = _focus_descriptions(focus_result_ids, results, policy)
     if focus:
         sections.append(
             "Результаты в фокусе разговора (нумерованы для ссылок «первый», "
             "«второй», «тот же период»):\n" + "\n".join(focus)
         )
 
-    blocks = _block_descriptions(previous_blocks)
+    blocks = _block_descriptions(previous_blocks, policy)
     if blocks:
         sections.append("Структура предыдущего ответа:\n" + "\n".join(blocks))
 
@@ -152,7 +160,9 @@ def conversation_context(
 
 
 def _focus_descriptions(
-    focus_result_ids: Sequence[str], results: Sequence[ToolResult]
+    focus_result_ids: Sequence[str],
+    results: Sequence[ToolResult],
+    policy: DataTransferPolicy,
 ) -> list[str]:
     by_id = {result.result_id: result for result in results}
     lines: list[str] = []
@@ -164,21 +174,31 @@ def _focus_descriptions(
         if result.data is not None:
             names = [_column_name(column) for column in result.data.columns]
             parts.append(f"columns={names}")
-            if result.data.rows:
-                parts.append(f"sample_rows={result.data.rows[:CONTEXT_RESULT_ROWS]}")
+            if result.data.row_count is not None:
+                parts.append(f"row_count={result.data.row_count}")
+            data = policy.result_data(
+                result.data,
+                context=DataContext.HISTORY,
+                max_rows=CONTEXT_RESULT_ROWS,
+            )
+            if data.get("rows"):
+                parts.append(f"sample_rows={data['rows']}")
+            elif data.get("rows_omitted"):
+                parts.append("sample_rows=omitted_by_data_policy")
         if result.facts:
-            parts.append(f"facts={[fact.text for fact in result.facts[:CONTEXT_FACTS]]}")
+            facts = [policy.sanitize_fact(fact)["text"] for fact in result.facts[:CONTEXT_FACTS]]
+            parts.append(f"facts={facts}")
         if result.chart_hint is not None:
-            parts.append(f"chart_hint={result.chart_hint.model_dump(mode='json')}")
+            parts.append(f"chart_hint={policy.sanitize_value(result.chart_hint)}")
         lines.append("; ".join(parts))
     return lines
 
 
-def _block_descriptions(blocks: Sequence[Block]) -> list[str]:
+def _block_descriptions(blocks: Sequence[Block], policy: DataTransferPolicy) -> list[str]:
     lines: list[str] = []
     for index, block in enumerate(blocks, start=1):
         if block.type == "text":
-            text = compact_text(block.markdown, CONTEXT_LINE_CHARS)
+            text = compact_text(policy.sanitize_text(block.markdown), CONTEXT_LINE_CHARS)
             lines.append(f"{index}. text: {text or '—'}")
         elif block.type == "table":
             lines.append(f"{index}. table: result_id={block.result_id or '?'}")
@@ -188,13 +208,16 @@ def _block_descriptions(blocks: Sequence[Block]) -> list[str]:
             title = chart.get("title") if isinstance(chart, dict) else None
             result_id = chart.get("result_id") if isinstance(chart, dict) else None
             lines.append(
-                f"{index}. chart: type={chart_type or '?'}, title={title or '—'}, "
+                f"{index}. chart: type={chart_type or '?'}, "
+                f"title={policy.sanitize_text(title) or '—'}, "
                 f"result_id={result_id or '?'}"
             )
         elif block.type == "dashboard_link":
-            lines.append(f"{index}. dashboard: {block.title or block.dashboard_id or '?'}")
+            title = policy.sanitize_text(block.title or block.dashboard_id or "?")
+            lines.append(f"{index}. dashboard: {title}")
         elif block.type == "clarification":
-            lines.append(f"{index}. clarification: {compact_text(block.markdown, 120)}")
+            text = compact_text(policy.sanitize_text(block.markdown), 120)
+            lines.append(f"{index}. clarification: {text}")
         elif block.type == "suggestions":
             lines.append(f"{index}. suggestions: {len(block.items)}")
     return lines

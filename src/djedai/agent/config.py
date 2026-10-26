@@ -1,29 +1,20 @@
 import os
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
 from djedai.agent.client import BIModelClient
+from djedai.agent.data_policy import DataTransferPolicy, data_sharing_allowed
 from djedai.agent.reasoning import ReasoningConfigurationError
 from djedai.config import LimitSettings, ReasoningEffort, get_limits
+
+__all__ = ["ModelConfig", "data_sharing_allowed", "get_agent_client", "reasoning_profile"]
 
 
 class ModelConfig(BaseModel):
     base_url: str = Field(min_length=1)
     name: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
-
-
-def data_sharing_allowed() -> bool:
-    """Можно ли отправлять модели значения ячеек: только при ``ALLOW_DATA_SHARING=true``.
-
-    По умолчанию нельзя: ``MODEL_BASE_URL`` может указывать на внешний API. Значение
-    берётся из окружения, затем из ``.env``; окружение процесса не меняется.
-    """
-    value = os.environ.get("ALLOW_DATA_SHARING")
-    if value is None:
-        value = dotenv_values().get("ALLOW_DATA_SHARING")
-    return (value or "false").strip().lower() == "true"
 
 
 def reasoning_profile(limits: LimitSettings | None = None) -> dict[str, ReasoningEffort]:
@@ -59,6 +50,7 @@ def get_agent_client() -> BIModelClient:
             retry_delay=limits.model_retry_delay_seconds,
             reasoning=reasoning_profile(limits),
             reasoning_supported=limits.model_reasoning_supported,
+            data_policy=DataTransferPolicy.from_env(),
         )
     except ValidationError as e:
         if any(

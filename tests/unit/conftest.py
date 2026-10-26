@@ -57,7 +57,13 @@ def model_endpoint() -> Callable:
                             "answer_blocks": [{"type": "text", "markdown": "1 строка"}]
                         },
                         "VerifyResponse": {"is_valid": True, "corrected_markdown": ""},
+                        "VisualizeResponse": {"charts": []},
+                        "TableDescriptions": {"table": "orders", "columns": []},
+                        "DatasetSummary": {"summary": "Данные заказа"},
                     }
+                    content = options.get("body", bodies[schema])
+                    if not isinstance(content, str):
+                        content = json.dumps(content)
                     body = {
                         "id": "fixture",
                         "object": "chat.completion",
@@ -66,17 +72,16 @@ def model_endpoint() -> Callable:
                         "choices": [
                             {
                                 "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": json.dumps(bodies[schema]),
-                                },
-                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": content},
+                                "finish_reason": options.get("finish_reason", "stop"),
                             }
                         ],
                     }
                     status = options.get("status", 200)
                     encoded = json.dumps(
-                        body if status == 200 else {"error": {"message": "fixture"}}
+                        body
+                        if status == 200
+                        else options.get("error_body", {"error": {"message": "fixture"}})
                     ).encode()
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")

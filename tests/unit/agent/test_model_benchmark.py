@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import re
 import sys
 from decimal import Decimal
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.contracts.agent import (
     ComposeResponse,
     PlanResponse,
@@ -35,6 +37,9 @@ class FakeClient:
         self.wrong_verify = wrong_verify
         self.reasoning = {stage: "provider_default" for stage in benchmark.REASONING_STAGES}
         self.stages = []
+        # Benchmark cases assert values in compose/verify prompts; the production
+        # default stays restricted and is covered by the policy tests.
+        self.data_policy = DataTransferPolicy.sharing()
 
     def reasoning_for(self, stage):
         return self.reasoning.get(stage, "provider_default")
@@ -111,16 +116,33 @@ class FakeClient:
         return "SELECT region, SUM(amount) AS total FROM orders GROUP BY region ORDER BY region"
 
     def _answer(self, system):
-        facts = system.split("Facts and Data:", 1)[-1]
+        raw = system.split("Facts and Data:", 1)[-1].split("\n\nData policy:", 1)[0]
+        facts = raw
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            facts = json.dumps(payload, ensure_ascii=False)
+            has_values = False
+            for entry in payload:
+                for row in (entry.get("data") or {}).get("rows", []):
+                    if any(value is not None for value in row):
+                        has_values = True
+                for fact in entry.get("facts", []):
+                    if fact.get("kind") != "summary" and (fact.get("text") or fact.get("values")):
+                        has_values = True
+            if not has_values:
+                return "Данных нет"
         if "[[None]]" in facts or "Нет успешных результатов" in facts:
             return "Данных нет"
         if "RUB" in facts:
             return "RUB 70, USD 5"
-        if "'pct'" in facts:
+        if '"pct"' in facts or "'pct'" in facts:
             return "50%"
         if "retail" in facts:
             return "retail 50, wholesale 20"
-        if "'region'" in facts:
+        if '"region"' in facts or "'region'" in facts:
             return "A 30, B 5, C 40"
         return "5" if self.wrong_count else "4"
 

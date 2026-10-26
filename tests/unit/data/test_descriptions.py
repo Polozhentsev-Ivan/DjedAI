@@ -13,6 +13,7 @@ import duckdb
 import pytest
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.data import descriptions
@@ -83,7 +84,7 @@ def only_clients() -> DatasetCatalog:
 def no_data_sharing(monkeypatch):
     """По умолчанию значения не передаются; локальный .env на тесты не влияет."""
     monkeypatch.delenv("ALLOW_DATA_SHARING", raising=False)
-    monkeypatch.setattr("djedai.agent.config.dotenv_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr("djedai.agent.data_policy.dotenv_values", lambda *args, **kwargs: {})
 
 
 @pytest.fixture
@@ -303,6 +304,27 @@ def test_empty_catalog_needs_no_model(con):
     catalog = blank_catalog(tables=[], relations=[], transformations=[], warnings=[])
     report = describe_catalog(con, catalog, FakeClient())
     assert (report.model_calls, report.catalog.summary) == (0, None)
+
+
+def test_values_are_not_shared_by_default(con):
+    client = FakeClient()
+    report = describe_catalog(con, blank_catalog(), client)
+
+    sent = json.dumps([payload for _, payload, _ in client.calls], ensure_ascii=False)
+    for value in ("sample_values", "top_values", "000123", "C-0007", "доставлен"):
+        assert value not in sent
+    amount = next(c for c in client.calls[0][1]["columns"] if c["name"] == "amount")
+    assert amount["original_name"] == "Сумма" and "max" in amount["stats"]
+    assert report.catalog.tables[0].columns[0].description is not None
+
+
+def test_client_policy_overrides_environment(con, share_data):
+    client = FakeClient()
+    client.data_policy = DataTransferPolicy.restricted()
+    describe_catalog(con, blank_catalog(), client)
+
+    sent = json.dumps([payload for _, payload, _ in client.calls], ensure_ascii=False)
+    assert "000123" not in sent and "sample_values" not in sent
 
 
 def test_values_are_not_shared_when_disabled(con, share_data):

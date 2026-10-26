@@ -2,6 +2,7 @@ from typing import get_args
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.graph import build_agent_graph
 from djedai.contracts.agent import (
     Block,
@@ -54,7 +55,11 @@ def _run_modify(thread_id: str, response: VisualizeResponse, dispatcher=None):
         ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
     ]
 
-    configurable = {"thread_id": thread_id, "client": mock_client}
+    configurable = {
+        "thread_id": thread_id,
+        "client": mock_client,
+        "data_policy": DataTransferPolicy.sharing(),
+    }
     if dispatcher is not None:
         configurable["tool_dispatcher"] = dispatcher
 
@@ -98,7 +103,13 @@ def test_visualize_modifies_previous():
         ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
     ]
 
-    config = {"configurable": {"thread_id": "test_vis", "client": mock_client}}
+    config = {
+        "configurable": {
+            "thread_id": "test_vis",
+            "client": mock_client,
+            "data_policy": DataTransferPolicy.sharing(),
+        }
+    }
     initial_state = {
         "chat_id": "c1",
         "dataset_id": "ds_1",
@@ -210,6 +221,7 @@ def test_visualize_reuses_result_from_previous_turn_in_the_same_chat():
             "thread_id": "test_vis_two_turns",
             "client": client,
             "tool_dispatcher": dispatcher,
+            "data_policy": DataTransferPolicy.sharing(),
         }
     }
 
@@ -333,7 +345,13 @@ def test_compose_uses_saved_facts_when_plan_is_empty():
             "messages": [Message(role="user", content="Смени вид и объясни те же суммы")],
             "results": [_saved_result()],
         },
-        config={"configurable": {"thread_id": "test_compose_saved", "client": client}},
+        config={
+            "configurable": {
+                "thread_id": "test_compose_saved",
+                "client": client,
+                "data_policy": DataTransferPolicy.sharing(),
+            }
+        },
     )
 
     assert result["charts"][0].result_id == "r_1"
@@ -369,7 +387,13 @@ def test_compose_falls_back_to_saved_history_when_no_chart_is_built():
             "messages": [Message(role="user", content="Объясни те же суммы")],
             "results": [_saved_result()],
         },
-        config={"configurable": {"thread_id": "test_compose_history", "client": client}},
+        config={
+            "configurable": {
+                "thread_id": "test_compose_history",
+                "client": client,
+                "data_policy": DataTransferPolicy.sharing(),
+            }
+        },
     )
 
     compose_prompt = client.generate_typed_response.call_args_list[3].args[0]

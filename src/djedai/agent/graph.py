@@ -8,6 +8,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.data_policy import (
+    RESTRICTED_CONTEXT_MESSAGE,
+    DataContext,
+    DataTransferPolicy,
+    policy_for_client,
+)
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
@@ -29,9 +35,61 @@ from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
+MODEL_ERROR_MARKDOWN = "Не удалось получить ответ модели. Попробуйте повторить запрос."
+POLICY_NOTE = (
+    "\n\nData policy: raw rows from earlier results are not included. "
+    "Use only the provided facts, aggregates and metadata; do not invent values. "
+    "If they are insufficient to answer, state that the data is unavailable."
+)
+
+
+def _policy(config: RunnableConfig | None) -> DataTransferPolicy:
+    """Одна политика хода: приоритет у явного override, затем у клиента."""
+    configurable = (config or {}).get("configurable", {})
+    override = configurable.get("data_policy")
+    if isinstance(override, DataTransferPolicy):
+        return override
+    return policy_for_client(configurable.get("client"))
+
+
+def _result_context(state: AgentState, result: ToolResult) -> DataContext:
+    current_ids = {item.result_id for item in state.get("results", [])}
+    return DataContext.CURRENT_RESULT if result.result_id in current_ids else DataContext.HISTORY
+
+
+def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list[dict], bool]:
+    """Факты и разрешённые данные для compose/verify и признак достаточности.
+
+    Строки прошлых результатов в restricted-режиме заменяются метаданными и
+    пометкой ``rows_omitted``. Если после фильтрации не осталось ни фактов, ни
+    разрешённых строк, вызывать модель нельзя: ответ был бы выдуманным.
+    """
+    entries: list[dict] = []
+    usable = False
+    for result in answer_results(state):
+        entry: dict = {"result_id": result.result_id, "tool": result.tool}
+        if result.facts:
+            facts = [policy.sanitize_fact(fact) for fact in result.facts]
+            entry["facts"] = facts
+            if any(fact.get("text") or fact.get("values") for fact in facts):
+                usable = True
+        if result.data is not None:
+            data = policy.result_data(result.data, context=_result_context(state, result))
+            entry["data"] = data
+            if data.get("rows"):
+                usable = True
+        entries.append(entry)
+    return entries, usable
+
+
+def _policy_note(entries: list[dict]) -> str:
+    omitted = any(entry.get("data", {}).get("rows_omitted") for entry in entries)
+    return POLICY_NOTE if omitted else ""
+
 
 def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     """Loads the catalog and context for the specific dataset, and resets per-turn state."""
+    policy = _policy(config)
     catalog_loader = config.get("configurable", {}).get("catalog_loader")
     catalog_prompt = (
         catalog_loader(state["dataset_id"]).to_prompt()
@@ -41,6 +99,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     metrics_loader = config.get("configurable", {}).get("metrics_loader")
     if metrics_loader is not None:
         catalog_prompt += "\n\n" + metrics_prompt(metrics_loader(state["dataset_id"]))
+    catalog_prompt = policy.sanitize_text(catalog_prompt)
     # Results already in the state belong to earlier turns: keep them as history
     # before the per-turn results are cleared.
     history_results = list(state.get("history_results", []))
@@ -64,7 +123,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
-def memory_context(state: AgentState) -> str:
+def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
     """Собирает единый контекст диалога для understand/plan."""
     messages = state.get("messages", [])
     return conversation_context(
@@ -73,6 +132,7 @@ def memory_context(state: AgentState) -> str:
         focus_result_ids=state.get("focus_result_ids", []),
         results=[*state.get("history_results", []), *state.get("results", [])],
         previous_blocks=state.get("previous_blocks", []),
+        policy=policy,
     )
 
 
@@ -89,20 +149,25 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         return {"understanding": Understanding(intent="off_topic", entities=Entities())}
 
     if client:
+        policy = _policy(config)
         sys_prompt = load_prompt("understand").format(
             catalog=state.get("catalog_prompt"),
-            history=memory_context(state),
+            history=memory_context(state, policy),
         )
         response = client.generate_typed_response(
             sys_prompt, last_msg, Understanding, stage="understand"
         )
         if response.status == "success" and response.data:
             return {"understanding": response.data}
-        else:
+        if response.error_type == "POLICY_RESTRICTED":
             return {
-                "understanding": Understanding(intent="ambiguous"),
-                "answer_blocks": [Block(type="error", markdown=f"API Error: {response.message}")],
+                "understanding": Understanding(intent="invalid"),
+                "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
             }
+        return {
+            "understanding": Understanding(intent="ambiguous"),
+            "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+        }
 
     intent = "ambiguous" if "ambiguous" in last_msg.lower() else "data_question"
     return {"understanding": Understanding(intent=intent, entities=Entities())}
@@ -110,6 +175,7 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
 
 def plan(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
+    policy = _policy(config)
 
     registry = get_tools_for_llm()
     tools_desc = "\n".join(
@@ -117,9 +183,11 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         for t in registry
     )
 
-    # Format the retry context
+    # Format the retry context. Tool errors can contain SQL fragments or values,
+    # so they are sanitized before they enter the prompt.
     results_str = "\n".join(
-        f"Tool {r.tool}: {r.status} - {r.error.message if r.error else 'Success'}"
+        f"Tool {r.tool}: {r.status} - "
+        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
         for r in state.get("results", [])
     )
 
@@ -127,7 +195,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         catalog=state.get("catalog_prompt"),
         results=results_str,
         tools_registry=tools_desc,
-        history=memory_context(state),
+        history=memory_context(state, policy),
     )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
@@ -142,10 +210,15 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         )
         if response.status == "success" and response.data:
             return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
+        message = (
+            RESTRICTED_CONTEXT_MESSAGE
+            if response.error_type == "POLICY_RESTRICTED"
+            else MODEL_ERROR_MARKDOWN
+        )
         return {
             "plan": [],
             "retries": state.get("retries", 0) + 1,
-            "answer_blocks": [Block(type="error", markdown=f"API Error: {response.message}")],
+            "answer_blocks": [Block(type="error", markdown=message)],
         }
 
     return {"plan": state.get("plan", []), "retries": state.get("retries", 0) + 1}
@@ -154,6 +227,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
 def execute(state: AgentState, config: RunnableConfig) -> dict:
     plan_steps = state.get("plan", [])
     existing_results = state.get("results", [])
+    policy = _policy(config)
     new_results = []
 
     # In production, dispatcher comes from djedai.analytics.registry
@@ -182,8 +256,20 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                     ),
                 )
 
-            # Ensure metadata is stamped on the result (ToolResult is frozen)
-            res = res.model_copy(update={"tool": step.tool, "params": step.args})
+            # Ensure metadata is stamped on the result (ToolResult is frozen).
+            # Errors and facts are stored sanitized because they can reach both
+            # the planner and the final answer.
+            updates: dict = {
+                "tool": step.tool,
+                "params": policy.sanitize_value(step.args),
+            }
+            if res.error is not None:
+                updates["error"] = policy.sanitize_error(res.error)
+            if res.facts:
+                updates["facts"] = [policy.sanitize_fact_model(fact) for fact in res.facts]
+            if res.sql is not None:
+                updates["sql"] = policy.sanitize_text(res.sql)
+            res = res.model_copy(update=updates)
             new_results.append(res)
 
         except (TurnTimeout, TurnCancelled):
@@ -194,8 +280,11 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                     result_id=f"r_{uuid.uuid4().hex[:6]}",
                     status="error",
                     tool=step.tool,
-                    params=step.args,
-                    error=ToolError(code="execution_failed", message=str(e)),
+                    params=policy.sanitize_value(step.args),
+                    error=ToolError(
+                        code="execution_failed",
+                        message=policy.sanitize_text(str(e)) or "Ошибка выполнения инструмента.",
+                    ),
                 )
             )
 
@@ -355,20 +444,11 @@ def updated_focus_result_ids(state: AgentState) -> list[str]:
     )
 
 
-def describe_result_for_chart(result: ToolResult) -> dict:
-    """Краткое описание результата для модели: поля, подсказка и пример строк."""
-    columns = []
-    for column in result.data.columns if result.data else []:
-        columns.append(column.model_dump(mode="json") if hasattr(column, "model_dump") else column)
-    rows = result.data.rows[:5] if result.data else []
-    return {
-        "result_id": result.result_id,
-        "tool": result.tool,
-        "columns": columns,
-        "sample_rows": rows,
-        "chart_hint": result.chart_hint.model_dump(mode="json") if result.chart_hint else None,
-        "facts": [fact.text for fact in result.facts],
-    }
+def describe_result_for_chart(
+    result: ToolResult, policy: DataTransferPolicy, context: DataContext
+) -> dict:
+    """Краткое описание результата для модели по правилам политики."""
+    return policy.chart_result(result, context=context)
 
 
 NUMERIC_TYPES = {
@@ -502,7 +582,11 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
     if not valid_results:
         return {"charts": [], "focus_result_ids": focus}
 
-    results_summary = [describe_result_for_chart(result) for result in valid_results]
+    policy = _policy(config)
+    results_summary = [
+        describe_result_for_chart(result, policy, _result_context(state, result))
+        for result in valid_results
+    ]
 
     messages = state.get("messages", [])
     last_msg = messages[-1].content if messages else ""
@@ -526,6 +610,12 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
                 "charts": sanitize_charts(response.data.charts, valid_results),
                 "focus_result_ids": focus,
             }
+        if response.error_type == "POLICY_RESTRICTED":
+            return {
+                "charts": [],
+                "focus_result_ids": focus,
+                "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+            }
 
     return {"charts": [], "focus_result_ids": focus}
 
@@ -538,16 +628,20 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     if any(b.type == "error" for b in existing_blocks):
         return {"answer_blocks": existing_blocks, "focus_result_ids": focus}
 
-    facts_and_data = []
-    for r in answer_results(state):
-        entry = {"tool": r.tool}
-        if r.facts:
-            entry["facts"] = r.facts
-        if r.data:
-            entry["data"] = r.data
-        facts_and_data.append(entry)
+    policy = _policy(config)
+    results = answer_results(state)
+    facts_and_data, usable = _answer_payload(state, policy)
+    if results and not usable:
+        return {
+            "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+            "compose_retries": state.get("compose_retries", 0) + 1,
+            "focus_result_ids": focus,
+        }
 
-    sys_prompt = load_prompt("compose").format(facts=str(facts_and_data))
+    sys_prompt = load_prompt("compose").format(
+        facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
+        + _policy_note(facts_and_data)
+    )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
     user_prompt = (
@@ -572,7 +666,12 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         if response.status == "success" and response.data:
             blocks = response.data.answer_blocks
         else:
-            blocks = [Block(type="error", markdown=f"API Error: {response.message}")]
+            message = (
+                RESTRICTED_CONTEXT_MESSAGE
+                if response.error_type == "POLICY_RESTRICTED"
+                else MODEL_ERROR_MARKDOWN
+            )
+            blocks = [Block(type="error", markdown=message)]
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
@@ -613,22 +712,26 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     draft = "\n\n".join(draft_parts)
 
-    facts_and_data = []
-    for r in answer_results(state):
-        entry = {"tool": r.tool}
-        if r.facts:
-            entry["facts"] = r.facts
-        if r.data:
-            entry["data"] = r.data
-        facts_and_data.append(entry)
+    policy = _policy(config)
+    results = answer_results(state)
+    facts_and_data, usable = _answer_payload(state, policy)
 
     if not facts_and_data:
         new_blocks = [b for b in blocks if b.type != "text"]
         new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
         return {"is_verified": True, "answer_blocks": new_blocks}
 
+    if results and not usable:
+        new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
+        new_blocks.append(Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE))
+        return {"is_verified": True, "answer_blocks": new_blocks}
+
     if client:
-        sys_prompt = load_prompt("verify").format(facts=str(facts_and_data), draft=draft)
+        sys_prompt = load_prompt("verify").format(
+            facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
+            + _policy_note(facts_and_data),
+            draft=draft,
+        )
         response = client.generate_typed_response(
             sys_prompt,
             "Verify the numbers and formats.",
@@ -650,18 +753,18 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                     # Triggers conditional route to loop back to compose
                     return {"is_verified": False}
         else:
-            # The API failed (timeout, 500, etc.).
+            # The API failed (timeout, 500, policy restriction, etc.).
             # We do not allow the publication of an unvalidated draft.
             new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
-            new_blocks.append(
-                Block(
-                    type="error",
-                    markdown=(
-                        "Ошибка проверки ответа: недоступен API верификации. "
-                        "Неподтвержденный ответ удален."
-                    ),
+            message = (
+                RESTRICTED_CONTEXT_MESSAGE
+                if response.error_type == "POLICY_RESTRICTED"
+                else (
+                    "Ошибка проверки ответа: недоступен API верификации. "
+                    "Неподтвержденный ответ удален."
                 )
             )
+            new_blocks.append(Block(type="error", markdown=message))
             return {"is_verified": True, "answer_blocks": new_blocks}
 
     return {"is_verified": True}
@@ -674,6 +777,7 @@ def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
     if any(b.type == "error" for b in existing):
         return {"answer_blocks": existing, "focus_result_ids": focus}
 
+    policy = _policy(config)
     understanding = state.get("understanding")
     intent = understanding.intent if understanding else "invalid"
 
@@ -685,8 +789,11 @@ def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
             blocks.append(
                 Block(
                     type="clarification",
-                    markdown=understanding.clarification.question,
-                    options=understanding.clarification.options,
+                    markdown=policy.sanitize_text(understanding.clarification.question),
+                    options=[
+                        policy.sanitize_text(option)
+                        for option in understanding.clarification.options
+                    ],
                     metric_candidates=_checked_candidates(
                         understanding.clarification, state, config
                     ),
@@ -716,13 +823,21 @@ def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
 
     elif (error := _metric_decision(state)) is not None:
         # Расчёт метрики упёрся в решение пользователя: определение, валюту, период, JOIN.
-        text = error.message if not error.suggestion else f"{error.message}\n\n{error.suggestion}"
+        text = policy.sanitize_text(error.message)
+        if error.suggestion:
+            text = f"{text}\n\n{policy.sanitize_text(error.suggestion)}"
         blocks.append(Block(type="clarification", markdown=text))
 
     elif blockers := _quality_blockers(state):
         # Неоднозначная дата или смешанные валюты в расчёте: решает пользователь (B2-10).
         issue = blockers[0]
-        blocks.append(Block(type="clarification", markdown=issue.message, options=issue.options))
+        blocks.append(
+            Block(
+                type="clarification",
+                markdown=policy.sanitize_text(issue.message),
+                options=[policy.sanitize_text(option) for option in issue.options],
+            )
+        )
 
     else:
         blocks.append(Block(type="clarification", markdown="Пожалуйста, уточните ваш запрос."))
