@@ -382,14 +382,62 @@ export function toolCall(tool: string, params: Record<string, unknown>): string 
   return `${tool}(${Object.entries(params).map(([k, v]) => `${k}=${literal(v)}`).join(', ')})`;
 }
 
-export function calculation(result: Schemas['ToolResultMeta']): Calculation {
+/**
+ * «Как посчитано» for a saved result. `current` is the dataset's catalog revision now:
+ * a newer one means the catalog was re-profiled after this result was computed (B1-11).
+ */
+export function calculation(result: Schemas['ToolResultMeta'], current?: Schemas['CatalogRevision'] | null): Calculation {
+  const read = result.read ?? null;
+  const notes = [...limitations(result.quality) ?? [], ...readNotes(read, current)];
   return {
     tool: toolCall(result.tool ?? 'unknown_tool', result.params ?? {}),
     columns: (result.data?.columns ?? []).map((c) => typeof c === 'string' ? { label: c, name: c } : { label: c.label ?? c.name, name: c.name }),
     sql: result.sql ?? '—',
     stats: result.data?.row_count == null ? undefined : `${rowsLabel(result.data.row_count)} в результате`,
-    limitations: limitations(result.quality),
+    source: readSource(read),
+    limitations: notes.length > 0 ? notes : undefined,
   };
+}
+
+/** Where and when the data of a result was read: «Живое чтение 26.10.2026 14:03 · каталог r3». */
+export function readSource(read: Schemas['ReadProvenance'] | null): string | undefined {
+  if (!read) return undefined;
+  if (read.read_mode === 'unknown' || !read.finished_at) return 'Версия каталога и время чтения не сохранены';
+  const revision = read.catalog_revision == null ? 'версия каталога неизвестна' : `каталог r${read.catalog_revision}`;
+  if (read.read_mode === 'live') return `Живое чтение источника ${formatDateTime(read.finished_at)} · ${revision}`;
+  const profiled = read.freshness.profiled_at;
+  return `Снимок датасета · ${revision}${profiled ? ` · профиль от ${formatDateTime(profiled)}` : ''}`;
+}
+
+function readNotes(read: Schemas['ReadProvenance'] | null, current?: Schemas['CatalogRevision'] | null): string[] {
+  if (!read) return [];
+  const notes: string[] = [];
+  const { state, reason } = read.freshness;
+  if ((state === 'aged' || state === 'drifted' || state === 'unknown') && reason) notes.push(reason);
+  if (current && read.catalog_revision != null && current.number > read.catalog_revision) {
+    notes.push(`Каталог обновлён до r${current.number} после расчёта: результат показан как был сохранён, без пересчёта.`);
+  }
+  return notes;
+}
+
+const FRESHNESS: Record<Schemas['SourceFreshness']['state'], string> = {
+  fresh: 'схема источника совпадает с каталогом',
+  aged: 'профиль устарел',
+  drifted: 'схема источника изменилась',
+  incompatible: 'каталог несовместим с источником',
+  unknown: 'версия каталога неизвестна',
+};
+
+/** «Каталог r2 · профиль от 26.10.2026 09:30 · схема источника совпадает с каталогом». */
+export function revisionSummary(d: Schemas['DatasetDetail']): string {
+  const parts = [d.revision ? `Каталог r${d.revision.number} · профиль от ${formatDateTime(d.revision.profiled_at)}` : 'Версия каталога неизвестна'];
+  if (d.freshness && d.freshness.state !== 'unknown') parts.push(FRESHNESS[d.freshness.state]);
+  return parts.join(' · ');
+}
+
+/** The source needs re-profiling before its catalog can be trusted again. */
+export function needsRefresh(d: Schemas['DatasetDetail']): boolean {
+  return !d.revision || (d.freshness?.state ?? 'fresh') !== 'fresh';
 }
 
 /** Data limitations behind a result (B2-10); informational notes stay out. */

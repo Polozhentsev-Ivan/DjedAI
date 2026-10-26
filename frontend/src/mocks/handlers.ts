@@ -148,6 +148,18 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
       return HttpResponse.json(dataset);
     }),
 
+    http.post(api('/datasets/:id/refresh'), async ({ params }) => {
+      await slow();
+      const dataset = db.datasets.find((d) => d.dataset_id === params.id);
+      if (!dataset) return notFound('Датасет');
+      if (dataset.status !== 'ready' || !dataset.catalog?.revision) return errorJson(409, { code: 'conflict', message: 'Датасет ещё не готов к запросам' });
+      // The mock publishes the next revision at once; the real service builds it in the background.
+      const revision = { ...dataset.catalog.revision, number: dataset.catalog.revision.number + 1, profiled_at: new Date().toISOString() };
+      dataset.catalog = { ...dataset.catalog, revision };
+      Object.assign(dataset, { revision, freshness: { state: 'fresh', profiled_at: revision.profiled_at, checked_at: revision.profiled_at, changes: [], reason: null }, refresh: null });
+      return HttpResponse.json(dataset, { status: 202 });
+    }),
+
     http.delete(api('/datasets/:id'), ({ params }) => {
       db.datasets = db.datasets.filter((d) => d.dataset_id !== params.id);
       pending.delete(String(params.id));

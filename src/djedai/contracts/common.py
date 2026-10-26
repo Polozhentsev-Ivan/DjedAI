@@ -6,7 +6,8 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
 
-from djedai.contracts.catalog import DatasetCatalog, DatasetSource
+from djedai.contracts.catalog import CatalogRevision, DatasetCatalog, DatasetSource
+from djedai.contracts.freshness import DatasetRefresh, SourceFreshness
 from djedai.contracts.tool_result import ToolError
 
 
@@ -46,6 +47,15 @@ class DatasetSummary(BaseModel):
     table_count: int | None = Field(ge=0)
     row_count: int | None = Field(ge=0)
     created_at: AwareDatetime = Field(description="Дата создания")
+    revision: CatalogRevision | None = Field(
+        default=None, description="Ревизия каталога; null — ещё не собран или собран до #169"
+    )
+    freshness: SourceFreshness | None = Field(
+        default=None, description="Последняя проверка источника относительно каталога"
+    )
+    refresh: DatasetRefresh | None = Field(
+        default=None, description="Идущая или неудавшаяся перепрофилировка"
+    )
 
 
 class DatasetDetail(DatasetSummary):

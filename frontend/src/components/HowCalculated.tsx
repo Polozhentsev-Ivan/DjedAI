@@ -14,6 +14,8 @@ export interface Calculation {
   columns: readonly CalculationColumn[];
   sql: string;
   stats?: string | undefined;
+  /** Where and when the data was read and against which catalog revision (B1-11). */
+  source?: string | undefined;
   /** Data limitations of the result: typing losses, ambiguities, incomplete lineage. */
   limitations?: readonly string[] | undefined;
 }
@@ -24,7 +26,7 @@ interface HowCalculatedProps extends Calculation {
   defaultOpen?: boolean | undefined;
 }
 
-function Body({ tool, columns, sql, stats, limitations, panel }: Calculation & { panel: boolean }) {
+function Body({ tool, columns, sql, stats, source, limitations, panel }: Calculation & { panel: boolean }) {
   const label = 'min-w-(--label-col) text-xs text-muted-foreground';
   return (
     <div className={cn('flex flex-col gap-3', panel ? 'px-2 pb-2 pt-1' : 'border-t border-border bg-secondary p-3.5')}>
@@ -46,6 +48,12 @@ function Body({ tool, columns, sql, stats, limitations, panel }: Calculation & {
         <div className="flex flex-wrap items-baseline gap-2">
           <span className={label}>Обработано</span>
           <span className="tabular">{stats}</span>
+        </div>
+      )}
+      {source && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Данные</span>
+          <span>{source}</span>
         </div>
       )}
       {limitations && limitations.length > 0 && (
