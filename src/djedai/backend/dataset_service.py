@@ -848,7 +848,8 @@ class DatasetService:
             with self.session_factory() as db:
                 return list(
                     db.execute(
-                        select(DatasetModel.owner_id, DatasetModel.dataset_id).where(
+                        select(DatasetModel.owner_id, DatasetModel.dataset_id)
+                        .where(
                             DatasetModel.source_kind.in_(
                                 ["csv", "csv_upload", "postgres", "clickhouse"]
                             ),

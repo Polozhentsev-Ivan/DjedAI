@@ -322,6 +322,9 @@ class ChatAdmissionController:
         if waiter.cancelled:
             return
         waiter.cancelled = True
+        if waiter.event.is_set():
+            self._on_permit_released(waiter.owner_id, waiter.chat_id, 0)
+            return
         owner_queue = self._waiters_by_owner.get(waiter.owner_id)
         if owner_queue and waiter in owner_queue:
             owner_queue.remove(waiter)

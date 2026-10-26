@@ -170,3 +170,101 @@ async def test_fair_round_robin_queue_dispatch() -> None:
     assert permit_owner1.owner_id == "owner1"
     permit_owner1.release()
     await asyncio.sleep(0.01)
+
+
+@pytest.mark.anyio
+async def test_permit_release_is_idempotent() -> None:
+    controller = ChatAdmissionController(max_concurrent=2, max_concurrent_per_owner=2)
+    permit = await controller.acquire_permit("owner1", "c_1")
+    assert controller.snapshot()["active_chats_total"] == 1
+
+    permit.release()
+    permit.release()
+    permit.release()
+    await asyncio.sleep(0.02)
+
+    snapshot = controller.snapshot()
+    assert snapshot["active_chats_total"] == 0
+    assert snapshot["active_chats_by_owner"]["owner1"] == 0
+
+
+@pytest.mark.anyio
+async def test_cancellation_after_dispatch_does_not_leak_slot() -> None:
+    controller = ChatAdmissionController(
+        max_concurrent=1,
+        max_concurrent_per_owner=1,
+        max_queued=5,
+        max_queued_per_owner=2,
+        timeout_seconds=2.0,
+    )
+    permit1 = await controller.acquire_permit("owner1", "c_1")
+
+    # owner2 встает в очередь
+    task2 = asyncio.create_task(controller.acquire_permit("owner2", "c_2"))
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["queued_chats_total"] == 1
+
+    # owner3 встает в очередь
+    task3 = asyncio.create_task(controller.acquire_permit("owner3", "c_3"))
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["queued_chats_total"] == 2
+
+    # Освобождаем слот permit1 - диспетчер назначит слот task2 (owner2)
+    permit1.release()
+    # Но task2 отменяется сразу же
+    task2.cancel()
+    await asyncio.sleep(0.05)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task2
+
+    # Слот не должен утечь, а должен перейти к task3 (owner3)!
+    assert task3.done()
+    permit3 = task3.result()
+    assert permit3.owner_id == "owner3"
+    assert controller.snapshot()["active_chats_total"] == 1
+
+    permit3.release()
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["active_chats_total"] == 0
+
+
+@pytest.mark.anyio
+async def test_max_concurrent_chats_strictly_enforced() -> None:
+    controller = ChatAdmissionController(
+        max_concurrent=4,
+        max_concurrent_per_owner=2,
+        max_queued=10,
+        max_queued_per_owner=2,
+        timeout_seconds=0.1,
+    )
+    permits = []
+    # Занимаем все 4 слота: 2 для owner1, 2 для owner2
+    permits.append(await controller.acquire_permit("owner1", "c_1"))
+    permits.append(await controller.acquire_permit("owner1", "c_2"))
+    permits.append(await controller.acquire_permit("owner2", "c_3"))
+    permits.append(await controller.acquire_permit("owner2", "c_4"))
+
+    assert controller.snapshot()["active_chats_total"] == 4
+
+    # 5-й запрос от owner3 не может получить слот немедленно и встает в очередь
+    task5 = asyncio.create_task(controller.acquire_permit("owner3", "c_5"))
+    await asyncio.sleep(0.02)
+    assert not task5.done()
+    assert controller.snapshot()["queued_chats_total"] == 1
+    assert controller.snapshot()["active_chats_total"] == 4
+
+    # Освобождаем один слот
+    permits[0].release()
+    await asyncio.sleep(0.05)
+
+    # Теперь task5 получил слот, а общее число активных по-прежнему ровно 4
+    assert task5.done()
+    permit5 = task5.result()
+    permits.append(permit5)
+    assert controller.snapshot()["active_chats_total"] == 4
+
+    for p in permits:
+        p.release()
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["active_chats_total"] == 0
