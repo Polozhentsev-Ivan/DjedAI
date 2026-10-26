@@ -3308,8 +3308,8 @@ def lagged_correlation(
         df = pd.DataFrame(raw, columns=["time_bucket", "a", "b"])
         df["time_bucket"] = pd.to_datetime(df["time_bucket"])
         df = df.set_index("time_bucket").sort_index()
-        # Защита от раздувания календарной сетки: одна ошибочная дата
-        # (например, 1970-01-01 рядом с 2026-10-26) при freq='minute'
+        # Защита от раздувания календарной сетки до аллокации: одна ошибочная
+        # дата (например, 1970-01-01 рядом с 2026-10-26) при freq='minute'
         # даёт десятки миллионов бакетов до первой CPU-проверки бюджета.
         n_buckets = _estimate_calendar_buckets(df.index.min(), df.index.max(), freq)
         if n_buckets > _MAX_CALENDAR_BUCKETS:
@@ -3505,6 +3505,7 @@ def lagged_correlation(
         timer.cancel()
         if connection is None:
             con.close()
+
 
 # ============================================================================
 # FORECAST
