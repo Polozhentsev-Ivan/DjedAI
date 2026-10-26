@@ -458,7 +458,9 @@ class DashboardService:
                                         if parent_res and parent_res.error
                                         else ToolError(
                                             code="dependency_failed",
-                                            message=f"Шаг '{step.source_step_id}' завершился ошибкой",
+                                            message=(
+                                                f"Шаг '{step.source_step_id}' завершился ошибкой"
+                                            ),
                                         )
                                     )
                                     break
