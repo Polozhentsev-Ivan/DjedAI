@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from djedai.contracts.auth import TokenResponse, UserBase, UserCreate, UserLogin, UserRead
 from djedai.contracts.catalog import (
+    CatalogRevision,
     Column,
     ColumnStats,
     DatasetCatalog,
@@ -60,6 +61,7 @@ from djedai.contracts.dashboard import (
     WidgetSnapshot,
     WidgetToolCall,
 )
+from djedai.contracts.freshness import DatasetRefresh, SchemaChange, SourceFreshness
 from djedai.contracts.message import (
     AssistantMessage,
     ChartBlock,
@@ -117,6 +119,7 @@ __all__ = [
     "SourceCheckResult",
     "SourceTable",
     # Каталог
+    "CatalogRevision",
     "Column",
     "ColumnStats",
     "DatasetCatalog",
@@ -127,6 +130,10 @@ __all__ = [
     "TableSource",
     "TopValue",
     "Transformation",
+    # Свежесть источника и перепрофилировка
+    "DatasetRefresh",
+    "SchemaChange",
+    "SourceFreshness",
     # Определения бизнес-метрик
     "JoinCheck",
     "MetricConfirmation",
