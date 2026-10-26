@@ -153,6 +153,33 @@ paths:
       responses:
         '204': { description: Deleted }
         default: { $ref: '#/components/responses/Error' }
+  /datasets/{dataset_id}/refresh:
+    parameters:
+      - { name: dataset_id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: refreshDataset
+      summary: Re-profile a ready dataset into the next catalog revision
+      description: The current revision stays usable until the new one is published; a failure is reported in DatasetDetail.refresh.
+      responses:
+        '202':
+          description: Re-profiling started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetDetail' }
+        default: { $ref: '#/components/responses/Error' }
+  /datasets/{dataset_id}/freshness:
+    parameters:
+      - { name: dataset_id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: checkDatasetFreshness
+      summary: Compare the source schema with the catalog now
+      responses:
+        '200':
+          description: Freshness of the source relative to the catalog revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceFreshness' }
+        default: { $ref: '#/components/responses/Error' }
   /datasets/{dataset_id}/events:
     parameters:
       - { name: dataset_id, in: path, required: true, schema: { type: string } }
@@ -379,6 +406,12 @@ components:
 
     DatasetAccepted:
       $ref: './contracts.json#/components/schemas/DatasetUploadAccepted'
+    CatalogRevision:
+      $ref: './contracts.json#/components/schemas/CatalogRevision'
+    SourceFreshness:
+      $ref: './contracts.json#/components/schemas/SourceFreshness'
+    ReadProvenance:
+      $ref: './contracts.json#/components/schemas/ReadProvenance'
     ConnectRequest:
       $ref: './contracts.json#/components/schemas/ConnectRequest'
     SourceCheckRequest:

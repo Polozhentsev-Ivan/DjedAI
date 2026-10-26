@@ -1,7 +1,8 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
 import {
   calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
-  journal, kpiView, limitations, missingCell, relationGraph, relationViews, sourceLabel, tableMeta, toolCall, typeLabel,
+  journal, kpiView, limitations, missingCell, needsRefresh, readSource, relationGraph, relationViews, revisionSummary, sourceLabel,
+  tableMeta, toolCall, typeLabel,
 } from './view';
 
 // Intl separates digit groups with no-break spaces; \s matches them.
@@ -225,6 +226,38 @@ describe('result views', () => {
     expect(limitations({ lineage: 'complete', columns: [] })).toBeUndefined();
     expect(limitations(null)).toBeUndefined();
     expect(calculation({ ...db.results.r_rev!, quality: { lineage: 'complete', columns: [column] } }).limitations).toHaveLength(1);
+  });
+
+  it('states where, when and on which catalog revision a result was read', () => {
+    const saved = db.results.r_rev!;
+    const read = saved.read!;
+    expect(calculation(saved).source).toMatch(/^Снимок датасета · каталог r1 · профиль от 18\.10\.2026/);
+    const live = { ...read, read_mode: 'live' as const, consistency: 'turn_snapshot' as const, snapshot_id: 'run_1:1' };
+    expect(readSource(live)).toMatch(/^Живое чтение источника 18\.10\.2026 \d\d:\d\d · каталог r1$/);
+    expect(readSource(null)).toBeUndefined();
+    const unknown = {
+      ...read, revision_known: false, read_mode: 'unknown' as const, consistency: 'unknown' as const,
+      catalog_revision: null, started_at: null, finished_at: null,
+      freshness: { state: 'unknown' as const, reason: 'Версия каталога и время чтения этого результата не сохранены: версия неизвестна' },
+    };
+    const how = calculation({ ...saved, read: unknown });
+    expect(how.source).toBe('Версия каталога и время чтения не сохранены');
+    expect(how.limitations).toEqual([unknown.freshness.reason]);
+    // A catalog re-profiled after the calculation is pointed out, the result is not recomputed.
+    const newer = { ...db.datasets[0]!.revision!, number: 3 };
+    expect(calculation(saved, newer).limitations?.[0]).toMatch(/^Каталог обновлён до r3 после расчёта/);
+    expect(calculation(saved, db.datasets[0]!.revision).limitations).toBeUndefined();
+  });
+
+  it('summarises the catalog revision and freshness of a dataset', () => {
+    const dataset = db.datasets[0]!;
+    expect(revisionSummary(dataset)).toMatch(/^Каталог r1 · профиль от 18\.10\.2026 .* · схема источника совпадает с каталогом$/);
+    expect(needsRefresh(dataset)).toBe(false);
+    const drifted = { ...dataset, freshness: { state: 'drifted' as const, profiled_at: dataset.revision!.profiled_at, changes: [{ kind: 'added_column' as const, table: 'public.orders', column: 'note' }], reason: 'Схема источника изменилась' } };
+    expect(revisionSummary(drifted)).toMatch(/схема источника изменилась$/);
+    expect(needsRefresh(drifted)).toBe(true);
+    expect(revisionSummary({ ...dataset, revision: null, freshness: null })).toBe('Версия каталога неизвестна');
+    expect(needsRefresh({ ...dataset, revision: null })).toBe(true);
   });
 
   it('formats measures', () => {
