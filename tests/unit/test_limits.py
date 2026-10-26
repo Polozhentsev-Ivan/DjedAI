@@ -29,11 +29,39 @@ def clear_limits_cache():
         ("MODEL_TIMEOUT_SECONDS", 0),
         ("MODEL_MAX_OUTPUT_TOKENS", 0),
         ("MODEL_CONTEXT_TOKENS", 2048),
+        ("MODEL_REASONING_UNDERSTAND", "turbo"),
+        ("MODEL_REASONING_VERIFY", "HIGH"),
+        ("MODEL_REASONING_SUPPORTED", "maybe"),
     ],
 )
 def test_invalid_limits_fail_before_execution(field: str, value: float):
     with pytest.raises(ValueError):
         LimitSettings(_env_file=None, **{field: value})
+
+
+def test_reasoning_defaults_keep_the_provider_profile(monkeypatch):
+    for name in (
+        "MODEL_REASONING_UNDERSTAND",
+        "MODEL_REASONING_PLAN",
+        "MODEL_REASONING_VISUALIZE",
+        "MODEL_REASONING_COMPOSE",
+        "MODEL_REASONING_VERIFY",
+        "MODEL_REASONING_SUPPORTED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    limits = LimitSettings(_env_file=None)
+    assert limits.model_reasoning_understand == "provider_default"
+    assert limits.model_reasoning_plan == "provider_default"
+    assert limits.model_reasoning_visualize == "provider_default"
+    assert limits.model_reasoning_compose == "provider_default"
+    assert limits.model_reasoning_verify == "provider_default"
+    assert limits.model_reasoning_supported is False
+
+
+def test_blank_reasoning_value_uses_provider_default(monkeypatch):
+    monkeypatch.setenv("MODEL_REASONING_PLAN", "")
+    limits = LimitSettings(_env_file=None)
+    assert limits.model_reasoning_plan == "provider_default"
 
 
 def test_sql_uses_configured_cap_even_when_caller_requests_more(monkeypatch):

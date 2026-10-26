@@ -22,6 +22,7 @@ from djedai.agent.config import get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.agent.memory import HISTORY_WINDOW, HistoryEntry, summarize_history
+from djedai.agent.reasoning import ReasoningConfigurationError
 from djedai.analytics.metrics import MetricContext
 from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
@@ -42,6 +43,7 @@ from djedai.backend.db.repositories import (
 from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.backend.metric_service import MetricService
+from djedai.backend.model_errors import ModelConfigurationHTTPError
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -105,6 +107,7 @@ class AgentRuntime:
     diagnostics: DiagnosticJournal | None = None
     tariff: Tariff | None = None
     unavailable: bool = False
+    unavailable_code: str = "model_unavailable"
 
     def budget(self, is_cancelled: Callable[[], bool] | None = None) -> ExecutionBudget:
         seconds = (
@@ -119,6 +122,8 @@ def build_agent_runtime() -> AgentRuntime:
     """Создаёт реальный runtime; отсутствие конфигурации не имитирует ответ модели."""
     try:
         client = get_agent_client()
+    except ReasoningConfigurationError as exc:
+        raise ModelConfigurationHTTPError(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=503, detail="Настройте MODEL_BASE_URL, MODEL_NAME и MODEL_API_KEY"
@@ -143,6 +148,8 @@ def get_agent_runtime(request: Request) -> AgentRuntime:
     )
     try:
         runtime = build_agent_runtime()
+    except ModelConfigurationHTTPError:
+        runtime = AgentRuntime(graph=None, unavailable=True, unavailable_code="model_configuration")
     except HTTPException as exc:
         if exc.status_code != 503:
             raise
@@ -486,9 +493,9 @@ def stream_chat_turn(
         budgeted_write(db, budget, accept)
         yield _status_event(turn, user_message_id)
         if runtime.unavailable:
-            finish_error(db, user_message_id, run_id, "model_unavailable")
+            finish_error(db, user_message_id, run_id, runtime.unavailable_code)
             diagnostics.finish("error", "CONFIGURATION_ERROR")
-            yield _error_event("model_unavailable")
+            yield _error_event(runtime.unavailable_code)
             return
 
         # Выбор варианта уточнения подтверждает приложенное к нему определение (B2-9).

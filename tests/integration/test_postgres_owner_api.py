@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class CountModel:
     """A deterministic test plan; no language model server or weights are used."""
 
-    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+    def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         if response_model.__name__ == "Understanding":
             value = {"intent": "data_question", "resolved_question": user_prompt}
         elif response_model.__name__ == "PlanResponse":

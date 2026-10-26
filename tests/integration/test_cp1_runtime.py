@@ -63,7 +63,7 @@ class ControlledModel:
         self.fail = fail
         self.calls = []
 
-    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+    def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         self.calls.append((response_model.__name__, system_prompt, user_prompt))
         if self.fail:
             raise RuntimeError("Controlled model transport failure")
@@ -304,7 +304,7 @@ def test_unverified_numbers_are_neither_published_nor_saved(
             self.compose_calls = 0
             self.verify_calls = 0
 
-        def generate_typed_response(self, system_prompt, user_prompt, response_model):
+        def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
             if failure == "empty" and response_model.__name__ == "PlanResponse":
                 return ModelResponse(
                     status="success",
@@ -343,7 +343,9 @@ def test_unverified_numbers_are_neither_published_nor_saved(
                         ),
                     )
                 return ModelResponse(status="error", error_type="TIMEOUT", message="Test timeout")
-            return super().generate_typed_response(system_prompt, user_prompt, response_model)
+            return super().generate_typed_response(
+                system_prompt, user_prompt, response_model, **kwargs
+            )
 
     model = UnverifiedModel()
     monkeypatch.setattr(chat_service, "get_agent_client", lambda: model)

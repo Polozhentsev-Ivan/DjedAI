@@ -30,6 +30,12 @@ ERRORS = {
     "model_timeout": ("timeout", "Модель не ответила за отведённое время"),
     "turn_timeout": ("timeout", "Время ожидания ответа истекло"),
     "model_unavailable": ("error", "Сервис модели временно недоступен"),
+    "model_configuration": (
+        "error",
+        "Недопустимый профиль reasoning. Проверьте MODEL_REASONING_* и "
+        "MODEL_REASONING_SUPPORTED для выбранной модели и endpoint; "
+        "provider_default сохраняет режим провайдера.",
+    ),
     "model_response_invalid": ("error", "Не удалось проверить ответ модели"),
     "agent_error": ("error", "Не удалось получить ответ агента"),
     "cancelled": ("cancelled", "Получение ответа остановлено"),

@@ -52,7 +52,7 @@ class FakeClient:
         self.respond = respond
         self.calls: list[tuple[str, dict, type]] = []
 
-    def generate_typed_response(self, system_prompt, user_prompt, response_model):
+    def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         payload = json.loads(user_prompt)
         self.calls.append((system_prompt, payload, response_model))
         return self.respond(payload, response_model)

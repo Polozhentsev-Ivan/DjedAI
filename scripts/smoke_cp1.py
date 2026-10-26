@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from sqlglot import exp  # noqa: E402
 
 from djedai.agent.client import BIModelClient, ModelResponse  # noqa: E402
+from djedai.agent.config import reasoning_profile  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
 from djedai.analytics.registry import execute_tool  # noqa: E402
 from djedai.backend.chat_service import AgentRuntime, stream_chat_turn  # noqa: E402
@@ -77,11 +78,19 @@ class ModelTrace:
         self.path = path
 
     def generate_typed_response[T: BaseModel](
-        self, system_prompt: str, user_prompt: str, response_model: type[T]
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        *,
+        stage: str | None = None,
     ) -> ModelResponse[T]:
-        response = self.client.generate_typed_response(system_prompt, user_prompt, response_model)
+        response = self.client.generate_typed_response(
+            system_prompt, user_prompt, response_model, stage=stage
+        )
         record = {
             "schema": response_model.__name__,
+            "stage": stage,
             "status": response.status,
             "data": response.data.model_dump(mode="json") if response.data else None,
             "error_type": response.error_type,
@@ -144,6 +153,8 @@ def model_client(args: argparse.Namespace) -> BIModelClient:
         model_name=args.model,
         timeout=limits.model_timeout_seconds,
         max_output_tokens=limits.model_max_output_tokens,
+        reasoning=reasoning_profile(limits),
+        reasoning_supported=limits.model_reasoning_supported,
     )
 
 
