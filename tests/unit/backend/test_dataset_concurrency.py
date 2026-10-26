@@ -192,3 +192,36 @@ async def test_dataset_recovery_respects_queue_limits(tmp_path: Path, db_factory
         assert "очередь задач переполнена" in overflow_model.error_message
 
     await service.close()
+
+
+@pytest.mark.anyio
+async def test_partial_copy_failure_releases_reserved_quota(tmp_path: Path, db_factory) -> None:
+    # Лимит файла 65536 байт, лимит хранилища 200 КБ
+    limits = LimitSettings(
+        _env_file=None,
+        max_upload_file_bytes=65536,
+        max_upload_request_bytes=100000,
+        max_owner_storage_bytes=200000,
+    )
+    service = DatasetService(db_factory, tmp_path / "datasets_partial", limits=limits)
+
+    # Файл размером 65537 байт (65536 байт запишутся в 1-м чанке, на 2-м чанке 1 байт упадет с 413)
+    oversized_file = tmp_path / "oversized.csv"
+    oversized_file.write_bytes(b"x" * 65537)
+
+    # Загрузка должна упасть с 413
+    with pytest.raises(HTTPException) as exc:
+        await service.ingest_csv("user1", [CsvSource(oversized_file, "oversized.csv")])
+    assert exc.value.status_code == 413
+
+    # Резерв должен быть полностью очищен (0 байт), а не зависнуть на 65536
+    assert service.quota_manager.snapshot().get("user1", 0) == 0
+
+    # Повторные попытки не должны исчерпать квоту
+    for _ in range(5):
+        with pytest.raises(HTTPException) as exc_repeat:
+            await service.ingest_csv("user1", [CsvSource(oversized_file, "oversized.csv")])
+        assert exc_repeat.value.status_code == 413
+        assert service.quota_manager.snapshot().get("user1", 0) == 0
+
+    await service.close()

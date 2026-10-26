@@ -608,33 +608,38 @@ class DatasetService:
         file_bytes = 0
         reserved_bytes = 0
         stream.seek(0)
-        with target.open("wb") as handle:
-            while True:
-                chunk = stream.read(64 * 1024)
-                if not chunk:
-                    break
-                chunk_len = len(chunk)
-                file_bytes += chunk_len
-                if file_bytes > self.limits.max_upload_file_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            f"Размер файла '{name}' превышает допустимый "
-                            f"лимит ({self.limits.max_upload_file_bytes} байт)"
-                        ),
-                    )
-                if current_request_bytes + file_bytes > self.limits.max_upload_request_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            f"Суммарный размер файлов запроса превышает допустимый "
-                            f"лимит ({self.limits.max_upload_request_bytes} байт)"
-                        ),
-                    )
-                self.quota_manager.reserve(owner_id, chunk_len)
-                reserved_bytes += chunk_len
-                handle.write(chunk)
-        return file_bytes, reserved_bytes
+        try:
+            with target.open("wb") as handle:
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    chunk_len = len(chunk)
+                    file_bytes += chunk_len
+                    if file_bytes > self.limits.max_upload_file_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"Размер файла '{name}' превышает допустимый "
+                                f"лимит ({self.limits.max_upload_file_bytes} байт)"
+                            ),
+                        )
+                    if current_request_bytes + file_bytes > self.limits.max_upload_request_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"Суммарный размер файлов запроса превышает допустимый "
+                                f"лимит ({self.limits.max_upload_request_bytes} байт)"
+                            ),
+                        )
+                    self.quota_manager.reserve(owner_id, chunk_len)
+                    reserved_bytes += chunk_len
+                    handle.write(chunk)
+            return file_bytes, reserved_bytes
+        except Exception:
+            if reserved_bytes > 0:
+                self.quota_manager.release(owner_id, reserved_bytes)
+            raise
 
     def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
         def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:

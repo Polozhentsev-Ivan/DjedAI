@@ -268,3 +268,119 @@ async def test_max_concurrent_chats_strictly_enforced() -> None:
         p.release()
     await asyncio.sleep(0.02)
     assert controller.snapshot()["active_chats_total"] == 0
+
+
+@pytest.mark.anyio
+async def test_active_owner_in_queue_does_not_block_eligible_owner() -> None:
+    # Глобальный лимит 4, лимит на владельца 1
+    controller = ChatAdmissionController(
+        max_concurrent=4,
+        max_concurrent_per_owner=1,
+        max_queued=5,
+        max_queued_per_owner=2,
+        timeout_seconds=1.0,
+    )
+
+    # 1. Запускаем A1
+    permit_a1 = await controller.acquire_permit("ownerA", "chat_a1")
+    assert controller.snapshot()["active_chats_total"] == 1
+    assert controller.snapshot()["active_chats_by_owner"]["ownerA"] == 1
+
+    # 2. Ставим A2 в очередь (ownerA исчерпал лимит 1)
+    task_a2 = asyncio.create_task(controller.acquire_permit("ownerA", "chat_a2"))
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["queued_chats_total"] == 1
+    assert not task_a2.done()
+
+    # 3. Приходит B1: свободны 3 слота, лимит ownerB (0/1) не исчерпан.
+    # B1 должен получить слот немедленно, не блокируясь очередью ownerA!
+    permit_b1 = await controller.acquire_permit("ownerB", "chat_b1")
+    assert permit_b1 is not None
+    assert permit_b1.owner_id == "ownerB"
+
+    snapshot = controller.snapshot()
+    assert snapshot["active_chats_total"] == 2
+    assert snapshot["active_chats_by_owner"]["ownerA"] == 1
+    assert snapshot["active_chats_by_owner"]["ownerB"] == 1
+    assert snapshot["queued_chats_total"] == 1
+    assert not task_a2.done()
+
+    # 4. Освобождаем B1 и A1
+    permit_b1.release()
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["active_chats_by_owner"]["ownerB"] == 0
+
+    permit_a1.release()
+    await asyncio.sleep(0.05)
+
+    # Теперь task_a2 должен получить слот
+    assert task_a2.done()
+    permit_a2 = task_a2.result()
+    assert permit_a2.owner_id == "ownerA"
+
+    permit_a2.release()
+    await asyncio.sleep(0.02)
+    assert controller.snapshot()["active_chats_total"] == 0
+
+
+@pytest.mark.anyio
+async def test_concurrent_admission_stress_no_leaks() -> None:
+    """Стресс-тест конкурентных запросов: проверка инвариантов и отсутствия утечек слотов."""
+    controller = ChatAdmissionController(
+        max_concurrent=4,
+        max_concurrent_per_owner=2,
+        max_queued=20,
+        max_queued_per_owner=5,
+        timeout_seconds=0.5,
+    )
+
+    max_observed_total = 0
+    max_observed_per_owner: dict[str, int] = {}
+    completed = 0
+    rejected = 0
+
+    async def worker_sim(owner_id: str, chat_id: str) -> None:
+        nonlocal max_observed_total, completed, rejected
+        try:
+            permit = await controller.acquire_permit(owner_id, chat_id)
+            try:
+                # Фиксируем инварианты
+                snap = controller.snapshot()
+                total = snap["active_chats_total"]
+                owner_cnt = snap["active_chats_by_owner"].get(owner_id, 0)
+                if total > max_observed_total:
+                    max_observed_total = total
+                if owner_cnt > max_observed_per_owner.get(owner_id, 0):
+                    max_observed_per_owner[owner_id] = owner_cnt
+
+                assert total <= 4, f"Превышен общий лимит: {total}"
+                assert owner_cnt <= 2, f"Превышен лимит владельца: {owner_cnt}"
+
+                # Имитируем работу
+                await asyncio.sleep(0.02)
+                completed += 1
+            finally:
+                permit.release()
+        except HTTPException as exc:
+            assert exc.status_code in (409, 429)
+            rejected += 1
+
+    # Запускаем 30 параллельных задач от 6 владельцев
+    tasks = []
+    for i in range(30):
+        owner = f"user_{i % 6}"
+        chat = f"chat_{i}"
+        tasks.append(asyncio.create_task(worker_sim(owner, chat)))
+
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0.05)
+
+    # Все задачи либо завершились, либо получили корректный 429/409
+    assert completed + rejected == 30
+    assert completed > 0
+
+    # Проверяем, что нет утечек: все слоты и очереди вернулись в 0
+    final_snap = controller.snapshot()
+    assert final_snap["active_chats_total"] == 0
+    assert final_snap["queued_chats_total"] == 0
+    assert all(cnt == 0 for cnt in final_snap["active_chats_by_owner"].values())

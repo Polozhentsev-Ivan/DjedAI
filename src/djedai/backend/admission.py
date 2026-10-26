@@ -178,6 +178,18 @@ class ChatAdmissionController:
         self._queued_total: int = 0
         self._owner_queue_order: deque[str] = deque()
 
+    def _has_eligible_waiter(self) -> bool:
+        """Проверяет, есть ли в очереди ожидающие владельцы, не исчерпавшие свой лимит."""
+        for owner in self._owner_queue_order:
+            if self._active_by_owner[owner] < self.max_concurrent_per_owner:
+                owner_waiters = self._waiters_by_owner.get(owner)
+                if owner_waiters and any(
+                    not w.cancelled and w.chat_id not in self._active_chat_ids
+                    for w in owner_waiters
+                ):
+                    return True
+        return False
+
     async def acquire_permit(
         self,
         owner_id: str,
@@ -210,7 +222,8 @@ class ChatAdmissionController:
             if (
                 self._active_total < self.max_concurrent
                 and self._active_by_owner[owner_id] < self.max_concurrent_per_owner
-                and self._queued_total == 0
+                and self._queued_by_owner[owner_id] == 0
+                and not self._has_eligible_waiter()
             ):
                 self._active_total += 1
                 self._active_by_owner[owner_id] += 1
@@ -266,15 +279,46 @@ class ChatAdmissionController:
                 queue_position=self._queued_total,
             )
 
+            # Распределяем доступные слоты среди подходящих владельцев в очереди
+            self._dispatch_next()
+
         # 5. Ожидание допуска вне блокировки с проверкой дедлайна и дисконнекта
         start_wait = monotonic()
+        if waiter.event.is_set():
+            self._log_event(
+                "admission_acquired",
+                owner_id=owner_id,
+                chat_id=chat_id,
+                wait_ms=0,
+            )
+            return Permit(self, owner_id, chat_id, loop)
+
         deadline = start_wait + self.timeout_seconds
 
         try:
             while True:
+                if waiter.event.is_set():
+                    wait_ms = int((monotonic() - start_wait) * 1000)
+                    self._log_event(
+                        "admission_acquired",
+                        owner_id=owner_id,
+                        chat_id=chat_id,
+                        wait_ms=wait_ms,
+                    )
+                    return Permit(self, owner_id, chat_id, loop)
+
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     async with self._lock:
+                        if waiter.event.is_set():
+                            wait_ms = int((monotonic() - start_wait) * 1000)
+                            self._log_event(
+                                "admission_acquired",
+                                owner_id=owner_id,
+                                chat_id=chat_id,
+                                wait_ms=wait_ms,
+                            )
+                            return Permit(self, owner_id, chat_id, loop)
                         self._remove_waiter(waiter)
                     self._log_event(
                         "admission_rejected",
@@ -360,44 +404,47 @@ class ChatAdmissionController:
         self._dispatch_next()
 
     def _dispatch_next(self) -> None:
-        """Справедливо активирует следующую заявку в очереди (Round-Robin между владельцами)."""
-        if self._active_total >= self.max_concurrent or self._queued_total == 0:
-            return
+        """Справедливо активирует заявки в очереди (Round-Robin между владельцами)."""
+        while self._active_total < self.max_concurrent and self._queued_total > 0:
+            dispatched = False
+            attempts = len(self._owner_queue_order)
+            for _ in range(attempts):
+                if not self._owner_queue_order:
+                    break
+                candidate_owner = self._owner_queue_order[0]
+                # Перемещаем в конец для соблюдения справедливости
+                self._owner_queue_order.rotate(-1)
 
-        # Ищем следующего владельца в round-robin порядке, у которого не исчерпан лимит
-        attempts = len(self._owner_queue_order)
-        for _ in range(attempts):
-            if not self._owner_queue_order:
+                if self._active_by_owner[candidate_owner] < self.max_concurrent_per_owner:
+                    owner_waiters = self._waiters_by_owner.get(candidate_owner)
+                    while owner_waiters:
+                        next_waiter = owner_waiters.popleft()
+                        self._queued_by_owner[candidate_owner] = max(
+                            0, self._queued_by_owner[candidate_owner] - 1
+                        )
+                        self._queued_total = max(0, self._queued_total - 1)
+                        if not owner_waiters and candidate_owner in self._owner_queue_order:
+                            self._owner_queue_order.remove(candidate_owner)
+
+                        if next_waiter.cancelled:
+                            continue
+
+                        # Проверяем chat_id кандидата
+                        if next_waiter.chat_id in self._active_chat_ids:
+                            # В чате уже кто-то активен
+                            continue
+
+                        # Выдаем слот
+                        self._active_total += 1
+                        self._active_by_owner[candidate_owner] += 1
+                        self._active_chat_ids.add(next_waiter.chat_id)
+                        next_waiter.event.set()
+                        dispatched = True
+                        break
+                if dispatched:
+                    break
+            if not dispatched:
                 break
-            candidate_owner = self._owner_queue_order[0]
-            # Перемещаем в конец для соблюдения справедливости
-            self._owner_queue_order.rotate(-1)
-
-            if self._active_by_owner[candidate_owner] < self.max_concurrent_per_owner:
-                owner_waiters = self._waiters_by_owner.get(candidate_owner)
-                while owner_waiters:
-                    next_waiter = owner_waiters.popleft()
-                    self._queued_by_owner[candidate_owner] = max(
-                        0, self._queued_by_owner[candidate_owner] - 1
-                    )
-                    self._queued_total = max(0, self._queued_total - 1)
-                    if not owner_waiters and candidate_owner in self._owner_queue_order:
-                        self._owner_queue_order.remove(candidate_owner)
-
-                    if next_waiter.cancelled:
-                        continue
-
-                    # Проверяем chat_id кандидата
-                    if next_waiter.chat_id in self._active_chat_ids:
-                        # В чате уже кто-то активен, отменяем этого официанта с 409
-                        continue
-
-                    # Выдаем слот
-                    self._active_total += 1
-                    self._active_by_owner[candidate_owner] += 1
-                    self._active_chat_ids.add(next_waiter.chat_id)
-                    next_waiter.event.set()
-                    return
 
     def _log_event(self, event_type: str, **kwargs: Any) -> None:
         if self.diagnostics_logger is not None:
