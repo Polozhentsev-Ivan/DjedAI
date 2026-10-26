@@ -8,6 +8,7 @@ import shutil
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,6 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.db.models import DatasetModel
+from djedai.backend.source_reads import (
+    CatalogStaleError,
+    SourceReader,
+    check_live_freshness,
+    snapshot_freshness,
+)
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.common import (
@@ -26,6 +33,7 @@ from djedai.contracts.common import (
     SourceCheckResult,
     SourceTable,
 )
+from djedai.contracts.freshness import DatasetRefresh, SourceFreshness
 from djedai.contracts.sse import (
     DatasetDoneData,
     DatasetDoneEvent,
@@ -40,7 +48,7 @@ from djedai.data.clickhouse import ClickHouseError, ClickHouseLimits, SourceTooL
 from djedai.data.clickhouse import parse_dsn as parse_clickhouse_dsn
 from djedai.data.csv_ingest import CsvReadError
 from djedai.data.descriptions import ModelClient
-from djedai.data.postgres import PostgresError, attach_postgres, parse_dsn
+from djedai.data.postgres import ALIAS, PostgresError, attach_postgres, parse_dsn
 from djedai.data.service import (
     CsvSource,
     check_clickhouse_source,
@@ -77,9 +85,20 @@ class DatasetContext:
     _owner_id: str = field(default="", repr=False)
     _source_secret: str | None = field(default=None, repr=False)
     _secrets: SourceSecrets | None = field(default=None, repr=False)
+    max_profile_age: timedelta = timedelta(hours=24)
+    # Последняя проверка живого источника сохраняется для карточки датасета.
+    _record_freshness: Callable[[SourceFreshness], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @contextmanager
     def open_connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        with self.open_reader() as reader:
+            yield reader.connection
+
+    @contextmanager
+    def open_reader(self, *, strict: bool = True) -> Iterator[SourceReader]:
+        """Соединение со свежестью источника; ``strict`` отклоняет несовместимый каталог."""
         # Recheck the persisted file at use time as well as at ownership lookup.
         if (
             not self.duckdb_path.is_file()
@@ -112,8 +131,22 @@ class DatasetContext:
                     raise HTTPException(
                         status_code=503, detail="Источник PostgreSQL недоступен"
                     ) from None
+                try:
+                    freshness = check_live_freshness(
+                        connection, self.catalog, ALIAS, self.max_profile_age
+                    )
+                except duckdb.Error:
+                    raise HTTPException(
+                        status_code=503, detail="Источник PostgreSQL недоступен"
+                    ) from None
+                if self._record_freshness is not None:
+                    self._record_freshness(freshness)
+                if strict and freshness.state == "incompatible":
+                    raise CatalogStaleError(freshness)
+            else:
+                freshness = snapshot_freshness(self.catalog)
             connection.execute("SET enable_external_access=false")
-            yield connection
+            yield SourceReader(connection, self.catalog, freshness, live=postgres)
 
 
 class DatasetService:
@@ -125,6 +158,7 @@ class DatasetService:
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
+        catalog_max_age_hours: float = 24,
     ) -> None:
         self.session_factory = session_factory
         self.data_dir = Path(data_dir).resolve()
@@ -133,6 +167,7 @@ class DatasetService:
         # None disables LLM descriptions; the factory is called once per build.
         self._description_client = description_client
         self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
+        self._catalog_max_age = timedelta(hours=catalog_max_age_hours)
 
     def _path(self, relative: str) -> Path:
         path = (self.data_dir / relative).resolve()
@@ -200,6 +235,9 @@ class DatasetService:
             table_count=len(catalog.tables) if catalog else None,
             row_count=sum(table.row_count for table in catalog.tables) if catalog else None,
             created_at=model.created_at,
+            revision=catalog.revision if catalog else None,
+            freshness=_freshness(model, catalog),
+            refresh=DatasetRefresh.model_validate(model.refresh) if model.refresh else None,
             catalog=catalog,
             error=ToolError(code="dataset_processing_failed", message=model.error_message)
             if model.error_message
@@ -262,7 +300,25 @@ class DatasetService:
                 owner_id,
                 model.source_secret if model.source_kind == "postgres" else None,
                 self._secrets,
+                self._catalog_max_age,
+                lambda freshness: self._record_freshness(owner_id, dataset_id, freshness),
             )
+
+    def _record_freshness(self, owner_id: str, dataset_id: str, freshness: SourceFreshness) -> None:
+        try:
+            with self.session_factory() as db:
+                model = self._owned(db, owner_id, dataset_id)
+                model.freshness = freshness.model_dump(mode="json")
+                db.commit()
+        except Exception:
+            # The check itself already decided the read; a lost status update is not fatal.
+            logger.warning("Freshness of owned dataset %s was not stored", dataset_id)
+
+    def check_freshness(self, owner_id: str, dataset_id: str) -> SourceFreshness:
+        """Compare the source with the catalog now; an incompatible result is returned."""
+        context = self.get_context(owner_id, dataset_id)
+        with context.open_reader(strict=False) as reader:
+            return reader.freshness
 
     async def ingest_uploads(
         self, owner_id: str, files: Sequence[UploadFile]
@@ -643,6 +699,15 @@ class DatasetService:
                 yield DatasetProgressEvent(data=DatasetProgressData.model_validate(progress))
                 previous = progress
             await asyncio.sleep(0.2)
+
+
+def _freshness(model: DatasetModel, catalog: DatasetCatalog | None) -> SourceFreshness | None:
+    """The last live check for PostgreSQL; a snapshot is judged by its catalog alone."""
+    if catalog is None:
+        return None
+    if model.source_kind == "postgres":
+        return SourceFreshness.model_validate(model.freshness) if model.freshness else None
+    return snapshot_freshness(catalog)
 
 
 def _check_message(reason: str) -> str:

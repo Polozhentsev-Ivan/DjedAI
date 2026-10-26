@@ -44,6 +44,7 @@ from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.backend.metric_service import MetricService
 from djedai.backend.model_errors import ModelConfigurationHTTPError
+from djedai.backend.source_reads import CatalogStaleError
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -830,6 +831,12 @@ def stream_chat_turn(
         if diagnostics is not None:
             diagnostics.finish("cancelled", "CANCELLED")
         return
+    except CatalogStaleError:
+        # A source whose schema no longer matches the catalog is never read silently.
+        if diagnostics is not None:
+            diagnostics.finish("error", "CATALOG_STALE")
+        finish_error(db, user_message_id, run_id, "catalog_stale")
+        yield _error_event("catalog_stale")
     except Exception:  # The stream must end with an event, not a broken connection.
         if diagnostics is not None:
             diagnostics.finish("error", diagnostics.last_error or "TURN_EXCEPTION")

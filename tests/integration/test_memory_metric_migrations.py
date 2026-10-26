@@ -24,7 +24,7 @@ def test_combined_head_preserves_deployed_branch_data(tmp_path: Path, starting_r
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
     cfg.set_main_option("sqlalchemy.url", url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f192merge0001"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f169rev0001"]
     command.upgrade(cfg, starting_revision)
     has_metrics = starting_revision in {"f166metr0001", "f168qual0001", "f191merge0001"}
     has_memory = starting_revision in {"e5b1c7a2d304", "f191merge0001"}

@@ -141,6 +141,8 @@ class DatasetModel(Base):
     duckdb_path = Column(Text, nullable=True)
     raw_files = Column(JSON, nullable=True)
     progress = Column(JSON, nullable=True)
+    freshness = Column(JSON, nullable=True)  # последняя проверка источника, SourceFreshness
+    refresh = Column(JSON, nullable=True)  # идущая или неудавшаяся перепрофилировка
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
     updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 

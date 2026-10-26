@@ -22,6 +22,7 @@ from djedai.contracts.common import (
     SourceCheckRequest,
     SourceCheckResult,
 )
+from djedai.contracts.freshness import SourceFreshness
 from djedai.contracts.sse import DatasetErrorEvent, SSEErrorData
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -81,6 +82,14 @@ def get_dataset_catalog(
     dataset_id: str, owner_id: OwnerDep, service: DatasetServiceDep
 ) -> DatasetCatalog:
     return service.get_catalog(owner_id, dataset_id)
+
+
+@router.post("/{dataset_id}/freshness", response_model=SourceFreshness)
+def check_dataset_freshness(
+    dataset_id: str, owner_id: OwnerDep, service: DatasetServiceDep
+) -> SourceFreshness:
+    """Compare the source schema with the catalog now; nothing is computed or rebuilt."""
+    return service.check_freshness(owner_id, dataset_id)
 
 
 @router.get(
