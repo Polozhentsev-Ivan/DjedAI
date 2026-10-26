@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             max_bytes=cfg.clickhouse_max_bytes,
             query_timeout=cfg.clickhouse_query_timeout,
         ),
+        limits=cfg,
     )
     app.state.metric_service = MetricService(app.state.session_factory, app.state.dataset_service)
     try:
@@ -183,6 +184,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bind=app.state.engine, autocommit=False, autoflush=False
     )
 
+    from djedai.backend.admission import ChatAdmissionController
+
+    app.state.chat_admission = ChatAdmissionController(
+        max_concurrent=cfg.max_concurrent_chats,
+        max_concurrent_per_owner=cfg.max_concurrent_chats_per_owner,
+        max_queued=cfg.max_queued_chats,
+        max_queued_per_owner=cfg.max_queued_chats_per_owner,
+        timeout_seconds=cfg.chat_admission_timeout_seconds,
+        diagnostics_logger=app.state.diagnostics,
+    )
+
     app.state.auth_limiter = AuthRateLimiter(
         cfg.auth_rate_limit_requests, cfg.auth_rate_limit_window_seconds
     )
@@ -197,6 +209,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    from djedai.backend.admission import StreamingUploadLimitMiddleware
+
+    app.add_middleware(
+        StreamingUploadLimitMiddleware,
+        max_bytes=cfg.max_upload_request_bytes,
+        path_prefix=f"{cfg.api_prefix}/datasets/upload",
+    )
+
     # Подключение всех API маршрутов с префиксом /api
     app.include_router(api_router, prefix=cfg.api_prefix)
 
@@ -207,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             403: "forbidden",
             404: "not_found",
             409: "conflict",
+            413: "payload_too_large",
             429: "rate_limit",
             503: "unavailable",
         }

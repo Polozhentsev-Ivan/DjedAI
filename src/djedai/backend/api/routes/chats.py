@@ -200,6 +200,16 @@ async def send_chat_message(
         raise HTTPException(
             status_code=409, detail="Этот вопрос уже принят. Обновите историю чата."
         )
+
+    # Допуск к вычислениям и ограничение очередей/слотов (CP2 / #172)
+    admission = getattr(request.app.state, "chat_admission", None)
+    permit = None
+    if admission is not None:
+        permit = await admission.acquire_permit(
+            owner_id,
+            chat_id,
+            is_disconnected=request.is_disconnected,
+        )
     cancel_event = threading.Event()
     budget = runtime.budget(lambda: cancelled())
     queue: asyncio.Queue[object] = asyncio.Queue()
@@ -271,10 +281,17 @@ async def send_chat_message(
                     session.close()
             except Exception:
                 pass
+            if permit is not None:
+                permit.release()
             enqueue(done_sentinel)
 
-    worker_thread = threading.Thread(target=worker, name=f"chat-agent-{chat_id}", daemon=True)
-    worker_thread.start()
+    try:
+        worker_thread = threading.Thread(target=worker, name=f"chat-agent-{chat_id}", daemon=True)
+        worker_thread.start()
+    except Exception:
+        if permit is not None:
+            permit.release()
+        raise
 
     async def frames() -> AsyncIterator[str]:
         terminal = False

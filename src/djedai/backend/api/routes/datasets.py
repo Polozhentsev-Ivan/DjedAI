@@ -40,7 +40,14 @@ async def upload_dataset(
     files: Annotated[list[UploadFile], File()], owner_id: OwnerDep, service: DatasetServiceDep
 ) -> DatasetUploadAccepted:
     """Persist repeated multipart ``files`` fields and schedule the CSV pipeline."""
-    return await service.ingest_uploads(owner_id, files)
+    try:
+        return await service.ingest_uploads(owner_id, files)
+    finally:
+        for file in files:
+            try:
+                await file.close()
+            except Exception:
+                pass
 
 
 @router.get("", response_model=list[DatasetSummary])

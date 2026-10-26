@@ -65,6 +65,33 @@ class LimitSettings(BaseSettings):
     # Enable only after checking the selected model and endpoint.
     model_reasoning_supported: bool = Field(default=False, alias="MODEL_REASONING_SUPPORTED")
 
+    # Лимиты параллельных вычислений и очередей (CP2 / #172)
+    max_concurrent_chats: int = Field(default=4, ge=1, alias="MAX_CONCURRENT_CHATS")
+    max_concurrent_chats_per_owner: int = Field(
+        default=1, ge=1, alias="MAX_CONCURRENT_CHATS_PER_OWNER"
+    )
+    max_queued_chats: int = Field(default=10, ge=0, alias="MAX_QUEUED_CHATS")
+    max_queued_chats_per_owner: int = Field(default=2, ge=0, alias="MAX_QUEUED_CHATS_PER_OWNER")
+    chat_admission_timeout_seconds: float = Field(
+        default=10.0, gt=0, alias="CHAT_ADMISSION_TIMEOUT_SECONDS"
+    )
+
+    max_concurrent_dataset_jobs: int = Field(default=2, ge=1, alias="MAX_CONCURRENT_DATASET_JOBS")
+    max_concurrent_dataset_jobs_per_owner: int = Field(
+        default=1, ge=1, alias="MAX_CONCURRENT_DATASET_JOBS_PER_OWNER"
+    )
+    max_queued_dataset_jobs: int = Field(default=10, ge=0, alias="MAX_QUEUED_DATASET_JOBS")
+    max_queued_dataset_jobs_per_owner: int = Field(
+        default=2, ge=0, alias="MAX_QUEUED_DATASET_JOBS_PER_OWNER"
+    )
+
+    # Лимиты загрузки файлов и дисковой квоты (CP2 / #172)
+    max_upload_file_bytes: int = Field(default=50_000_000, ge=1, alias="MAX_UPLOAD_FILE_BYTES")
+    max_upload_request_bytes: int = Field(
+        default=100_000_000, ge=1, alias="MAX_UPLOAD_REQUEST_BYTES"
+    )
+    max_owner_storage_bytes: int = Field(default=500_000_000, ge=1, alias="MAX_OWNER_STORAGE_BYTES")
+
     @field_validator("*", mode="before")
     @classmethod
     def blank_uses_default(cls, value: Any, info: ValidationInfo) -> Any:
@@ -78,6 +105,16 @@ class LimitSettings(BaseSettings):
             raise ValueError("В контексте модели должно оставаться место для входного запроса")
         if self.relation_unnamed_min_overlap < self.relation_min_overlap:
             raise ValueError("Порог без совпадения имён не может быть слабее общего overlap")
+        if self.max_upload_file_bytes > self.max_upload_request_bytes:
+            raise ValueError("Лимит отдельного файла не может превышать лимит запроса")
+        if self.max_upload_request_bytes > self.max_owner_storage_bytes:
+            raise ValueError("Лимит запроса загрузки не может превышать квоту хранилища владельца")
+        if self.max_concurrent_chats_per_owner > self.max_concurrent_chats:
+            raise ValueError("Лимит чатов на владельца не может превышать общий лимит чатов")
+        if self.max_concurrent_dataset_jobs_per_owner > self.max_concurrent_dataset_jobs:
+            raise ValueError(
+                "Лимит задач датасета на владельца не может превышать общий лимит задач"
+            )
         return self
 
 
