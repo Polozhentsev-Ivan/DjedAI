@@ -516,22 +516,29 @@ def stream_chat_turn(
             context = runtime.dataset_context(owner_id, chat_model.dataset_id)
             if context.catalog.dataset_id != chat_model.dataset_id:
                 raise ValueError("Каталог не относится к датасету чата")
-            connection = resources.enter_context(context.open_connection())
+            reader = resources.enter_context(context.open_reader())
+            connection = reader.connection
             allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
             semantics = MetricContext(context.catalog, metrics)
 
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                result = execute_tool(
-                    tool,
-                    params,
-                    connection=connection,
-                    allowed_tables=allowed_tables,
-                    semantics=semantics,
-                )
-                # Потери типизации в колонках именно этого расчёта (B2-10).
-                return assess(result, connection, context.catalog)
+
+                def compute() -> ToolResult:
+                    result = execute_tool(
+                        tool,
+                        params,
+                        connection=connection,
+                        allowed_tables=allowed_tables,
+                        semantics=semantics,
+                    )
+                    # Потери типизации в колонках именно этого расчёта (B2-10).
+                    return assess(result, connection, context.catalog)
+
+                # Ревизия каталога, режим и время чтения источника (B1-11).
+                result, read = reader.run(compute)
+                return result.model_copy(update={"read": read})
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:

@@ -79,7 +79,7 @@ class DatasetRefresh(_Model):
 
 ReadMode = Literal["live", "snapshot", "saved_result", "unknown"]
 Consistency = Literal["turn_snapshot", "independent", "immutable", "unknown"]
-UNKNOWN_REASON = "Результат сохранён до версионирования каталога: версия неизвестна"
+UNKNOWN_REASON = "Версия каталога и время чтения этого результата не сохранены: версия неизвестна"
 
 
 class ReadProvenance(_Model):
@@ -102,7 +102,7 @@ class ReadProvenance(_Model):
 
     @classmethod
     def unknown(cls, reason: str = UNKNOWN_REASON) -> ReadProvenance:
-        """Явное «версия неизвестна» для результатов, сохранённых до #169."""
+        """Явное «версия неизвестна»: результат сохранён до #169 или без учёта чтения."""
         return cls(
             revision_known=False,
             read_mode="unknown",
