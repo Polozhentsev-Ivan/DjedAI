@@ -3407,39 +3407,73 @@ def lagged_correlation(
                         values={},
                     )
                 )
+            elif df[["a", "b"]].isna().any().any():
+                # Granger определён на регулярной сетке. При agg != sum/count
+                # отсутствующие бакеты остаются NaN, и dropna() сжал бы ряд:
+                # «лаг 1» в сжатом ряду соответствовал бы 2 дням, max_lag
+                # перестал бы ограничивать календарный сдвиг. Отказываемся
+                # явно вместо того, чтобы молча публиковать неверные единицы.
+                missing = int(df[["a", "b"]].isna().any(axis=1).sum())
+                facts.append(
+                    Fact(
+                        text=(
+                            f"Тест Грейнджера не рассчитан: в ряду {missing} "
+                            f"пропущенных бакетов, а Granger требует регулярной "
+                            f"сетки. Используйте agg='sum' или agg='count', "
+                            f"либо сузьте диапазон до непрерывного периода."
+                        ),
+                        kind="warning",
+                        values={"n": len(df), "missing_buckets": missing},
+                    )
+                )
             else:
                 try:
                     check_budget()
+                    import warnings
+
                     from statsmodels.tsa.stattools import grangercausalitytests
 
-                    sub = df[["b", "a"]].dropna()
-                    if len(sub) >= 30:
-                        g = grangercausalitytests(sub, maxlag=min(max_lag, 10))
-                        pvals = {lag: g[lag][0]["ssr_ftest"][1] for lag in g}
-                        best_g = min(pvals, key=pvals.get)
-                        facts.append(
-                            Fact(
-                                text=(
-                                    f"Тест Грейнджера: p = {round(pvals[best_g], 3)} "
-                                    f"на лаге {best_g} для {a}→{b}. Это потенциальная "
-                                    f"предсказуемость, а не причинность; на нестационарных "
-                                    f"рядах ненадёжно."
-                                ),
-                                kind="granger",
-                                values={"p": pvals[best_g], "lag": best_g},
-                            )
+                    # df уже на полной календарной сетке (reindex выше),
+                    # NaN нет — dropna() не нужен и только сжал бы периоды.
+                    x = df[["b", "a"]].to_numpy(dtype=float)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        g = grangercausalitytests(x, maxlag=min(max_lag, 10))
+
+                    pvals: dict[int, float] = {}
+                    for lag, (results, _) in g.items():
+                        ftest = results.get("ssr_ftest")
+                        if ftest is None:
+                            continue
+                        p = float(ftest[1])
+                        if not math.isnan(p):
+                            pvals[lag] = p
+                    if not pvals:
+                        raise ValueError("все p-value нечисловые")
+
+                    best_g = min(pvals, key=pvals.get)
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"Тест Грейнджера: p = {round(pvals[best_g], 3)} "
+                                f"на лаге {best_g} для {a}→{b}. Это потенциальная "
+                                f"предсказуемость, а не причинность; на "
+                                f"нестационарных рядах ненадёжно."
+                            ),
+                            kind="granger",
+                            values={"p": pvals[best_g], "lag": best_g},
                         )
+                    )
                 except (TurnCancelled, TurnTimeout):
                     raise
                 except Exception as e:  # noqa: BLE001
                     facts.append(
                         Fact(
-                            text=f"Granger не рассчитан: {type(e).__name__}: {e}",
+                            text=f"Тест Грейнджера не рассчитан: {type(e).__name__}: {e}",
                             kind="warning",
                             values={"error": type(e).__name__, "message": str(e)},
                         )
                     )
-
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex}",
             status="ok",

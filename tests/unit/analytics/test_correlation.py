@@ -541,3 +541,71 @@ def test_estimate_calendar_buckets_upper_bound():
     assert 12 <= _estimate_calendar_buckets(start, end, "month") <= 14
     # minute: заведомо больше, чем day
     assert _estimate_calendar_buckets(start, end, "minute") > 500_000
+
+
+def test_granger_refuses_irregular_grid():
+    """Granger не сжимает календарные пропуски."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(0)
+    n = 70
+    a = rng.normal(size=n).cumsum()
+    b = np.concatenate([np.zeros(1), a[:-1]])
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=2 * i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="avg",
+        max_lag=5,
+        include_granger=True,
+        connection=con,
+    )
+
+    # основная кривая корректна: с reindex лаг 2 дня (b отстаёт на 1 наблюдение = 2 дня)
+    assert result.status == "ok"
+    metric = _by_kind(result, "metric")[0]
+    assert metric.values["lag"] == 2
+
+    # Granger отказался — warning, без kind="granger"
+    assert not _by_kind(result, "granger")
+    warnings = _by_kind(result, "warning")
+    assert any("Granger" in w.text and "регулярн" in w.text for w in warnings)
+
+
+def test_granger_runs_on_continuous_grid_with_sum():
+    """Для agg='sum' пропуски заполняются нулями — Granger работает на полной сетке."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, a DOUBLE, b DOUBLE)")
+    rng = np.random.default_rng(0)
+    n = 70
+    a = rng.normal(size=n)
+    # шум обязателен: детерминированная связь даёт InfeasibleTestError
+    # (VAR подгоняется идеально, F-статистика не считается)
+    b = np.concatenate([np.zeros(1), a[:-1]]) + rng.normal(scale=0.1, size=n)
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=i), float(a[i]), float(b[i])) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?, ?)", rows)
+
+    result = lagged_correlation(
+        "s",
+        "ts",
+        "a",
+        "b",
+        freq="day",
+        agg="sum",
+        max_lag=2,
+        include_granger=True,
+        connection=con,
+    )
+    assert result.status == "ok"
+
+    # никаких warning — Granger должен посчитаться
+    warnings = [f for f in result.facts if f.kind == "warning"]
+    assert not warnings, f"Granger не выполнился: {warnings[0].text}"
+    assert _by_kind(result, "granger")
