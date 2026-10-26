@@ -80,6 +80,16 @@ _AGG_FUNCS = {
     "median": "MEDIAN",
     "stddev": "STDDEV_POP",
 }
+_FREQ_MIN_SECONDS = {
+    "minute": 60,
+    "hour": 3_600,
+    "day": 86_400,
+    "week": 7 * 86_400,
+    "month": 28 * 86_400,
+    "quarter": 89 * 86_400,
+    "year": 365 * 86_400,
+}
+_MAX_CALENDAR_BUCKETS = 200_000
 _ANOMALY_METHODS = {"iqr", "zscore", "mad", "stl-residual"}
 _DEFAULT_THRESHOLDS = {
     "iqr": 1.5,
@@ -3123,6 +3133,13 @@ def correlation(
 # ============================================================================
 
 
+def _estimate_calendar_buckets(start, end, freq: str) -> int:
+    """Оценка сверху числа бакетов между start и end для выбранной частоты."""
+    delta_seconds = (end - start).total_seconds()
+    unit = _FREQ_MIN_SECONDS[freq]
+    return int(delta_seconds // unit) + 1
+
+
 def _agg_expression(agg: str, column: str) -> str:
     if agg == "count":
         return f"COUNT({_quote_id(column)})"
@@ -3291,6 +3308,27 @@ def lagged_correlation(
         df = pd.DataFrame(raw, columns=["time_bucket", "a", "b"])
         df["time_bucket"] = pd.to_datetime(df["time_bucket"])
         df = df.set_index("time_bucket").sort_index()
+        # Защита от раздувания календарной сетки: одна ошибочная дата
+        # (например, 1970-01-01 рядом с 2026-10-26) при freq='minute'
+        # даёт десятки миллионов бакетов до первой CPU-проверки бюджета.
+        n_buckets = _estimate_calendar_buckets(df.index.min(), df.index.max(), freq)
+        if n_buckets > _MAX_CALENDAR_BUCKETS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"Календарная сетка частоты '{freq}' между "
+                        f"{df.index.min().isoformat()} и {df.index.max().isoformat()} "
+                        f"содержит около {n_buckets} бакетов "
+                        f"(лимит {_MAX_CALENDAR_BUCKETS})."
+                    ),
+                    suggestion=(
+                        "Укрупните частоту (например, 'day' вместо 'minute'), "
+                        "сузьте диапазон фильтром или проверьте колонку времени — "
+                        "возможно, в данных есть ошибочная дата вне основного периода."
+                    ),
+                )
+            )
         df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
         # sum/count — отсутствующий бакет = 0; остальные — неизвестно (NaN)
         if agg in ("sum", "count"):
@@ -3369,39 +3407,73 @@ def lagged_correlation(
                         values={},
                     )
                 )
+            elif df[["a", "b"]].isna().any().any():
+                # Granger определён на регулярной сетке. При agg != sum/count
+                # отсутствующие бакеты остаются NaN, и dropna() сжал бы ряд:
+                # «лаг 1» в сжатом ряду соответствовал бы 2 дням, max_lag
+                # перестал бы ограничивать календарный сдвиг. Отказываемся
+                # явно вместо того, чтобы молча публиковать неверные единицы.
+                missing = int(df[["a", "b"]].isna().any(axis=1).sum())
+                facts.append(
+                    Fact(
+                        text=(
+                            f"Тест Грейнджера не рассчитан: в ряду {missing} "
+                            f"пропущенных бакетов, а Granger требует регулярной "
+                            f"сетки. Используйте agg='sum' или agg='count', "
+                            f"либо сузьте диапазон до непрерывного периода."
+                        ),
+                        kind="warning",
+                        values={"n": len(df), "missing_buckets": missing},
+                    )
+                )
             else:
                 try:
                     check_budget()
+                    import warnings
+
                     from statsmodels.tsa.stattools import grangercausalitytests
 
-                    sub = df[["b", "a"]].dropna()
-                    if len(sub) >= 30:
-                        g = grangercausalitytests(sub, maxlag=min(max_lag, 10))
-                        pvals = {lag: g[lag][0]["ssr_ftest"][1] for lag in g}
-                        best_g = min(pvals, key=pvals.get)
-                        facts.append(
-                            Fact(
-                                text=(
-                                    f"Тест Грейнджера: p = {round(pvals[best_g], 3)} "
-                                    f"на лаге {best_g} для {a}→{b}. Это потенциальная "
-                                    f"предсказуемость, а не причинность; на нестационарных "
-                                    f"рядах ненадёжно."
-                                ),
-                                kind="granger",
-                                values={"p": pvals[best_g], "lag": best_g},
-                            )
+                    # df уже на полной календарной сетке (reindex выше),
+                    # NaN нет — dropna() не нужен и только сжал бы периоды.
+                    x = df[["b", "a"]].to_numpy(dtype=float)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        g = grangercausalitytests(x, maxlag=min(max_lag, 10))
+
+                    pvals: dict[int, float] = {}
+                    for lag, (results, _) in g.items():
+                        ftest = results.get("ssr_ftest")
+                        if ftest is None:
+                            continue
+                        p = float(ftest[1])
+                        if not math.isnan(p):
+                            pvals[lag] = p
+                    if not pvals:
+                        raise ValueError("все p-value нечисловые")
+
+                    best_g = min(pvals, key=pvals.get)
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"Тест Грейнджера: p = {round(pvals[best_g], 3)} "
+                                f"на лаге {best_g} для {a}→{b}. Это потенциальная "
+                                f"предсказуемость, а не причинность; на "
+                                f"нестационарных рядах ненадёжно."
+                            ),
+                            kind="granger",
+                            values={"p": pvals[best_g], "lag": best_g},
                         )
+                    )
                 except (TurnCancelled, TurnTimeout):
                     raise
                 except Exception as e:  # noqa: BLE001
                     facts.append(
                         Fact(
-                            text=f"Granger не рассчитан: {type(e).__name__}: {e}",
+                            text=f"Тест Грейнджера не рассчитан: {type(e).__name__}: {e}",
                             kind="warning",
                             values={"error": type(e).__name__, "message": str(e)},
                         )
                     )
-
         return ToolResult(
             result_id=f"r_{uuid.uuid4().hex}",
             status="ok",
@@ -3433,7 +3505,6 @@ def lagged_correlation(
         timer.cancel()
         if connection is None:
             con.close()
-
 
 # ============================================================================
 # FORECAST
