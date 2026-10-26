@@ -57,7 +57,8 @@
    (`int → bigint`), но преобразование typed view выбиралось под прежний тип, поэтому
    она тоже несовместима. Проверка — один запрос `duckdb_columns()` к подключённому
    источнику при открытии соединения. Последний результат проверки сохраняется в
-   `datasets.freshness` и виден в `DatasetDetail`.
+   `datasets.freshness` и виден в `DatasetDetail`. `POST /api/datasets/{id}/freshness`
+   проверяет источник сразу, без расчёта, и возвращает и несовместимое состояние.
 4. **Перепрофилировка.** `POST /api/datasets/{id}/refresh` (`DatasetService.refresh`):
    - датасет собирается заново из сохранённого источника: зашифрованный DSN для
      PostgreSQL/ClickHouse, сохранённые CSV для загрузок;
@@ -101,11 +102,14 @@
    история хода читают Parquet или preview. Повторный вопрос по живой PG — это новое
    чтение с новым временем и, возможно, другими числами. Исторического снимка
    источника система не хранит и не обещает: старое число объясняется его `read`.
-8. **Старые записи.** Миграция `f169rev0001` добавляет `results.read` и
-   `datasets.freshness`/`datasets.refresh` и записывает в старые результаты явное
-   «версия неизвестна» (`revision_known=false`, `read_mode="unknown"`). Не NULL:
-   отсутствие сведений не путается с «не применимо». Загрузчик даёт то же для
-   строки без значения.
+8. **Старые записи.** Миграция `f169rev0001` добавляет `datasets.freshness` и
+   `datasets.refresh`. Миграция `f169read0001` добавляет `results.read` и
+   записывает в старые результаты явное «версия неизвестна»
+   (`revision_known=false`, `read_mode="unknown"`). Не NULL: отсутствие сведений не
+   путается с «не применимо». Загрузчик даёт то же для строки без значения.
+   Повторное сохранение результата без `read` не стирает прежнее. Откат удаляет
+   колонки через `ALTER TABLE … DROP COLUMN`: пересоздание таблицы в SQLite
+   каскадно удалило бы чаты и результаты.
 9. **Ответ и UI.** Узел `cite_metrics` добавляет в «Как посчитано» строку источника:
    режим, время чтения, ревизию. В «Ограничения данных» он добавляет `aged`,
    `drifted`, `unknown` и разные снимки в одном ответе. Это детерминированно, не
@@ -126,8 +130,12 @@
 - `tests/unit/data/test_fingerprint.py` — стабильность отпечатков, классы drift;
 - `tests/unit/contracts/test_freshness.py` — инварианты `SourceFreshness` и
   `ReadProvenance`, старый каталог без ревизии;
-- `tests/unit/backend/test_read_provenance.py` — ревизия, время и снимок в результате,
-  миграция и «версия неизвестна»;
+- `tests/unit/backend/test_source_reads.py` — свежесть (fresh/aged/drifted/
+  incompatible/unknown), снимок хода и его обновление после ошибки;
+- `tests/unit/backend/test_read_provenance.py` — хранение `read`, «версия неизвестна»,
+  миграция и откат;
+- `tests/unit/agent/test_read_citation.py` — строка источника и ограничения в ответе;
 - `tests/integration/test_catalog_revision.py` — реальная PostgreSQL: DML между
   запросами хода, `ADD COLUMN`, `DROP COLUMN`/`ALTER TYPE`/`DROP TABLE`,
-  перепрофилировка, перезапуск. Запуск — `scripts/test_postgres_isolation.py`.
+  перепрофилировка, перезапуск; CSV-перепрофилировка и её сбой. Запуск —
+  `scripts/test_postgres_isolation.py`.
