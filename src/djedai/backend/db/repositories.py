@@ -402,7 +402,31 @@ def get_owned_tool_result(
             ):
                 return None
         elif dataset_id is not None:
-            return None
+            dashboards = (
+                db.query(DashboardModel)
+                .filter(
+                    DashboardModel.owner_id == owner_id,
+                    DashboardModel.dataset_id == dataset_id,
+                )
+                .all()
+            )
+            found = False
+            for dash in dashboards:
+                for w in (dash.widgets or []):
+                    if isinstance(w, dict) and (
+                        w.get("result_id") == current.result_id
+                        or (w.get("chart") or {}).get("result_id") == current.result_id
+                        or any(
+                            isinstance(step, dict) and step.get("result_id") == current.result_id
+                            for step in (w.get("recipe") or {}).get("steps", [])
+                        )
+                    ):
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                return None
         if not current.source_result_id:
             return record
         current = db.get(ToolResultModel, current.source_result_id)
@@ -1062,9 +1086,41 @@ def create_dashboard(
     return dashboard
 
 
-def get_dashboard(db: Session, dashboard_id: str) -> DashboardModel | None:
-    """Возвращает дашборд по идентификатору."""
-    return db.query(DashboardModel).filter_by(dashboard_id=dashboard_id).first()
+def get_dashboard(
+    db: Session, dashboard_id: str, owner_id: str | None = None
+) -> DashboardModel | None:
+    """Возвращает дашборд по идентификатору и опциональному владельцу."""
+    stmt = select(DashboardModel).where(DashboardModel.dashboard_id == dashboard_id)
+    if owner_id is not None:
+        stmt = stmt.where(DashboardModel.owner_id == owner_id)
+    return db.scalars(stmt).first()
+
+
+def update_dashboard(
+    db: Session,
+    dashboard_id: str,
+    *,
+    owner_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    widgets: list[dict[str, Any]] | None = None,
+    refreshed_at: datetime | None = None,
+) -> DashboardModel | None:
+    """Обновляет метаданные, виджеты или время пересчёта дашборда."""
+    dashboard = get_dashboard(db, dashboard_id, owner_id=owner_id)
+    if dashboard is None:
+        return None
+    if title is not None:
+        dashboard.title = title
+    if description is not None:
+        dashboard.description = description
+    if widgets is not None:
+        dashboard.widgets = widgets
+    if refreshed_at is not None:
+        dashboard.refreshed_at = refreshed_at
+    db.commit()
+    db.refresh(dashboard)
+    return dashboard
 
 
 def list_dashboards(

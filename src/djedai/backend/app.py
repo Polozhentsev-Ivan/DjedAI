@@ -105,6 +105,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         ),
     )
     app.state.metric_service = MetricService(app.state.session_factory, app.state.dataset_service)
+    from djedai.backend.dashboard_service import DashboardService
+
+    app.state.dashboard_service = DashboardService(cfg)
     try:
         await app.state.dataset_service.recover_interrupted()
         yield
