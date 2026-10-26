@@ -39,6 +39,18 @@ def test_semantic_checker_rejects_wrong_currency_extra_claim_and_empty_answer(na
     assert benchmark.semantic_ok(answer, case(name)) is False
 
 
+@pytest.mark.parametrize("amount", ["999руб.", "999USD", "999кг", "999,50руб.", "4руб."])
+def test_count_rejects_numeric_claims_with_an_attached_unit(amount):
+    assert not benchmark.text_ok(f"Всего 4 строки. Выручка {amount}", case("compose_count"))
+
+
+@pytest.mark.parametrize(
+    "name,text", [("compose_count", "Всего 4строки."), ("compose_percentage", "50процентов")]
+)
+def test_supported_scalar_answer_can_use_an_attached_unit(name, text):
+    assert benchmark.text_ok(text, case(name))
+
+
 def test_stage_chart_must_reference_existing_result_and_columns():
     answer = VisualizeResponse.model_validate(
         {
@@ -92,6 +104,149 @@ def test_requested_chart_does_not_require_repeating_every_value_in_prose():
     assert turn["sql_ok"] is True
     assert turn["charts"] == 1
     assert turn["semantic_ok"] is True
+
+
+def test_chart_removed_by_verify_is_not_a_successful_published_chart():
+    class StrippedChartClient(_fake_helper().FakeClient):
+        def _answer(self, system):
+            return "График готов."
+
+        def _verify(self, system):
+            return {"is_valid": False, "corrected_markdown": "График готов."}
+
+    chart_case = next(item for item in benchmark.TURN_CASES if item.name == "turn_chart")
+    turn = benchmark.run_turn(
+        benchmark.build_agent_graph(),
+        StrippedChartClient(),
+        chart_case,
+        repeat=0,
+        profile_name="stripped-chart",
+    )
+    assert turn["schema_valid"] and turn["sql_ok"] and turn["trace"]["is_verified"]
+    assert len(turn["trace"]["charts"]) == 1
+    assert all(block["type"] != "chart" for block in turn["trace"]["answer_blocks"])
+    assert turn["charts"] == 0
+    assert turn["semantic_ok"] is False
+
+
+@pytest.mark.parametrize("limit,valid", [(1, False), (2, False), (3, True), (20, True)])
+@pytest.mark.parametrize("sort", [None, {"field": "total", "order": "desc"}])
+def test_graph_chart_requires_all_requested_categories_after_display_limit(limit, valid, sort):
+    class LimitedChartClient(_fake_helper().FakeClient):
+        def generate_typed_response(self, system, question, response_model, **kwargs):
+            response = super().generate_typed_response(system, question, response_model, **kwargs)
+            if response_model is VisualizeResponse:
+                response.data = VisualizeResponse.model_validate(
+                    {
+                        "charts": [
+                            {**chart.model_dump(), "limit": limit, "sort": sort}
+                            for chart in response.data.charts
+                        ]
+                    }
+                )
+            return response
+
+    chart_case = next(item for item in benchmark.TURN_CASES if item.name == "turn_chart")
+    turn = benchmark.run_turn(
+        benchmark.build_agent_graph(),
+        LimitedChartClient(),
+        chart_case,
+        repeat=0,
+        profile_name="limited-chart",
+    )
+    assert turn["schema_valid"] and turn["sql_ok"] and turn["charts"] == 1
+    assert turn["semantic_ok"] is valid
+
+
+@pytest.mark.parametrize("kind,valid", [("category", True), ("number", False)])
+def test_stage_chart_rejects_numeric_x_axis_with_text_categories(kind, valid):
+    response = VisualizeResponse.model_validate(
+        {
+            "charts": [
+                {
+                    "chart_id": "region-chart",
+                    "type": "bar",
+                    "title": "Регионы",
+                    "result_id": "r_benchmark",
+                    "x": {"field": "region", "kind": kind},
+                    "y": [{"field": "total"}],
+                }
+            ]
+        }
+    )
+    assert benchmark.semantic_ok(response, case("visualize_region")) is valid
+
+
+@pytest.mark.parametrize(
+    "bad_chart",
+    [
+        {"result_id": "missing-result"},
+        {"x": {"field": "missing-column"}},
+        {"x": {"field": "region", "kind": "number"}},
+        {"limit": 1},
+        {"type": "unknown-chart-type"},
+    ],
+)
+def test_valid_intermediate_chart_cannot_hide_an_invalid_published_chart(bad_chart):
+    from djedai.contracts.agent import Block
+
+    class InvalidPublishedChartClient(_fake_helper().FakeClient):
+        def generate_typed_response(self, system, question, response_model, **kwargs):
+            response = super().generate_typed_response(system, question, response_model, **kwargs)
+            if response_model is ComposeResponse:
+                # The saved visualize result stays valid; only this extra final
+                # answer block is invalid. A final answer must validate both.
+                chart = {
+                    "chart_id": "untrusted-inline",
+                    "type": "bar",
+                    "title": "Регионы",
+                    "result_id": self.result_id,
+                    "x": {"field": "region"},
+                    "y": [{"field": "total"}],
+                    **bad_chart,
+                }
+                response.data.answer_blocks.append(Block(type="chart", chart=chart))
+            elif response_model is VisualizeResponse:
+                self.result_id = response.data.charts[0].result_id
+            return response
+
+    chart_case = next(item for item in benchmark.TURN_CASES if item.name == "turn_chart")
+    turn = benchmark.run_turn(
+        benchmark.build_agent_graph(),
+        InvalidPublishedChartClient(),
+        chart_case,
+        repeat=0,
+        profile_name="invalid-published-chart",
+    )
+    assert turn["schema_valid"] and turn["sql_ok"] and turn["trace"]["is_verified"]
+    assert len(turn["trace"]["charts"]) == 1
+    assert sum(block["type"] == "chart" for block in turn["trace"]["answer_blocks"]) == 2
+    assert turn["semantic_ok"] is False
+
+
+def test_numeric_chart_axis_accepts_real_numeric_values():
+    from djedai.contracts.chart import ChartSpec
+    from djedai.contracts.tool_result import ToolResult
+
+    source = ToolResult(
+        result_id="numeric-source",
+        status="ok",
+        data={
+            "columns": ["x", "total"],
+            "rows": [[1, 30], [2, 40]],
+        },
+    )
+    chart = ChartSpec.model_validate(
+        {
+            "chart_id": "numeric-axis",
+            "type": "bar",
+            "title": "Числовая ось",
+            "result_id": source.result_id,
+            "x": {"field": "x", "kind": "number"},
+            "y": [{"field": "total"}],
+        }
+    )
+    assert benchmark.charts_ok([chart], [source], ((1, 30), (2, 40)))
 
 
 def test_candidate_must_not_hide_case_degradation_by_improving_another_case():

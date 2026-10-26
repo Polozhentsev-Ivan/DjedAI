@@ -29,10 +29,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import duckdb  # noqa: E402
 from dotenv import dotenv_values  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from djedai.agent.client import BIModelClient  # noqa: E402
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
-from djedai.agent.graph import build_agent_graph  # noqa: E402
+from djedai.agent.graph import build_agent_graph, sanitize_charts  # noqa: E402
 from djedai.agent.prompts import load_prompt  # noqa: E402
 from djedai.agent.reasoning import (  # noqa: E402
     PROVIDER_DEFAULT,
@@ -44,6 +45,7 @@ from djedai.agent.reasoning import (  # noqa: E402
 from djedai.analytics.registry import execute_tool, get_tools_for_llm  # noqa: E402
 from djedai.config import ReasoningEffort, get_limits  # noqa: E402
 from djedai.contracts.agent import (  # noqa: E402
+    Block,
     ComposeResponse,
     Message,
     PlanResponse,
@@ -52,6 +54,7 @@ from djedai.contracts.agent import (  # noqa: E402
     VisualizeResponse,
 )
 from djedai.contracts.catalog import Column, DatasetCatalog, Table  # noqa: E402
+from djedai.contracts.chart import ChartSpec  # noqa: E402
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.execution import ExecutionBudget, TurnTimeout  # noqa: E402
 
@@ -82,7 +85,9 @@ EXPECTED_FILTER_JOIN = (("retail", Decimal("50")), ("wholesale", Decimal("20")))
 EXPECTED_CURRENCY = (("RUB", Decimal("70")), ("USD", Decimal("5")))
 EXPECTED_PERCENTAGE = ((Decimal("50"),),)
 
-_NUMBER = re.compile(r"(?<![\w.,])-?\d+(?:[.,]\d+)?(?!\w|[.,]\d)")
+# A unit may immediately follow its value (999руб., 50процентов). Keep the
+# leading identifier boundary and prevent backtracking to a partial number.
+_NUMBER = re.compile(r"(?<![\w.,])-?\d+(?:[.,]\d+)?(?!\d|[.,]\d)")
 
 
 @dataclass(frozen=True)
@@ -543,7 +548,7 @@ def text_ok(text: str, case: StageCase | TurnCase) -> bool:
         return False
     if case.expected_bindings:
         return _bindings_match(text, case.expected_bindings)
-    if re.search(r"\b(?:RUB|USD|руб\w*|доллар\w*)\b|[₽$]", text, re.I):
+    if re.search(r"(?<![^\W\d])(?:RUB|USD|руб\w*|доллар\w*)\b|[₽$]", text, re.I):
         return False
     if (
         case.expected in {"count", "corrected", "percentage"}
@@ -654,6 +659,12 @@ def charts_ok(
         source = sources.get(chart.result_id)
         if not source or source.data is None or chart.x is None or len(chart.y) != 1:
             return False
+        if not sanitize_charts([chart], [source]):
+            return False
+        # These cases require all source categories. Sorting cannot recover
+        # categories cut off by the renderer's display limit.
+        if len(source.data.rows) > chart.limit:
+            return False
         columns = source.data.columns
         fields = [chart.x.field, chart.y[0].field]
         optional = [chart.color.field] if chart.color else []
@@ -671,6 +682,14 @@ def charts_ok(
         if not rows_match(rows, expected, ordered=False):
             return False
     return True
+
+
+def answer_charts(blocks: list[Block]) -> list[ChartSpec]:
+    """Read final chart blocks; an invalid block cannot hide behind a valid one."""
+    try:
+        return [ChartSpec.model_validate(block.chart) for block in blocks if block.type == "chart"]
+    except ValidationError:
+        return []
 
 
 def _reasoning_for(client: Any, stage: str) -> ReasoningEffort:
@@ -1049,6 +1068,7 @@ def run_turn(
         and _expected_turn_stages(case) <= stages
     )
     text = _answer_text(state)
+    final_charts = answer_charts(state.get("answer_blocks", []))
     understanding = state.get("understanding")
     if case.expected == "ambiguous":
         semantic = bool(
@@ -1065,7 +1085,7 @@ def run_turn(
         semantic = bool(sql_ok) and bool(numbers_ok)
         if case.requires_chart:
             chart_valid = charts_ok(
-                state.get("charts", []), state.get("results", []), case.expected_rows or ()
+                final_charts, state.get("results", []), case.expected_rows or ()
             )
             # A requested chart carries its values through result_id. Repeating
             # every plotted value in prose is optional; actual text claims still
@@ -1104,7 +1124,7 @@ def run_turn(
         "reasoning_tokens": reasoning_tokens,
         "final_numbers": sorted(str(number) for number in numbers_in_text(text)),
         "expected_numbers": list(case.expected_numbers),
-        "charts": len(state.get("charts", [])),
+        "charts": len(final_charts),
         "calls": calls,
         "trace": {
             "understanding": understanding.model_dump(mode="json") if understanding else None,
