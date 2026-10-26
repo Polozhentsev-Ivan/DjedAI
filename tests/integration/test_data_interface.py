@@ -94,9 +94,19 @@ def _terminal(client: TestClient, dataset_id: str) -> tuple[str, dict]:
 
 
 def _same_catalog(python: dict, http: dict) -> None:
+    python, http = _stable(python), _stable(http)
+    assert python["revision"] is not None
     assert {key: value for key, value in python.items() if key not in VOLATILE} == {
         key: value for key, value in http.items() if key not in VOLATILE
     }
+
+
+def _stable(catalog: dict) -> dict:
+    """The profile time is per build; the fingerprints must match across entry points."""
+    if not catalog.get("revision"):
+        return catalog
+    revision = {key: value for key, value in catalog["revision"].items() if key != "profiled_at"}
+    return {**catalog, "revision": revision}
 
 
 def _python_error(call) -> int:

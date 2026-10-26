@@ -158,6 +158,21 @@ def test_snapshot_is_queried_without_the_source_and_stays_owned(storage) -> None
             assert connection.execute(
                 "SELECT current_setting('enable_external_access')"
             ).fetchone() == (False,)
+        # A copied snapshot needs no live check: fresh for its revision (B1-11).
+        detail = restarted.get_detail(owner, dataset_id)
+        assert (detail.revision.number, detail.freshness.state) == (1, "fresh")
+        with context.open_reader() as reader:
+            _, read = reader.run(lambda: None)
+        assert (read.read_mode, read.consistency, read.snapshot_id) == (
+            "snapshot",
+            "immutable",
+            "r1",
+        )
+    alice_revision = restarted.get_detail("alice", alice).revision
+    bob_revision = restarted.get_detail("bob", bob).revision
+    # Same server, different tables: a different source and schema.
+    assert alice_revision.source_fingerprint != bob_revision.source_fingerprint
+    assert alice_revision.schema_fingerprint != bob_revision.schema_fingerprint
     assert len(fake.calls) == calls
 
 

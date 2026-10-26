@@ -38,6 +38,7 @@ from djedai.backend.db.models import (
 )
 from djedai.backend.db.session import budgeted_write
 from djedai.contracts.chat import ChatTurnState
+from djedai.contracts.freshness import ReadProvenance
 from djedai.contracts.message import AssistantMessage
 from djedai.contracts.metrics import MetricProvenance
 from djedai.contracts.quality import QualityReport
@@ -622,6 +623,7 @@ def save_tool_result(
     quality_data = (
         tool_result.quality.model_dump(mode="json") if tool_result.quality is not None else None
     )
+    read_data = tool_result.read.model_dump(mode="json") if tool_result.read is not None else None
 
     if record is None:
         record = ToolResultModel(
@@ -641,6 +643,7 @@ def save_tool_result(
             duration_ms=tool_result.duration_ms,
             metric=metric_data,
             quality=quality_data,
+            read=read_data,
         )
         db.add(record)
     else:
@@ -661,6 +664,8 @@ def save_tool_result(
         record.duration_ms = tool_result.duration_ms
         record.metric = metric_data
         record.quality = quality_data
+        if read_data is not None:  # what a stored result once read is never erased
+            record.read = read_data
 
     try:
         # The unique DB key claims this ID/owner before any shared file is touched.
@@ -808,6 +813,9 @@ def load_tool_result(
         duration_ms=record.duration_ms,
         metric=MetricProvenance.model_validate(record.metric) if record.metric else None,
         quality=QualityReport.model_validate(record.quality) if record.quality else None,
+        read=ReadProvenance.model_validate(record.read)
+        if record.read
+        else ReadProvenance.unknown(),
     )
 
 
