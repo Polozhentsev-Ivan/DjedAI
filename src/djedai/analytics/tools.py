@@ -3443,31 +3443,51 @@ _FORECAST_METHODS = {"ets", "arima", "naive"}
 
 
 def _forecast_ets(y: np.ndarray, horizon: int, period: int | None, alpha: float):
-    """Holt-Winters additive. Интервалы — yhat ± z·σ_resid·sqrt(step)."""
+    """Holt-Winters additive. Интервалы — аналитическая дисперсия ETS (Hyndman 8.7).
+
+    Для ETS(A,A,N)/ETS(A,A,A): Var(e_{t+h}) = σ²·(1 + Σ_{j=1}^{h-1} c_j²),
+    c_j = α + j·β + γ·1_{j ≡ 0 mod m}. sqrt(h) — это случайное блуждание,
+    оно завышает интервалы в разы на почти-постоянных рядах.
+    """
     import warnings
 
-    import numpy as np
     from scipy import stats
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
+    check_budget()
     n = len(y)
     use_seasonal = period is not None and period >= 2 and n >= 2 * period
-    model = ExponentialSmoothing(
-        y,
-        trend="add",
-        seasonal="add" if use_seasonal else None,
-        seasonal_periods=period if use_seasonal else None,
-    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        model = ExponentialSmoothing(
+            y,
+            trend="add",
+            seasonal="add" if use_seasonal else None,
+            seasonal_periods=period if use_seasonal else None,
+        )
         fit = model.fit()
+    check_budget()
+
     point = np.asarray(fit.forecast(horizon), dtype=float)
+
+    alpha_s = float(fit.params.get("smoothing_level", 0.0))
+    beta_s = float(fit.params.get("smoothing_trend", 0.0))
+    gamma_s = float(fit.params.get("smoothing_seasonal", 0.0)) if use_seasonal else 0.0
+
     resid = np.asarray(fit.resid, dtype=float)
     resid = resid[~np.isnan(resid)]
-    std = float(np.std(resid, ddof=1)) if len(resid) >= 2 else 0.0
+    sigma = float(np.std(resid, ddof=1)) if len(resid) >= 2 else 0.0
+
+    # c_j для j=1..h-1; для h=1 c пуст, множитель 1
+    c = np.zeros(max(horizon - 1, 0))
+    for j in range(1, horizon):
+        c[j - 1] = alpha_s + j * beta_s
+        if use_seasonal and period and j % period == 0:
+            c[j - 1] += gamma_s
+    cum_sq = np.cumsum(c**2) if len(c) > 0 else np.array([])
+    multipliers = np.array([1.0] + [float(np.sqrt(1 + cum_sq[k])) for k in range(horizon - 1)])
     z = float(stats.norm.ppf(1 - alpha / 2))
-    steps = np.arange(1, horizon + 1, dtype=float)
-    half = z * std * np.sqrt(steps)
+    half = z * sigma * multipliers
     return point, point - half, point + half
 
 
@@ -3475,9 +3495,9 @@ def _forecast_arima(y: np.ndarray, horizon: int, period: int | None, alpha: floa
     """ARIMA(1,1,1); SARIMAX — только при достаточной длине и с fallback."""
     import warnings
 
-    import numpy as np
     from statsmodels.tsa.arima.model import ARIMA as _ARIMA
 
+    check_budget()
     n = len(y)
     # 4 полных сезона — минимум, ниже которого SARIMAX нестабилен.
     use_seasonal = period is not None and period >= 2 and n >= 4 * period
@@ -3496,12 +3516,17 @@ def _forecast_arima(y: np.ndarray, horizon: int, period: int | None, alpha: floa
                 ).fit(disp=False)
                 if not fit.mle_retvals.get("converged", True):
                     raise RuntimeError("SARIMAX не сошёлся")
+            except (TurnCancelled, TurnTimeout):
+                raise
             except Exception:  # noqa: BLE001
                 use_seasonal = False
+        check_budget()
     if not use_seasonal:
+        check_budget()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             fit = _ARIMA(y, order=(1, 1, 1)).fit()
+        check_budget()
 
     fc = fit.get_forecast(steps=horizon)
     point = np.asarray(fc.predicted_mean, dtype=float)
@@ -3510,10 +3535,14 @@ def _forecast_arima(y: np.ndarray, horizon: int, period: int | None, alpha: floa
 
 
 def _forecast_naive(y: np.ndarray, horizon: int, period: int | None, alpha: float):
-    """Сезонный naive: повторяем последний сезон, интервалы — как в ETS."""
+    """Сезонный naive: интервал растёт по числу пройденных сезонов, не по h.
+
+    Множитель: sqrt(1 + floor((h-1)/p)); для p=1 сводится к sqrt(h).
+    """
     import numpy as np
     from scipy import stats
 
+    check_budget()
     p = period if period and period >= 1 else 1
     if len(y) <= p:
         raise RuntimeError(f"для naive нужно > {p} наблюдений")
@@ -3523,7 +3552,8 @@ def _forecast_naive(y: np.ndarray, horizon: int, period: int | None, alpha: floa
     point = np.array([y[-p + (h % p)] for h in range(horizon)], dtype=float)
     z = float(stats.norm.ppf(1 - alpha / 2))
     steps = np.arange(1, horizon + 1, dtype=float)
-    half = z * std * np.sqrt(steps)
+    multipliers = np.sqrt(1 + np.floor((steps - 1) / p))
+    half = z * std * multipliers
     return point, point - half, point + half
 
 
@@ -3823,6 +3853,7 @@ def forecast(
             else:
                 train = series.iloc[:-holdout].to_numpy()
                 actual = series.iloc[-holdout:].to_numpy()
+                check_budget()
                 try:
                     point_train, _, _ = _dispatch_forecast(
                         method,
@@ -3848,6 +3879,8 @@ def forecast(
                             values=metrics,
                         )
                     )
+                except (TurnCancelled, TurnTimeout):
+                    raise
                 except Exception as e:  # noqa: BLE001
                     facts.append(
                         Fact(
@@ -3858,6 +3891,7 @@ def forecast(
                     )
 
         # --- основной прогноз ---
+        check_budget()
         try:
             point, lower, upper = _dispatch_forecast(
                 method,
@@ -3866,6 +3900,8 @@ def forecast(
                 period,
                 alpha,
             )
+        except (TurnCancelled, TurnTimeout):
+            raise
         except Exception as e:  # noqa: BLE001
             return _err(
                 error=ToolError(

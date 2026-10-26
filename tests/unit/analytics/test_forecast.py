@@ -480,3 +480,168 @@ def test_forecast_arima_seasonal_path(long_monthly_conn):
     assert result.data.row_count == 6
     for row in result.data.rows:
         assert row[2] <= row[1] <= row[3]
+
+
+# ---------- дисперсия интервалов ----------
+
+
+def test_forecast_ets_intervals_not_random_walk():
+    """ETS на почти постоянном ряду: ширины не растут как sqrt(h).
+
+    Для α≈0, β≈0 аналитическая ETS(A,A,N) даёт множитель ≈1 на любом h,
+    а sqrt(h) на h=30 даёт завышение в ~5.5 раз.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    rng = np.random.default_rng(42)
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=i), 100.0 + float(rng.normal())) for i in range(1000)]
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+
+    result = forecast(
+        "s",
+        "ts",
+        horizon=30,
+        measure="value",
+        freq="day",
+        period=1,
+        method="ets",
+        connection=con,
+    )
+    assert result.status == "ok"
+    last_row = result.data.rows[-1]
+    half_width = (last_row[3] - last_row[2]) / 2
+    # Аналитическая ETS ≈ z·σ ≈ 2; sqrt(30)·z·σ ≈ 10.5
+    assert half_width < 4.0, f"half-width {half_width} растёт как sqrt(h) — регрессия"
+    assert half_width > 0.5
+
+
+def test_forecast_naive_seasonal_widths_equal_in_first_season():
+    """Для period=7 h=1..7 множитель sqrt(1) — ширины одинаковы.
+
+    Раньше использовался sqrt(h), и ширины росли: sqrt(1), sqrt(2), …, sqrt(7).
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    rng = np.random.default_rng(0)
+    base = datetime(2024, 1, 1)
+    n = 200
+    values = [float(rng.normal()) for _ in range(7)]
+    for i in range(7, n):
+        values.append(values[i - 7] + float(rng.normal()))
+    rows = [(base + timedelta(days=i), values[i]) for i in range(n)]
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+
+    result = forecast(
+        "s",
+        "ts",
+        horizon=14,
+        measure="value",
+        freq="day",
+        period=7,
+        method="naive",
+        connection=con,
+    )
+    assert result.status == "ok"
+
+    widths = [row[3] - row[2] for row in result.data.rows]
+    first, second = widths[:7], widths[7:]
+
+    # h=1..7: одинаковая ширина (sqrt(1))
+    assert all(abs(w - first[0]) < 1e-9 for w in first), (
+        f"ширины первого сезона должны совпадать, получено {first}"
+    )
+    # h=8..14: одинаковая ширина (sqrt(2))
+    assert all(abs(w - second[0]) < 1e-9 for w in second)
+    # второй сезон sqrt(2) шире первого
+    assert second[0] == pytest.approx(first[0] * np.sqrt(2), rel=1e-6)
+
+
+def test_forecast_naive_period_1_keeps_sqrt_h():
+    """Для period=1 формула сводится к старой sqrt(h) — регрессии нет."""
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    rng = np.random.default_rng(0)
+    base = datetime(2024, 1, 1)
+    rows = [(base + timedelta(days=i), 100.0 + float(rng.normal())) for i in range(100)]
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+
+    result = forecast(
+        "s",
+        "ts",
+        horizon=4,
+        measure="value",
+        freq="day",
+        period=1,
+        method="naive",
+        connection=con,
+    )
+    assert result.status == "ok"
+    widths = [row[3] - row[2] for row in result.data.rows]
+    # множители sqrt(1..4) = 1, √2, √3, 2
+    expected = [widths[0] * np.sqrt(h) for h in (1, 2, 3, 4)]
+    for got, exp in zip(widths, expected, strict=False):
+        assert got == pytest.approx(exp, rel=1e-6)
+
+
+# ---------- отмена внутри fit ----------
+
+
+def test_forecast_cancellation_before_dispatch(monkeypatch):
+    """TurnCancelled на первом же check_budget — обучение не начинается."""
+    from djedai.execution import TurnCancelled
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    rows = [(datetime(2024, 1, 1) + timedelta(days=i), 10.0 + i) for i in range(30)]
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+
+    dispatched = {"n": 0}
+    from djedai.analytics.tools import _dispatch_forecast as _orig
+
+    def counting_dispatch(*args, **kwargs):
+        dispatched["n"] += 1
+        return _orig(*args, **kwargs)
+
+    def cancel_immediately():
+        raise TurnCancelled("cancel before dispatch")
+
+    monkeypatch.setattr("djedai.analytics.tools.check_budget", cancel_immediately)
+    monkeypatch.setattr("djedai.analytics.tools._dispatch_forecast", counting_dispatch)
+
+    with pytest.raises(TurnCancelled):
+        forecast("s", "ts", horizon=3, measure="value", freq="day", period=1, connection=con)
+
+    assert dispatched["n"] == 0
+
+
+def test_forecast_cancellation_inside_fit_propagates(monkeypatch):
+    """TurnCancelled внутри _forecast_ets не превращается в forecast_failed."""
+    from djedai.execution import TurnCancelled
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    rows = [(datetime(2024, 1, 1) + timedelta(days=i), 10.0 + i) for i in range(30)]
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+
+    calls = {"n": 0}
+
+    def cancel_inside_fit():
+        calls["n"] += 1
+        # #1 — SQL; #2 — перед основным fit; #3 — внутри _forecast_ets
+        if calls["n"] >= 3:
+            raise TurnCancelled("cancel inside fit")
+
+    monkeypatch.setattr("djedai.analytics.tools.check_budget", cancel_inside_fit)
+
+    with pytest.raises(TurnCancelled):
+        forecast(
+            "s",
+            "ts",
+            horizon=3,
+            measure="value",
+            freq="day",
+            period=1,
+            method="ets",
+            connection=con,
+        )
