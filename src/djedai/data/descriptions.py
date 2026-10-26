@@ -337,7 +337,14 @@ def _dataset_payload(catalog: DatasetCatalog, tables: list[Table]) -> dict:
         for name in table.time_columns:
             column = table.column(name)
             if column is not None and column.stats.min is not None:
-                result.append({"column": name, "min": column.stats.min, "max": column.stats.max})
+                result.append(
+                    {
+                        "column": name,
+                        "original_name": column.original_name,
+                        "min": column.stats.min,
+                        "max": column.stats.max,
+                    }
+                )
         return result
 
     return {

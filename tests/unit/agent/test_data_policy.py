@@ -15,6 +15,7 @@ from djedai.agent.data_policy import (
     data_sharing_allowed,
     policy_for_client,
 )
+from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.tool_result import ChartHint, Fact, ToolError, ToolResult, ToolResultData
 
 SECRET = "sk-live-1234567890abcdef"
@@ -233,6 +234,184 @@ def test_sanitize_description_payload_redacts_sensitive_dataset_periods() -> Non
         "min": "2020-01-01",
         "max": "2024-01-01",
     }
+
+
+def test_sanitize_description_payload_uses_period_original_name() -> None:
+    policy = DataTransferPolicy.sharing()
+    payload = {
+        "tables": [
+            {
+                "table": "accounts",
+                "periods": [
+                    {
+                        "column": "userpassword",
+                        "original_name": "userPassword",
+                        "min": "1990-01-01",
+                        "max": "1991-02-02",
+                    },
+                    {
+                        "column": "created_at",
+                        "original_name": "createdAt",
+                        "min": "2020-01-01",
+                        "max": "2024-01-01",
+                    },
+                ],
+            }
+        ]
+    }
+
+    safe = policy.sanitize_description_payload(payload)
+    sensitive, created_at = safe["tables"][0]["periods"]
+
+    assert sensitive["min"] == REDACTED and sensitive["max"] == REDACTED
+    assert created_at["min"] == "2020-01-01" and created_at["max"] == "2024-01-01"
+
+
+@pytest.mark.parametrize(
+    ("name", "original_name"),
+    [("password", "Пароль"), ("userpassword", "userPassword")],
+    ids=["name", "original-name"],
+)
+def test_sanitize_catalog_redacts_sensitive_numeric_column_values(
+    name: str, original_name: str
+) -> None:
+    catalog = DatasetCatalog.model_validate(
+        {
+            "schema_version": 1,
+            "dataset_id": "ds",
+            "name": "ds",
+            "created_at": "2026-01-01T00:00:00Z",
+            "source": {"kind": "csv_upload"},
+            "tables": [
+                {
+                    "table_id": "s",
+                    "original_name": "s.csv",
+                    "row_count": 2,
+                    "duplicate_rows": 0,
+                    "columns": [
+                        {
+                            "name": name,
+                            "original_name": original_name,
+                            "physical_type": "BIGINT",
+                            "semantic_type": "integer",
+                            "role": "measure",
+                            "null_ratio": 0.0,
+                            "distinct_count": 2,
+                            "is_unique": False,
+                            "sample_values": [89462718, 89462719],
+                            "top_values": [{"value": 89462718, "count": 1}],
+                            "stats": {
+                                "min": 89462718,
+                                "max": 89462719,
+                                "mean": 89462718.5,
+                                "median": 89462718.5,
+                                "std": 0.5,
+                            },
+                            "description": "Пароль 89462718",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    safe = DataTransferPolicy.sharing().sanitize_catalog(catalog)
+    prompt = safe.to_prompt()
+
+    assert "89462718" not in prompt and "89462719" not in prompt
+    assert "[REDACTED] … [REDACTED]" in prompt
+    assert f"{name}: integer, measure" in prompt
+    assert safe.tables[0].columns[0].stats.min == REDACTED
+    assert safe.tables[0].columns[0].stats.mean is None
+
+
+def test_sanitize_fact_with_sensitive_source_redacts_text_and_values() -> None:
+    policy = DataTransferPolicy.sharing()
+    facts = [
+        Fact(
+            text="Значение '89462718' встречается 2 раз.",
+            kind="freq",
+            values={"value": 89462718, "count": 2},
+        ),
+        Fact(
+            text="Примеры значений: 89462718, 89462719",
+            kind="examples",
+            values={"examples": [89462718, 89462719]},
+        ),
+        Fact(
+            text="Мин: 89462718, Макс: 89462719, Среднее: 89462718.5",
+            kind="numeric_profile",
+            values={"min": 89462718, "max": 89462719, "mean": 89462718.5},
+        ),
+    ]
+
+    for fact in facts:
+        safe = policy.sanitize_fact(fact, sensitive=True)
+        assert "89462718" not in str(safe) and "89462719" not in str(safe)
+        assert REDACTED in str(safe)
+
+    safe_freq = policy.sanitize_fact(facts[0], sensitive=True)
+    assert safe_freq["values"]["count"] == 2
+
+    profile = Fact(
+        text="Всего строк: 2, пропусков: 0, уникальных: 2",
+        kind="profile",
+        values={"total": 2, "non_null": 2, "distinct": 2, "null_count": 0},
+    )
+    safe_profile = policy.sanitize_fact(profile, sensitive=True)
+    assert "Всего строк: 2" in safe_profile["text"]
+    assert safe_profile["values"]["total"] == 2
+
+
+def test_result_has_sensitive_source_checks_params_and_result_columns() -> None:
+    policy = DataTransferPolicy.sharing()
+    described = ToolResult(
+        result_id="r_described",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "password"},
+        data=ToolResultData(columns=["password", "count"], rows=[[89462718, 2]]),
+    )
+    normalized = ToolResult(
+        result_id="r_normalized",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "userpassword"},
+        data=ToolResultData(columns=["userpassword", "count"], rows=[["1990-01-01", 2]]),
+    )
+    sql_result = ToolResult(
+        result_id="r_sql",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["category", "amount"], rows=[["A", 1]]),
+    )
+
+    assert policy.result_has_sensitive_source(described) is True
+    assert policy.result_has_sensitive_source(normalized) is True
+    assert policy.result_has_sensitive_source(sql_result) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Connection config: {"password":"ordinaryCredential9!", '
+        '"api_key":"reviewFixtureCredential9!"}',
+        "Connection config: {“password”:“ordinaryCredential9!”, "
+        "‘api_key’:‘reviewFixtureCredential9!’}",
+        "password: correct horse battery staple",
+    ],
+)
+def test_json_credentials_are_detected_and_redacted(text: str) -> None:
+    policy = DataTransferPolicy.restricted()
+
+    assert policy.contains_secret(text) is True
+    safe = policy.sanitize_text(text)
+    assert "ordinaryCredential9!" not in safe
+    assert "reviewFixtureCredential9!" not in safe
+    assert "correct horse battery staple" not in safe
+
+    with pytest.raises(DataTransferRestricted):
+        policy.guard("system", text, stage="understand")
 
 
 def test_guard_rejects_secrets_with_a_content_free_error() -> None:

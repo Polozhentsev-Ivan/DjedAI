@@ -1,5 +1,8 @@
 """Память чата: summary старых сообщений, фокус результатов и контекст промпта."""
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from djedai.agent.memory import (
     HISTORY_WINDOW,
     HistoryEntry,
@@ -101,6 +104,50 @@ def test_focus_prefers_new_successful_results_then_references_then_previous() ->
         "r_old"
     ]
     assert next_focus_result_ids(["r_old", "r_old"], available_ids=known) == ["r_old"]
+
+
+def test_private_key_is_redacted_before_message_truncation() -> None:
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    body = pem.splitlines()[1]
+    text = "P" * 140 + " " + pem
+    assert len(text) > 250
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[Message(role="user", content=text)],
+        focus_result_ids=[],
+        results=[],
+    )
+
+    assert body[:40] not in context
+    assert "PRIVATE KEY" not in context
+    assert "[REDACTED]" in context
+
+
+def test_summary_sanitizes_private_key_before_truncation() -> None:
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    body = pem.splitlines()[1]
+    entries = [
+        _entry("user", "P" * 140 + " " + pem),
+        *[_entry("user", f"новый вопрос {index}") for index in range(HISTORY_WINDOW)],
+    ]
+
+    summary = summarize_history(entries)
+
+    assert summary is not None
+    assert body[:40] not in summary
+    assert "PRIVATE KEY" not in summary
+    assert "[REDACTED]" in summary
 
 
 def test_conversation_context_contains_summary_messages_focus_and_blocks() -> None:

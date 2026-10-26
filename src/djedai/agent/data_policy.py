@@ -43,9 +43,14 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
+    # Ключ может быть в JSON/YAML: кавычки вокруг имени и значения, `:` или `=`.
+    # Значение в кавычках может содержать пробелы; без кавычек — до разделителя.
     re.compile(
-        r"(?i)\b(?:password|passwd|api[_-]?key|secret|token)\s*[=:]\s*"
-        r"(?!\[REDACTED\])\S+"
+        r"(?i)\b(?:password|passwd|api[_-]?key|secret|token|client[_-]?secret|"
+        r"access[_-]?token|secret[_-]?key|private[_-]?key|authorization|credentials?)\b"
+        r"[\"'“”‘’]?\s*[=:]\s*"
+        r"(?:[\"'“”‘’](?!\[REDACTED\])[^\"'“”‘’]*[\"'“”‘’]"
+        r"|(?!\[REDACTED\])[^\n,;}\]\"'“”‘’]+)"
     ),
 )
 
@@ -182,21 +187,108 @@ class DataTransferPolicy:
         """Рекурсивно редактирует секреты в словарях, списках и моделях."""
         return _sanitize_value(value)
 
-    def sanitize_fact(self, fact: Any) -> dict[str, Any]:
-        """Факт в виде JSON-совместимого словаря без секретов."""
+    def sanitize_fact(self, fact: Any, *, sensitive: bool = False) -> dict[str, Any]:
+        """Факт в виде JSON-совместимого словаря без секретов.
+
+        ``sensitive`` означает, что факт получен из чувствительной колонки. В этом
+        случае недостаточно проверить шаблоны секретов: обычное значение пароля
+        может быть числом или датой. Поэтому значения факта очищаются, а их
+        текстовые представления заменяются в ``text``. Счётчики и метаданные
+        (``count``, ``total``, ``distinct``, имя колонки) сохраняются.
+        """
         raw = _as_mapping(fact)
         text = self.sanitize_text(str(raw.get("text") or ""))
-        return {
-            "text": text,
-            "kind": raw.get("kind"),
-            "values": self.sanitize_value(raw.get("values") or {}),
-        }
+        values = self.sanitize_value(raw.get("values") or {})
+        if not isinstance(values, Mapping):
+            values = {}
+        values = dict(values)
+        if sensitive:
+            secret_values = _fact_values_to_redact(values)
+            text = _replace_text_values(text, secret_values)
+            values = _redact_fact_values(values)
+            # Если структурированных значений нет, текст мог быть единственным
+            # носителем значения чувствительной колонки.
+            if not values:
+                text = REDACTED
+        return {"text": text, "kind": raw.get("kind"), "values": values}
 
-    def sanitize_fact_model(self, fact: Any) -> Any:
+    def sanitize_fact_model(self, fact: Any, *, sensitive: bool = False) -> Any:
         """Копия ``Fact`` с отредактированными текстом и значениями."""
-        safe = self.sanitize_fact(fact)
+        safe = self.sanitize_fact(fact, sensitive=sensitive)
         if hasattr(fact, "model_copy"):
             return fact.model_copy(update={"text": safe["text"], "values": safe["values"]})
+        return safe
+
+    def result_has_sensitive_source(self, result: Any) -> bool:
+        """Есть ли у результата колонка-источник с чувствительным именем.
+
+        У ``describe_column``/``value_counts`` имя источника лежит в ``params``;
+        у SQL-результатов — в ``data.columns``. Проверяются и нормализованное
+        имя, и исходный заголовок, если он сохранён.
+        """
+        names: list[str] = []
+        params = getattr(result, "params", None)
+        if isinstance(params, Mapping):
+            for key in ("column", "column_name"):
+                value = params.get(key)
+                if value:
+                    names.append(str(value))
+            params_columns = params.get("columns")
+            if isinstance(params_columns, (list, tuple)):
+                names.extend(_column_name(column) for column in params_columns)
+        data = getattr(result, "data", None)
+        raw_data = _as_mapping(data)
+        for column in raw_data.get("columns") or []:
+            names.append(_column_name(column))
+        return any(_is_sensitive_key(name) for name in names if name)
+
+    def sanitize_catalog(self, catalog: Any) -> Any:
+        """Копия каталога без значений чувствительных колонок.
+
+        ``DatasetCatalog.to_prompt()`` выводит min/max числовых и временных колонок.
+        Если колонка называется ``password``, сами значения не похожи на секрет и
+        не ловятся шаблонами. Поэтому до рендеринга очищаются все value-bearing
+        поля таких колонок: примеры, top-values, статистика и неудачные примеры
+        парсинга. Метаданные (имя, тип, роль, число уникальных) остаются.
+        """
+        dump = getattr(catalog, "model_dump", None)
+        if not callable(dump):
+            return catalog
+        safe = self.sanitize_value(dump(mode="json"))
+        if not isinstance(safe, Mapping):
+            return safe
+        safe = dict(safe)
+        for table in safe.get("tables") or []:
+            if not isinstance(table, dict):
+                continue
+            for column in table.get("columns") or []:
+                if not isinstance(column, dict) or not _is_sensitive_column(column):
+                    continue
+                sensitive_values = _column_values(column)
+                column["sample_values"] = []
+                column["top_values"] = []
+                stats = column.get("stats")
+                if isinstance(stats, dict):
+                    for key in ("min", "max"):
+                        if stats.get(key) is not None:
+                            stats[key] = REDACTED
+                    for key in ("mean", "median", "std"):
+                        if key in stats:
+                            stats[key] = None
+                parse = column.get("parse")
+                if isinstance(parse, dict) and parse.get("failed_examples"):
+                    parse["failed_examples"] = []
+                description = column.get("description")
+                if description:
+                    column["description"] = _replace_text_values(
+                        self.sanitize_text(str(description)), sensitive_values
+                    )
+        validator = getattr(type(catalog), "model_validate", None)
+        if callable(validator):
+            try:
+                return validator(safe)
+            except Exception:
+                return safe
         return safe
 
     def sanitize_error(self, error: Any) -> Any:
@@ -260,8 +352,10 @@ class DataTransferPolicy:
                 payload["sample_rows_omitted"] = "data_policy"
         facts = getattr(result, "facts", [])
         if facts:
+            sensitive = self.result_has_sensitive_source(result)
             payload["facts"] = [
-                fact["text"] for fact in (self.sanitize_fact(item) for item in facts)
+                fact["text"]
+                for fact in (self.sanitize_fact(item, sensitive=sensitive) for item in facts)
             ]
         chart_hint = getattr(result, "chart_hint", None)
         if chart_hint is not None:
@@ -288,10 +382,7 @@ class DataTransferPolicy:
         safe_columns = safe.get("columns")
         if isinstance(raw_columns, list) and isinstance(safe_columns, list):
             for raw, column in zip(raw_columns, safe_columns, strict=False):
-                if not isinstance(column, dict):
-                    continue
-                names = _column_names(raw)
-                if not any(_is_sensitive_key(name) for name in names if name):
+                if not isinstance(column, dict) or not _is_sensitive_column(raw):
                     continue
                 for key in ("sample_values", "top_values"):
                     if key in column:
@@ -312,10 +403,7 @@ class DataTransferPolicy:
                 if not isinstance(raw_periods, list) or not isinstance(safe_periods, list):
                     continue
                 for raw_period, period in zip(raw_periods, safe_periods, strict=False):
-                    if not isinstance(period, dict):
-                        continue
-                    name = str(raw_period.get("column") or "")
-                    if not name or not _is_sensitive_key(name):
+                    if not isinstance(period, dict) or not _is_sensitive_column(raw_period):
                         continue
                     for key in ("min", "max"):
                         if key in period:
@@ -363,7 +451,100 @@ def _column_name(column: Any) -> str:
 def _column_names(column: Any) -> list[str]:
     """Имена колонки, по которым определяется чувствительность."""
     raw = _as_mapping(column)
-    return [str(raw.get("name") or ""), str(raw.get("original_name") or "")]
+    return [
+        str(raw.get("name") or ""),
+        str(raw.get("original_name") or ""),
+        str(raw.get("column") or ""),
+    ]
+
+
+def _is_sensitive_column(column: Any) -> bool:
+    return any(_is_sensitive_key(name) for name in _column_names(column) if name)
+
+
+def _column_values(column: Mapping[str, Any]) -> list[Any]:
+    """Значения колонки, которые нельзя выводить в промпт."""
+    values: list[Any] = list(column.get("sample_values") or [])
+    for item in column.get("top_values") or []:
+        if isinstance(item, Mapping):
+            values.append(item.get("value"))
+    stats = column.get("stats")
+    if isinstance(stats, Mapping):
+        values.extend(stats.get(key) for key in ("min", "max", "mean", "median", "std"))
+    parse = column.get("parse")
+    if isinstance(parse, Mapping):
+        values.extend(parse.get("failed_examples") or [])
+    return [value for value in values if value is not None]
+
+
+def _flatten_values(value: Any) -> list[Any]:
+    if isinstance(value, Mapping):
+        return [leaf for item in value.values() for leaf in _flatten_values(item)]
+    if isinstance(value, (list, tuple, set)):
+        return [leaf for item in value for leaf in _flatten_values(item)]
+    return [] if value is None else [value]
+
+
+def _text_forms(value: Any) -> list[str]:
+    forms = {str(value)}
+    if isinstance(value, float) and value.is_integer():
+        forms.add(str(int(value)))
+    return [form for form in forms if form and form != REDACTED]
+
+
+def _replace_text_values(text: str, values: Any) -> str:
+    """Заменяет в тексте строковые представления значений чувствительной колонки."""
+    forms = sorted(
+        {form for value in values for form in _text_forms(value)},
+        key=len,
+        reverse=True,
+    )
+    for form in forms:
+        text = text.replace(form, REDACTED)
+    return text
+
+
+# Факты из чувствительной колонки: счётчики и имена — агрегаты/метаданные,
+# остальные значения считаются значением ячейки и очищаются.
+_SAFE_FACT_VALUE_KEYS = {
+    "count",
+    "total",
+    "non_null",
+    "distinct",
+    "null_count",
+    "row_count",
+    "rows",
+    "columns",
+    "table",
+    "column",
+    "name",
+    "label",
+    "kind",
+}
+
+
+def _fact_values_to_redact(values: Mapping[str, Any]) -> list[Any]:
+    return [
+        leaf
+        for key, value in values.items()
+        if key not in _SAFE_FACT_VALUE_KEYS
+        for leaf in _flatten_values(value)
+    ]
+
+
+def _redact_fact_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _redact_fact_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_redact_fact_value(item) for item in value]
+    return REDACTED
+
+
+def _redact_fact_values(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value if key in _SAFE_FACT_VALUE_KEYS else _redact_fact_value(value)
+        for key, value in values.items()
+    }
 
 
 def _redact_examples(value: Any) -> Any:
@@ -382,9 +563,15 @@ def _key_parts(key: str) -> list[str]:
 
 def _is_sensitive_key(key: str) -> bool:
     parts = _key_parts(key)
-    if "".join(parts) in _SENSITIVE_KEY_NAMES:
+    joined = "".join(parts)
+    if joined in _SENSITIVE_KEY_NAMES:
         return True
-    return any(part in _SENSITIVE_KEY_WORDS for part in parts)
+    if any(part in _SENSITIVE_KEY_WORDS for part in parts):
+        return True
+    # Нормализованный заголовок вроде ``userPassword`` -> ``userpassword`` теряет
+    # границы слов. Чувствительное слово в начале или конце такого имени всё ещё
+    # означает credential: ``userpassword``, ``passwordhash``, ``apitoken``.
+    return any(joined.startswith(word) or joined.endswith(word) for word in _SENSITIVE_KEY_WORDS)
 
 
 def _redact_text(text: str) -> str:

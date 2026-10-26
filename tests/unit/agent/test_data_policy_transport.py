@@ -13,6 +13,8 @@ from typing import Any
 
 import duckdb
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from djedai.agent.client import SERVER_ERROR_MESSAGE, BIModelClient
 from djedai.agent.data_policy import (
@@ -43,6 +45,10 @@ CURRENT_AGGREGATE_MARKER = "CURRENT_AGGREGATE_MARKER_173"
 HISTORY_AGGREGATE_MARKER = "HISTORY_AGGREGATE_MARKER_173"
 CATALOG_SAMPLE_MARKER = "CATALOG_SAMPLE_MARKER_173"
 COLUMN_PASSWORD_MARKER = "COLUMN_PASSWORD_MARKER_173"
+SENSITIVE_STAT_MIN = 89462718
+SENSITIVE_STAT_MAX = 89462719
+SENSITIVE_PERIOD_MIN = "1990-01-01"
+SENSITIVE_PERIOD_MAX = "1991-02-02"
 SECRET_MARKER = "SECRET_MARKER_173"
 ERROR_SECRET_MARKER = "ERROR_SECRET_MARKER_173"
 
@@ -52,6 +58,8 @@ def _catalog(
     with_samples: bool = False,
     described: bool = True,
     sensitive_sample: str | None = None,
+    sensitive_stats: bool = False,
+    sensitive_period: tuple[str, str] | None = None,
 ) -> DatasetCatalog:
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     data["name"] = META_MARKER
@@ -76,6 +84,32 @@ def _catalog(
         column["original_name"] = "Пароль"
         column["sample_values"] = [sensitive_sample]
         column["top_values"] = [{"value": sensitive_sample, "count": 1}]
+    if sensitive_stats:
+        column = table["columns"][3]  # amount
+        column["name"] = "password"
+        column["original_name"] = "Пароль"
+        column["physical_type"] = "BIGINT"
+        column["semantic_type"] = "integer"
+        column["role"] = "measure"
+        column["currency"] = None
+        column["sample_values"] = []
+        column["top_values"] = []
+        column["stats"] = {"min": SENSITIVE_STAT_MIN, "max": SENSITIVE_STAT_MAX}
+    if sensitive_period is not None:
+        column = table["columns"][2]  # created_at
+        column["name"] = "userpassword"
+        column["original_name"] = "userPassword"
+        column["physical_type"] = "DATE"
+        column["semantic_type"] = "date"
+        column["role"] = "time"
+        column["sample_values"] = []
+        column["top_values"] = []
+        column["stats"] = {
+            "min": sensitive_period[0],
+            "max": sensitive_period[1],
+            "granularity": "day",
+        }
+        table["time_columns"] = ["userpassword"]
     return DatasetCatalog.model_validate(data)
 
 
@@ -153,11 +187,12 @@ def _config(
     *,
     diagnostics: RunDiagnostics | None = None,
     dispatcher: Callable[[str, dict[str, Any]], ToolResult] | None = None,
+    catalog: DatasetCatalog | None = None,
 ) -> dict[str, Any]:
     configurable: dict[str, Any] = {
         "thread_id": f"thread_{id(client)}",
         "client": client,
-        "catalog_loader": lambda _dataset_id: _catalog(),
+        "catalog_loader": lambda _dataset_id: catalog if catalog is not None else _catalog(),
         "data_policy": client.data_policy,
     }
     if diagnostics is not None:
@@ -581,3 +616,236 @@ def test_sensitive_column_examples_never_reach_network(model_endpoint: Callable)
     assert COLUMN_PASSWORD_MARKER not in network
     assert REDACTED in network
     assert "password=" not in network
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_catalog_sensitive_stats_never_reach_network(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    catalog = _catalog(sensitive_stats=True)
+
+    with model_endpoint(_reply()) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(client, catalog=catalog),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    prompt = result["catalog_prompt"]
+    assert str(SENSITIVE_STAT_MIN) not in network
+    assert str(SENSITIVE_STAT_MAX) not in network
+    assert str(SENSITIVE_STAT_MIN) not in prompt
+    assert str(SENSITIVE_STAT_MAX) not in prompt
+    assert "[REDACTED] … [REDACTED]" in prompt
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_sensitive_column_facts_never_reach_compose(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "PASSWORD_FACT_MARKER_173"
+    described = ToolResult(
+        result_id="r_password",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "password"},
+        data=ToolResultData(columns=["password", "count"], rows=[[marker, 2]], row_count=1),
+        facts=[
+            Fact(
+                text="Всего строк: 2, пропусков: 0, уникальных: 2",
+                kind="profile",
+                values={"total": 2, "non_null": 2, "distinct": 2, "null_count": 0},
+            ),
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            ),
+            Fact(
+                text=f"Примеры значений: {marker}",
+                kind="examples",
+                values={"examples": [marker]},
+            ),
+        ],
+    )
+
+    def dispatcher(tool: str, _params: dict[str, Any]) -> ToolResult:
+        assert tool == "describe_column"
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {"tool": "describe_column", "args": {"table": "s", "column": "password"}}
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(client, dispatcher=dispatcher),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_sensitive_period_original_name_never_reaches_summary(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "TableDescriptions":
+            columns = json.loads(payload["messages"][1]["content"])["columns"]
+            return {
+                "body": {
+                    "table": "orders",
+                    "columns": [
+                        {"name": column["name"], "description": "Описание колонки"}
+                        for column in columns
+                    ],
+                }
+            }
+        assert schema == "DatasetSummary"
+        return {"body": {"summary": "Описание датасета"}}
+
+    connection = duckdb.connect(":memory:")
+    try:
+        with model_endpoint(reply) as endpoint:
+            client = _client(endpoint, policy)
+            try:
+                report = describe_catalog(
+                    connection,
+                    _catalog(
+                        described=False,
+                        sensitive_period=(SENSITIVE_PERIOD_MIN, SENSITIVE_PERIOD_MAX),
+                    ),
+                    client,
+                )
+            finally:
+                client.client.close()
+    finally:
+        connection.close()
+
+    network = _network_text(endpoint)
+    summary_calls = _stage_calls(endpoint)["DatasetSummary"]
+    summary_text = json.dumps(summary_calls, ensure_ascii=False)
+    assert report.model_calls == 2
+    assert SENSITIVE_PERIOD_MIN not in network
+    assert SENSITIVE_PERIOD_MAX not in network
+    assert SENSITIVE_PERIOD_MIN not in summary_text
+    assert SENSITIVE_PERIOD_MAX not in summary_text
+    assert REDACTED in summary_text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Connection config: {"password":"ordinaryCredential9!", '
+        '"api_key":"reviewFixtureCredential9!"}',
+        "Connection config: {“password”:“ordinaryCredential9!”, "
+        "‘api_key’:‘reviewFixtureCredential9!’}",
+    ],
+    ids=["json", "unicode-quotes"],
+)
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_json_credentials_are_rejected_before_network(
+    model_endpoint: Callable, policy: DataTransferPolicy, text: str
+) -> None:
+    with model_endpoint(_reply()) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            response = client.generate_typed_response(
+                "system", text, Understanding, stage="understand"
+            )
+            assert response.status == "error"
+            assert response.error_type == "POLICY_RESTRICTED"
+            assert response.message == POLICY_RESTRICTED_MESSAGE
+            assert endpoint.calls == []
+
+            result = build_agent_graph().invoke(
+                _state() | {"messages": [Message(role="user", content=text)]},
+                config=_config(client),
+            )
+        finally:
+            client.client.close()
+
+    assert endpoint.calls == []
+    assert result["answer_blocks"][0].type == "error"
+    assert result["answer_blocks"][0].markdown == RESTRICTED_CONTEXT_MESSAGE
+    assert "ordinaryCredential9!" not in result["answer_blocks"][0].markdown
+    assert "reviewFixtureCredential9!" not in result["answer_blocks"][0].markdown
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_private_key_in_history_never_reaches_network(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    body = pem.splitlines()[1]
+    text = "P" * 140 + " " + pem
+    assert len(text) > 250
+
+    with model_endpoint(_reply()) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state()
+                | {
+                    "messages": [
+                        Message(role="user", content=text),
+                        Message(role="user", content=f"{USER_MARKER}: покажи график"),
+                    ]
+                },
+                config=_config(client),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert endpoint.calls
+    assert body[:40] not in network
+    assert "PRIVATE KEY" not in network
+    assert "[REDACTED]" in network
+    assert all(block.type != "error" for block in result["answer_blocks"])

@@ -69,7 +69,8 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
     for result in answer_results(state):
         entry: dict = {"result_id": result.result_id, "tool": result.tool}
         if result.facts:
-            facts = [policy.sanitize_fact(fact) for fact in result.facts]
+            sensitive = policy.result_has_sensitive_source(result)
+            facts = [policy.sanitize_fact(fact, sensitive=sensitive) for fact in result.facts]
             entry["facts"] = facts
             if any(fact.get("text") or fact.get("values") for fact in facts):
                 usable = True
@@ -92,7 +93,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     policy = _policy(config)
     catalog_loader = config.get("configurable", {}).get("catalog_loader")
     catalog_prompt = (
-        catalog_loader(state["dataset_id"]).to_prompt()
+        policy.sanitize_catalog(catalog_loader(state["dataset_id"])).to_prompt()
         if catalog_loader is not None
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
@@ -266,7 +267,10 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             if res.error is not None:
                 updates["error"] = policy.sanitize_error(res.error)
             if res.facts:
-                updates["facts"] = [policy.sanitize_fact_model(fact) for fact in res.facts]
+                sensitive = policy.result_has_sensitive_source(res)
+                updates["facts"] = [
+                    policy.sanitize_fact_model(fact, sensitive=sensitive) for fact in res.facts
+                ]
             if res.sql is not None:
                 updates["sql"] = policy.sanitize_text(res.sql)
             res = res.model_copy(update=updates)

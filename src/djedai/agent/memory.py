@@ -81,7 +81,10 @@ def summarize_history(
 
     lines: list[str] = []
     for entry in older:
-        text = compact_text(entry_text(entry), SUMMARY_LINE_CHARS)
+        text = compact_text(
+            DataTransferPolicy.restricted().sanitize_text(entry_text(entry)),
+            SUMMARY_LINE_CHARS,
+        )
         if not text and not entry.result_ids:
             continue
         role = "Пользователь" if entry.role == "user" else "Ассистент"
@@ -138,7 +141,7 @@ def conversation_context(
 
     recent = [
         f"{'Пользователь' if message.role == 'user' else 'Ассистент'}: "
-        f"{policy.sanitize_text(compact_text(message.content, CONTEXT_LINE_CHARS))}"
+        f"{compact_text(policy.sanitize_text(message.content), CONTEXT_LINE_CHARS)}"
         for message in recent_messages[-HISTORY_WINDOW:]
         if message.content.strip()
     ]
@@ -186,7 +189,11 @@ def _focus_descriptions(
             elif data.get("rows_omitted"):
                 parts.append("sample_rows=omitted_by_data_policy")
         if result.facts:
-            facts = [policy.sanitize_fact(fact)["text"] for fact in result.facts[:CONTEXT_FACTS]]
+            sensitive = policy.result_has_sensitive_source(result)
+            facts = [
+                policy.sanitize_fact(fact, sensitive=sensitive)["text"]
+                for fact in result.facts[:CONTEXT_FACTS]
+            ]
             parts.append(f"facts={facts}")
         if result.chart_hint is not None:
             parts.append(f"chart_hint={policy.sanitize_value(result.chart_hint)}")
