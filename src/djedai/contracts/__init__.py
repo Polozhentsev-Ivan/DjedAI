@@ -61,7 +61,12 @@ from djedai.contracts.dashboard import (
     WidgetSnapshot,
     WidgetToolCall,
 )
-from djedai.contracts.freshness import DatasetRefresh, SchemaChange, SourceFreshness
+from djedai.contracts.freshness import (
+    DatasetRefresh,
+    ReadProvenance,
+    SchemaChange,
+    SourceFreshness,
+)
 from djedai.contracts.message import (
     AssistantMessage,
     ChartBlock,
@@ -132,6 +137,7 @@ __all__ = [
     "Transformation",
     # Свежесть источника и перепрофилировка
     "DatasetRefresh",
+    "ReadProvenance",
     "SchemaChange",
     "SourceFreshness",
     # Определения бизнес-метрик

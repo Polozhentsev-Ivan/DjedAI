@@ -1620,6 +1620,18 @@
             "default": null,
             "description": "Дата последнего пересчета",
             "title": "Refreshed At"
+          },
+          "consistency": {
+            "default": "independent",
+            "description": "Согласованность чтений виджетов одного refresh",
+            "enum": [
+              "turn_snapshot",
+              "independent",
+              "immutable",
+              "unknown"
+            ],
+            "title": "Consistency",
+            "type": "string"
           }
         },
         "required": [
@@ -2698,6 +2710,146 @@
         "title": "QualityReport",
         "type": "object"
       },
+      "ReadProvenance": {
+        "additionalProperties": false,
+        "description": "Что и когда прочитал расчёт; копия ревизии, которую не меняет перепрофилировка.",
+        "properties": {
+          "revision_known": {
+            "title": "Revision Known",
+            "type": "boolean"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dataset Id"
+          },
+          "catalog_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Revision"
+          },
+          "schema_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schema Fingerprint"
+          },
+          "source_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Fingerprint"
+          },
+          "transform_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transform Version"
+          },
+          "read_mode": {
+            "enum": [
+              "live",
+              "snapshot",
+              "saved_result",
+              "unknown"
+            ],
+            "title": "Read Mode",
+            "type": "string"
+          },
+          "consistency": {
+            "enum": [
+              "turn_snapshot",
+              "independent",
+              "immutable",
+              "unknown"
+            ],
+            "title": "Consistency",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/SourceFreshness"
+          }
+        },
+        "required": [
+          "revision_known",
+          "read_mode",
+          "consistency",
+          "freshness"
+        ],
+        "title": "ReadProvenance",
+        "type": "object"
+      },
       "Relation": {
         "additionalProperties": false,
         "properties": {
@@ -3661,6 +3813,18 @@
             ],
             "default": null,
             "description": "Потери и неоднозначности преобразования использованных колонок (B2-10)"
+          },
+          "read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ревизия каталога, режим и время чтения источника (B1-11)"
           }
         },
         "required": [
@@ -4183,6 +4347,32 @@
               }
             ],
             "default": null
+          },
+          "read_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Read Started At"
+          },
+          "read_finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Read Finished At"
           }
         },
         "required": [

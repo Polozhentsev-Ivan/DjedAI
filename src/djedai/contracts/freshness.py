@@ -75,3 +75,56 @@ class DatasetRefresh(_Model):
     status: Literal["processing", "error"]
     started_at: AwareDatetime
     message: str | None = None  # текст ошибки без DSN и трассировки
+
+
+ReadMode = Literal["live", "snapshot", "saved_result", "unknown"]
+Consistency = Literal["turn_snapshot", "independent", "immutable", "unknown"]
+UNKNOWN_REASON = "Результат сохранён до версионирования каталога: версия неизвестна"
+
+
+class ReadProvenance(_Model):
+    """Что и когда прочитал расчёт; копия ревизии, которую не меняет перепрофилировка."""
+
+    revision_known: bool
+    dataset_id: str | None = None
+    catalog_revision: int | None = Field(default=None, ge=1)
+    schema_fingerprint: str | None = None
+    source_fingerprint: str | None = None
+    transform_version: str | None = None
+    read_mode: ReadMode
+    # turn_snapshot — один снимок PostgreSQL на ход; immutable — файл датасета не меняется;
+    # independent — у каждого чтения своё состояние источника
+    consistency: Consistency
+    snapshot_id: str | None = None  # чтения с одинаковым id видели одно состояние источника
+    started_at: AwareDatetime | None = None
+    finished_at: AwareDatetime | None = None
+    freshness: SourceFreshness
+
+    @classmethod
+    def unknown(cls, reason: str = UNKNOWN_REASON) -> ReadProvenance:
+        """Явное «версия неизвестна» для результатов, сохранённых до #169."""
+        return cls(
+            revision_known=False,
+            read_mode="unknown",
+            consistency="unknown",
+            freshness=SourceFreshness(state="unknown", reason=reason),
+        )
+
+    @model_validator(mode="after")
+    def _is_consistent(self) -> ReadProvenance:
+        revision = (self.catalog_revision, self.schema_fingerprint, self.source_fingerprint)
+        if self.revision_known != all(value is not None for value in revision):
+            raise ValueError("revision_known требует ревизии и обоих отпечатков, и только их")
+        if (self.read_mode == "unknown") != (self.started_at is None):
+            raise ValueError("время чтения неизвестно только у read_mode=unknown")
+        if (self.read_mode == "unknown") != (self.consistency == "unknown"):
+            raise ValueError("согласованность неизвестна только у read_mode=unknown")
+        if self.read_mode == "unknown" and self.revision_known:
+            raise ValueError("read_mode=unknown только у результатов без ревизии")
+        if self.started_at and (self.finished_at is None or self.finished_at < self.started_at):
+            raise ValueError("finished_at не раньше started_at")
+        if self.consistency in ("turn_snapshot", "immutable") and not self.snapshot_id:
+            raise ValueError(f"{self.consistency}: нужен snapshot_id")
+        if self.consistency == "independent" and self.snapshot_id:
+            raise ValueError("independent: у чтения нет общего снимка")
+        return self

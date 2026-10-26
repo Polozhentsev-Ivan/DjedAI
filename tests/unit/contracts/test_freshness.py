@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from djedai.contracts import CatalogRevision, DatasetCatalog, SchemaChange, SourceFreshness
+from djedai.contracts import (
+    CatalogRevision,
+    DatasetCatalog,
+    ReadProvenance,
+    SchemaChange,
+    SourceFreshness,
+    ToolResult,
+)
 
 EXAMPLES = Path(__file__).parents[3] / "src" / "djedai" / "contracts" / "examples"
 FULL = json.loads((EXAMPLES / "dataset_catalog.json").read_text(encoding="utf-8"))
@@ -80,3 +87,74 @@ def test_states_require_their_explanation():
 def test_inconsistent_states_are_rejected(data):
     with pytest.raises(ValidationError):
         SourceFreshness.model_validate(data)
+
+
+LIVE = {
+    "revision_known": True,
+    "dataset_id": "ds_7f3a",
+    "catalog_revision": 2,
+    "schema_fingerprint": FULL["revision"]["schema_fingerprint"],
+    "source_fingerprint": FULL["revision"]["source_fingerprint"],
+    "transform_version": "2026.10.1",
+    "read_mode": "live",
+    "consistency": "turn_snapshot",
+    "snapshot_id": "run_1:1",
+    "started_at": "2026-10-26T10:00:00Z",
+    "finished_at": "2026-10-26T10:00:01Z",
+    "freshness": {"state": "fresh", "profiled_at": PROFILED},
+}
+
+
+def test_read_provenance_round_trips_inside_tool_result():
+    read = ReadProvenance.model_validate(LIVE)
+    result = ToolResult(result_id="r_1", status="ok", read=read)
+    assert ToolResult.model_validate_json(result.model_dump_json()).read == read
+
+
+def test_unknown_read_is_explicit():
+    read = ReadProvenance.unknown()
+    assert (read.revision_known, read.read_mode, read.consistency) == (False, "unknown", "unknown")
+    assert read.freshness.state == "unknown" and "неизвестна" in read.freshness.reason
+    assert read.started_at is None and read.catalog_revision is None
+
+
+def test_new_read_of_an_old_catalog_keeps_its_time():
+    read = ReadProvenance.model_validate(
+        {
+            **LIVE,
+            "revision_known": False,
+            "catalog_revision": None,
+            "schema_fingerprint": None,
+            "source_fingerprint": None,
+            "freshness": {"state": "unknown", "reason": "каталог собран до версионирования"},
+        }
+    )
+    assert read.read_mode == "live" and read.started_at is not None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"catalog_revision": None},
+        {"revision_known": False},
+        {"read_mode": "unknown"},
+        {"started_at": None},
+        {"finished_at": "2026-10-26T09:00:00Z"},
+        {"snapshot_id": None},
+        {"consistency": "independent"},
+        {"consistency": "unknown"},
+    ],
+    ids=[
+        "ревизия без номера",
+        "отпечатки без ревизии",
+        "unknown со временем",
+        "live без времени",
+        "конец раньше начала",
+        "снимок без id",
+        "independent со снимком",
+        "unknown-согласованность у live",
+    ],
+)
+def test_inconsistent_reads_are_rejected(change):
+    with pytest.raises(ValidationError):
+        ReadProvenance.model_validate({**LIVE, **change})
