@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.dataset_service import DatasetJobQueue, DatasetService, StorageQuotaManager
@@ -58,13 +61,13 @@ def test_storage_quota_manager_reserve_and_release() -> None:
 @pytest.mark.anyio
 async def test_dataset_job_queue_limits_and_fairness() -> None:
     processed_order: list[str] = []
-    job_started = asyncio.Event()
-    job_can_finish = asyncio.Event()
+    job_started = threading.Event()
+    job_can_finish = threading.Event()
 
     def process_func(owner_id: str, dataset_id: str) -> None:
         processed_order.append(f"{owner_id}:{dataset_id}")
         job_started.set()
-        asyncio.run(job_can_finish.wait())
+        job_can_finish.wait()
 
     queue = DatasetJobQueue(
         process_func,
@@ -77,7 +80,7 @@ async def test_dataset_job_queue_limits_and_fairness() -> None:
     try:
         # 1. Первая задача запускается сразу
         queue.enqueue("owner1", "ds_1_1")
-        await asyncio.wait_for(job_started.wait(), timeout=1.0)
+        await asyncio.to_thread(job_started.wait, 2.0)
         assert queue.snapshot()["active_dataset_jobs_total"] == 1
 
         # 2. Вторая задача owner1 встает в очередь (1/2)
@@ -103,7 +106,7 @@ async def test_dataset_job_queue_limits_and_fairness() -> None:
         await asyncio.sleep(0.05)
 
         # Ожидаем второй запуск
-        await asyncio.wait_for(job_started.wait(), timeout=1.0)
+        await asyncio.to_thread(job_started.wait, 2.0)
         # Проверяем, что owner2 запустился строго перед следующей задачей owner1
         assert processed_order[:2] == ["owner1:ds_1_1", "owner2:ds_2_1"]
     finally:
@@ -225,3 +228,106 @@ async def test_partial_copy_failure_releases_reserved_quota(tmp_path: Path, db_f
         assert service.quota_manager.snapshot().get("user1", 0) == 0
 
     await service.close()
+
+
+@pytest.mark.anyio
+async def test_dataset_queue_overflow_rolls_back_storage_and_records(
+    tmp_path: Path, db_factory
+) -> None:
+    """При переполнении очереди датасет не оставляет файлов и записей (#172 / PR #199)."""
+    limits = LimitSettings(
+        _env_file=None,
+        max_concurrent_dataset_jobs=1,
+        max_concurrent_dataset_jobs_per_owner=1,
+        max_queued_dataset_jobs=1,
+        max_queued_dataset_jobs_per_owner=1,
+        max_upload_file_bytes=10000,
+        max_upload_request_bytes=20000,
+        max_owner_storage_bytes=100000,
+    )
+    data_dir = tmp_path / "datasets_rollback"
+    service = DatasetService(
+        db_factory,
+        data_dir,
+        source_encryption_key=Fernet.generate_key().decode("ascii"),
+        limits=limits,
+    )
+
+    job1_started = threading.Event()
+    job1_can_proceed = threading.Event()
+
+    def blocking_process(owner_id: str, dataset_id: str) -> None:
+        job1_started.set()
+        job1_can_proceed.wait()
+
+    service._job_queue.process_func = blocking_process
+
+    f = tmp_path / "sample.csv"
+    f.write_text("col1,col2\n1,2\n3,4\n", encoding="utf-8")
+
+    try:
+        # 1. Первая задача запускается и становится активной
+        res1 = await service.ingest_csv("owner1", [CsvSource(f, "sample.csv")])
+        await asyncio.to_thread(job1_started.wait, 2.0)
+        assert service._job_queue.snapshot()["active_dataset_jobs_total"] == 1
+
+        # 2. Вторая задача встает в очередь (достигнут лимит очереди per-owner=1)
+        res2 = await service.ingest_csv("owner1", [CsvSource(f, "sample.csv")])
+        assert service._job_queue.snapshot()["queued_dataset_jobs_total"] == 1
+
+        # 3. Третья попытка загрузки CSV должна отклониться с 429
+        with pytest.raises(HTTPException) as exc_csv:
+            await service.ingest_csv("owner1", [CsvSource(f, "sample.csv")])
+        assert exc_csv.value.status_code == 429
+        assert "Превышен лимит очереди" in exc_csv.value.detail
+
+        # 4. Попытка подключения БД также должна отклониться с 429 без создания каталогов
+        with pytest.raises(HTTPException) as exc_db:
+            await service.connect_db(
+                "owner1", "postgresql://user:pass@localhost:5432/db", kind="postgresql"
+            )
+        assert exc_db.value.status_code == 429
+
+        # 5. Проверяем состояние БД: должны остаться ТОЛЬКО 2 датасета (res1 и res2)
+        with db_factory() as db:
+            models = db.scalars(select(DatasetModel).where(DatasetModel.owner_id == "owner1")).all()
+            ids = {m.dataset_id for m in models}
+            assert ids == {res1.dataset_id, res2.dataset_id}
+
+        # 6. Проверяем файловую систему: на диске ТОЛЬКО каталоги res1 и res2
+        existing_dirs = {p.name for p in data_dir.iterdir() if p.is_dir()}
+        assert existing_dirs == {res1.dataset_id, res2.dataset_id}
+
+        # 7. Проверяем счетчики резервирования: очереди и диска
+        assert service._job_queue.snapshot()["reserved_dataset_jobs_total"] == 0
+        assert service.quota_manager.snapshot().get("owner1", 0) == 0
+
+        # 8. Проверяем прямой откат через _start: если запись и файлы уже созданы,
+        # но enqueue падает с 429, они должны быть удалены
+        test_orphan_id = "test_orphan_dataset"
+        orphan_dir = data_dir / test_orphan_id
+        orphan_dir.mkdir(parents=True)
+        (orphan_dir / "some_file.csv").write_text("data", encoding="utf-8")
+        with db_factory() as db:
+            db.add(
+                DatasetModel(
+                    dataset_id=test_orphan_id,
+                    owner_id="owner1",
+                    name="Orphan",
+                    source_kind="csv",
+                    status="processing",
+                    duckdb_path=f"{test_orphan_id}/dataset.duckdb",
+                )
+            )
+            db.commit()
+
+        # Вызов _start должен выбросить 429 и автоматически откатить каталог и запись в БД
+        with pytest.raises(HTTPException) as exc_start:
+            service._start("owner1", test_orphan_id)
+        assert exc_start.value.status_code == 429
+        assert not orphan_dir.exists()
+        with db_factory() as db:
+            assert db.get(DatasetModel, test_orphan_id) is None
+    finally:
+        job1_can_proceed.set()
+        await service.close()

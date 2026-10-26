@@ -178,6 +178,34 @@ class DatasetJobQueue:
         self._queued_total: int = 0
         self._owner_order: deque[str] = deque()
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._reserved_by_owner: dict[str, int] = defaultdict(int)
+        self._reserved_total: int = 0
+
+    def reserve(self, owner_id: str) -> None:
+        if (
+            self._active_by_owner[owner_id]
+            + self._queued_counts[owner_id]
+            + self._reserved_by_owner[owner_id]
+            >= self.max_concurrent_per_owner + self.max_queued_per_owner
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="Превышен лимит очереди обработки датасетов пользователя",
+            )
+        if (
+            self._active_total + self._queued_total + self._reserved_total
+            >= self.max_concurrent + self.max_queued
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="Очередь обработки датасетов сервера перегружена",
+            )
+        self._reserved_by_owner[owner_id] += 1
+        self._reserved_total += 1
+
+    def release_reservation(self, owner_id: str) -> None:
+        self._reserved_by_owner[owner_id] = max(0, self._reserved_by_owner[owner_id] - 1)
+        self._reserved_total = max(0, self._reserved_total - 1)
 
     def enqueue(self, owner_id: str, dataset_id: str) -> None:
         key = (owner_id, dataset_id)
@@ -283,6 +311,8 @@ class DatasetJobQueue:
             "active_dataset_jobs_by_owner": dict(self._active_by_owner),
             "queued_dataset_jobs_total": self._queued_total,
             "queued_dataset_jobs_by_owner": dict(self._queued_counts),
+            "reserved_dataset_jobs_total": self._reserved_total,
+            "reserved_dataset_jobs_by_owner": dict(self._reserved_by_owner),
         }
 
 
@@ -468,9 +498,18 @@ class DatasetService:
     async def ingest_uploads(
         self, owner_id: str, files: Sequence[UploadFile]
     ) -> DatasetUploadAccepted:
-        dataset_id = await asyncio.to_thread(self._persist_upload, owner_id, files)
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(self._persist_upload, owner_id, files)
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def ingest_csv(
         self, owner_id: str, sources: Sequence[CsvSource]
@@ -481,9 +520,18 @@ class DatasetService:
         change or remove their originals. This method requires no UploadFile or
         HTTP request and shares processing/recovery with the multipart adapter.
         """
-        dataset_id = await asyncio.to_thread(self._persist_csv_sources, owner_id, sources)
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(self._persist_csv_sources, owner_id, sources)
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def connect_db(
         self,
@@ -520,11 +568,20 @@ class DatasetService:
             raise HTTPException(
                 status_code=422, detail="Имя датасета должно содержать 1–255 символов"
             )
-        dataset_id = await asyncio.to_thread(
-            self._persist_db_source, owner_id, kind, dsn, tables, name
-        )
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(
+                self._persist_db_source, owner_id, kind, dsn, tables, name
+            )
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def check_db(self, dsn: str, *, kind: str = "postgresql") -> SourceCheckResult:
         """Probe a read-only source and list its tables without storing anything.
@@ -710,8 +767,31 @@ class DatasetService:
                 self.quota_manager.release(owner_id, total_reserved)
         return dataset_id
 
+    def _rollback_dataset(self, owner_id: str, dataset_id: str) -> None:
+        """Откатывает сохраненные файлы и запись датасета при ошибке постановки в очередь (#172)."""
+        directory = self.data_dir / dataset_id
+        if directory.is_dir():
+            shutil.rmtree(directory, ignore_errors=True)
+        try:
+            with self.session_factory() as db:
+                model = db.scalar(
+                    select(DatasetModel).where(
+                        DatasetModel.dataset_id == dataset_id,
+                        DatasetModel.owner_id == owner_id,
+                    )
+                )
+                if model is not None:
+                    db.delete(model)
+                    db.commit()
+        except Exception:
+            logger.exception("Failed to rollback dataset record %s", dataset_id)
+
     def _start(self, owner_id: str, dataset_id: str) -> None:
-        self._job_queue.enqueue(owner_id, dataset_id)
+        try:
+            self._job_queue.enqueue(owner_id, dataset_id)
+        except Exception:
+            self._rollback_dataset(owner_id, dataset_id)
+            raise
 
     def _update_progress(
         self, owner_id: str, dataset_id: str, stage: str, fraction: float, message: str
