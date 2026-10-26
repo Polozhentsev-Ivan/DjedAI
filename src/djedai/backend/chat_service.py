@@ -517,6 +517,9 @@ def stream_chat_turn(
             if context.catalog.dataset_id != chat_model.dataset_id:
                 raise ValueError("Каталог не относится к датасету чата")
             reader = resources.enter_context(context.open_reader())
+            # All reads of this turn see one PostgreSQL snapshot (B1-11): the answer, its
+            # quality counts and every plan step describe the same source state.
+            reader.share_snapshot(run_id)
             connection = reader.connection
             allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
             semantics = MetricContext(context.catalog, metrics)
