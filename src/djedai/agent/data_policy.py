@@ -273,6 +273,55 @@ class DataTransferPolicy:
         if self.contains_secret(system_prompt) or self.contains_secret(user_prompt):
             raise DataTransferRestricted("secret", stage=stage)
 
+    def sanitize_description_payload(self, payload: Any) -> Any:
+        """Очищает payload описания каталога с учётом имён колонок.
+
+        ``sanitize_value`` видит только ключи ``sample_values``/``value`` и не знает,
+        что колонка называется ``password``. Поэтому примеры и min/max чувствительных
+        колонок заменяются на ``[REDACTED]`` до сериализации — как строки результатов.
+        Обрабатываются payload таблицы (``columns``) и summary (``tables[].periods``).
+        """
+        safe = self.sanitize_value(payload)
+        if not isinstance(payload, Mapping) or not isinstance(safe, dict):
+            return safe
+        raw_columns = payload.get("columns")
+        safe_columns = safe.get("columns")
+        if isinstance(raw_columns, list) and isinstance(safe_columns, list):
+            for raw, column in zip(raw_columns, safe_columns, strict=False):
+                if not isinstance(column, dict):
+                    continue
+                names = _column_names(raw)
+                if not any(_is_sensitive_key(name) for name in names if name):
+                    continue
+                for key in ("sample_values", "top_values"):
+                    if key in column:
+                        column[key] = _redact_examples(column[key])
+                stats = column.get("stats")
+                if isinstance(stats, dict):
+                    for key in ("min", "max"):
+                        if key in stats:
+                            stats[key] = REDACTED
+        raw_tables = payload.get("tables")
+        safe_tables = safe.get("tables")
+        if isinstance(raw_tables, list) and isinstance(safe_tables, list):
+            for raw_table, safe_table in zip(raw_tables, safe_tables, strict=False):
+                if not isinstance(safe_table, dict):
+                    continue
+                raw_periods = raw_table.get("periods") if isinstance(raw_table, Mapping) else None
+                safe_periods = safe_table.get("periods")
+                if not isinstance(raw_periods, list) or not isinstance(safe_periods, list):
+                    continue
+                for raw_period, period in zip(raw_periods, safe_periods, strict=False):
+                    if not isinstance(period, dict):
+                        continue
+                    name = str(raw_period.get("column") or "")
+                    if not name or not _is_sensitive_key(name):
+                        continue
+                    for key in ("min", "max"):
+                        if key in period:
+                            period[key] = REDACTED
+        return safe
+
     def _sanitize_row(self, row: Any, names: list[str]) -> list[Any]:
         return [
             REDACTED
@@ -309,6 +358,21 @@ def _column_name(column: Any) -> str:
     if isinstance(column, Mapping):
         return str(column.get("name") or "")
     return str(getattr(column, "name", "") or "")
+
+
+def _column_names(column: Any) -> list[str]:
+    """Имена колонки, по которым определяется чувствительность."""
+    raw = _as_mapping(column)
+    return [str(raw.get("name") or ""), str(raw.get("original_name") or "")]
+
+
+def _redact_examples(value: Any) -> Any:
+    """Сохраняет форму примеров, заменяя значения на ``[REDACTED]``."""
+    if isinstance(value, Mapping):
+        return {key: REDACTED if key == "value" else item for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_examples(item) for item in value]
+    return REDACTED
 
 
 def _key_parts(key: str) -> list[str]:

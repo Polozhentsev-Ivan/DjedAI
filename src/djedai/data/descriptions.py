@@ -116,10 +116,12 @@ class _Describer:
         прошли проверку. Отвергнутый или неполный ответ не кэшируется, поэтому при
         следующем вызове пустые поля можно получить заново. Ответ из кэша тоже
         проверяется ``complete`` для текущего вызова: неполный заменяется новым.
-        Вход очищается той же политикой, что и промпты агента: секреты не попадают
-        ни в запрос, ни в ключ кэша.
+        Вход очищается той же политикой, что и промпты агента: секреты и примеры
+        значений чувствительных колонок не попадают ни в запрос, ни в ключ кэша.
         """
-        user = json.dumps(self.policy.sanitize_value(payload), ensure_ascii=False, sort_keys=True)
+        user = json.dumps(
+            self.policy.sanitize_description_payload(payload), ensure_ascii=False, sort_keys=True
+        )
         system = load_prompt(prompt)
         schema = json.dumps(answer.model_json_schema(), sort_keys=True)
         key = hashlib.sha256(

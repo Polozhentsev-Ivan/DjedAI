@@ -13,7 +13,7 @@ import duckdb
 import pytest
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.data_policy import DataTransferPolicy
+from djedai.agent.data_policy import REDACTED, DataTransferPolicy
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.data import descriptions
@@ -151,6 +151,28 @@ def test_table_call_sends_names_samples_and_stats(con, share_data):
     assert summary_input["relations"] == ["orders.client_id → clients.id (N:1)"]
     assert summary_input["tables"][0]["description"] == "Строка таблицы orders"
     assert summary_input["tables"][0]["periods"][0]["column"] == "created_at"
+
+
+def test_sensitive_column_examples_are_redacted(con):
+    data = blank_catalog().model_dump(mode="json", by_alias=True)
+    status = data["tables"][0]["columns"][-1]
+    status["name"] = "password"
+    status["original_name"] = "Пароль"
+    status["sample_values"] = ["hunter2", "correct horse"]
+    status["top_values"] = [{"value": "hunter2", "count": 2}]
+    client = FakeClient()
+    client.data_policy = DataTransferPolicy.sharing()
+
+    describe_catalog(con, DatasetCatalog.model_validate(data), client)
+
+    sent = json.dumps([payload for _, payload, _ in client.calls], ensure_ascii=False)
+    assert "hunter2" not in sent and "correct horse" not in sent
+    columns = client.calls[0][1]["columns"]
+    password = next(column for column in columns if column["name"] == "password")
+    assert password["sample_values"] == [REDACTED, REDACTED]
+    assert password["top_values"] == [{"value": REDACTED, "count": 2}]
+    order_id = next(column for column in columns if column["name"] == "order_id")
+    assert order_id["sample_values"] == ["000123", "000124", "000125", "000126", "000127"]
 
 
 def test_second_read_uses_cache(con, db_path):

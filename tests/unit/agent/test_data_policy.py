@@ -158,6 +158,83 @@ def test_error_and_fact_sanitizers_remove_secrets() -> None:
     assert safe_fact.values["count"] == 3
 
 
+def test_sanitize_description_payload_redacts_examples_of_sensitive_columns() -> None:
+    policy = DataTransferPolicy.sharing()
+    payload = {
+        "table": "users",
+        "columns": [
+            {
+                "name": "password",
+                "original_name": "Пароль",
+                "sample_values": ["hunter2", "correct horse"],
+                "top_values": [{"value": "hunter2", "count": 3}],
+                "stats": {"min": "hunter2", "max": "zzz"},
+            },
+            {
+                "name": "city",
+                "original_name": "Город",
+                "sample_values": ["Berlin"],
+                "top_values": [{"value": "Berlin", "count": 2}],
+                "stats": {"min": "Berlin", "max": "Munich"},
+            },
+        ],
+    }
+
+    safe = policy.sanitize_description_payload(payload)
+    password, city = safe["columns"]
+
+    assert password["sample_values"] == [REDACTED, REDACTED]
+    assert password["top_values"] == [{"value": REDACTED, "count": 3}]
+    assert password["stats"] == {"min": REDACTED, "max": REDACTED}
+    assert city["sample_values"] == ["Berlin"]
+    assert city["top_values"] == [{"value": "Berlin", "count": 2}]
+    assert city["stats"] == {"min": "Berlin", "max": "Munich"}
+    assert "hunter2" not in str(safe) and "correct horse" not in str(safe)
+
+
+def test_sanitize_description_payload_checks_original_name_and_key_parts() -> None:
+    policy = DataTransferPolicy.sharing()
+    payload = {
+        "columns": [
+            {"name": "user_password", "sample_values": ["secret-value"]},
+            {"name": "value", "original_name": "password", "sample_values": ["other-secret"]},
+            {"name": "public", "original_name": "public", "sample_values": ["visible"]},
+        ]
+    }
+
+    safe = policy.sanitize_description_payload(payload)
+
+    assert safe["columns"][0]["sample_values"] == [REDACTED]
+    assert safe["columns"][1]["sample_values"] == [REDACTED]
+    assert safe["columns"][2]["sample_values"] == ["visible"]
+
+
+def test_sanitize_description_payload_redacts_sensitive_dataset_periods() -> None:
+    policy = DataTransferPolicy.sharing()
+    payload = {
+        "dataset": "users",
+        "tables": [
+            {
+                "table": "accounts",
+                "periods": [
+                    {"column": "password", "min": "2020-01-01", "max": "2024-01-01"},
+                    {"column": "created_at", "min": "2020-01-01", "max": "2024-01-01"},
+                ],
+            }
+        ],
+    }
+
+    safe = policy.sanitize_description_payload(payload)
+    password, created_at = safe["tables"][0]["periods"]
+
+    assert password == {"column": "password", "min": REDACTED, "max": REDACTED}
+    assert created_at == {
+        "column": "created_at",
+        "min": "2020-01-01",
+        "max": "2024-01-01",
+    }
+
+
 def test_guard_rejects_secrets_with_a_content_free_error() -> None:
     policy = DataTransferPolicy.restricted()
 

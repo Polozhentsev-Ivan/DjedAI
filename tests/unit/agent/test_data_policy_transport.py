@@ -17,6 +17,7 @@ import pytest
 from djedai.agent.client import SERVER_ERROR_MESSAGE, BIModelClient
 from djedai.agent.data_policy import (
     POLICY_RESTRICTED_MESSAGE,
+    REDACTED,
     RESTRICTED_CONTEXT_MESSAGE,
     DataTransferPolicy,
 )
@@ -41,11 +42,17 @@ HISTORY_FACT_MARKER = "HISTORY_FACT_MARKER_173"
 CURRENT_AGGREGATE_MARKER = "CURRENT_AGGREGATE_MARKER_173"
 HISTORY_AGGREGATE_MARKER = "HISTORY_AGGREGATE_MARKER_173"
 CATALOG_SAMPLE_MARKER = "CATALOG_SAMPLE_MARKER_173"
+COLUMN_PASSWORD_MARKER = "COLUMN_PASSWORD_MARKER_173"
 SECRET_MARKER = "SECRET_MARKER_173"
 ERROR_SECRET_MARKER = "ERROR_SECRET_MARKER_173"
 
 
-def _catalog(*, with_samples: bool = False, described: bool = True) -> DatasetCatalog:
+def _catalog(
+    *,
+    with_samples: bool = False,
+    described: bool = True,
+    sensitive_sample: str | None = None,
+) -> DatasetCatalog:
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     data["name"] = META_MARKER
     data["summary"] = META_MARKER if described else None
@@ -63,6 +70,12 @@ def _catalog(*, with_samples: bool = False, described: bool = True) -> DatasetCa
         else:
             column["sample_values"] = []
             column["top_values"] = []
+    if sensitive_sample is not None:
+        column = table["columns"][-1]
+        column["name"] = "password"
+        column["original_name"] = "Пароль"
+        column["sample_values"] = [sensitive_sample]
+        column["top_values"] = [{"value": sensitive_sample, "count": 1}]
     return DatasetCatalog.model_validate(data)
 
 
@@ -406,6 +419,53 @@ def test_insufficient_permitted_context_is_explicit(
         assert HISTORY_CELL_MARKER not in _network_text(endpoint)
 
 
+def test_restricted_follow_up_uses_history_facts_without_rows(model_endpoint: Callable) -> None:
+    history = ToolResult(
+        result_id="r_history",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["category", "amount"], rows=[[HISTORY_CELL_MARKER, 10]]),
+        facts=[Fact(text=f"aggregate {HISTORY_AGGREGATE_MARKER}", values={"total": 10})],
+    )
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "Understanding":
+            return {
+                "body": {
+                    "intent": "modify_previous",
+                    "references": ["r_history"],
+                }
+            }
+        if schema == "PlanResponse":
+            return {"body": {"plan": []}}
+        if schema == "VisualizeResponse":
+            return {"body": {"charts": []}}
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, DataTransferPolicy.restricted())
+        try:
+            result = build_agent_graph().invoke(
+                {
+                    "chat_id": "chat_173",
+                    "dataset_id": "ds_173",
+                    "messages": [Message(role="user", content="Объясни те же суммы")],
+                    "results": [history],
+                },
+                config=_config(client),
+            )
+        finally:
+            client.client.close()
+
+    calls = _stage_calls(endpoint)
+    compose = json.dumps(calls["ComposeResponse"], ensure_ascii=False)
+    assert HISTORY_AGGREGATE_MARKER in compose
+    assert "rows_omitted" in compose
+    assert HISTORY_CELL_MARKER not in compose
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
 def test_provider_error_and_graph_error_are_content_free(model_endpoint: Callable) -> None:
     with model_endpoint(
         lambda *_: {
@@ -476,4 +536,48 @@ def test_descriptions_use_the_same_catalog_policy(
     assert report.catalog.tables[0].columns[0].description == "Описание колонки"
     assert (CATALOG_SAMPLE_MARKER in network) is sample_visible
     assert SECRET_MARKER not in network
+    assert "password=" not in network
+
+
+def test_sensitive_column_examples_never_reach_network(model_endpoint: Callable) -> None:
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "TableDescriptions":
+            columns = json.loads(payload["messages"][1]["content"])["columns"]
+            return {
+                "body": {
+                    "table": "orders",
+                    "columns": [
+                        {"name": column["name"], "description": "Описание колонки"}
+                        for column in columns
+                    ],
+                }
+            }
+        assert schema == "DatasetSummary"
+        return {"body": {"summary": "Описание датасета"}}
+
+    connection = duckdb.connect(":memory:")
+    try:
+        with model_endpoint(reply) as endpoint:
+            client = _client(endpoint, DataTransferPolicy.sharing())
+            try:
+                report = describe_catalog(
+                    connection,
+                    _catalog(
+                        with_samples=True,
+                        described=False,
+                        sensitive_sample=COLUMN_PASSWORD_MARKER,
+                    ),
+                    client,
+                )
+            finally:
+                client.client.close()
+    finally:
+        connection.close()
+
+    network = _network_text(endpoint)
+    assert report.model_calls == 2
+    assert report.catalog.tables[0].columns[0].description == "Описание колонки"
+    assert COLUMN_PASSWORD_MARKER not in network
+    assert REDACTED in network
     assert "password=" not in network
