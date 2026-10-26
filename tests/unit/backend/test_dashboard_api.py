@@ -748,3 +748,142 @@ def test_broken_dependency_chain_rejected_on_widget_creation(dashboard_env):
     )
     assert resp.status_code == 422
     assert "лимит" in resp.text.lower()
+
+
+def test_patch_dashboard_layout_persistence(dashboard_env):
+    """PATCH только с layout корректно сохраняется в БД и возвращается при GET (§7.2, #97)."""
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+
+    with factory() as db:
+        res = ToolResult(
+            result_id="res_layout_test",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT 1"},
+            data=ToolResultData(columns=["val"], rows=[[1]], row_count=1),
+        )
+        save_tool_result(
+            db, res, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir
+        )
+
+    chart = {"chart_id": "c_lay", "result_id": "res_layout_test", "type": "kpi", "title": "Layout"}
+    create_resp = client.post(
+        "/api/dashboards",
+        json={"dataset_id": dataset_id, "result_id": "res_layout_test", "chart": chart},
+        headers=headers,
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+    dash_id = created["dashboard_id"]
+    wid = created["widgets"][0]["widget_id"]
+    assert created["widgets"][0]["layout"] == {"x": 0, "y": 0, "w": 6, "h": 4}
+
+    # PATCH только с layout
+    patch_resp = client.patch(
+        f"/api/dashboards/{dash_id}",
+        json={"layout": {wid: {"x": 1, "y": 12, "w": 3, "h": 2}}},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200
+    patched = patch_resp.json()
+    assert patched["widgets"][0]["layout"] == {"x": 1, "y": 12, "w": 3, "h": 2}
+
+    # Последующее чтение GET дашборда возвращает обновлённый layout из БД
+    get_resp = client.get(f"/api/dashboards/{dash_id}", headers=headers)
+    assert get_resp.status_code == 200
+    reloaded = get_resp.json()
+    assert reloaded["widgets"][0]["layout"] == {"x": 1, "y": 12, "w": 3, "h": 2}
+
+
+def test_save_refreshed_dependent_widget_result_to_another_dashboard(dashboard_env):
+    """Результат пересчитанного зависимого виджета сохраняется в другой дашборд (§7.2, #97)."""
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+
+    # Создаём 2-шаговую зависимую цепочку
+    with factory() as db:
+        r1 = ToolResult(
+            result_id="r_prov_1",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT id, category, amount FROM sales"},
+            data=ToolResultData(
+                columns=["id", "category", "amount"],
+                rows=[[1, "electronics", 100.0], [2, "electronics", 200.0]],
+                row_count=2,
+            ),
+        )
+        r2 = ToolResult(
+            result_id="r_prov_2",
+            source_result_id="r_prov_1",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT SUM(amount) AS total FROM source_result"},
+            data=ToolResultData(columns=["total"], rows=[[300.0]], row_count=1),
+        )
+        save_tool_result(db, r1, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+        save_tool_result(db, r2, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+
+    chart = {"chart_id": "c_prov", "result_id": "r_prov_2", "type": "kpi", "title": "Prov KPI"}
+    create_resp = client.post(
+        "/api/dashboards",
+        json={"dataset_id": dataset_id, "result_id": "r_prov_2", "chart": chart},
+        headers=headers,
+    )
+    assert create_resp.status_code == 200
+    dash1_id = create_resp.json()["dashboard_id"]
+
+    # Выполняем refresh первого дашборда
+    refresh_resp = client.post(f"/api/dashboards/{dash1_id}/refresh", headers=headers)
+    assert refresh_resp.status_code == 200
+    refreshed_wid = refresh_resp.json()["widgets"][0]
+    assert refreshed_wid["status"] == "ok"
+    new_res_id = refreshed_wid["result_id"]
+    assert new_res_id != "r_prov_2"
+
+    # Сохраняем свежий результат в НОВЫЙ дашборд через POST /api/dashboards
+    c_new = {"chart_id": "c_dash2", "result_id": new_res_id, "type": "kpi", "title": "Dash2 KPI"}
+    save_new_resp = client.post(
+        "/api/dashboards",
+        json={
+            "dataset_id": dataset_id,
+            "result_id": new_res_id,
+            "chart": c_new,
+            "title": "Второй дашборд",
+        },
+        headers=headers,
+    )
+    assert save_new_resp.status_code == 200, save_new_resp.text
+    dash2_data = save_new_resp.json()
+    dash2_id = dash2_data["dashboard_id"]
+    assert dash2_id != dash1_id
+    assert len(dash2_data["widgets"]) == 1
+    w2 = dash2_data["widgets"][0]
+    assert w2["result_id"] == new_res_id
+    assert w2["recipe"] is not None
+    assert len(w2["recipe"]["steps"]) == 2
+
+    # Сохраняем свежий результат в СУЩЕСТВУЮЩИЙ дашборд
+    c_add = {"chart_id": "c_add", "result_id": new_res_id, "type": "kpi", "title": "Added KPI"}
+    add_resp = client.post(
+        "/api/dashboards",
+        json={
+            "dataset_id": dataset_id,
+            "dashboard_id": dash1_id,
+            "result_id": new_res_id,
+            "chart": c_add,
+        },
+        headers=headers,
+    )
+    assert add_resp.status_code == 200, add_resp.text
+    dash1_reloaded = add_resp.json()
+    assert len(dash1_reloaded["widgets"]) == 2
+
+    # Проверяем, что второй дашборд с перенесённым рецептом автономно пересчитывается
+    refresh2_resp = client.post(f"/api/dashboards/{dash2_id}/refresh", headers=headers)
+    assert refresh2_resp.status_code == 200
+    dash2_refreshed = refresh2_resp.json()
+    assert dash2_refreshed["widgets"][0]["status"] == "ok"
+    assert dash2_refreshed["widgets"][0]["result_id"] is not None
+    assert dash2_refreshed["widgets"][0]["result_id"] != new_res_id

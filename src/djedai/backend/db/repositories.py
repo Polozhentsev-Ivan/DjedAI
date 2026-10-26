@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import re
@@ -23,6 +24,7 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from djedai.backend.chat_turns import apply_turn
 from djedai.backend.config import get_settings
@@ -366,6 +368,46 @@ def _resolve_data_ref_path(
 # ============================================================================
 
 
+def _get_dashboard_result_ids_for_dataset(
+    db: Session, owner_id: str, dataset_id: str
+) -> set[str]:
+    """Возвращает множество всех result_id (включая шаги-предки) для дашбордов датасета."""
+    dashboards = (
+        db.query(DashboardModel)
+        .filter(
+            DashboardModel.owner_id == owner_id,
+            DashboardModel.dataset_id == dataset_id,
+        )
+        .all()
+    )
+    valid_ids: set[str] = set()
+    for dash in dashboards:
+        for w in (dash.widgets or []):
+            if not isinstance(w, dict):
+                continue
+            candidates: list[str] = []
+            wid_res = w.get("result_id")
+            if wid_res:
+                candidates.append(wid_res)
+            chart_res = (w.get("chart") or {}).get("result_id")
+            if chart_res and chart_res not in candidates:
+                candidates.append(chart_res)
+
+            for cand_id in candidates:
+                if cand_id in valid_ids:
+                    continue
+                curr_id: str | None = cand_id
+                seen_ancestors: set[str] = set()
+                while curr_id and curr_id not in seen_ancestors:
+                    seen_ancestors.add(curr_id)
+                    valid_ids.add(curr_id)
+                    r = db.get(ToolResultModel, curr_id)
+                    if r is None or r.owner_id != owner_id:
+                        break
+                    curr_id = r.source_result_id
+    return valid_ids
+
+
 def get_owned_tool_result(
     db: Session,
     result_id: str,
@@ -379,6 +421,8 @@ def get_owned_tool_result(
     current = record
     seen: set[str] = set()
     expected_chat = chat_id if chat_id is not None else (record.chat_id if record else None)
+    valid_dashboard_result_ids: set[str] | None = None
+
     while current is not None:
         if current.owner_id != owner_id or current.result_id in seen:
             return None
@@ -402,30 +446,11 @@ def get_owned_tool_result(
             ):
                 return None
         elif dataset_id is not None:
-            dashboards = (
-                db.query(DashboardModel)
-                .filter(
-                    DashboardModel.owner_id == owner_id,
-                    DashboardModel.dataset_id == dataset_id,
+            if valid_dashboard_result_ids is None:
+                valid_dashboard_result_ids = _get_dashboard_result_ids_for_dataset(
+                    db, owner_id=owner_id, dataset_id=dataset_id
                 )
-                .all()
-            )
-            found = False
-            for dash in dashboards:
-                for w in (dash.widgets or []):
-                    if isinstance(w, dict) and (
-                        w.get("result_id") == current.result_id
-                        or (w.get("chart") or {}).get("result_id") == current.result_id
-                        or any(
-                            isinstance(step, dict) and step.get("result_id") == current.result_id
-                            for step in (w.get("recipe") or {}).get("steps", [])
-                        )
-                    ):
-                        found = True
-                        break
-                if found:
-                    break
-            if not found:
+            if current.result_id not in valid_dashboard_result_ids:
                 return None
         if not current.source_result_id:
             return record
@@ -1115,7 +1140,8 @@ def update_dashboard(
     if description is not None:
         dashboard.description = description
     if widgets is not None:
-        dashboard.widgets = widgets
+        dashboard.widgets = copy.deepcopy(widgets)
+        flag_modified(dashboard, "widgets")
     if refreshed_at is not None:
         dashboard.refreshed_at = refreshed_at
     db.commit()

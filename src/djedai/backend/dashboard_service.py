@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -232,7 +233,7 @@ class DashboardService:
                 raise HTTPException(404, "Дашборд не найден")
 
         # 5. Вычисляем позицию виджета в сетке
-        existing_widgets = list(target_dashboard.widgets or []) if target_dashboard else []
+        existing_widgets = copy.deepcopy(target_dashboard.widgets or []) if target_dashboard else []
         next_y = 0
         for w in existing_widgets:
             layout_data = w.get("layout") or {}
@@ -290,7 +291,8 @@ class DashboardService:
         if dataset is None or dataset.owner_id != owner_id:
             raise HTTPException(404, "Датасет не найден")
 
-        widgets = list(dashboard.widgets or [])
+        # Создаем глубокую независимую копию виджетов, не мутируя исходный ORM JSON
+        widgets = copy.deepcopy(dashboard.widgets or [])
 
         if patch.remove_widget_ids:
             remove_set = set(patch.remove_widget_ids)
