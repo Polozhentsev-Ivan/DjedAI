@@ -1,5 +1,7 @@
 """Память чата: summary старых сообщений, фокус результатов и контекст промпта."""
 
+import json
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -148,6 +150,20 @@ def test_summary_sanitizes_private_key_before_truncation() -> None:
     assert body[:40] not in summary
     assert "PRIVATE KEY" not in summary
     assert "[REDACTED]" in summary
+
+
+def test_json_escaped_quote_is_redacted_before_history_truncation() -> None:
+    text = json.dumps({"password": 'prefix"ESCAPED_PASSWORD_TAIL_173'})
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[Message(role="user", content=text)],
+        focus_result_ids=[],
+        results=[],
+    )
+
+    assert "ESCAPED_PASSWORD_TAIL_173" not in context
+    assert json.loads(context.split("Пользователь: ", 1)[1]) == {"password": "[REDACTED]"}
 
 
 def test_conversation_context_contains_summary_messages_focus_and_blocks() -> None:

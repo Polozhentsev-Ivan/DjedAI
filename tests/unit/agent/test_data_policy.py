@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from djedai.agent.data_policy import (
@@ -269,8 +271,13 @@ def test_sanitize_description_payload_uses_period_original_name() -> None:
 
 @pytest.mark.parametrize(
     ("name", "original_name"),
-    [("password", "Пароль"), ("userpassword", "userPassword")],
-    ids=["name", "original-name"],
+    [
+        ("password", "Пароль"),
+        ("userpassword", "userPassword"),
+        ("passwordhash", "passwordHash"),
+        ("apitoken", "apiToken"),
+    ],
+    ids=["name", "original-name", "normalized-name", "camel-case-name"],
 )
 def test_sanitize_catalog_redacts_sensitive_numeric_column_values(
     name: str, original_name: str
@@ -412,6 +419,58 @@ def test_json_credentials_are_detected_and_redacted(text: str) -> None:
 
     with pytest.raises(DataTransferRestricted):
         policy.guard("system", text, stage="understand")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'password="prefix\\"ESCAPED_PASSWORD_TAIL_173"',
+        "password='prefix\\'ESCAPED_PASSWORD_TAIL_173'",
+        "password: “prefix\\”ESCAPED_PASSWORD_TAIL_173”",
+        "password: ‘prefix\\’ESCAPED_PASSWORD_TAIL_173’",
+    ],
+    ids=["double", "single", "smart-double", "smart-single"],
+)
+def test_escaped_quote_in_non_json_assignment_is_redacted(text: str) -> None:
+    policy = DataTransferPolicy.restricted()
+
+    assert policy.contains_secret(text) is True
+    safe = policy.sanitize_text(text)
+
+    assert "ESCAPED_PASSWORD_TAIL_173" not in safe
+    assert safe == REDACTED
+
+
+def test_json_value_with_escaped_quote_is_redacted_as_a_whole() -> None:
+    policy = DataTransferPolicy.restricted()
+    text = json.dumps({"password": 'prefix"ESCAPED_PASSWORD_TAIL_173'})
+
+    assert policy.contains_secret(text) is True
+    safe = policy.sanitize_text(text)
+
+    assert "ESCAPED_PASSWORD_TAIL_173" not in safe
+    assert json.loads(safe) == {"password": REDACTED}
+    assert policy.contains_secret(safe) is False
+
+    with pytest.raises(DataTransferRestricted):
+        policy.guard("system", text, stage="understand")
+
+
+def test_nested_json_with_escaped_quote_is_redacted_structurally() -> None:
+    policy = DataTransferPolicy.sharing()
+    text = json.dumps(
+        {
+            "config": {"password": 'prefix"ESCAPED_PASSWORD_TAIL_173'},
+            "visible": "ordinary value",
+        }
+    )
+
+    safe = policy.sanitize_text(text)
+    parsed = json.loads(safe)
+
+    assert "ESCAPED_PASSWORD_TAIL_173" not in safe
+    assert parsed["config"]["password"] == REDACTED
+    assert parsed["visible"] == "ordinary value"
 
 
 def test_guard_rejects_secrets_with_a_content_free_error() -> None:

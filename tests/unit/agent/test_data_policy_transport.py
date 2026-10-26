@@ -849,3 +849,36 @@ def test_private_key_in_history_never_reaches_network(
     assert "PRIVATE KEY" not in network
     assert "[REDACTED]" in network
     assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_json_escaped_quote_in_history_never_reaches_network(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    text = json.dumps({"password": 'prefix"ESCAPED_PASSWORD_TAIL_173'})
+
+    with model_endpoint(_reply()) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state()
+                | {
+                    "messages": [
+                        Message(role="user", content=text),
+                        Message(role="user", content=f"{USER_MARKER}: покажи график"),
+                    ]
+                },
+                config=_config(client),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert endpoint.calls
+    assert "ESCAPED_PASSWORD_TAIL_173" not in network
+    assert "[REDACTED]" in network
+    assert all(block.type != "error" for block in result["answer_blocks"])

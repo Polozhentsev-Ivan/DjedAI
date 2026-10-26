@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Mapping
@@ -44,13 +45,19 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     # Ключ может быть в JSON/YAML: кавычки вокруг имени и значения, `:` или `=`.
-    # Значение в кавычках может содержать пробелы; без кавычек — до разделителя.
+    # Значение в кавычках может содержать пробелы и экранированные кавычки;
+    # без кавычек — до разделителя.
     re.compile(
         r"(?i)\b(?:password|passwd|api[_-]?key|secret|token|client[_-]?secret|"
         r"access[_-]?token|secret[_-]?key|private[_-]?key|authorization|credentials?)\b"
         r"[\"'“”‘’]?\s*[=:]\s*"
-        r"(?:[\"'“”‘’](?!\[REDACTED\])[^\"'“”‘’]*[\"'“”‘’]"
-        r"|(?!\[REDACTED\])[^\n,;}\]\"'“”‘’]+)"
+        r"(?:"
+        r'"(?!\[REDACTED\])(?:[^"\\]|\\.)*"'
+        r"|'(?!\[REDACTED\])(?:[^'\\]|\\.)*'"
+        r"|“(?!\[REDACTED\])(?:[^”\\]|\\.)*”"
+        r"|‘(?!\[REDACTED\])(?:[^’\\]|\\.)*’"
+        r"|(?!\[REDACTED\])(?!\s)[^\n,;}\]\"'“”‘’]+"
+        r")"
     ),
 )
 
@@ -69,6 +76,22 @@ _SENSITIVE_KEY_NAMES = {
     "accesskey",
     "secretkey",
     "clientsecret",
+    # Нормализованные compound-имена теряют границы слов, поэтому перечислены
+    # явно; camelCase-варианты (`userPassword`) ловятся по частям выше.
+    "userpassword",
+    "userpasswd",
+    "passwordhash",
+    "hashedpassword",
+    "passwdhash",
+    "hashedpasswd",
+    "apitoken",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "authtoken",
+    "bearertoken",
+    "sessiontoken",
+    "securitytoken",
 }
 _SENSITIVE_KEY_WORDS = {
     "password",
@@ -563,26 +586,63 @@ def _key_parts(key: str) -> list[str]:
 
 def _is_sensitive_key(key: str) -> bool:
     parts = _key_parts(key)
-    joined = "".join(parts)
-    if joined in _SENSITIVE_KEY_NAMES:
+    if "".join(parts) in _SENSITIVE_KEY_NAMES:
         return True
-    if any(part in _SENSITIVE_KEY_WORDS for part in parts):
-        return True
-    # Нормализованный заголовок вроде ``userPassword`` -> ``userpassword`` теряет
-    # границы слов. Чувствительное слово в начале или конце такого имени всё ещё
-    # означает credential: ``userpassword``, ``passwordhash``, ``apitoken``.
-    return any(joined.startswith(word) or joined.endswith(word) for word in _SENSITIVE_KEY_WORDS)
+    return any(part in _SENSITIVE_KEY_WORDS for part in parts)
+
+
+def _sanitize_json_fragments(text: str) -> str:
+    """Очищает JSON-объекты и массивы внутри свободного текста.
+
+    ``json.dumps`` экранирует кавычки внутри значений (``"prefix\\"tail"``).
+    Регулярное выражение видит только часть такого значения, поэтому валидный
+    JSON разбирается целиком, очищается структурно и сериализуется обратно.
+    Если JSON не изменился, исходный фрагмент сохраняется без переформатирования.
+    """
+    if "{" not in text and "[" not in text:
+        return text
+    decoder = json.JSONDecoder()
+    result = text
+    index = 0
+    while index < len(result):
+        if result[index] not in "{[":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(result, index)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            index += 1
+            continue
+        try:
+            safe = _sanitize_value(value)
+        except RecursionError:
+            safe = REDACTED
+        if safe == value:
+            index = end
+            continue
+        try:
+            replacement = json.dumps(safe, ensure_ascii=False)
+        except (TypeError, ValueError):
+            index += 1
+            continue
+        result = result[:index] + replacement + result[end:]
+        index += len(replacement)
+    return result
 
 
 def _redact_text(text: str) -> str:
-    redacted = text
+    redacted = _sanitize_json_fragments(text)
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub(REDACTED, redacted)
     return redacted
 
 
 def _contains_secret(text: str) -> bool:
-    return any(pattern.search(text) is not None for pattern in _SECRET_PATTERNS)
+    if any(pattern.search(text) is not None for pattern in _SECRET_PATTERNS):
+        return True
+    if "{" not in text and "[" not in text:
+        return False
+    return _sanitize_json_fragments(text) != text
 
 
 def _sanitize_value(value: Any) -> Any:
