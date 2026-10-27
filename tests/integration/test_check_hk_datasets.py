@@ -55,6 +55,7 @@ def test_check_cli_matches_reference(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=300,
     )  # fmt: skip
 
@@ -79,6 +80,7 @@ def test_check_cli_matches_reference(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )  # fmt: skip
     assert again.returncode == 0 and "csv.seconds" in again.stdout

@@ -17,7 +17,6 @@ import csv
 import json
 import multiprocessing
 import os
-import resource
 import statistics
 import sys
 import time
@@ -117,8 +116,55 @@ def write_json(path: Path, value: Any) -> None:
     )
 
 
-def peak_rss_mb() -> float:
-    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+def peak_rss_mb() -> float | None:
+    """Пик памяти процесса, МБ; ``None``, если платформа его не сообщает.
+
+    Модуля ``resource`` в CPython для Windows нет: там пик берётся из
+    ``PeakWorkingSetSize``. Замер памяти не должен мешать самой проверке данных.
+    """
+    if sys.platform == "win32":
+        return _windows_peak_mb()
+    try:
+        import resource
+    except ImportError:
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss: Linux — КБ, macOS — байты
+    return round(peak / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
+
+
+def _windows_peak_mb() -> float | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                *(
+                    (name, ctypes.c_size_t)
+                    for name in (
+                        "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                        "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                        "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+                    )
+                ),
+            ]  # fmt: skip
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        counters = Counters(cb=ctypes.sizeof(Counters))
+        process = kernel32.GetCurrentProcess()
+        if not kernel32.K32GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
+            return None
+        return round(counters.PeakWorkingSetSize / 1024 / 1024, 1)
+    except (AttributeError, OSError):
+        return None
+
+
+def mb(value: float | None) -> str:
+    return "—" if value is None else f"{value} МБ"
 
 
 def in_child[T](function: Callable[..., T], *args: Any) -> T:
@@ -705,10 +751,10 @@ def summarize(report: dict) -> list[str]:
         if run.get("max_rows"):
             lines += [f"Лимит строк ClickHouse: {run['max_rows']}.", ""]
         if not run.get("ok"):
-            lines.append(f"Ошибка: `{run.get('error')}` (RSS {run.get('rss_mb')} МБ)")
+            lines.append(f"Ошибка: `{run.get('error')}` (RSS {mb(run.get('rss_mb'))})")
             continue
         lines.append(
-            f"Всего {run['seconds']} с, пик RSS {run['rss_mb']} МБ, файл {run.get('file_mb')} МБ."
+            f"Всего {run['seconds']} с, пик RSS {mb(run['rss_mb'])}, файл {mb(run.get('file_mb'))}."
         )
         lines += ["", "| Этап | Таблица | Сообщение | с |", "| --- | --- | --- | ---: |"]
         lines += [
@@ -750,7 +796,7 @@ def summarize(report: dict) -> list[str]:
         if queries:
             lines += [
                 "",
-                f"Запросы: {queries['seconds']} с, RSS {queries['rss_mb']} МБ.",
+                f"Запросы: {queries['seconds']} с, RSS {mb(queries['rss_mb'])}.",
                 "",
                 "| Таблица | Сценарий | Инструмент | Статус | Эталон | Холодный, с | Медиана, с |",
                 "| --- | --- | --- | --- | --- | ---: | ---: |",
@@ -945,6 +991,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("BEFORE", "AFTER"))
     args = parser.parse_args(argv)
+    # Вывод с «→» и «≠»: на Windows перенаправленный stdout иначе был бы в cp1251.
+    sys.stdout.reconfigure(encoding="utf-8")
     if args.compare:
         print("\n".join(compare(*args.compare)))
         return 0
