@@ -16,12 +16,44 @@ from djedai.agent.data_policy import (
     DataTransferRestricted,
     data_sharing_allowed,
     policy_for_client,
+    sensitive_column_names,
 )
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.tool_result import ChartHint, Fact, ToolError, ToolResult, ToolResultData
 
 SECRET = "sk-live-1234567890abcdef"
 DSN = "postgresql://analyst:s3cr3t@db.internal:5432/warehouse"
+
+
+def _catalog_with_column(name: str, original_name: str) -> DatasetCatalog:
+    return DatasetCatalog.model_validate(
+        {
+            "dataset_id": "ds",
+            "name": "ds",
+            "created_at": "2026-01-01T00:00:00Z",
+            "source": {"kind": "csv_upload"},
+            "tables": [
+                {
+                    "table_id": "s",
+                    "original_name": "s.csv",
+                    "row_count": 1,
+                    "duplicate_rows": 0,
+                    "columns": [
+                        {
+                            "name": name,
+                            "original_name": original_name,
+                            "physical_type": "VARCHAR",
+                            "semantic_type": "text",
+                            "role": "text",
+                            "null_ratio": 0.0,
+                            "distinct_count": 1,
+                            "is_unique": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -439,6 +471,58 @@ def test_normalized_metadata_column_is_not_sensitive(column: str) -> None:
     )
 
     assert policy.result_has_sensitive_source(result) is False
+
+
+def test_sensitive_column_names_preserves_original_compound_name() -> None:
+    catalog = _catalog_with_column("dbpasswordtext", "dbPasswordText")
+
+    names = sensitive_column_names(catalog)
+
+    assert "dbpasswordtext" in names
+    assert "dbPasswordText" in names
+
+
+def test_sensitive_column_names_keeps_metadata_words_non_sensitive() -> None:
+    catalog = _catalog_with_column("tokenizer", "tokenizer")
+
+    assert sensitive_column_names(catalog) == ()
+
+
+def test_result_has_sensitive_source_accepts_normalized_catalog_names() -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_db_password_text",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "dbpasswordtext"},
+        data=ToolResultData(
+            columns=["dbpasswordtext", "count"], rows=[["ordinaryCredential9!", 2]]
+        ),
+    )
+
+    assert policy.result_has_sensitive_source(result) is False
+    assert (
+        policy.result_has_sensitive_source(
+            result, sensitive_columns=("dbpasswordtext", "dbPasswordText")
+        )
+        is True
+    )
+
+
+def test_result_data_redacts_normalized_catalog_column() -> None:
+    data = ToolResultData(
+        columns=["dbpasswordtext", "count"],
+        rows=[["ordinaryCredential9!", 2]],
+    )
+
+    payload = DataTransferPolicy.sharing().result_data(
+        data,
+        context=DataContext.CURRENT_RESULT,
+        sensitive_columns=("dbpasswordtext", "dbPasswordText"),
+    )
+
+    assert payload["rows"] == [[REDACTED, 2]]
+    assert "ordinaryCredential9!" not in str(payload)
 
 
 @pytest.mark.parametrize(

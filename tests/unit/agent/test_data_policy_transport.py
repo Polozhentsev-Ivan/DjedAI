@@ -60,6 +60,7 @@ def _catalog(
     sensitive_sample: str | None = None,
     sensitive_stats: bool = False,
     sensitive_period: tuple[str, str] | None = None,
+    compound_column: tuple[str, str] | None = None,
 ) -> DatasetCatalog:
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     data["name"] = META_MARKER
@@ -110,6 +111,11 @@ def _catalog(
             "granularity": "day",
         }
         table["time_columns"] = ["userpassword"]
+    if compound_column is not None:
+        column = table["columns"][-1]
+        column["name"], column["original_name"] = compound_column
+        column["sample_values"] = []
+        column["top_values"] = []
     return DatasetCatalog.model_validate(data)
 
 
@@ -864,6 +870,75 @@ def test_normalized_compound_sensitive_column_facts_never_reach_compose(
             result = build_agent_graph().invoke(
                 _state(),
                 config=_config(client, dispatcher=dispatcher),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_original_compound_column_sensitivity_survives_normalization(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_db_password_text",
+        status="ok",
+        tool="describe_column",
+        params={"table": "orders", "column": "dbpasswordtext"},
+        data=ToolResultData(columns=["dbpasswordtext", "count"], rows=[[marker, 2]], row_count=1),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            ),
+            Fact(
+                text=f"Примеры значений: {marker}",
+                kind="examples",
+                values={"examples": [marker]},
+            ),
+        ],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "describe_column"
+        assert params["column"] == "dbpasswordtext"
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {
+                            "tool": "describe_column",
+                            "args": {"table": "orders", "column": "dbpasswordtext"},
+                        }
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    dispatcher=dispatcher,
+                    catalog=_catalog(compound_column=("dbpasswordtext", "dbPasswordText")),
+                ),
             )
         finally:
             client.client.close()

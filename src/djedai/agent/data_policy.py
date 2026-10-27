@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -267,28 +267,33 @@ class DataTransferPolicy:
             return fact.model_copy(update={"text": safe["text"], "values": safe["values"]})
         return safe
 
-    def result_has_sensitive_source(self, result: Any) -> bool:
+    def result_has_sensitive_source(
+        self, result: Any, *, sensitive_columns: Collection[str] = ()
+    ) -> bool:
         """Есть ли у результата колонка-источник с чувствительным именем.
 
         У ``describe_column``/``value_counts`` имя источника лежит в ``params``;
-        у SQL-результатов — в ``data.columns``. Проверяются и нормализованное
-        имя, и исходный заголовок, если он сохранён.
+        у SQL-результатов — в ``data.columns``. Проверяются нормализованное имя,
+        исходный заголовок и ``sensitive_columns`` — набор нормализованных имён,
+        полученных из ``original_name`` каталога (``dbPasswordText`` ->
+        ``dbpasswordtext``).
         """
         names: list[str] = []
         params = getattr(result, "params", None)
         if isinstance(params, Mapping):
-            for key in ("column", "column_name"):
+            for key in ("column", "column_name", "original_name"):
                 value = params.get(key)
                 if value:
                     names.append(str(value))
             params_columns = params.get("columns")
             if isinstance(params_columns, (list, tuple)):
-                names.extend(_column_name(column) for column in params_columns)
+                names.extend(name for column in params_columns for name in _column_names(column))
         data = getattr(result, "data", None)
         raw_data = _as_mapping(data)
         for column in raw_data.get("columns") or []:
-            names.append(_column_name(column))
-        return any(_is_sensitive_key(name) for name in names if name)
+            names.extend(_column_names(column))
+        known = set(sensitive_columns)
+        return any(name in known or _is_sensitive_key(name) for name in names if name)
 
     def sanitize_catalog(self, catalog: Any) -> Any:
         """Копия каталога без значений чувствительных колонок.
@@ -357,6 +362,7 @@ class DataTransferPolicy:
         *,
         context: DataContext,
         max_rows: int = MAX_PROMPT_ROWS,
+        sensitive_columns: Collection[str] = (),
     ) -> dict[str, Any]:
         """Данные результата для промпта: метаданные всегда, строки — по политике."""
         raw = _as_mapping(data)
@@ -370,14 +376,23 @@ class DataTransferPolicy:
 
         rows = raw.get("rows") or []
         if rows and self.allows(DataCategory.CELL_VALUE, context):
-            payload["rows"] = [self._sanitize_row(row, names) for row in rows[:max_rows]]
+            payload["rows"] = [
+                self._sanitize_row(row, names, sensitive_columns=sensitive_columns)
+                for row in rows[:max_rows]
+            ]
             if len(rows) > max_rows:
                 payload["rows_truncated"] = True
         elif rows:
             payload["rows_omitted"] = "data_policy"
         return payload
 
-    def chart_result(self, result: Any, *, context: DataContext) -> dict[str, Any]:
+    def chart_result(
+        self,
+        result: Any,
+        *,
+        context: DataContext,
+        sensitive_columns: Collection[str] = (),
+    ) -> dict[str, Any]:
         """Компактное описание результата для стадии visualize."""
         data = getattr(result, "data", None)
         payload: dict[str, Any] = {
@@ -394,13 +409,16 @@ class DataTransferPolicy:
             rows = raw.get("rows") or []
             if rows and self.allows(DataCategory.CELL_VALUE, context):
                 payload["sample_rows"] = [
-                    self._sanitize_row(row, names) for row in rows[:MAX_CHART_ROWS]
+                    self._sanitize_row(row, names, sensitive_columns=sensitive_columns)
+                    for row in rows[:MAX_CHART_ROWS]
                 ]
             elif rows:
                 payload["sample_rows_omitted"] = "data_policy"
         facts = getattr(result, "facts", [])
         if facts:
-            sensitive = self.result_has_sensitive_source(result)
+            sensitive = self.result_has_sensitive_source(
+                result, sensitive_columns=sensitive_columns
+            )
             payload["facts"] = [
                 fact["text"]
                 for fact in (self.sanitize_fact(item, sensitive=sensitive) for item in facts)
@@ -458,10 +476,17 @@ class DataTransferPolicy:
                             period[key] = REDACTED
         return safe
 
-    def _sanitize_row(self, row: Any, names: list[str]) -> list[Any]:
+    def _sanitize_row(
+        self,
+        row: Any,
+        names: list[str],
+        *,
+        sensitive_columns: Collection[str] = (),
+    ) -> list[Any]:
+        known = set(sensitive_columns)
         return [
             REDACTED
-            if index < len(names) and _is_sensitive_key(names[index])
+            if index < len(names) and (names[index] in known or _is_sensitive_key(names[index]))
             else self.sanitize_value(value)
             for index, value in enumerate(row)
         ]
@@ -508,6 +533,25 @@ def _column_names(column: Any) -> list[str]:
 
 def _is_sensitive_column(column: Any) -> bool:
     return any(_is_sensitive_key(name) for name in _column_names(column) if name)
+
+
+def sensitive_column_names(catalog: Any) -> tuple[str, ...]:
+    """Нормализованные имена колонок, чувствительные по исходному заголовку.
+
+    ``dbPasswordText`` после нормализации становится ``dbpasswordtext``: границы
+    слов потеряны, и суффикс ``text`` сам по себе ничего не говорит о секрете.
+    Поэтому чувствительность определяется по ``original_name`` каталога, а в
+    результат добавляется и нормализованное имя — по нему колонку можно найти в
+    ``ToolResult``.
+    """
+    names: set[str] = set()
+    for table in _as_mapping(catalog).get("tables") or []:
+        for column in table.get("columns") or []:
+            name = str(column.get("name") or "")
+            original = str(column.get("original_name") or "")
+            if (name and _is_sensitive_key(name)) or (original and _is_sensitive_key(original)):
+                names.update(item for item in (name, original) if item)
+    return tuple(sorted(names))
 
 
 def _column_values(column: Mapping[str, Any]) -> list[Any]:
