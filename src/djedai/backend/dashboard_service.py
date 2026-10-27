@@ -572,6 +572,28 @@ class DashboardService:
                                     )
                                     break
 
+                                parent_data = parent_res.data
+                                if parent_data is not None and (
+                                    parent_data.truncated
+                                    or (
+                                        parent_data.row_count is not None
+                                        and parent_data.row_count > len(parent_data.rows)
+                                    )
+                                ):
+                                    recipe_failed = True
+                                    failure_error = ToolError(
+                                        code="dependency_truncated",
+                                        message=(
+                                            "Промежуточный результат усечён лимитом строк; "
+                                            "зависимый расчёт по неполным данным не выполняется"
+                                        ),
+                                        suggestion=(
+                                            "Сократите промежуточный результат или агрегируйте "
+                                            "данные до зависимого шага."
+                                        ),
+                                    )
+                                    break
+
                                 # Безопасно регистрируем DataFrame в соединении DuckDB
                                 try:
                                     df = None

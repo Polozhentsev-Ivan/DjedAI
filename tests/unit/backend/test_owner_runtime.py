@@ -167,6 +167,78 @@ def test_runtime_binds_dispatcher_to_catalog_and_closes_connection(db, tmp_path)
         assert connection.execute("SELECT COUNT(*) FROM sales").fetchone() == (1,)
 
 
+def test_truncated_dependency_fails_before_partial_aggregate(db, tmp_path):
+    path = (tmp_path / "dataset.duckdb").resolve()
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("CREATE TABLE sales (amount INTEGER)")
+        connection.execute("INSERT INTO sales VALUES (100), (200), (50)")
+    column = Column(
+        name="amount",
+        original_name="amount",
+        physical_type="INTEGER",
+        semantic_type="integer",
+        role="measure",
+        null_ratio=0,
+        distinct_count=3,
+        is_unique=False,
+    )
+    catalog = DatasetCatalog(
+        dataset_id="ds_alice",
+        name="sales",
+        created_at=datetime.now(UTC),
+        source=DatasetSource(kind="csv_upload"),
+        tables=[
+            Table(
+                table_id="sales",
+                raw_table="sales",
+                original_name="sales",
+                row_count=3,
+                duplicate_rows=0,
+                columns=[column],
+            )
+        ],
+    )
+    observed: list[ToolResult] = []
+
+    class Graph:
+        def stream(self, state, *, config, stream_mode):
+            dispatch = config["configurable"]["tool_dispatcher"]
+            parent = ToolResult(
+                result_id="r_parent",
+                status="ok",
+                tool="run_sql",
+                data=ToolResultData(
+                    columns=["amount"],
+                    rows=[[100], [200]],
+                    row_count=3,
+                    truncated=True,
+                ),
+            )
+            observed.append(
+                dispatch(
+                    "run_sql",
+                    {"sql": "SELECT SUM(amount) AS total FROM source_result"},
+                    source_result=parent,
+                )
+            )
+            yield {"compose": {"answer_blocks": [Block(type="text", markdown="Готово")]}}
+
+    runtime = AgentRuntime(
+        graph=Graph(),
+        dataset_context=lambda owner, dataset: DatasetContext(catalog, path),
+        results_storage_dir=tmp_path / "results",
+    )
+    events = list(stream_chat_turn(db, "chat_alice", "dashboard", runtime, owner_id="alice"))
+
+    assert events[-1].event == "done"
+    dependent = observed[0]
+    assert dependent.status == "error"
+    assert dependent.data is None
+    assert dependent.error is not None
+    assert dependent.error.code == "dependency_truncated"
+    assert "усеч" in dependent.error.message
+
+
 @pytest.mark.parametrize("parent", ["missing", "r_bob", "r_other_chat", "r_audit"])
 def test_saved_result_cannot_claim_foreign_missing_or_unowned_source(db, tmp_path, parent):
     save_tool_result(db, result("r_bob"), chat_id="chat_bob", storage_dir=tmp_path)

@@ -78,7 +78,7 @@ from djedai.contracts.sse import (
     SSEToolResultData,
     SSEToolResultEvent,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 
 _BLOCK_ADAPTER: TypeAdapter[MessageBlock] = TypeAdapter(MessageBlock)
@@ -543,13 +543,35 @@ def stream_chat_turn(
                 step_allowed_tables = allowed_tables
                 registered_view = False
                 if source_result is not None:
-                    if source_result.data is None:
+                    data = source_result.data
+                    if data is None:
                         raise ValueError("Данные предыдущего шага недоступны")
+                    if data.truncated or (
+                        data.row_count is not None and data.row_count > len(data.rows)
+                    ):
+                        return ToolResult(
+                            result_id=_new_id("r"),
+                            status="error",
+                            tool=tool,
+                            params=clean_params,
+                            source_result_id=source_result.result_id,
+                            error=ToolError(
+                                code="dependency_truncated",
+                                message=(
+                                    "Промежуточный результат усечён лимитом строк; "
+                                    "зависимый расчёт по неполным данным не выполняется"
+                                ),
+                                suggestion=(
+                                    "Сократите промежуточный результат или агрегируйте "
+                                    "данные до зависимого шага."
+                                ),
+                            ),
+                        )
                     columns = [
                         column.name if hasattr(column, "name") else str(column)
-                        for column in source_result.data.columns
+                        for column in data.columns
                     ]
-                    frame = pd.DataFrame(source_result.data.rows, columns=columns)
+                    frame = pd.DataFrame(data.rows, columns=columns)
                     connection.register("source_result", frame)
                     registered_view = True
                     step_allowed_tables = allowed_tables | {"source_result"}
@@ -755,6 +777,7 @@ def stream_chat_turn(
                     "verify",
                     "clarify",
                     "cite_metrics",
+                    "plan_dashboard",
                     "save_dashboard",
                 ):
                     node_update = data if isinstance(data, dict) else {}

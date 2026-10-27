@@ -34,6 +34,7 @@ from djedai.backend.db.models import (
 )
 from djedai.backend.db.repositories import save_tool_result
 from djedai.backend.db.session import create_db_engine, get_db, init_db
+from djedai.config import get_limits
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.contracts.chart import ChartSpec
 from djedai.contracts.dashboard import WidgetLayout, WidgetSnapshot, WidgetToolCall
@@ -432,6 +433,64 @@ def test_refresh_generates_new_results_and_executes_dependencies(dashboard_env):
     reopened = client.get(f"/api/dashboards/{dash_id}", headers=headers)
     assert reopened.status_code == 200
     assert reopened.json()["consistency"] == "immutable"
+
+
+def test_refresh_rejects_truncated_dependency(dashboard_env, monkeypatch):
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+
+    with factory() as db:
+        r1 = ToolResult(
+            result_id="r_trunc_parent",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT id, category, amount FROM sales"},
+            data=ToolResultData(
+                columns=["id", "category", "amount"],
+                rows=[[1, "electronics", 100.0], [2, "electronics", 200.0], [3, "books", 50.0]],
+                row_count=3,
+            ),
+        )
+        r2 = ToolResult(
+            result_id="r_trunc_child",
+            source_result_id="r_trunc_parent",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT SUM(amount) AS total FROM source_result"},
+            data=ToolResultData(columns=["total"], rows=[[350.0]], row_count=1),
+        )
+        save_tool_result(db, r1, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+        save_tool_result(db, r2, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+
+    chart = {
+        "chart_id": "c_truncated",
+        "result_id": "r_trunc_child",
+        "type": "kpi",
+        "title": "Total",
+    }
+    create_resp = client.post(
+        "/api/dashboards",
+        json={"dataset_id": dataset_id, "result_id": "r_trunc_child", "chart": chart},
+        headers=headers,
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    dash_id = create_resp.json()["dashboard_id"]
+
+    # Preliminary JOIN is longer than the configured row cap, so refresh must not
+    # aggregate the truncated rows as if they were the complete parent result.
+    monkeypatch.setenv("SQL_MAX_ROWS", "2")
+    get_limits.cache_clear()
+    try:
+        refresh_resp = client.post(f"/api/dashboards/{dash_id}/refresh", headers=headers)
+    finally:
+        # monkeypatch restores the env after the test; do not keep the lowered cap cached.
+        get_limits.cache_clear()
+    assert refresh_resp.status_code == 200, refresh_resp.text
+    widget = refresh_resp.json()["widgets"][0]
+    assert widget["status"] == "error"
+    assert widget["result_id"] is None
+    assert widget["error"]["code"] == "dependency_truncated"
+    assert "усеч" in widget["error"]["message"]
 
 
 def test_partial_failure_isolates_errors_and_preserves_good_widgets(dashboard_env):
