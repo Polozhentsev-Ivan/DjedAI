@@ -21,6 +21,7 @@ from djedai.backend.db.repositories import (
     save_tool_result,
 )
 from djedai.backend.db.session import create_db_engine, init_db
+from djedai.config import get_limits
 from djedai.contracts.agent import Block
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.contracts.tool_result import ToolResult, ToolResultData
@@ -167,7 +168,7 @@ def test_runtime_binds_dispatcher_to_catalog_and_closes_connection(db, tmp_path)
         assert connection.execute("SELECT COUNT(*) FROM sales").fetchone() == (1,)
 
 
-def test_truncated_dependency_fails_before_partial_aggregate(db, tmp_path):
+def test_truncated_dependency_fails_before_partial_aggregate(db, tmp_path, monkeypatch):
     path = (tmp_path / "dataset.duckdb").resolve()
     with duckdb.connect(str(path)) as connection:
         connection.execute("CREATE TABLE sales (amount INTEGER)")
@@ -203,17 +204,8 @@ def test_truncated_dependency_fails_before_partial_aggregate(db, tmp_path):
     class Graph:
         def stream(self, state, *, config, stream_mode):
             dispatch = config["configurable"]["tool_dispatcher"]
-            parent = ToolResult(
-                result_id="r_parent",
-                status="ok",
-                tool="run_sql",
-                data=ToolResultData(
-                    columns=["amount"],
-                    rows=[[100], [200]],
-                    row_count=3,
-                    truncated=True,
-                ),
-            )
+            parent = dispatch("run_sql", {"sql": "SELECT amount FROM sales"})
+            observed.append(parent)
             observed.append(
                 dispatch(
                     "run_sql",
@@ -228,10 +220,19 @@ def test_truncated_dependency_fails_before_partial_aggregate(db, tmp_path):
         dataset_context=lambda owner, dataset: DatasetContext(catalog, path),
         results_storage_dir=tmp_path / "results",
     )
-    events = list(stream_chat_turn(db, "chat_alice", "dashboard", runtime, owner_id="alice"))
+    monkeypatch.setenv("SQL_MAX_ROWS", "2")
+    get_limits.cache_clear()
+    try:
+        events = list(stream_chat_turn(db, "chat_alice", "dashboard", runtime, owner_id="alice"))
+    finally:
+        # monkeypatch restores the env after the test; do not keep the lowered cap cached.
+        get_limits.cache_clear()
 
     assert events[-1].event == "done"
-    dependent = observed[0]
+    parent, dependent = observed
+    assert parent.status == "ok"
+    assert parent.data is not None and parent.data.truncated
+    assert len(parent.data.rows) == 2
     assert dependent.status == "error"
     assert dependent.data is None
     assert dependent.error is not None
