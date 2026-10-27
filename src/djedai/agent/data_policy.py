@@ -105,6 +105,31 @@ _SENSITIVE_KEY_WORDS = {
     "privatekey",
     "dsn",
 }
+# После нормализации compound-имя теряет границы слов. Чувствительный компонент
+# в конце (`dbPassword` -> `dbpassword`) или перед суффиксом, который может
+# хранить значение (`dbPasswordHash` -> `dbpasswordhash`), всё ещё означает
+# credential. Суффиксы выбраны так, чтобы `tokenizer`, `secretary` и
+# `passwordless` не считались секретами.
+_SENSITIVE_DERIVED_SUFFIXES = {
+    "hash",
+    "hashed",
+    "digest",
+    "salt",
+    "pepper",
+    "value",
+    "values",
+    "data",
+    "raw",
+    "plain",
+    "plaintext",
+    "cleartext",
+    "encoded",
+    "encrypted",
+    "ciphertext",
+    "cipher",
+    "key",
+    "keys",
+}
 
 
 class DataMode(StrEnum):
@@ -584,11 +609,32 @@ def _key_parts(key: str) -> list[str]:
     return [part for part in re.split(r"[^a-zA-Z0-9]+", spaced.lower()) if part]
 
 
+def _is_sensitive_suffix(suffix: str) -> bool:
+    """Может ли хвост после чувствительного слова хранить его значение."""
+    if not suffix:
+        return True
+    for derived in _SENSITIVE_DERIVED_SUFFIXES:
+        if suffix == derived:
+            return True
+        if suffix.startswith(derived) and _is_sensitive_suffix(suffix[len(derived) :]):
+            return True
+    return False
+
+
 def _is_sensitive_key(key: str) -> bool:
     parts = _key_parts(key)
-    if "".join(parts) in _SENSITIVE_KEY_NAMES:
+    joined = "".join(parts)
+    if joined in _SENSITIVE_KEY_NAMES:
         return True
-    return any(part in _SENSITIVE_KEY_WORDS for part in parts)
+    if any(part in _SENSITIVE_KEY_WORDS for part in parts):
+        return True
+    for word in _SENSITIVE_KEY_WORDS:
+        start = joined.find(word)
+        while start != -1:
+            if _is_sensitive_suffix(joined[start + len(word) :]):
+                return True
+            start = joined.find(word, start + 1)
+    return False
 
 
 def _sanitize_json_fragments(text: str) -> str:

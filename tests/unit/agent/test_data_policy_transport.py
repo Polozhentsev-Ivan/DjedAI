@@ -814,6 +814,71 @@ def test_json_credentials_are_rejected_before_network(
     [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
     ids=["restricted", "sharing"],
 )
+def test_normalized_compound_sensitive_column_facts_never_reach_compose(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_db_password",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "dbpassword"},
+        data=ToolResultData(columns=["dbpassword", "count"], rows=[[marker, 2]], row_count=1),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            ),
+            Fact(
+                text=f"Примеры значений: {marker}",
+                kind="examples",
+                values={"examples": [marker]},
+            ),
+        ],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "describe_column"
+        assert params["column"] == "dbpassword"
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {
+                            "tool": "describe_column",
+                            "args": {"table": "s", "column": "dbpassword"},
+                        }
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(client, dispatcher=dispatcher),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
 def test_private_key_in_history_never_reaches_network(
     model_endpoint: Callable, policy: DataTransferPolicy
 ) -> None:

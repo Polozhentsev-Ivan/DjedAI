@@ -276,8 +276,9 @@ def test_sanitize_description_payload_uses_period_original_name() -> None:
         ("userpassword", "userPassword"),
         ("passwordhash", "passwordHash"),
         ("apitoken", "apiToken"),
+        ("dbpassword", "dbPassword"),
     ],
-    ids=["name", "original-name", "normalized-name", "camel-case-name"],
+    ids=["name", "original-name", "normalized-name", "camel-case-name", "db-prefix"],
 )
 def test_sanitize_catalog_redacts_sensitive_numeric_column_values(
     name: str, original_name: str
@@ -396,6 +397,48 @@ def test_result_has_sensitive_source_checks_params_and_result_columns() -> None:
     assert policy.result_has_sensitive_source(described) is True
     assert policy.result_has_sensitive_source(normalized) is True
     assert policy.result_has_sensitive_source(sql_result) is False
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "dbpassword",
+        "dbPassword",
+        "db_password",
+        "dbpasswordhash",
+        "dbpasswordhashvalue",
+        "mytoken",
+        "appsecret",
+    ],
+)
+def test_normalized_compound_column_is_sensitive(column: str) -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_compound",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": column},
+        data=ToolResultData(columns=[column, "count"], rows=[["ordinaryCredential9!", 2]]),
+    )
+
+    assert policy.result_has_sensitive_source(result) is True
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["tokenizer", "secretary", "passwordless", "credentialed"],
+)
+def test_normalized_metadata_column_is_not_sensitive(column: str) -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_metadata",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": column},
+        data=ToolResultData(columns=[column, "count"], rows=[["ordinary value", 2]]),
+    )
+
+    assert policy.result_has_sensitive_source(result) is False
 
 
 @pytest.mark.parametrize(
