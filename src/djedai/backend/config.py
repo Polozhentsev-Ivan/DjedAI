@@ -71,6 +71,11 @@ class Settings(LimitSettings):
     )
     model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
+    # Ключ и адрес API из интерфейса (#209): только для локального запуска. На сервере
+    # false: ключ не идёт через браузер, а данные — на произвольный хост.
+    model_settings_from_ui: bool = Field(default=False, alias="MODEL_SETTINGS_FROM_UI")
+    # Модели, которые можно выбрать в интерфейсе; MODEL_NAME разрешена всегда.
+    model_allowed_names: list[str] | str = Field(default=[], alias="MODEL_ALLOWED_NAMES")
     # LLM descriptions of new dataset catalogs (B1-6); off unless enabled in .env.
     catalog_descriptions: bool = Field(default=False, alias="CATALOG_DESCRIPTIONS")
 
@@ -130,6 +135,32 @@ class Settings(LimitSettings):
             )
         return origins
 
+    @field_validator("model_allowed_names", mode="before")
+    @classmethod
+    def parse_model_names(cls, v: Any) -> list[str]:
+        """Список через запятую или JSON-массив; пустое значение — пустой список."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            value = v.strip()
+            if value.startswith("["):
+                import json
+
+                try:
+                    parsed = json.loads(value)
+                except ValueError as e:
+                    raise ValueError(f"Некорректный JSON в MODEL_ALLOWED_NAMES: {e}") from e
+                if not isinstance(parsed, list):
+                    raise ValueError("MODEL_ALLOWED_NAMES в формате JSON должен быть массивом")
+                items = parsed
+            else:
+                items = value.split(",")
+        elif isinstance(v, (list, tuple, set)):
+            items = list(v)
+        else:
+            items = [v]
+        return list(dict.fromkeys(str(item).strip() for item in items if str(item).strip()))
+
     @field_validator(
         "app_env",
         "log_level",
@@ -147,6 +178,7 @@ class Settings(LimitSettings):
         "model_base_url",
         "model_name",
         "model_revision",
+        "model_settings_from_ui",
         "sql_max_rows",
         "tool_timeout_seconds",
         "allowed_outbound_hosts",
@@ -165,6 +197,13 @@ class Settings(LimitSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @model_validator(mode="after")
+    def allow_configured_model(self) -> Settings:
+        assert isinstance(self.model_allowed_names, list)
+        if self.model_name not in self.model_allowed_names:
+            self.model_allowed_names = [self.model_name, *self.model_allowed_names]
+        return self
 
     @model_validator(mode="after")
     def complete_model_tariff(self) -> Settings:
