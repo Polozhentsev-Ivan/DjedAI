@@ -1,9 +1,9 @@
-import { Database, LayoutDashboard, MessageSquare, Plus, Table2, type LucideIcon } from 'lucide-react';
+import { Database, LayoutDashboard, MessageSquare, Plus, Settings, Table2, type LucideIcon } from 'lucide-react';
 import { Link } from 'react-router';
 import { cn } from '@/lib/cn';
 import { Icon } from './Icon';
 
-export type Section = 'sources' | 'catalog' | 'chat' | 'dashboards';
+export type Section = 'sources' | 'catalog' | 'chat' | 'dashboards' | 'settings';
 
 export interface ChatItem {
   id: string;
@@ -23,6 +23,7 @@ const nav: readonly { section: Section; label: string; icon: LucideIcon; to: str
   { section: 'catalog', label: 'Каталог', icon: Table2, to: '/catalog' },
   { section: 'chat', label: 'Чат', icon: MessageSquare, to: '/chat' },
   { section: 'dashboards', label: 'Дашборды', icon: LayoutDashboard, to: '/dashboards' },
+  { section: 'settings', label: 'Настройки', icon: Settings, to: '/settings' },
 ];
 
 /** Section navigation; in the chat section it also lists chat history. */
