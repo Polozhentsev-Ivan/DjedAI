@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from djedai.contracts.chart import ChartSpec, ChartTemplate
+from djedai.contracts.freshness import Consistency
 from djedai.contracts.tool_result import ToolError
 
 
@@ -114,6 +115,9 @@ class WidgetSnapshot(DashboardWidget):
     result_id: str | None
     status: Literal["ok", "error", "empty"]
     error: ToolError | None = None
+    # время чтения источника этим виджетом; у ошибки до чтения — null (B1-11)
+    read_started_at: AwareDatetime | None = None
+    read_finished_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> WidgetSnapshot:
@@ -133,6 +137,10 @@ class DashboardSnapshot(Dashboard):
     """Отдельный wire-формат GET/refresh: сохранённый Dashboard и исход каждого виджета."""
 
     widgets: list[WidgetSnapshot]
+    # пока refresh (#97) не держит общий снимок, виджеты PostgreSQL читаются независимо
+    consistency: Consistency = Field(
+        default="independent", description="Согласованность чтений виджетов одного refresh"
+    )
 
 
 class DashboardSummary(BaseModel):

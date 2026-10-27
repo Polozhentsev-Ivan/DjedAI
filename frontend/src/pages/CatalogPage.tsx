@@ -2,8 +2,8 @@ import { ArrowLeftRight, ArrowRight, LoaderCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
-import { useDataset, useProfilingProgress } from '@/api/queries';
-import { catalogSummary, columnNote, journal, missingCell, relationGraph, relationViews, rowsLabel, tableMeta, typeLabel } from '@/api/view';
+import { useDataset, useProfilingProgress, useRefreshDataset } from '@/api/queries';
+import { catalogSummary, columnNote, journal, missingCell, needsRefresh, relationGraph, relationViews, revisionSummary, rowsLabel, tableMeta, typeLabel } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
 import { Button } from '@/components/Button';
@@ -192,6 +192,32 @@ function Catalog({ catalog }: { catalog: Schemas['DatasetCatalog'] }) {
   );
 }
 
+/** Catalog revision, source freshness and re-profiling of a ready dataset (B1-11). */
+function Revision({ detail }: { detail: Schemas['DatasetDetail'] }) {
+  const refresh = useRefreshDataset();
+  const running = refresh.isPending || detail.refresh?.status === 'processing';
+  const failed = refresh.error?.message ?? (detail.refresh?.status === 'error' ? detail.refresh.message : null);
+  const warning = detail.freshness && detail.freshness.state !== 'fresh' ? detail.freshness.reason : null;
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-muted-foreground">
+        <span>{revisionSummary(detail)}</span>
+        <Button
+          variant={needsRefresh(detail) ? 'outline' : 'link'}
+          className="px-3 py-0.5 text-xs"
+          disabled={running}
+          onClick={() => { refresh.mutate(detail.dataset_id); }}
+        >
+          {running ? 'Перепрофилируем…' : 'Перепрофилировать'}
+        </Button>
+      </div>
+      {warning && <p className={cn('m-0 max-w-[72ch]', detail.freshness?.state === 'incompatible' ? 'text-destructive' : 'text-warning')}>{warning}</p>}
+      {running && <p role="status" className="m-0 text-muted-foreground">Строим новую ревизию каталога; текущая остаётся доступной.</p>}
+      {!running && failed && <p role="alert" className="m-0 text-destructive">Перепрофилировка не удалась: {failed}</p>}
+    </div>
+  );
+}
+
 export function CatalogPage() {
   const navigate = useNavigate();
   const { datasetId } = useParams();
@@ -216,6 +242,7 @@ export function CatalogPage() {
           <div>
             <PageTitle>{detail ? `Каталог датасета: ${detail.name}` : 'Каталог данных'}</PageTitle>
             {detail?.status === 'ready' && <div className="mt-1.5 text-muted-foreground">{catalogSummary(detail)}</div>}
+            {detail?.status === 'ready' && <Revision detail={detail} />}
             {detail?.status === 'ready' && detail.catalog?.summary && <p className="mt-1.5 max-w-[72ch] text-secondary-foreground">{detail.catalog.summary}</p>}
           </div>
           {detail?.status === 'ready' && (
