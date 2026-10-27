@@ -18,7 +18,7 @@ from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
 from djedai.backend.config import Settings
 from djedai.backend.dataset_service import DatasetService
-from djedai.backend.db.models import DashboardModel, ToolResultModel
+from djedai.backend.db.models import DashboardModel, DatasetModel, ToolResultModel
 from djedai.backend.db.repositories import (
     _escape_sql_literal,
     _resolve_data_ref_path,
@@ -53,11 +53,35 @@ from djedai.contracts.dashboard import (
     WidgetSnapshot,
     WidgetToolCall,
 )
+from djedai.contracts.freshness import Consistency, ReadProvenance
 from djedai.contracts.tool_result import ToolError, ToolResult, ToolResultColumn
 
 logger = logging.getLogger(__name__)
 
 MAX_RECIPE_STEPS = 5
+
+
+def _dashboard_consistency(reads: list[ReadProvenance]) -> Consistency:
+    """Сводит чтения виджетов к согласованности снимка всего дашборда."""
+    if not reads:
+        return "unknown"
+    values = {read.consistency for read in reads}
+    if len(values) != 1:
+        return "independent"
+    consistency = values.pop()
+    if consistency == "turn_snapshot":
+        snapshot_ids = {read.snapshot_id for read in reads}
+        if len(snapshot_ids) == 1 and None not in snapshot_ids:
+            return "turn_snapshot"
+        return "independent"
+    return consistency
+
+
+def _generated_consistency(dataset: DatasetModel, widgets: list[WidgetSnapshot]) -> Consistency:
+    """Согласованность дашборда, собранного агентом в одном ходе чата."""
+    if not any(widget.read_started_at is not None for widget in widgets):
+        return "unknown"
+    return "turn_snapshot" if dataset.source_kind == "postgres" else "immutable"
 
 
 def _to_widget_snapshot(data: dict[str, Any]) -> WidgetSnapshot:
@@ -111,6 +135,7 @@ def _to_dashboard_snapshot(model: DashboardModel) -> DashboardSnapshot:
         description=model.description,
         source_chat_id=model.source_chat_id,
         widgets=snapshots,
+        consistency=model.consistency or "independent",
         created_at=model.created_at,
         refreshed_at=model.refreshed_at,
     )
@@ -241,6 +266,7 @@ class DashboardService:
 
         layout = WidgetLayout(x=0, y=next_y, w=6, h=4)
         new_widget_id = f"w_{uuid4().hex[:12]}"
+        root_read = ReadProvenance.model_validate(root_record.read) if root_record.read else None
 
         # Снимок для нового виджета с сохраняемым результатом
         widget_snapshot = WidgetSnapshot(
@@ -253,13 +279,20 @@ class DashboardService:
             result_id=payload.result_id,
             status=root_record.status if root_record.status in ("ok", "empty") else "ok",
             error=None,
+            read_started_at=root_read.started_at if root_read is not None else None,
+            read_finished_at=root_read.finished_at if root_read is not None else None,
         )
 
-        existing_widgets.append(widget_snapshot.model_dump())
+        existing_widgets.append(widget_snapshot.model_dump(mode="json"))
 
         if target_dashboard is not None:
             updated = repo_update_dashboard(
-                db, target_dashboard.dashboard_id, owner_id=owner_id, widgets=existing_widgets
+                db,
+                target_dashboard.dashboard_id,
+                owner_id=owner_id,
+                widgets=existing_widgets,
+                # Новый виджет мог быть посчитан в другом снимке источника.
+                consistency="independent",
             )
             assert updated is not None
             return _to_dashboard_snapshot(updated)
@@ -275,6 +308,7 @@ class DashboardService:
                 title=title,
                 widgets=existing_widgets,
                 source_chat_id=source_chat_id,
+                consistency=root_read.consistency if root_read is not None else "independent",
             )
             return _to_dashboard_snapshot(created)
 
@@ -324,6 +358,7 @@ class DashboardService:
             description=description,
             widgets=[widget.model_dump(mode="json") for widget in widgets],
             source_chat_id=source_chat_id,
+            consistency=_generated_consistency(dataset, widgets),
         )
         updated = repo_update_dashboard(
             db,
@@ -394,8 +429,14 @@ class DashboardService:
         }
         new_snapshots: list[WidgetSnapshot] = []
 
-        with context.open_connection() as connection:
+        with context.open_reader() as reader:
+            connection = reader.connection
+            # Все виджеты одного refresh видят один снимок PostgreSQL (B1-11, #169).
+            reader.share_snapshot(f"dashboard:{dashboard_id}")
+            widget_reads: list[list[ReadProvenance]] = []
             for w_dict in dashboard.widgets or []:
+                reads: list[ReadProvenance] = []
+                widget_reads.append(reads)
                 w_snapshot = _to_widget_snapshot(w_dict)
                 chart_template = (
                     ChartTemplate(**w_snapshot.chart.model_dump(exclude={"result_id"}))
@@ -430,16 +471,26 @@ class DashboardService:
                             continue
 
                         calls_count += 1
-                        tool_res = execute_tool(
-                            w_snapshot.tool_call.tool,
-                            w_snapshot.tool_call.params,
-                            connection=connection,
-                            allowed_tables=allowed_base_tables,
-                            semantics=semantics,
-                        )
-                        tool_res = assess(tool_res, connection, catalog)
+
+                        def run_tool_call(
+                            snapshot: WidgetSnapshot = w_snapshot,
+                        ) -> ToolResult:
+                            assert snapshot.tool_call is not None
+                            result = execute_tool(
+                                snapshot.tool_call.tool,
+                                snapshot.tool_call.params,
+                                connection=connection,
+                                allowed_tables=allowed_base_tables,
+                                semantics=semantics,
+                            )
+                            return assess(result, connection, catalog)
+
+                        tool_res, read = reader.run(run_tool_call)
+                        reads.append(read)
                         new_res_id = f"r_{uuid4().hex[:16]}"
-                        tool_res = tool_res.model_copy(update={"result_id": new_res_id})
+                        tool_res = tool_res.model_copy(
+                            update={"result_id": new_res_id, "read": read}
+                        )
                         save_tool_result(
                             db,
                             tool_res,
@@ -565,21 +616,29 @@ class DashboardService:
                             calls_count += 1
                             step_params = dict(step.call.params)
 
-                            try:
-                                step_res = execute_tool(
-                                    step.call.tool,
-                                    step_params,
-                                    connection=connection,
-                                    allowed_tables=step_allowed_tables,
-                                    semantics=semantics,
-                                )
-                            finally:
-                                if registered_view:
-                                    try:
-                                        connection.unregister("source_result")
-                                    except Exception:
-                                        pass
+                            def run_recipe_step(
+                                current_step: WidgetRecipeStep = step,
+                                params: dict[str, Any] = step_params,
+                                allowed: set[str] = step_allowed_tables,
+                                has_view: bool = registered_view,
+                            ) -> ToolResult:
+                                try:
+                                    return execute_tool(
+                                        current_step.call.tool,
+                                        params,
+                                        connection=connection,
+                                        allowed_tables=allowed,
+                                        semantics=semantics,
+                                    )
+                                finally:
+                                    if has_view:
+                                        try:
+                                            connection.unregister("source_result")
+                                        except Exception:
+                                            pass
 
+                            step_res, read = reader.run(run_recipe_step)
+                            reads.append(read)
                             new_step_id = f"r_{uuid4().hex[:16]}"
                             parent_res = (
                                 step_results.get(step.source_step_id)
@@ -588,7 +647,11 @@ class DashboardService:
                             )
                             parent_res_id = parent_res.result_id if parent_res else None
                             step_res = step_res.model_copy(
-                                update={"result_id": new_step_id, "source_result_id": parent_res_id}
+                                update={
+                                    "result_id": new_step_id,
+                                    "source_result_id": parent_res_id,
+                                    "read": read,
+                                }
                             )
                             save_tool_result(
                                 db,
@@ -680,13 +743,27 @@ class DashboardService:
                         )
                     )
 
+        for index, snapshot in enumerate(new_snapshots):
+            reads = widget_reads[index] if index < len(widget_reads) else []
+            started = [read.started_at for read in reads if read.started_at is not None]
+            finished = [read.finished_at for read in reads if read.finished_at is not None]
+            if started and finished:
+                new_snapshots[index] = snapshot.model_copy(
+                    update={
+                        "read_started_at": min(started),
+                        "read_finished_at": max(finished),
+                    }
+                )
+
+        consistency = _dashboard_consistency([read for reads in widget_reads for read in reads])
         refreshed_at = datetime.now(UTC)
         updated = repo_update_dashboard(
             db,
             dashboard_id,
             owner_id=owner_id,
-            widgets=[s.model_dump() for s in new_snapshots],
+            widgets=[s.model_dump(mode="json") for s in new_snapshots],
             refreshed_at=refreshed_at,
+            consistency=consistency,
         )
         assert updated is not None
         return _to_dashboard_snapshot(updated)

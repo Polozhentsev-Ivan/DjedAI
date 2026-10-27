@@ -263,6 +263,10 @@ class DashboardModel(Base):
         String(64), ForeignKey("chats.chat_id", ondelete="SET NULL"), nullable=True
     )
     widgets = Column(JSON, nullable=False, default=list)  # список DashboardWidget
+    # Согласованность чтений последнего refresh (#97, #169).
+    consistency = Column(
+        String(16), nullable=False, default="independent", server_default="independent"
+    )
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
     refreshed_at = Column(UTCDateTime, nullable=True)
 

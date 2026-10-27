@@ -132,8 +132,10 @@ understand ──(intent=dashboard)──▶ plan_dashboard ──▶ execute_da
   включая промежуточный JOIN, не мешает воспроизведению.
 - Ошибка одного виджета не прерывает остальные; успешные соседи получают свежие
   результаты, ошибочный виджет — `status="error"` и `result_id=null`.
-- Общий снимок источника пока не удерживается: `DashboardSnapshot.consistency`
-  остаётся `independent` в соответствии с #97.
+- Refresh удерживает общий снимок источника через `SourceReader.share_snapshot`:
+  виджеты PostgreSQL получают `consistency="turn_snapshot"`, CSV/ClickHouse —
+  `immutable`; если сбой прервал транзакцию и следующий виджет открыл новый снимок,
+  ответ честно показывает `independent`.
 
 ## Проверка
 

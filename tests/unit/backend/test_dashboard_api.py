@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
 from djedai.backend.config import Settings, get_settings
-from djedai.backend.dashboard_service import DashboardService
+from djedai.backend.dashboard_service import DashboardService, _dashboard_consistency
 from djedai.backend.db.models import (
     ChatModel,
     DatasetModel,
@@ -37,6 +37,7 @@ from djedai.backend.db.session import create_db_engine, get_db, init_db
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.contracts.chart import ChartSpec
 from djedai.contracts.dashboard import WidgetLayout, WidgetSnapshot, WidgetToolCall
+from djedai.contracts.freshness import ReadProvenance
 from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 
@@ -410,8 +411,12 @@ def test_refresh_generates_new_results_and_executes_dependencies(dashboard_env):
     assert refresh_resp.status_code == 200, refresh_resp.text
     snapshot = refresh_resp.json()
     assert snapshot["refreshed_at"] is not None
+    # CSV — неизменяемый снимок: все виджеты читают одну ревизию источника.
+    assert snapshot["consistency"] == "immutable"
     widget = snapshot["widgets"][0]
     assert widget["status"] == "ok"
+    assert widget["read_started_at"] is not None
+    assert widget["read_finished_at"] is not None
     new_res_id = widget["result_id"]
     # Идентификатор должен быть НОВЫМ
     assert new_res_id != "r_initial_2"
@@ -422,6 +427,11 @@ def test_refresh_generates_new_results_and_executes_dependencies(dashboard_env):
     assert data_resp.status_code == 200
     rows = data_resp.json()["rows"]
     assert rows == [[3]]
+
+    # Согласованность последнего refresh сохраняется при повторном открытии.
+    reopened = client.get(f"/api/dashboards/{dash_id}", headers=headers)
+    assert reopened.status_code == 200
+    assert reopened.json()["consistency"] == "immutable"
 
 
 def test_partial_failure_isolates_errors_and_preserves_good_widgets(dashboard_env):
@@ -887,6 +897,42 @@ def test_save_refreshed_dependent_widget_result_to_another_dashboard(dashboard_e
     assert dash2_refreshed["widgets"][0]["result_id"] != new_res_id
 
 
+def _read(consistency: str, snapshot_id: str | None) -> ReadProvenance:
+    return ReadProvenance.model_validate(
+        {
+            "revision_known": True,
+            "dataset_id": "ds_alice",
+            "catalog_revision": 1,
+            "schema_fingerprint": "a" * 64,
+            "source_fingerprint": "b" * 64,
+            "transform_version": "2026.10.1",
+            "read_mode": "live" if consistency == "turn_snapshot" else "snapshot",
+            "consistency": consistency,
+            "snapshot_id": snapshot_id,
+            "started_at": "2026-10-26T10:00:00Z",
+            "finished_at": "2026-10-26T10:00:01Z",
+            "freshness": {"state": "fresh", "profiled_at": "2026-10-26T09:00:00Z"},
+        }
+    )
+
+
+def test_dashboard_consistency_reports_one_snapshot_or_independent():
+    assert _dashboard_consistency([]) == "unknown"
+    assert _dashboard_consistency([_read("immutable", "r1")]) == "immutable"
+    assert (
+        _dashboard_consistency(
+            [_read("turn_snapshot", "dashboard:d_1:1"), _read("turn_snapshot", "dashboard:d_1:1")]
+        )
+        == "turn_snapshot"
+    )
+    assert (
+        _dashboard_consistency(
+            [_read("turn_snapshot", "dashboard:d_1:1"), _read("turn_snapshot", "dashboard:d_1:2")]
+        )
+        == "independent"
+    )
+
+
 def _generated_widget(result_id: str, chart_id: str, title: str) -> WidgetSnapshot:
     return WidgetSnapshot(
         widget_id=f"w_{chart_id}",
@@ -907,6 +953,8 @@ def _generated_widget(result_id: str, chart_id: str, title: str) -> WidgetSnapsh
         layout=WidgetLayout(x=0, y=0, w=6, h=4),
         result_id=result_id,
         status="ok",
+        read_started_at=datetime.now(UTC),
+        read_finished_at=datetime.now(UTC),
     )
 
 
@@ -953,6 +1001,7 @@ def test_save_generated_dashboard_persists_agent_snapshot(dashboard_env):
     assert snapshot.title == "Дашборд агента"
     assert snapshot.source_chat_id == "chat_alice"
     assert snapshot.refreshed_at is not None
+    assert snapshot.consistency == "immutable"
     assert [widget.widget_id for widget in snapshot.widgets] == [
         widget.widget_id for widget in widgets
     ]
@@ -962,6 +1011,7 @@ def test_save_generated_dashboard_persists_agent_snapshot(dashboard_env):
     reopened = client.get(f"/api/dashboards/{snapshot.dashboard_id}", headers=headers)
     assert reopened.status_code == 200, reopened.text
     assert reopened.json()["widgets"] == snapshot.model_dump(mode="json")["widgets"]
+    assert reopened.json()["consistency"] == "immutable"
 
     with factory() as db, pytest.raises(HTTPException) as too_few:
         service.save_generated_dashboard(

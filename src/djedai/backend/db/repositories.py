@@ -1100,6 +1100,7 @@ def create_dashboard(
     description: str | None = None,
     widgets: list[dict[str, Any]] | None = None,
     source_chat_id: str | None = None,
+    consistency: str = "independent",
 ) -> DashboardModel:
     """Создает дашборд со списком виджетов."""
     dashboard = DashboardModel(
@@ -1110,6 +1111,7 @@ def create_dashboard(
         description=description,
         widgets=widgets or [],
         source_chat_id=source_chat_id,
+        consistency=consistency,
     )
     db.add(dashboard)
     db.commit()
@@ -1136,6 +1138,7 @@ def update_dashboard(
     description: str | None = None,
     widgets: list[dict[str, Any]] | None = None,
     refreshed_at: datetime | None = None,
+    consistency: str | None = None,
 ) -> DashboardModel | None:
     """Обновляет метаданные, виджеты или время пересчёта дашборда."""
     dashboard = get_dashboard(db, dashboard_id, owner_id=owner_id)
@@ -1150,6 +1153,8 @@ def update_dashboard(
         flag_modified(dashboard, "widgets")
     if refreshed_at is not None:
         dashboard.refreshed_at = refreshed_at
+    if consistency is not None:
+        dashboard.consistency = consistency
     db.commit()
     db.refresh(dashboard)
     return dashboard
