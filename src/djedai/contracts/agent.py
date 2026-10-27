@@ -2,7 +2,8 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
-from djedai.contracts.chart import ChartSpec
+from djedai.contracts.chart import ChartSpec, ChartTemplate
+from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, MetricSpec
 from djedai.contracts.tool_result import ToolResult
 
@@ -64,6 +65,44 @@ class Block(BaseModel):
     metric_candidates: list[MetricDefinition | None] = Field(default_factory=list)
 
 
+class PlanResponse(BaseModel):
+    # Enforces the max 5 steps requirement
+    plan: list[PlannedCall] = Field(max_length=5)
+
+
+class DashboardStepPlan(BaseModel):
+    """Один вызов инструмента внутри вычисления виджета дашборда."""
+
+    step_id: str = Field(min_length=1, description="Идентификатор шага внутри виджета")
+    tool: str = Field(min_length=1, description="Имя инструмента из реестра")
+    args: dict[str, Any] = Field(default_factory=dict, description="Параметры вызова")
+    source_step_id: str | None = Field(
+        default=None,
+        description="Предыдущий шаг этого же виджета; его данные доступны как source_result",
+    )
+
+
+class DashboardWidgetPlan(BaseModel):
+    """Виджет дашборда до выполнения: график и один или несколько шагов расчёта."""
+
+    title: str = Field(min_length=1, description="Понятный заголовок виджета")
+    chart: ChartTemplate = Field(description="Настройки графика без временного result_id")
+    caption: str | None = Field(default=None, description="Короткий вывод под заголовком")
+    steps: list[DashboardStepPlan] = Field(min_length=1, max_length=5)
+    output_step_id: str | None = Field(
+        default=None,
+        description="Шаг, чей результат показывает виджет; по умолчанию последний",
+    )
+
+
+class DashboardPlanResponse(BaseModel):
+    """План дашборда: от 3 до 8 независимо перевыполняемых виджетов."""
+
+    title: str = Field(min_length=1, description="Название дашборда")
+    description: str | None = Field(default=None, description="Краткое описание дашборда")
+    widgets: list[DashboardWidgetPlan] = Field(min_length=3, max_length=8)
+
+
 class AgentState(TypedDict, total=False):
     chat_id: str
     dataset_id: str
@@ -86,11 +125,11 @@ class AgentState(TypedDict, total=False):
     retries: int
     compose_retries: int
     is_verified: bool
-
-
-class PlanResponse(BaseModel):
-    # Enforces the max 5 steps requirement
-    plan: list[PlannedCall] = Field(max_length=5)
+    # Отдельная ветка дашборда: план виджетов, их вычисления и сохранённый снимок.
+    dashboard_plan: DashboardPlanResponse | None
+    dashboard_widgets: list[Any]
+    dashboard_snapshot: DashboardSnapshot | None
+    dashboard_retries: int
 
 
 class ComposeResponse(BaseModel):

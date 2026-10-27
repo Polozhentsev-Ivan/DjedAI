@@ -9,6 +9,13 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.dashboard import (
+    WidgetExecution,
+    build_widget_snapshot,
+    dashboard_output_result_ids,
+    dashboard_preview_blocks,
+    normalize_dashboard_plan,
+)
 from djedai.agent.data_policy import (
     RESTRICTED_CONTEXT_MESSAGE,
     DataContext,
@@ -19,11 +26,13 @@ from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
+from djedai.config import get_limits
 from djedai.contracts.agent import (
     AgentState,
     Block,
     Clarification,
     ComposeResponse,
+    DashboardPlanResponse,
     Entities,
     PlanResponse,
     Understanding,
@@ -31,6 +40,7 @@ from djedai.contracts.agent import (
     VisualizeResponse,
 )
 from djedai.contracts.chart import ChartSpec
+from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import ToolError, ToolResult
@@ -122,6 +132,10 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "retries": 0,
         "compose_retries": 0,
         "is_verified": False,
+        "dashboard_plan": None,
+        "dashboard_widgets": [],
+        "dashboard_snapshot": None,
+        "dashboard_retries": 0,
     }
 
 
@@ -224,6 +238,229 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         }
 
     return {"plan": state.get("plan", []), "retries": state.get("retries", 0) + 1}
+
+
+def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
+    """Планирует 3–8 виджетов отдельно от обычного плана на пять шагов."""
+    client = config.get("configurable", {}).get("client")
+    policy = _policy(config)
+    limits = get_limits()
+
+    registry = get_tools_for_llm()
+    tools_desc = "\n".join(
+        f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
+        for t in registry
+    )
+    results_str = "\n".join(
+        f"Tool {r.tool}: {r.status} - "
+        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
+        for r in state.get("results", [])
+    )
+    sys_prompt = load_prompt("dashboard").format(
+        catalog=state.get("catalog_prompt"),
+        results=results_str,
+        tools_registry=tools_desc,
+        history=memory_context(state, policy),
+        max_tool_calls=limits.dashboard_max_tool_calls,
+    )
+
+    last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
+    user_prompt = (
+        state.get("understanding").resolved_question if state.get("understanding") else None
+    )
+    user_prompt = user_prompt or last_msg or "Build a dashboard."
+    retries = state.get("dashboard_retries", 0) + 1
+
+    if client:
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, DashboardPlanResponse, stage="plan_dashboard"
+        )
+        if response.status == "success" and response.data:
+            try:
+                plan = normalize_dashboard_plan(
+                    response.data, max_tool_calls=limits.dashboard_max_tool_calls
+                )
+            except ValueError as exc:
+                return {
+                    "dashboard_plan": None,
+                    "dashboard_retries": retries,
+                    "answer_blocks": [
+                        Block(
+                            type="error",
+                            markdown="Не удалось спланировать дашборд: "
+                            + policy.sanitize_text(str(exc)),
+                        )
+                    ],
+                }
+            return {"dashboard_plan": plan, "dashboard_retries": retries}
+        message = (
+            RESTRICTED_CONTEXT_MESSAGE
+            if response.error_type == "POLICY_RESTRICTED"
+            else MODEL_ERROR_MARKDOWN
+        )
+        return {
+            "dashboard_plan": None,
+            "dashboard_retries": retries,
+            "answer_blocks": [Block(type="error", markdown=message)],
+        }
+
+    return {
+        "dashboard_plan": None,
+        "dashboard_retries": retries,
+        "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+    }
+
+
+def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
+    """Выполняет шаги каждого виджета, передавая зависимости как source_result."""
+    plan = state.get("dashboard_plan")
+    if plan is None:
+        return {"dashboard_widgets": []}
+
+    dispatcher = config.get("configurable", {}).get("tool_dispatcher")
+    policy = _policy(config)
+    limit = get_limits().dashboard_max_tool_calls
+    existing_results = state.get("results", [])
+    new_results: list[ToolResult] = []
+    executions: list[WidgetExecution] = []
+    calls = 0
+
+    for widget in plan.widgets:
+        execution = WidgetExecution(widget=widget)
+        for step in widget.steps:
+            if calls >= limit:
+                execution.error = ToolError(
+                    code="tool_budget_exceeded",
+                    message=f"Превышен лимит вызовов инструментов (максимум {limit})",
+                    suggestion="Уменьшите число виджетов или шагов в дашборде",
+                )
+                break
+
+            parent: ToolResult | None = None
+            if step.source_step_id is not None:
+                parent = execution.results.get(step.source_step_id)
+                if parent is None or parent.status == "error":
+                    execution.error = (
+                        parent.error
+                        if parent is not None and parent.error is not None
+                        else ToolError(
+                            code="dependency_failed",
+                            message=f"Шаг «{step.source_step_id}» завершился ошибкой",
+                        )
+                    )
+                    break
+
+            calls += 1
+            try:
+                if budget := current_budget():
+                    budget.check()
+                if dispatcher:
+                    if parent is not None:
+                        res = dispatcher(step.tool, dict(step.args), source_result=parent)
+                    else:
+                        res = dispatcher(step.tool, dict(step.args))
+                elif step.tool == "run_sql" and parent is None:
+                    validated_args = RunSqlParams(**step.args).model_dump(
+                        exclude_unset=True, exclude_none=True
+                    )
+                    res = run_sql(**validated_args)
+                else:
+                    res = ToolResult(
+                        result_id=f"r_{uuid.uuid4().hex[:6]}",
+                        status="error",
+                        error=ToolError(
+                            code="not_implemented",
+                            message=f"Инструмент '{step.tool}' еще не подключен к агенту.",
+                        ),
+                    )
+
+                updates: dict = {
+                    "tool": step.tool,
+                    "params": policy.sanitize_value(dict(step.args)),
+                }
+                if parent is not None:
+                    updates["source_result_id"] = parent.result_id
+                if res.error is not None:
+                    updates["error"] = policy.sanitize_error(res.error)
+                if res.facts:
+                    sensitive = policy.result_has_sensitive_source(res)
+                    updates["facts"] = [
+                        policy.sanitize_fact_model(fact, sensitive=sensitive) for fact in res.facts
+                    ]
+                if res.sql is not None:
+                    updates["sql"] = policy.sanitize_text(res.sql)
+                res = res.model_copy(update=updates)
+            except (TurnTimeout, TurnCancelled):
+                raise
+            except Exception as exc:
+                res = ToolResult(
+                    result_id=f"r_{uuid.uuid4().hex[:6]}",
+                    status="error",
+                    tool=step.tool,
+                    params=policy.sanitize_value(dict(step.args)),
+                    source_result_id=parent.result_id if parent is not None else None,
+                    error=ToolError(
+                        code="execution_failed",
+                        message=policy.sanitize_text(str(exc)) or "Ошибка выполнения инструмента.",
+                    ),
+                )
+
+            new_results.append(res)
+            execution.results[step.step_id] = res
+            if res.status == "error":
+                execution.error = res.error
+                break
+
+        executions.append(execution)
+
+    return {
+        "results": existing_results + new_results,
+        "dashboard_widgets": executions,
+    }
+
+
+def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
+    """Сохраняет дашборд через backend и собирает ссылку с превью виджетов."""
+    plan = state.get("dashboard_plan")
+    executions = state.get("dashboard_widgets", [])
+    if plan is None or not executions:
+        return {"answer_blocks": [Block(type="error", markdown="Не удалось сформировать дашборд.")]}
+
+    saver = config.get("configurable", {}).get("dashboard_saver")
+    if saver is None:
+        return {
+            "answer_blocks": [
+                Block(type="error", markdown="Сохранение дашбордов сейчас недоступно.")
+            ]
+        }
+
+    widgets = [
+        build_widget_snapshot(execution, index) for index, execution in enumerate(executions)
+    ]
+    try:
+        snapshot = saver(plan.title, plan.description, widgets)
+        if isinstance(snapshot, dict):
+            snapshot = DashboardSnapshot.model_validate(snapshot)
+    except Exception as exc:
+        policy = _policy(config)
+        return {
+            "answer_blocks": [
+                Block(
+                    type="error",
+                    markdown="Не удалось сохранить дашборд. "
+                    + (policy.sanitize_text(str(exc)) or "Повторите запрос позднее."),
+                )
+            ]
+        }
+
+    return {
+        "dashboard_snapshot": snapshot,
+        "answer_blocks": dashboard_preview_blocks(snapshot),
+        "charts": [
+            widget.chart for widget in snapshot.widgets if isinstance(widget.chart, ChartSpec)
+        ],
+        "focus_result_ids": dashboard_output_result_ids(snapshot),
+    }
 
 
 def execute(state: AgentState, config: RunnableConfig) -> dict:
@@ -1054,11 +1291,34 @@ def _quality_lines(state: AgentState) -> list[str]:
 
 
 def route_after_understand(state: AgentState) -> str:
-    """Conditional edge: Routes off_topic/invalid/ambiguous to clarify, else plans."""
+    """Conditional edge: уточнения — в clarify, дашборд — в свою ветку, иначе plan."""
     intent = state["understanding"].intent
     if intent in ["ambiguous", "invalid", "off_topic"]:
         return "clarify"
+    if intent == "dashboard":
+        return "plan_dashboard"
     return "plan"
+
+
+def route_after_plan_dashboard(state: AgentState) -> str:
+    if state.get("dashboard_plan") is None:
+        return "end"
+    return "execute_dashboard"
+
+
+def route_after_execute_dashboard(state: AgentState) -> str:
+    """Один повтор полного плана, если хотя бы один виджет не посчитался.
+
+    План должен содержать завершённые расчёты, поэтому частичный сбой тоже
+    перепланируется: модель видит ошибки и может исправить шаг. Если после
+    повтора ошибки остались, сохраняем частичный дашборд с явными ошибками
+    виджетов — успешные соседи остаются доступны.
+    """
+    executions = state.get("dashboard_widgets", [])
+    if any(not execution.is_successful for execution in executions):
+        if state.get("dashboard_retries", 0) < 2:
+            return "plan_dashboard"
+    return "save_dashboard"
 
 
 def route_after_execute(state: AgentState) -> str:
@@ -1103,6 +1363,9 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("understand", observed("understand", understand))
     workflow.add_node("plan", observed("plan", plan))
     workflow.add_node("execute", observed("execute", execute))
+    workflow.add_node("plan_dashboard", observed("plan_dashboard", plan_dashboard))
+    workflow.add_node("execute_dashboard", observed("execute_dashboard", execute_dashboard))
+    workflow.add_node("save_dashboard", observed("save_dashboard", save_dashboard))
     workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
@@ -1114,7 +1377,9 @@ def build_agent_graph() -> StateGraph:
     workflow.add_edge("load_ctx", "understand")
 
     workflow.add_conditional_edges(
-        "understand", route_after_understand, {"plan": "plan", "clarify": "clarify"}
+        "understand",
+        route_after_understand,
+        {"plan": "plan", "plan_dashboard": "plan_dashboard", "clarify": "clarify"},
     )
 
     workflow.add_edge("plan", "execute")
@@ -1125,6 +1390,19 @@ def build_agent_graph() -> StateGraph:
         route_after_execute,
         {"plan": "plan", "visualize": "visualize", "clarify": "clarify"},
     )
+
+    # Отдельная ветка дашборда: план виджетов → вычисления → сохранение.
+    workflow.add_conditional_edges(
+        "plan_dashboard",
+        route_after_plan_dashboard,
+        {"execute_dashboard": "execute_dashboard", "end": END},
+    )
+    workflow.add_conditional_edges(
+        "execute_dashboard",
+        route_after_execute_dashboard,
+        {"plan_dashboard": "plan_dashboard", "save_dashboard": "save_dashboard"},
+    )
+    workflow.add_edge("save_dashboard", END)
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")

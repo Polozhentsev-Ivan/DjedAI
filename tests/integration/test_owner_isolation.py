@@ -395,7 +395,7 @@ def test_result_parent_chain_cannot_cross_users(owner_api: OwnerAPI) -> None:
         assert "bob_private" not in response.text and "98765" not in response.text
 
 
-def test_dashboard_stubs_validate_ownership_before_not_implemented(owner_api: OwnerAPI) -> None:
+def test_dashboard_api_validates_ownership(owner_api: OwnerAPI) -> None:
     api = owner_api
     own_ds, foreign_ds = _upload(api, api.alice), _upload(api, api.bob)
     own_chat, foreign_chat = _chat(api, api.alice, own_ds), _chat(api, api.bob, foreign_ds)
@@ -420,18 +420,21 @@ def test_dashboard_stubs_validate_ownership_before_not_implemented(owner_api: Ow
                     result_id=f"{prefix}-result",
                     status="ok",
                     tool="run_sql",
+                    sql="SELECT amount FROM sales",
+                    params={"sql": "SELECT amount FROM sales"},
                     data=ToolResultData(columns=["amount"], rows=[[10]], row_count=1),
                 ),
                 owner_id=actor.user_id,
                 chat_id=chat_id,
                 persist_data=False,
             )
-    assert (
-        api.client.get(
-            "/api/dashboards", params={"dataset_id": own_ds}, headers=api.alice.headers
-        ).status_code
-        == 501
+    own_list = api.client.get(
+        "/api/dashboards", params={"dataset_id": own_ds}, headers=api.alice.headers
     )
+    assert own_list.status_code == 200
+    assert len(own_list.json()) == 1
+    assert own_list.json()[0]["dashboard_id"] == "own-dashboard"
+
     for dataset_id in (foreign_ds, "absent"):
         _not_found(
             api.client.get(
@@ -450,7 +453,7 @@ def test_dashboard_stubs_validate_ownership_before_not_implemented(owner_api: Ow
                 headers=api.alice.headers,
                 **kwargs,
             ).status_code
-            == 501
+            == 200
         )
         assert _not_found(
             api.client.request(
@@ -467,7 +470,7 @@ def test_dashboard_stubs_validate_ownership_before_not_implemented(owner_api: Ow
                 **kwargs,
             )
         )
-    for result_id, status in (("own-result", 501), ("foreign-result", 404), ("absent", 404)):
+    for result_id, status in (("own-result", 200), ("foreign-result", 404), ("absent", 404)):
         chart = {"chart_id": "chart", "result_id": result_id, "type": "bar", "title": "Chart"}
         response = api.client.post(
             "/api/dashboards",
