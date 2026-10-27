@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import openai
 import pytest
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from djedai.agent.config import data_sharing_allowed
 from djedai.backend.app import create_app
+from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import get_agent_runtime
 from djedai.backend.config import Settings
 from djedai.backend.db.models import ModelSettingsModel
@@ -49,6 +54,7 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 AppFactory = Callable[..., FastAPI]
+PASSWORD_HASH = hash_password("model-settings-password")
 
 
 @pytest.fixture
@@ -75,7 +81,9 @@ def make_app(tmp_path: Path) -> Iterator[AppFactory]:
         app = create_app(Settings(**values))
         app.state.session_factory = sessionmaker(bind=engine)
         with app.state.session_factory() as db:
-            get_or_create_user(db, "u_admin", "admin")
+            user = get_or_create_user(db, "u_admin", "admin")
+            user.password_hash = PASSWORD_HASH
+            db.commit()
         return app
 
     yield make
@@ -201,3 +209,226 @@ def test_key_unreadable_under_another_server_key_fails_closed(make_app: AppFacto
     rotated = make_app(model_settings_from_ui=True, source_encryption_key=Fernet.generate_key())
     # The .env key is not sent instead of the saved one.
     assert _runtime(rotated).unavailable
+
+
+# --- HTTP API -----------------------------------------------------------------
+
+
+@pytest.fixture
+def api(make_app: AppFactory) -> Iterator[Callable[..., TestClient]]:
+    clients: list[TestClient] = []
+
+    def open_client(**overrides: Any) -> TestClient:
+        app = make_app(**overrides)
+        with app.state.session_factory() as db:
+            token = create_session(db, "u_admin")
+        client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+        client.__enter__()
+        clients.append(client)
+        return client
+
+    yield open_client
+    for client in clients:
+        client.__exit__(None, None, None)
+
+
+def test_settings_require_a_session(api: Callable[..., TestClient]) -> None:
+    client = api()
+    anonymous = TestClient(client.app)
+    assert anonymous.get("/api/settings/model").status_code == 401
+    assert anonymous.put("/api/settings/model", json={"model_name": "x"}).status_code == 401
+    assert client.get("/api/settings/model").headers["cache-control"] == "no-store"
+
+
+def test_server_mode_hides_connection_and_limits_models(api: Callable[..., TestClient]) -> None:
+    client = api(model_settings_from_ui=False)
+    body = client.get("/api/settings/model").json()
+    assert body["editable_connection"] is False
+    assert body["allowed_models"] == ["env-model", "other-model"]
+    for change in ({"api_key": UI_KEY}, {"base_url": "http://x/v1"}, {"api_key": ""}):
+        response = client.put("/api/settings/model", json={"model_name": "other-model", **change})
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
+        check = client.post("/api/settings/model/check", json=change)
+        assert check.status_code == 403
+    # Nothing was saved by the rejected requests.
+    assert client.get("/api/settings/model").json()["model_name"] == ENV_MODEL
+
+    outside = client.put("/api/settings/model", json={"model_name": "arbitrary/model"})
+    assert outside.status_code == 422
+    assert "arbitrary" not in outside.text
+    chosen = client.put("/api/settings/model", json={"model_name": "other-model"})
+    assert chosen.status_code == 200
+    assert chosen.json()["model_name"] == "other-model"
+    assert chosen.json()["matches_env"] is False
+
+
+def test_local_mode_sets_key_url_and_any_model(api: Callable[..., TestClient]) -> None:
+    client = api(model_settings_from_ui=True)
+    assert client.get("/api/settings/model").json()["editable_connection"] is True
+    response = client.put(
+        "/api/settings/model",
+        json={"base_url": "http://localhost:8000/v1", "model_name": "my/local", "api_key": UI_KEY},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["api_key_set"] and body["api_key_from_ui"]
+    assert (body["base_url"], body["model_name"]) == ("http://localhost:8000/v1", "my/local")
+    assert UI_KEY not in response.text
+    assert UI_KEY not in client.get("/api/settings/model").text
+    # An empty key returns to .env.
+    cleared = client.put("/api/settings/model", json={"api_key": ""}).json()
+    assert cleared["api_key_set"] and not cleared["api_key_from_ui"]
+
+
+@pytest.mark.parametrize(
+    "payload", [{"base_url": "ftp://host"}, {"base_url": "localhost"}, {"api_key": "a\nb"}]
+)
+def test_local_mode_rejects_invalid_values(
+    api: Callable[..., TestClient], payload: dict[str, str]
+) -> None:
+    response = api(model_settings_from_ui=True).put("/api/settings/model", json=payload)
+    assert response.status_code == 422
+
+
+def test_saving_a_key_requires_server_encryption_key(api: Callable[..., TestClient]) -> None:
+    client = api(model_settings_from_ui=True, source_encryption_key=None)
+    response = client.put("/api/settings/model", json={"api_key": UI_KEY})
+    assert response.status_code == 409
+    assert "SOURCE_ENCRYPTION_KEY" in response.json()["error"]["message"]
+    assert UI_KEY not in response.text
+
+
+def test_unknown_fields_are_rejected_without_echo(api: Callable[..., TestClient]) -> None:
+    response = api(model_settings_from_ui=True).put(
+        "/api/settings/model", json={"api_key": UI_KEY, "reasoning_supported": True}
+    )
+    assert response.status_code == 422
+    assert UI_KEY not in response.text
+
+
+class _FailingClient:
+    def __init__(self, error: Exception | None) -> None:
+        self.model = "m"
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+        self.client = self
+
+    def with_options(self, **options: Any) -> _FailingClient:
+        assert options["max_retries"] == 0 and options["timeout"] <= 10
+        return self
+
+    @property
+    def chat(self) -> _FailingClient:
+        return self
+
+    @property
+    def completions(self) -> _FailingClient:
+        return self
+
+    def create(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+
+
+def _status_error(cls: type[openai.APIStatusError], status: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "http://model.test/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return cls(f"rejected {UI_KEY}", response=response, body={"error": f"model {UI_KEY}"})
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (None, "ok"),
+        (_status_error(openai.AuthenticationError, 401), "invalid_key"),
+        (_status_error(openai.PermissionDeniedError, 403), "invalid_key"),
+        (_status_error(openai.NotFoundError, 404), "unknown_model"),
+        (_status_error(openai.BadRequestError, 400), "unknown_model"),
+        (_status_error(openai.InternalServerError, 500), "model_error"),
+        (openai.APIConnectionError(request=httpx.Request("POST", "http://x")), "unreachable"),
+        (RuntimeError(UI_KEY), "model_error"),
+    ],
+)
+def test_check_explains_failures_without_the_key(
+    api: Callable[..., TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception | None,
+    code: str,
+) -> None:
+    client = api(model_settings_from_ui=True)
+    fake = _FailingClient(error)
+    seen: list[Any] = []
+
+    def build(values: Any) -> _FailingClient:
+        seen.append(values)
+        return fake
+
+    monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", build)
+    response = client.post("/api/settings/model/check", json={"api_key": UI_KEY})
+    assert response.status_code == 200
+    assert response.json()["code"] == code
+    assert response.json()["ok"] is (code == "ok")
+    assert seen[0].api_key == UI_KEY and fake.calls[0]["max_tokens"] == 1
+    assert UI_KEY not in response.text and UI_KEY not in caplog.text
+    # The check never saves what it was given.
+    assert client.get("/api/settings/model").json()["api_key_from_ui"] is False
+
+
+def test_check_reports_missing_configuration(
+    api: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MODEL_API_KEY")
+    response = api(model_settings_from_ui=True).post("/api/settings/model/check", json={})
+    assert response.json()["code"] == "not_configured"
+
+
+def test_ui_key_never_leaves_the_server(
+    api: Callable[..., TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Ключ не попадает в ответы, SSE, логи, диагностику и сохранённые результаты."""
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("MODEL_MAX_RETRIES", "0")
+    get_limits.cache_clear()
+    client = api(
+        model_settings_from_ui=True,
+        datasets_data_dir=str(tmp_path / "datasets"),
+        catalog_descriptions=True,
+    )
+    texts = [
+        client.put(
+            "/api/settings/model",
+            json={
+                "base_url": "http://127.0.0.1:9/v1",
+                "model_name": "leak/model",
+                "api_key": UI_KEY,
+            },
+        ).text,
+        client.get("/api/settings/model").text,
+        client.post("/api/settings/model/check", json={}).text,
+    ]
+    upload = client.post(
+        "/api/datasets/upload", files={"files": ("sales.csv", b"amount\n10\n20\n", "text/csv")}
+    )
+    assert upload.status_code == 202
+    dataset_id = upload.json()["dataset_id"]
+    texts.append(client.get(f"/api/datasets/{dataset_id}/events").text)
+    texts.append(client.get(f"/api/datasets/{dataset_id}").text)
+    chat_id = client.post("/api/chats", json={"dataset_id": dataset_id}).json()["chat_id"]
+    stream = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сумма amount?"})
+    assert "event: error" in stream.text  # The real client really tried the UI endpoint.
+    texts += [stream.text, client.get(f"/api/chats/{chat_id}").text]
+
+    for text in texts:
+        assert UI_KEY not in text
+    assert UI_KEY not in caplog.text
+    marker = UI_KEY.encode()
+    stored = [path for path in tmp_path.rglob("*") if path.is_file()]
+    assert any(path.name == "agent.jsonl" for path in stored)  # Diagnostics were written.
+    for path in stored:
+        assert marker not in path.read_bytes(), path.name

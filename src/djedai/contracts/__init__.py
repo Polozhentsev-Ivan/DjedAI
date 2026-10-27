@@ -89,6 +89,7 @@ from djedai.contracts.metrics import (
     MetricVersionRef,
 )
 from djedai.contracts.quality import ColumnQuality, QualityIssue, QualityReport
+from djedai.contracts.settings import ModelCheckResult, ModelSettingsRead, ModelSettingsUpdate
 from djedai.contracts.sse import (
     AgentStreamEvent,
     DatasetDoneData,
@@ -122,6 +123,9 @@ __all__ = [
     "ConnectRequest",
     "SourceCheckRequest",
     "SourceCheckResult",
+    "ModelCheckResult",
+    "ModelSettingsRead",
+    "ModelSettingsUpdate",
     "SourceTable",
     # Каталог
     "CatalogRevision",
