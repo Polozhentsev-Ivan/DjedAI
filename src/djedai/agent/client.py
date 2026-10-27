@@ -53,6 +53,15 @@ class ModelResponse[T: BaseModel](BaseModel):
     finish_reason: str | None = None
 
 
+def valid_base_url(base_url: str) -> bool:
+    endpoint = urlsplit(base_url)
+    return endpoint.scheme in {"http", "https"} and bool(endpoint.hostname)
+
+
+def valid_api_key(api_key: str) -> bool:
+    return bool(api_key.strip()) and not any(character in api_key for character in "\r\n")
+
+
 class BIModelClient:
     def __init__(
         self,
@@ -66,10 +75,9 @@ class BIModelClient:
         reasoning: Mapping[str, ReasoningEffort] | None = None,
         reasoning_supported: bool = False,
     ):
-        endpoint = urlsplit(base_url)
-        if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+        if not valid_base_url(base_url):
             raise ValueError("MODEL_BASE_URL должен быть полным HTTP(S)-адресом")
-        if not api_key.strip() or any(character in api_key for character in "\r\n"):
+        if not valid_api_key(api_key):
             raise ValueError("MODEL_API_KEY не должен быть пустым или содержать переносы строк")
         profile = normalize_reasoning_profile(reasoning)
         if not reasoning_supported:

@@ -16,12 +16,13 @@ from pydantic.json_schema import models_json_schema
 from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
-from djedai.agent.config import get_agent_client
+from djedai.agent.config import data_sharing_allowed, get_agent_client
 from djedai.backend.api.router import api_router
 from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.diagnostics import DiagnosticJournal
+from djedai.backend.model_settings import model_settings_for
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -97,7 +98,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         source_encryption_key=cfg.source_encryption_key.get_secret_value()
         if cfg.source_encryption_key
         else None,
-        description_client=get_agent_client if cfg.catalog_descriptions else None,
+        # Descriptions follow the model chosen in the interface, like chat turns (#209).
+        description_client=(lambda: get_agent_client(model_settings_for(app).override()))
+        if cfg.catalog_descriptions
+        else None,
+        description_sharing=lambda: data_sharing_allowed(model_settings_for(app).override()),
         clickhouse_limits=ClickHouseLimits(
             max_rows=cfg.clickhouse_max_rows,
             max_bytes=cfg.clickhouse_max_bytes,

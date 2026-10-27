@@ -157,6 +157,7 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
+        description_sharing: Callable[[], bool] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
         catalog_max_age_hours: float = 24,
     ) -> None:
@@ -166,6 +167,7 @@ class DatasetService:
         self._secrets = SourceSecrets(source_encryption_key)
         # None disables LLM descriptions; the factory is called once per build.
         self._description_client = description_client
+        self._description_sharing = description_sharing
         self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
         self._catalog_max_age = timedelta(hours=catalog_max_age_hours)
 
@@ -735,7 +737,10 @@ class DatasetService:
     def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
         """Descriptions are optional: any failure publishes the statistical catalog."""
         try:
-            return describe_dataset(database, catalog, self._description_client())
+            share = self._description_sharing() if self._description_sharing else True
+            return describe_dataset(
+                database, catalog, self._description_client(), share_values=share
+            )
         except Exception:
             # Model client errors can echo endpoint or key details; log no traceback.
             logger.warning("Catalog descriptions failed for owned dataset %s", dataset_id)
