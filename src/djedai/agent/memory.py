@@ -185,7 +185,9 @@ def _focus_descriptions(
                 result.data,
                 context=DataContext.HISTORY,
                 max_rows=CONTEXT_RESULT_ROWS,
-                sensitive_columns=sensitive_columns,
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
             )
             if data.get("rows"):
                 parts.append(f"sample_rows={data['rows']}")

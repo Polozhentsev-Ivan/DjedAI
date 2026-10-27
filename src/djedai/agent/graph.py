@@ -83,7 +83,9 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
             data = policy.result_data(
                 result.data,
                 context=_result_context(state, result),
-                sensitive_columns=sensitive_columns,
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
             )
             entry["data"] = data
             if data.get("rows"):
