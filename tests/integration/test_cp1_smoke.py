@@ -25,6 +25,11 @@ ROOT = Path(__file__).resolve().parents[2]
 )
 def test_smoke_cli_with_local_model(tmp_path: Path, case: str):
     requests = []
+    profile = tmp_path / "profile.env"
+    profile.write_text(
+        "MODEL_REASONING_UNDERSTAND=none\nMODEL_REASONING_SUPPORTED=true\n",
+        encoding="utf-8",
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -105,7 +110,7 @@ def test_smoke_cli_with_local_model(tmp_path: Path, case: str):
                 "--base-url",
                 f"http://127.0.0.1:{server.server_port}/v1/openai",
                 "--env-file",
-                str(tmp_path / "missing.env"),
+                str(profile),
                 "--output",
                 str(tmp_path / "run"),
             ],
@@ -144,6 +149,8 @@ def test_smoke_cli_with_local_model(tmp_path: Path, case: str):
         "VerifyResponse",
     ]
     assert "orders_utf8_comma" in requests[0]["messages"][0]["content"]
+    assert requests[0]["reasoning_effort"] == "none"
+    assert all("reasoning_effort" not in request for request in requests[1:])
     assert "Original question and response requirements" in requests[2]["messages"][1]["content"]
     parquet_files = list((tmp_path / "run/results").glob("*.parquet"))
     assert parquet_files

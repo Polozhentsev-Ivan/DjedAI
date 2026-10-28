@@ -29,6 +29,9 @@ import duckdb
 from djedai.config import get_limits
 from djedai.data.csv_ingest import RawTable, read_sources, slugify
 
+# Версия правил типизации в ревизии каталога (B1-11). Повышается при любом изменении
+# выбора типа, формата или журнала: каталог по старым правилам должен быть отличим.
+TRANSFORM_VERSION = "2026.10.1"
 COLUMNS_TABLE = "_djedai_columns"
 JOURNAL_TABLE = "_djedai_transformations"
 EXAMPLES = 5

@@ -235,7 +235,7 @@ def test_replan_and_recompose_share_the_original_budget(replan: bool, monkeypatc
     budget = ExecutionBudget(3 if replan else 5)
 
     class Model:
-        def generate_typed_response(self, _system, _question, response_model):
+        def generate_typed_response(self, _system, _question, response_model, **kwargs):
             calls.append(response_model)
             from djedai.execution import current_budget
 

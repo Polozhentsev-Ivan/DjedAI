@@ -69,6 +69,7 @@ def model_server(
     answer: Callable[[int, dict[str, Any]], tuple[int, dict[str, Any], float]],
     *,
     timeout: float = 2,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> Iterator[tuple[BIModelClient, list[dict[str, Any]]]]:
     calls: list[dict[str, Any]] = []
     lock = threading.Lock()
@@ -108,6 +109,7 @@ def model_server(
             timeout=timeout,
             max_retries=2,
             retry_delay=0.01,
+            **(client_kwargs or {}),
         )
     try:
         with patch(
@@ -156,6 +158,50 @@ def test_model_retries_are_individually_recorded_without_contents(tmp_path: Path
     assert Decimal(call["estimated_cost_usd"]) == Decimal("0.000029")
     assert call["actual_charge_usd"] is None
     assert SECRET not in json.dumps(events)
+
+
+def test_diagnostics_record_stage_and_actual_reasoning(tmp_path: Path) -> None:
+    run = recording(tmp_path)
+    with (
+        model_server(
+            lambda *_: (200, completion('{"intent":"data_question"}'), 0),
+            client_kwargs={"reasoning": {"understand": "none"}, "reasoning_supported": True},
+        ) as (client, calls),
+        run.stage("understand"),
+    ):
+        result = client.generate_typed_response(
+            "system", "question", Understanding, stage="understand"
+        )
+    run.finish("success")
+
+    assert result.status == "success"
+    assert calls[0]["reasoning_effort"] == "none"
+    events = read_events(tmp_path)
+    started = next(e for e in events if e["event"] == "model_call_started")
+    finished = next(e for e in events if e["event"] == "model_call_finished")
+    for event in (started, finished):
+        assert event["stage"] == "understand"
+        assert event["reasoning_effort"] == "none"
+        assert event["reasoning_setting"] == "none"
+
+
+def test_diagnostics_record_omitted_provider_default_reasoning(tmp_path: Path) -> None:
+    run = recording(tmp_path)
+    with (
+        model_server(lambda *_: (200, completion('{"intent":"data_question"}'), 0)) as (
+            client,
+            calls,
+        ),
+        run.stage("plan"),
+    ):
+        client.generate_typed_response("system", "question", Understanding, stage="plan")
+    run.finish("success")
+
+    assert "reasoning_effort" not in calls[0]
+    call = next(e for e in read_events(tmp_path) if e["event"] == "model_call_finished")
+    assert call["stage"] == "plan"
+    assert call["reasoning_effort"] is None
+    assert call["reasoning_setting"] == "provider_default"
 
 
 @pytest.mark.parametrize(

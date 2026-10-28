@@ -2,6 +2,7 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from langchain_core.runnables import RunnableConfig
@@ -93,7 +94,9 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
             catalog=state.get("catalog_prompt"),
             history=memory_context(state),
         )
-        response = client.generate_typed_response(sys_prompt, last_msg, Understanding)
+        response = client.generate_typed_response(
+            sys_prompt, last_msg, Understanding, stage="understand"
+        )
         if response.status == "success" and response.data:
             return {"understanding": response.data}
         else:
@@ -135,7 +138,9 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     user_prompt = user_prompt or last_msg or "Generate execution plan."
 
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, PlanResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, PlanResponse, stage="plan"
+        )
         if response.status == "success" and response.data:
             return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
         return {
@@ -514,7 +519,9 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
 
     client = config.get("configurable", {}).get("client")
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, VisualizeResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, VisualizeResponse, stage="visualize"
+        )
         if response.status == "success" and response.data:
             return {
                 "charts": sanitize_charts(response.data.charts, valid_results),
@@ -533,12 +540,15 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         return {"answer_blocks": existing_blocks, "focus_result_ids": focus}
 
     facts_and_data = []
+    saved = _saved_result_ids(state)
     for r in answer_results(state):
         entry = {"tool": r.tool}
         if r.facts:
             entry["facts"] = r.facts
         if r.data:
             entry["data"] = r.data
+        if r.read is not None:
+            entry["read"] = _read_line(r, r.result_id in saved)
         facts_and_data.append(entry)
 
     sys_prompt = load_prompt("compose").format(facts=str(facts_and_data))
@@ -560,7 +570,9 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         user_prompt += f"\nOriginal question and response requirements: {last_msg}"
 
     if client:
-        response = client.generate_typed_response(sys_prompt, user_prompt, ComposeResponse)
+        response = client.generate_typed_response(
+            sys_prompt, user_prompt, ComposeResponse, stage="compose"
+        )
         if response.status == "success" and response.data:
             blocks = response.data.answer_blocks
         else:
@@ -622,7 +634,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     if client:
         sys_prompt = load_prompt("verify").format(facts=str(facts_and_data), draft=draft)
         response = client.generate_typed_response(
-            sys_prompt, "Verify the numbers and formats.", VerifyResponse
+            sys_prompt,
+            "Verify the numbers and formats.",
+            VerifyResponse,
+            stage="verify",
         )
 
         if response.status == "success" and response.data:
@@ -821,12 +836,78 @@ def cite_metrics(state: AgentState) -> dict:
         if result.status == "error" or result.metric is None:
             continue
         lines += [f.text for f in result.facts if f.kind == "metric_definition"]
+    lines += _source_lines(state)
     if lines:
         text = "**Как посчитано.** " + " ".join(f"{line}." for line in dict.fromkeys(lines))
         added.append(Block(type="text", markdown=text))
     if not added:
         return {}
     return {"answer_blocks": [*blocks, *added]}
+
+
+def _saved_result_ids(state: AgentState) -> set[str]:
+    """Результаты прошлых ходов: их числа берутся из хранилища, а не пересчитываются."""
+    current = {result.result_id for result in state.get("results", [])}
+    return {r.result_id for r in state.get("history_results", []) if r.result_id not in current}
+
+
+def _moment(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%d.%m.%Y %H:%M UTC")
+
+
+def _read_line(result: ToolResult, saved: bool) -> str:
+    """Откуда и когда взяты данные результата (B1-11)."""
+    read = result.read
+    if read.read_mode == "unknown":
+        return "версия каталога и время чтения не сохранены"
+    revision = (
+        f"каталог r{read.catalog_revision}" if read.revision_known else "версия каталога неизвестна"
+    )
+    if read.read_mode == "live":
+        line = f"живое чтение источника {_moment(read.finished_at)}, {revision}"
+    else:
+        profiled = read.freshness.profiled_at
+        line = f"снимок датасета, {revision}" + (
+            f" (профиль от {_moment(profiled)})" if profiled else ""
+        )
+    if saved:
+        line = f"сохранённый расчёт от {_moment(read.finished_at)} без пересчёта: {line}"
+    return line
+
+
+def _source_lines(state: AgentState) -> list[str]:
+    saved = _saved_result_ids(state)
+    used = [r for r in answer_results(state) if r.status != "error" and r.read is not None]
+    return list(dict.fromkeys(f"Данные: {_read_line(r, r.result_id in saved)}" for r in used))
+
+
+def _read_limits(state: AgentState) -> list[str]:
+    """Свежесть источника и согласованность чтений ответа как ограничения данных."""
+    saved = _saved_result_ids(state)
+    reads = [
+        (r.result_id in saved, r.read)
+        for r in answer_results(state)
+        if r.status != "error" and r.read is not None
+    ]
+    lines = []
+    for _, read in reads:
+        if read.freshness.state in ("aged", "drifted", "unknown") and read.freshness.reason:
+            lines.append(read.freshness.reason + ".")
+    live = [(old, read) for old, read in reads if read.read_mode == "live"]
+    if any(old for old, _ in live) and any(not old for old, _ in live):
+        lines.append(
+            "Ответ сочетает сохранённый ранее расчёт и новое чтение источника: данные могли "
+            "измениться между ними."
+        )
+    snapshots = {read.snapshot_id for old, read in live if not old}
+    if len(snapshots) > 1 or (
+        len(live) > 1 and any(read.consistency == "independent" for _, read in live)
+    ):
+        lines.append(
+            "Расчёты ответа прочитали источник в разных состояниях: числа между ними могут "
+            "не сходиться."
+        )
+    return list(dict.fromkeys(lines))
 
 
 def _quality_lines(state: AgentState) -> list[str]:
@@ -852,6 +933,7 @@ def _quality_lines(state: AgentState) -> list[str]:
                     else ""
                 )
                 lines.append(issue.message + note)
+    lines += _read_limits(state)
     return list(dict.fromkeys(lines))
 
 

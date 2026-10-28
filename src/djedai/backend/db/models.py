@@ -141,6 +141,8 @@ class DatasetModel(Base):
     duckdb_path = Column(Text, nullable=True)
     raw_files = Column(JSON, nullable=True)
     progress = Column(JSON, nullable=True)
+    freshness = Column(JSON, nullable=True)  # последняя проверка источника, SourceFreshness
+    refresh = Column(JSON, nullable=True)  # идущая или неудавшаяся перепрофилировка
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
     updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
@@ -232,6 +234,7 @@ class ToolResultModel(Base):
     duration_ms = Column(Integer, nullable=True)
     metric = Column(JSON, nullable=True)  # MetricProvenance: версия определения метрики
     quality = Column(JSON, nullable=True)  # QualityReport: потери типизации колонок расчёта
+    read = Column(JSON, nullable=True)  # ReadProvenance: ревизия каталога, режим и время чтения
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
 
     # Связи

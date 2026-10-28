@@ -32,6 +32,7 @@ TEMPORAL: tuple[SemanticType, ...] = ("date", "datetime")
 Ratio = Annotated[float, Field(ge=0.0, le=1.0)]
 CurrencyCode = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]  # ISO 4217, например RUB
 Count = Annotated[int, Field(ge=0)]
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class _Model(BaseModel):
@@ -158,12 +159,21 @@ class Transformation(_Model):  # запись журнала преобразо�
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+class CatalogRevision(_Model):  # версия профиля и схемы источника (B1-11, #169)
+    number: int = Field(ge=1)  # растёт при каждой перепрофилировке
+    profiled_at: AwareDatetime
+    schema_fingerprint: Sha256  # таблица источника, колонка и тип в порядке колонок
+    source_fingerprint: Sha256  # источник без пользователя, пароля и адреса в открытом виде
+    transform_version: str = Field(min_length=1)  # версия правил типизации
+
+
 class DatasetCatalog(_Model):
     schema_version: Literal[1] = SCHEMA_VERSION
     dataset_id: str = Field(min_length=1)
     name: str
     created_at: AwareDatetime
     source: DatasetSource
+    revision: CatalogRevision | None = None  # None — каталог сохранён до #169
     summary: str | None = None  # LLM (B1-6)
     tables: list[Table] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)

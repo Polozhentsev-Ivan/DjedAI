@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
-from djedai.contracts.catalog import DatasetCatalog
+from djedai.contracts.catalog import CatalogRevision, DatasetCatalog
 from djedai.data.catalog_builder import build_csv_catalog, build_db_catalog
 from djedai.data.clickhouse import (
     ClickHouseHttp,
@@ -24,19 +24,30 @@ from djedai.data.clickhouse import (
     open_session,
 )
 from djedai.data.clickhouse import list_tables as list_clickhouse_tables
-from djedai.data.csv_ingest import load_raw_csv
+from djedai.data.clickhouse import parse_dsn as parse_clickhouse_dsn
+from djedai.data.csv_ingest import load_raw_csv, read_sources
 from djedai.data.descriptions import ModelClient, describe_catalog
+from djedai.data.fingerprint import (
+    Schema,
+    live_schema,
+    record_source_schema,
+    schema_fingerprint,
+    source_fingerprint,
+    table_columns,
+)
 from djedai.data.postgres import (
+    ALIAS,
     PgConnectionInfo,
     attach_postgres,
     connect_postgres,
     detach_postgres,
     list_tables,
+    parse_dsn,
     read_db_sources,
 )
 from djedai.data.profiler import profile_table
 from djedai.data.relations import find_relations
-from djedai.data.typed_views import create_typed_view
+from djedai.data.typed_views import TRANSFORM_VERSION, create_typed_view
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,7 @@ def ingest_csv_dataset(
     dataset_id: str,
     name: str,
     created_at: datetime,
+    revision: int = 1,
     progress: Callable[[str, float, str], None] | None = None,
 ) -> DatasetCatalog:
     """Build a complete multiple-table dataset in a caller-owned database file.
@@ -90,12 +102,24 @@ def ingest_csv_dataset(
             # The UI knows read/types/profile; relations finish the profile stage.
             progress("profile", (len(sources) * 3 - 1) / (len(sources) * 3), "Поиск связей")
         relations = find_relations(connection)
+        raw = read_sources(connection)
+        database, schema = _file_location(connection)
+        built = _revision(
+            connection,
+            {
+                table.raw_table: table_columns(connection, database, schema, table.raw_table)
+                for table in raw
+            },
+            revision,
+            source_fingerprint("csv_upload", [[table.sha256, table.size_bytes] for table in raw]),
+        )
         connection.execute("CHECKPOINT")
     return DatasetCatalog(
         dataset_id=dataset_id,
         name=name,
         created_at=created_at,
         source={"kind": "csv_upload"},
+        revision=built,
         tables=tables,
         relations=[relation.to_contract() for relation in relations.relations],
         warnings=list(relations.warnings),
@@ -125,6 +149,7 @@ def connect_postgres_dataset(
     dataset_id: str,
     name: str,
     created_at: datetime,
+    revision: int = 1,
     progress: Callable[[str, float, str], None] | None = None,
 ) -> DatasetCatalog:
     """Build a PostgreSQL dataset in a caller-owned database file without copying data.
@@ -157,6 +182,14 @@ def connect_postgres_dataset(
             if progress:
                 progress("relations", 1.0, "Поиск связей")
             relations = find_relations(connection)
+            info = parse_dsn(dsn) if isinstance(dsn, str) else dsn
+            selected = sorted(source.relation for source in sources.values())
+            built = _revision(
+                connection,
+                live_schema(connection, selected, ALIAS),
+                revision,
+                source_fingerprint("postgres", info.host, info.port, info.dbname, selected),
+            )
         finally:
             detach_postgres(connection)
         connection.execute("CHECKPOINT")
@@ -165,6 +198,7 @@ def connect_postgres_dataset(
         name=name,
         created_at=created_at,
         source={"kind": "postgres"},
+        revision=built,
         tables=catalog_tables,
         relations=[relation.to_contract() for relation in relations.relations],
         warnings=list(relations.warnings),
@@ -181,6 +215,7 @@ def connect_clickhouse_dataset(
     name: str,
     created_at: datetime,
     limits: ClickHouseLimits | None = None,
+    revision: int = 1,
     progress: Callable[[str, float, str], None] | None = None,
 ) -> DatasetCatalog:
     """Copy selected ClickHouse tables into a caller-owned database file and profile them.
@@ -209,16 +244,53 @@ def connect_clickhouse_dataset(
         if progress:
             progress("relations", 1.0, "Поиск связей")
         relations = find_relations(connection)
+        client = parse_clickhouse_dsn(dsn) if isinstance(dsn, str) else dsn
+        database, schema = _file_location(connection)
+        built = _revision(
+            connection,
+            {
+                source.relation: table_columns(connection, database, schema, source.raw_table)
+                for source in sources.values()
+            },
+            revision,
+            source_fingerprint(
+                "clickhouse",
+                client.host,
+                client.port,
+                client.database,
+                sorted(source.relation for source in sources.values()),
+            ),
+        )
         connection.execute("CHECKPOINT")
     return DatasetCatalog(
         dataset_id=dataset_id,
         name=name,
         created_at=created_at,
         source={"kind": "clickhouse"},
+        revision=built,
         tables=catalog_tables,
         relations=[relation.to_contract() for relation in relations.relations],
         warnings=list(relations.warnings),
         transformations=transformations,
+    )
+
+
+def _file_location(connection: duckdb.DuckDBPyConnection) -> tuple[str, str]:
+    database, schema = connection.execute("SELECT current_database(), current_schema()").fetchone()
+    return database, schema
+
+
+def _revision(
+    connection: duckdb.DuckDBPyConnection, schema: Schema, number: int, source: str
+) -> CatalogRevision:
+    """Record the source schema in the dataset file and stamp the finished profile."""
+    record_source_schema(connection, schema)
+    return CatalogRevision(
+        number=number,
+        profiled_at=datetime.now(UTC),
+        schema_fingerprint=schema_fingerprint(schema),
+        source_fingerprint=source,
+        transform_version=TRANSFORM_VERSION,
     )
 
 
