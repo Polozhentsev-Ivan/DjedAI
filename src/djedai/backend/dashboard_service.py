@@ -40,7 +40,9 @@ from djedai.backend.db.repositories import (
 from djedai.backend.db.repositories import (
     update_dashboard as repo_update_dashboard,
 )
+from djedai.backend.db.session import budgeted_write
 from djedai.backend.metric_service import MetricService
+from djedai.config import get_limits
 from djedai.contracts.chart import ChartSpec, ChartTemplate
 from djedai.contracts.dashboard import (
     DashboardCreate,
@@ -55,6 +57,7 @@ from djedai.contracts.dashboard import (
 )
 from djedai.contracts.freshness import Consistency, ReadProvenance
 from djedai.contracts.tool_result import ToolError, ToolResult, ToolResultColumn
+from djedai.execution import ExecutionBudget, current_budget
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +325,7 @@ class DashboardService:
         widgets: list[WidgetSnapshot],
         description: str | None = None,
         source_chat_id: str | None = None,
+        budget: ExecutionBudget | None = None,
     ) -> DashboardSnapshot:
         """Сохраняет дашборд, собранный агентом, вместе со снимками виджетов.
 
@@ -330,44 +334,54 @@ class DashboardService:
         refresh. Временные ``source_result_id`` в рецептах отсутствуют: зависимости
         хранятся как ``source_step_id``.
         """
-        dataset = repo_get_dataset(db, dataset_id)
-        if dataset is None or dataset.owner_id != owner_id:
-            raise HTTPException(404, "Датасет не найден")
+        budget = (
+            budget or current_budget() or ExecutionBudget(get_limits().agent_turn_timeout_seconds)
+        )
         if not 3 <= len(widgets) <= 8:
             raise HTTPException(422, "Дашборд должен содержать от 3 до 8 виджетов")
         widget_ids = [widget.widget_id for widget in widgets]
         if len(set(widget_ids)) != len(widget_ids):
             raise HTTPException(422, "Идентификаторы виджетов должны быть уникальны")
 
-        for widget in widgets:
-            if widget.result_id is None:
-                continue
-            record = get_owned_tool_result(db, widget.result_id, owner_id, dataset_id=dataset_id)
-            if record is None:
-                raise HTTPException(404, "Результат виджета не найден")
-            if widget.status in ("ok", "empty") and record.status not in ("ok", "empty"):
-                raise HTTPException(422, "Результат виджета ещё не готов")
+        def write(writer: Session) -> DashboardSnapshot:
+            try:
+                budget.check()
+                dataset = repo_get_dataset(writer, dataset_id)
+                if dataset is None or dataset.owner_id != owner_id:
+                    raise HTTPException(404, "Датасет не найден")
+                for widget in widgets:
+                    if widget.result_id is None:
+                        continue
+                    record = get_owned_tool_result(
+                        writer, widget.result_id, owner_id, dataset_id=dataset_id
+                    )
+                    if record is None:
+                        raise HTTPException(404, "Результат виджета не найден")
+                    if widget.status in ("ok", "empty") and record.status not in ("ok", "empty"):
+                        raise HTTPException(422, "Результат виджета ещё не готов")
+                created = DashboardModel(
+                    dashboard_id=f"d_{uuid4().hex[:16]}",
+                    owner_id=owner_id,
+                    dataset_id=dataset_id,
+                    title=title,
+                    description=description,
+                    widgets=[widget.model_dump(mode="json") for widget in widgets],
+                    source_chat_id=source_chat_id,
+                    consistency=_generated_consistency(dataset, widgets),
+                    refreshed_at=datetime.now(UTC),
+                )
+                writer.add(created)
+                writer.flush()
+                budget.check()
+                snapshot = _to_dashboard_snapshot(created)
+                budget.check()
+                writer.commit()
+                return snapshot
+            except Exception:
+                writer.rollback()
+                raise
 
-        dashboard_id = f"d_{uuid4().hex[:16]}"
-        created = repo_create_dashboard(
-            db,
-            dashboard_id=dashboard_id,
-            owner_id=owner_id,
-            dataset_id=dataset_id,
-            title=title,
-            description=description,
-            widgets=[widget.model_dump(mode="json") for widget in widgets],
-            source_chat_id=source_chat_id,
-            consistency=_generated_consistency(dataset, widgets),
-        )
-        updated = repo_update_dashboard(
-            db,
-            created.dashboard_id,
-            owner_id=owner_id,
-            refreshed_at=datetime.now(UTC),
-        )
-        assert updated is not None
-        return _to_dashboard_snapshot(updated)
+        return budgeted_write(db, budget, write)
 
     def patch_dashboard(
         self, db: Session, owner_id: str, dashboard_id: str, patch: DashboardPatch

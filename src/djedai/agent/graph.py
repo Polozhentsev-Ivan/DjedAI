@@ -460,6 +460,8 @@ def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
         snapshot = saver(plan.title, plan.description, widgets)
         if isinstance(snapshot, dict):
             snapshot = DashboardSnapshot.model_validate(snapshot)
+    except (TurnTimeout, TurnCancelled):
+        raise
     except Exception as exc:
         policy = _policy(config)
         return {

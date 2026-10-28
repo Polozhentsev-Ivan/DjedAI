@@ -29,6 +29,26 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.execution import TurnCancelled, TurnTimeout
+
+
+@pytest.mark.parametrize("error", [TurnTimeout, TurnCancelled])
+def test_save_dashboard_propagates_budget_abort(error):
+    from djedai.agent.graph import save_dashboard
+
+    plan = DashboardPlanResponse(
+        title="Sales", widgets=[widget(str(i), [step(f"s{i}", "SELECT 1")]) for i in range(3)]
+    )
+    executions = [WidgetExecution(widget=w, results={}) for w in plan.widgets]
+
+    def saver(*_args):
+        raise error()
+
+    with pytest.raises(error):
+        save_dashboard(
+            {"dashboard_plan": plan, "dashboard_widgets": executions},
+            {"configurable": {"dashboard_saver": saver}},
+        )
 
 
 def chart(

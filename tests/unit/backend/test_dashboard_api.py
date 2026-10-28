@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,7 +32,9 @@ from djedai.backend.config import Settings, get_settings
 from djedai.backend.dashboard_service import DashboardService, _dashboard_consistency
 from djedai.backend.db.models import (
     ChatModel,
+    DashboardModel,
     DatasetModel,
+    ToolResultModel,
     UserModel,
 )
 from djedai.backend.db.repositories import save_tool_result
@@ -40,6 +45,7 @@ from djedai.contracts.chart import ChartSpec
 from djedai.contracts.dashboard import WidgetLayout, WidgetSnapshot, WidgetToolCall
 from djedai.contracts.freshness import ReadProvenance
 from djedai.contracts.tool_result import ToolResult, ToolResultData
+from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 
 
 @pytest.fixture(scope="module")
@@ -1015,6 +1021,64 @@ def _generated_widget(result_id: str, chart_id: str, title: str) -> WidgetSnapsh
         read_started_at=datetime.now(UTC),
         read_finished_at=datetime.now(UTC),
     )
+
+
+@pytest.mark.parametrize("lock_kind", ["reader", "writer"])
+@pytest.mark.parametrize("abort", ["timeout", "cancel"])
+def test_generated_dashboard_does_not_commit_after_budget_abort(dashboard_env, lock_kind, abort):
+    _, factory, settings, _, _, dataset_id, results_dir = dashboard_env
+    result_ids = [f"r_budget_{index}" for index in range(3)]
+    with factory() as db:
+        for result_id in result_ids:
+            save_tool_result(
+                db,
+                ToolResult(
+                    result_id=result_id,
+                    status="ok",
+                    tool="run_sql",
+                    data=ToolResultData(
+                        columns=["category", "amount"], rows=[["books", 50]], row_count=1
+                    ),
+                ),
+                chat_id="chat_alice",
+                owner_id="u_alice",
+                storage_dir=results_dir,
+            )
+    widgets = [_generated_widget(rid, f"ch_budget_{i}", str(i)) for i, rid in enumerate(result_ids)]
+    engine = factory.kw["bind"]
+    blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
+    if lock_kind == "writer":
+        blocker.execute("BEGIN IMMEDIATE")
+    else:
+        blocker.execute("BEGIN")
+        blocker.execute("SELECT dashboard_id FROM dashboards").fetchall()
+    cancelled = threading.Event()
+    budget = ExecutionBudget(0.15 if abort == "timeout" else 5, cancelled.is_set)
+    cancel_timer = threading.Timer(0.1, cancelled.set)
+    unlock_timer = threading.Timer(0.65, blocker.rollback)
+    if abort == "cancel":
+        cancel_timer.start()
+    unlock_timer.start()
+    started = time.monotonic()
+    try:
+        with factory() as db, pytest.raises(TurnTimeout if abort == "timeout" else TurnCancelled):
+            with budget.activate():
+                DashboardService(settings).save_generated_dashboard(
+                    db,
+                    "u_alice",
+                    dataset_id,
+                    title="Must roll back",
+                    widgets=widgets,
+                    source_chat_id="chat_alice",
+                )
+        assert time.monotonic() - started < 0.55
+    finally:
+        cancel_timer.cancel()
+        unlock_timer.join()
+        blocker.close()
+    with factory() as db:
+        assert db.query(DashboardModel).count() == 0
+        assert db.query(ToolResultModel).count() == 3
 
 
 def test_save_generated_dashboard_persists_agent_snapshot(dashboard_env):

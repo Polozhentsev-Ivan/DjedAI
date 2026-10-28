@@ -14,7 +14,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import delete, inspect, select
+from sqlalchemy import MetaData, Table, delete, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -160,7 +160,19 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
                 )
             )
             db.commit()
-            create_dashboard(db, "dashboard", "legacy", "dataset", "Обзор")
+            # This fixture predates dashboard consistency/provenance columns.
+            dashboards = Table("dashboards", MetaData(), autoload_with=db.connection())
+            db.execute(
+                dashboards.insert().values(
+                    dashboard_id="dashboard",
+                    owner_id="legacy",
+                    dataset_id="dataset",
+                    title="Обзор",
+                    widgets=[],
+                    created_at=datetime.now(UTC),
+                )
+            )
+            db.commit()
             db.execute(
                 ToolResultModel.__table__.insert().values(
                     result_id="result", owner_id="legacy", status="empty"
