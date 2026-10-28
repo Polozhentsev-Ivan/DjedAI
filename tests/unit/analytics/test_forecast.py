@@ -12,6 +12,68 @@ from djedai.analytics.registry import TOOLS_REGISTRY, get_tools_for_llm
 from djedai.analytics.tools import forecast
 
 
+@pytest.mark.parametrize("freq", ["minute", "hour"])
+def test_forecast_rejects_an_excessive_calendar_before_allocating(monkeypatch, freq):
+    import pandas as pd
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    conn.executemany(
+        "INSERT INTO s VALUES (?, ?)",
+        [
+            (datetime(1970, 1, 1), 1.0),
+            *[(datetime(2026, 10, 26), 2.0)] * 11,
+        ],
+    )
+    allocated = []
+
+    def forbidden_range(*args, **kwargs):
+        allocated.append((args, kwargs))
+        raise AssertionError("Oversized calendar must be rejected before allocation")
+
+    monkeypatch.setattr(pd, "date_range", forbidden_range)
+    try:
+        result = forecast(
+            "s", "ts", measure="value", freq=freq, horizon=2, method="naive", connection=conn
+        )
+    finally:
+        conn.close()
+    assert allocated == []
+    assert result.status == "error" and result.error.code == "invalid_parameter"
+    assert "частот" in result.error.suggestion.lower()
+
+
+@pytest.mark.parametrize("limit,valid", [(11, False), (12, True)])
+def test_forecast_calendar_limit_includes_the_boundary(monkeypatch, limit, valid):
+    from djedai.analytics import tools
+
+    monkeypatch.setattr(tools, "_MAX_CALENDAR_BUCKETS", limit)
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE s (ts TIMESTAMP, value DOUBLE)")
+    conn.executemany(
+        "INSERT INTO s VALUES (?, ?)",
+        [(datetime(2026, 1, 1) + timedelta(days=i), float(i)) for i in range(12)],
+    )
+    try:
+        result = forecast(
+            "s",
+            "ts",
+            measure="value",
+            freq="day",
+            horizon=2,
+            method="naive",
+            period=1,
+            connection=conn,
+        )
+    finally:
+        conn.close()
+    assert result.status == ("ok" if valid else "error")
+    if valid:
+        assert [row[1] for row in result.data.rows] == [11, 11]
+    else:
+        assert result.error.code == "invalid_parameter"
+
+
 def _by_kind(result, kind):
     return [f for f in result.facts if f.kind == kind]
 

@@ -3864,6 +3864,19 @@ def forecast(
         df = df.set_index("time_bucket").sort_index()
         # Выравниваем по календарю: пропущенные бакеты восстанавливаем,
         # чтобы дальше работали периоды, а не позиции.
+        buckets = _estimate_calendar_buckets(df.index.min(), df.index.max(), freq)
+        if buckets > _MAX_CALENDAR_BUCKETS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"Календарная сетка прогноза содержит около {buckets} бакетов "
+                        f"при лимите {_MAX_CALENDAR_BUCKETS}."
+                    ),
+                    suggestion="Укрупните частоту или сузьте диапазон дат фильтром.",
+                )
+            )
+        check_budget()
         df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
         if agg in ("sum", "count"):
             df["value"] = df["value"].fillna(0.0)
