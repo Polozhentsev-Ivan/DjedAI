@@ -15,7 +15,7 @@ from openai import APITimeoutError, DefaultAsyncHttpxClient, DefaultHttpxClient
 
 from djedai.execution import ExecutionBudget
 
-_attempt: ContextVar[tuple[ExecutionBudget, float] | None] = ContextVar(
+_attempt: ContextVar[tuple[ExecutionBudget, float, bool] | None] = ContextVar(
     "model_attempt", default=None
 )
 _loop: asyncio.AbstractEventLoop | None = None
@@ -43,9 +43,11 @@ def _network_loop() -> asyncio.AbstractEventLoop:
 
 
 @contextmanager
-def attempt_lease(budget: ExecutionBudget, seconds: float) -> Iterator[None]:
+def attempt_lease(
+    budget: ExecutionBudget, seconds: float, *, read_error_body: bool = False
+) -> Iterator[None]:
     budget.check()
-    token = _attempt.set((budget, min(monotonic() + seconds, budget.deadline)))
+    token = _attempt.set((budget, min(monotonic() + seconds, budget.deadline), read_error_body))
     try:
         yield
     finally:
@@ -63,7 +65,7 @@ class CancellableHttpClient(DefaultHttpxClient):
             return super().send(request, **kwargs)
         if kwargs.get("stream"):
             raise ValueError("The typed model transport requires a buffered response")
-        budget, deadline = lease
+        budget, deadline, read_error_body = lease
         closed = threading.Event()
 
         def check_attempt() -> None:
@@ -78,7 +80,7 @@ class CancellableHttpClient(DefaultHttpxClient):
                     check_attempt()
                     response = await client.send(request, **{**kwargs, "stream": True})
                     try:
-                        if response.status_code >= 400:
+                        if response.status_code >= 400 and not read_error_body:
                             # Retry policy needs status/headers, not an unbounded error
                             # body. A closed buffered response prevents SDK reads too.
                             headers = {

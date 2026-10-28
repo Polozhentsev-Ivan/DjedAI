@@ -249,3 +249,27 @@ engine.dispose()
             assert db.get(ToolResultModel, "result") is None
     finally:
         engine.dispose()
+
+
+def test_model_settings_migration_matches_model_and_downgrades(tmp_path: Path) -> None:
+    from djedai.backend.db.models import ModelSettingsModel
+
+    url = f"sqlite:///{(tmp_path / 'model-settings.db').as_posix()}"
+    cfg = migration_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_db_engine(url)
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("model_settings")}
+        assert columns == set(ModelSettingsModel.__table__.columns.keys())
+        with Session(engine) as db:
+            db.add(ModelSettingsModel(id="default", model_name="m", api_key_ciphertext="c"))
+            db.commit()
+            assert db.get(ModelSettingsModel, "default").updated_at.tzinfo is not None
+    finally:
+        engine.dispose()
+    command.downgrade(cfg, "f169read0001")
+    engine = create_db_engine(url)
+    try:
+        assert "model_settings" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()

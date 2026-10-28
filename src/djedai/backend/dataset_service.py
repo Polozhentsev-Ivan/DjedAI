@@ -359,6 +359,7 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
+        description_context: Callable[[], tuple[ModelClient, bool]] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
         catalog_max_age_hours: float = 24,
         limits: LimitSettings | None = None,
@@ -369,6 +370,7 @@ class DatasetService:
         self._secrets = SourceSecrets(source_encryption_key)
         # None disables LLM descriptions; the factory is called once per build.
         self._description_client = description_client
+        self._description_context = description_context
         self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
         self._catalog_max_age = timedelta(hours=catalog_max_age_hours)
         self.quota_manager = StorageQuotaManager(
@@ -988,7 +990,7 @@ class DatasetService:
             )
         else:
             raise ValueError("Неподдерживаемый источник")
-        if self._description_client is not None:
+        if self._description_client is not None or self._description_context is not None:
             # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
             progress(
                 "relations" if source_kind in {"postgres", "clickhouse"} else "profile",
@@ -1094,7 +1096,11 @@ class DatasetService:
     def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
         """Descriptions are optional: any failure publishes the statistical catalog."""
         try:
-            return describe_dataset(database, catalog, self._description_client())
+            if self._description_context is not None:
+                client, share = self._description_context()
+            else:
+                client, share = self._description_client(), True
+            return describe_dataset(database, catalog, client, share_values=share)
         except Exception:
             # Model client errors can echo endpoint or key details; log no traceback.
             logger.warning("Catalog descriptions failed for owned dataset %s", dataset_id)

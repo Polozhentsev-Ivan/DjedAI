@@ -56,6 +56,7 @@ from djedai.contracts.chat import ChatTurnState
 from djedai.contracts.message import AssistantMessage, ChartBlock, MessageBlock
 from djedai.contracts.sse import AgentStreamEvent, SSEBlockEvent
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
+from djedai.execution import current_budget
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "chat" / "blocks.json"
 
@@ -708,21 +709,45 @@ def _network_runtime(endpoint: Any, seconds: float) -> AgentRuntime:
     )
 
 
-def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpoint) -> None:
+def test_deadline_during_real_verify_never_publishes_draft(
+    chat_api, model_endpoint, monkeypatch
+) -> None:
     client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
 
+    verify_budgets = []
+    verify_started = []
+    real_verify = agent_graph.verify
+
+    def tracked_verify(state, config):
+        budget = current_budget()
+        assert budget is not None
+        verify_budgets.append(budget)
+        return real_verify(state, config)
+
+    monkeypatch.setattr(agent_graph, "verify", tracked_verify)
+
     def reply(_number, payload):
         schema = payload["response_format"]["json_schema"]["name"]
-        return {"mode": "stall"} if schema == "VerifyResponse" else {}
+        if schema == "VerifyResponse":
+            # Begin the short deadline only after real verify HTTP reaches the
+            # provider. Imports, earlier stages and transport setup are not the
+            # behavior this test measures.
+            verify_started.append(time.monotonic())
+            verify_budgets[-1].check()
+            verify_budgets[-1].deadline = min(
+                verify_budgets[-1].deadline, verify_started[-1] + 0.25
+            )
+            return {"mode": "stall"}
+        return {}
 
     with model_endpoint(reply) as endpoint:
-        runtime = _network_runtime(endpoint, 1)
+        runtime = _network_runtime(endpoint, 30)
         use_runtime(runtime)
         try:
-            started = time.monotonic()
             response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
-            assert time.monotonic() - started < 2.5
+            assert len(verify_started) == 1
+            assert time.monotonic() - verify_started[0] < 1.5
             events = parse_sse(response.text)
             assert [data["code"] for name, data in events if name == "error"] == ["turn_timeout"]
             assert all(name not in {"done", "block"} for name, _ in events)
@@ -736,7 +761,7 @@ def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpo
 
 @pytest.mark.parametrize("lock_kind", ["writer", "reader"])
 def test_sqlite_contention_never_saves_a_late_assistant(
-    chat_api, model_endpoint, tmp_path, lock_kind: str
+    chat_api, model_endpoint, tmp_path, monkeypatch, lock_kind: str
 ) -> None:
     client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
@@ -748,17 +773,24 @@ def test_sqlite_contention_never_saves_a_late_assistant(
         db.commit()
     blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
     locked, finished = threading.Event(), threading.Event()
+    write_started = []
 
-    def reply(_number, payload):
-        if payload["response_format"]["json_schema"]["name"] == "VerifyResponse":
-            if not locked.is_set():
-                if lock_kind == "writer":
-                    blocker.execute("BEGIN IMMEDIATE")
-                else:
-                    blocker.execute("BEGIN")
-                    blocker.execute("SELECT * FROM messages").fetchall()
-                locked.set()
-        return {}
+    def save_under_lock(*args, **kwargs):
+        if not locked.is_set():
+            if lock_kind == "writer":
+                blocker.execute("BEGIN IMMEDIATE")
+            else:
+                blocker.execute("BEGIN")
+                blocker.execute("SELECT * FROM messages").fetchall()
+            locked.set()
+            write_started.append(time.monotonic())
+            # Exercise the actual persistence gate with a fresh short budget;
+            # model and graph preparation must not consume this lock deadline.
+            kwargs["budget"].check()
+            kwargs["budget"].deadline = min(kwargs["budget"].deadline, write_started[-1] + 0.25)
+        return save_assistant_message(*args, **kwargs)
+
+    monkeypatch.setattr("djedai.backend.chat_service.save_assistant_message", save_under_lock)
 
     def tracked_factory():
         session = factory()
@@ -775,16 +807,16 @@ def test_sqlite_contention_never_saves_a_late_assistant(
     client.app.dependency_overrides[get_session_factory] = lambda: tracked_factory
     directory = tmp_path / "deadline-journal"
     try:
-        with model_endpoint(reply) as endpoint:
+        with model_endpoint(lambda *_: {}) as endpoint:
             runtime = replace(
-                _network_runtime(endpoint, 2),
+                _network_runtime(endpoint, 30),
                 diagnostics=DiagnosticJournal(directory, 1_000_000, 2),
             )
             use_runtime(runtime)
             try:
-                started = time.monotonic()
                 response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
-                assert time.monotonic() - started < 3.5
+                assert len(write_started) == 1
+                assert time.monotonic() - write_started[0] < 1.5
                 events = parse_sse(response.text)
                 assert locked.is_set()
                 assert [data["code"] for name, data in events if name == "error"] == [

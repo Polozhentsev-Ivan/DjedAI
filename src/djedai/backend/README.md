@@ -40,6 +40,16 @@ API предоставляет раздельный доступ к метада
 - Запрос несуществующего, чужого или не имеющего владельца (`owner_id=None`) результата возвращает унифицированный ответ `404 Not Found` по контракту `ErrorResponse`, предотвращая раскрытие данных и сканирование ID.
 - `CP1_LOCAL_MODE` не влияет на обязательность сессии. Ответы с личными данными и ошибки ресурсных API имеют `Cache-Control: no-store`.
 
+## Настройки модели
+
+#209: `model_settings.py`, `api/routes/settings.py`. Все эндпоинты требуют сессию и отвечают с `Cache-Control: no-store`.
+
+- `GET /api/settings/model` → `ModelSettingsRead`: действующие адрес и модель, `allowed_models`, `api_key_set`, `api_key_from_ui`, `editable_connection` (`MODEL_SETTINGS_FROM_UI`) и `matches_env`. Ключ не возвращается.
+- `PUT /api/settings/model` (`ModelSettingsUpdate`) меняет модель. Ключ и адрес он принимает только при `MODEL_SETTINGS_FROM_UI=true`, иначе отвечает 403. Модель вне `MODEL_ALLOWED_NAMES` при выключенном флаге — 422. Пустая строка возвращает значение из `.env`. Ключ хранится в таблице `model_settings` зашифрованным `SOURCE_ENCRYPTION_KEY`; без него — 409.
+- `POST /api/settings/model/check` — один запрос к модели (`max_tokens=1`, 10 с, без повторов). Возвращает `ModelCheckResult` с фиксированным сообщением.
+
+`get_agent_runtime()` читает настройки на каждый ход. Для пары «адрес + модель», отличной от `.env`, выключаются reasoning, тариф и `ALLOW_DATA_SHARING`. Сценарии и рекомендации — в [infra/README.md](../../../infra/README.md#настройка-модели).
+
 ## Подключения PostgreSQL
 
 `POST /api/datasets/connect/check` (`SourceCheckRequest`: `kind`, `dsn`) подключается только для чтения и возвращает адрес без пароля и таблицы источника; ничего не сохраняет, требует сессию и `SOURCE_ENCRYPTION_KEY`, ошибки сведены к безопасным категориям (#84).
