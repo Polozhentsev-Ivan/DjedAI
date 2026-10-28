@@ -4,6 +4,13 @@
   "name": "Продажи",
   "created_at": "2026-10-20T12:00:00Z",
   "source": { "kind": "csv_upload" },
+  "revision": {
+    "number": 2,
+    "profiled_at": "2026-10-21T09:30:00Z",
+    "schema_fingerprint": "5f0c2b7d9a4e81c36b0e7f2a1d94c8e3b6a5f7d2c1e0b9a8f7e6d5c4b3a29180",
+    "source_fingerprint": "a3c1e5f7092b4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6",
+    "transform_version": "2026.10.1"
+  },
   "summary": "Заказы и клиенты за 2021–2024 годы: 2 таблицы, связаны через client_id.",
   "tables": [
     {

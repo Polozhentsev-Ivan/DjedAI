@@ -44,6 +44,7 @@ from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.backend.metric_service import MetricService
 from djedai.backend.model_errors import ModelConfigurationHTTPError
+from djedai.backend.source_reads import CatalogStaleError
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -515,22 +516,32 @@ def stream_chat_turn(
             context = runtime.dataset_context(owner_id, chat_model.dataset_id)
             if context.catalog.dataset_id != chat_model.dataset_id:
                 raise ValueError("Каталог не относится к датасету чата")
-            connection = resources.enter_context(context.open_connection())
+            reader = resources.enter_context(context.open_reader())
+            # All reads of this turn see one PostgreSQL snapshot (B1-11): the answer, its
+            # quality counts and every plan step describe the same source state.
+            reader.share_snapshot(run_id)
+            connection = reader.connection
             allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
             semantics = MetricContext(context.catalog, metrics)
 
             def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
                 if params.get("source_result_id") is not None:
                     raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
-                result = execute_tool(
-                    tool,
-                    params,
-                    connection=connection,
-                    allowed_tables=allowed_tables,
-                    semantics=semantics,
-                )
-                # Потери типизации в колонках именно этого расчёта (B2-10).
-                return assess(result, connection, context.catalog)
+
+                def compute() -> ToolResult:
+                    result = execute_tool(
+                        tool,
+                        params,
+                        connection=connection,
+                        allowed_tables=allowed_tables,
+                        semantics=semantics,
+                    )
+                    # Потери типизации в колонках именно этого расчёта (B2-10).
+                    return assess(result, connection, context.catalog)
+
+                # Ревизия каталога, режим и время чтения источника (B1-11).
+                result, read = reader.run(compute)
+                return result.model_copy(update={"read": read})
 
             def catalog(dataset_id: str) -> DatasetCatalog:
                 if dataset_id != context.catalog.dataset_id:
@@ -830,6 +841,12 @@ def stream_chat_turn(
         if diagnostics is not None:
             diagnostics.finish("cancelled", "CANCELLED")
         return
+    except CatalogStaleError:
+        # A source whose schema no longer matches the catalog is never read silently.
+        if diagnostics is not None:
+            diagnostics.finish("error", "CATALOG_STALE")
+        finish_error(db, user_message_id, run_id, "catalog_stale")
+        yield _error_event("catalog_stale")
     except Exception:  # The stream must end with an event, not a broken connection.
         if diagnostics is not None:
             diagnostics.finish("error", diagnostics.last_error or "TURN_EXCEPTION")

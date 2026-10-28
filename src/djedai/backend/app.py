@@ -103,8 +103,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             max_bytes=cfg.clickhouse_max_bytes,
             query_timeout=cfg.clickhouse_query_timeout,
         ),
+        catalog_max_age_hours=cfg.catalog_max_age_hours,
     )
     app.state.metric_service = MetricService(app.state.session_factory, app.state.dataset_service)
+    from djedai.backend.dashboard_service import DashboardService
+
+    app.state.dashboard_service = DashboardService(cfg)
     try:
         await app.state.dataset_service.recover_interrupted()
         yield
@@ -212,7 +216,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         payload = ErrorResponse(
             error=ToolError(
-                code=codes.get(error.status_code, f"http_{error.status_code}"),
+                code=getattr(error, "code", None)
+                or codes.get(error.status_code, f"http_{error.status_code}"),
                 message=str(error.detail)
                 if error.status_code < 500
                 else "Сервис временно недоступен",
