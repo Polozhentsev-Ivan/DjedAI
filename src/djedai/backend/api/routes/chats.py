@@ -207,22 +207,33 @@ async def send_chat_message(
     permit = None
     if admission is not None:
 
-        def previous_cancelled_run() -> str | None:
+        def previous_finished_run() -> str | None:
             with session_factory() as db:
                 state = db.scalar(
                     select(MessageModel.turn)
                     .where(MessageModel.chat_id == chat_id, MessageModel.role == "user")
-                    .order_by(MessageModel.created_at.desc())
+                    .order_by(MessageModel.created_at.desc(), MessageModel.message_id.desc())
                     .limit(1)
                 )
-                return state.get("run_id") if state and state.get("status") == "cancelled" else None
+                # A durable outcome can precede the worker's final cleanup. The
+                # next explicit question may wait for that exact worker, but must
+                # not overlap it or bypass a running turn or queued follow-up.
+                if state and state.get("status") in {
+                    "success",
+                    "error",
+                    "timeout",
+                    "cancelled",
+                    "interrupted",
+                }:
+                    return state.get("run_id")
+                return None
 
         permit = await admission.acquire_permit(
             owner_id,
             chat_id,
             is_disconnected=request.is_disconnected,
             run_id=run_id,
-            cancelled_run_id=await asyncio.to_thread(previous_cancelled_run),
+            finished_run_id=await asyncio.to_thread(previous_finished_run),
         )
     cancel_event = threading.Event()
     budget = runtime.budget(lambda: cancelled())

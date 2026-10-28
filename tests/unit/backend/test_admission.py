@@ -55,7 +55,7 @@ async def test_confirmed_cancellation_waits_for_physical_worker_release() -> Non
             "owner",
             "chat",
             run_id="new",
-            cancelled_run_id="old",
+            finished_run_id="old",
         )
     )
     other = None
@@ -66,7 +66,7 @@ async def test_confirmed_cancellation_waits_for_physical_worker_release() -> Non
         assert controller.snapshot()["queued_chats_total"] == 1
         with pytest.raises(HTTPException) as duplicate:
             await controller.acquire_permit(
-                "owner", "chat", run_id="duplicate", cancelled_run_id="old"
+                "owner", "chat", run_id="duplicate", finished_run_id="old"
             )
         assert duplicate.value.status_code == 409
         # A blocked same-chat waiter must remain queued without blocking a
@@ -78,7 +78,7 @@ async def test_confirmed_cancellation_waits_for_physical_worker_release() -> Non
         new = await asyncio.wait_for(followup, 1)
         assert controller.snapshot()["active_chats_total"] == 2
         with pytest.raises(HTTPException) as stale:
-            await controller.acquire_permit("owner", "chat", run_id="stale", cancelled_run_id="old")
+            await controller.acquire_permit("owner", "chat", run_id="stale", finished_run_id="old")
         assert stale.value.status_code == 409
         new.release()
     finally:
@@ -103,7 +103,7 @@ async def test_stopping_worker_remains_counted_when_followup_abandons(cancel_wai
             "owner",
             "chat",
             run_id="new",
-            cancelled_run_id="old",
+            finished_run_id="old",
         )
     )
     try:

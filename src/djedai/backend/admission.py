@@ -199,7 +199,7 @@ class ChatAdmissionController:
         *,
         is_disconnected: Callable[[], Awaitable[bool]] | None = None,
         run_id: str | None = None,
-        cancelled_run_id: str | None = None,
+        finished_run_id: str | None = None,
     ) -> Permit:
         """Атомарно запрашивает допуск к вычислениям или ожидает слот в очереди."""
         loop = asyncio.get_running_loop()
@@ -207,16 +207,15 @@ class ChatAdmissionController:
 
         async with self._lock:
             # 1. Запрет одновременных вычислений в одном и том же чате
-            stopping_previous = (
-                cancelled_run_id is not None
-                and self._active_run_ids.get(chat_id) == cancelled_run_id
+            finishing_previous = (
+                finished_run_id is not None and self._active_run_ids.get(chat_id) == finished_run_id
             )
             queued_chat = any(
                 waiter.chat_id == chat_id
                 for queue in self._waiters_by_owner.values()
                 for waiter in queue
             )
-            if queued_chat or (chat_id in self._active_chat_ids and not stopping_previous):
+            if queued_chat or (chat_id in self._active_chat_ids and not finishing_previous):
                 self._log_event(
                     "admission_rejected",
                     owner_id=owner_id,
