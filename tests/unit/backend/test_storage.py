@@ -745,6 +745,29 @@ def test_metadata_restoration(tmp_path: Path) -> None:
         assert loaded.data.truncated is True
 
 
+def test_sensitive_columns_round_trip(tmp_path: Path) -> None:
+    """Чувствительность выходных колонок переживает сохранение и загрузку истории."""
+    engine = create_db_engine("sqlite:///:memory:")
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    res = ToolResult(
+        result_id="r_sensitive_restore",
+        status="ok",
+        tool="describe_column",
+        params={"table": "source_result", "column": "value"},
+        data=ToolResultData(columns=["value", "count"], rows=[["ordinaryCredential9!", 2]]),
+        sensitive_columns=["value"],
+    )
+
+    with session_factory() as db:
+        save_tool_result(db, res, storage_dir=tmp_path)
+        loaded = load_tool_result(db, "r_sensitive_restore", storage_dir=tmp_path)
+
+        assert loaded is not None
+        assert loaded.sensitive_columns == ["value"]
+
+
 def test_tool_result_owner_cascade_delete(tmp_path: Path) -> None:
     """[P2] Проверяет связь ToolResultModel с пользователем и каскадное удаление."""
     engine = create_db_engine("sqlite:///:memory:")

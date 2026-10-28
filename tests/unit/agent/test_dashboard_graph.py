@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.data_policy import REDACTED, DataTransferPolicy
+from djedai.agent.graph import build_agent_graph, execute_dashboard, understand
 from djedai.agent.reasoning import REASONING_STAGES
 from djedai.config import get_limits
 from djedai.contracts.agent import (
@@ -18,7 +21,7 @@ from djedai.contracts.agent import (
 )
 from djedai.contracts.chart import ChartTemplate, XAxis, YMeasure
 from djedai.contracts.dashboard import DashboardSnapshot
-from djedai.contracts.tool_result import ToolError, ToolResult, ToolResultData
+from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
 
 
 def _chart(
@@ -380,3 +383,180 @@ def test_dashboard_branch_reports_unavailable_saver():
     assert result["dashboard_snapshot"] is None
     assert result["answer_blocks"][0].type == "error"
     assert "Сохранение дашбордов" in result["answer_blocks"][0].markdown
+
+
+SECRET_VALUE = "ordinaryCredential9!"
+
+
+def _sensitive_dashboard_plan() -> DashboardPlanResponse:
+    return DashboardPlanResponse(
+        title="Секреты",
+        description="Проверка зависимых виджетов",
+        widgets=[
+            DashboardWidgetPlan(
+                title="Пароли",
+                chart=_chart("ch_password", y=("count",)),
+                steps=[
+                    DashboardStepPlan(
+                        step_id="prep",
+                        tool="run_sql",
+                        args={"sql": "SELECT password AS value FROM accounts"},
+                    ),
+                    DashboardStepPlan(
+                        step_id="profile",
+                        tool="describe_column",
+                        args={"table": "source_result", "column": "value"},
+                        source_step_id="prep",
+                    ),
+                ],
+            ),
+            DashboardWidgetPlan(
+                title="Всего",
+                chart=_chart("ch_total", kind="kpi", x=None, y=("total",)),
+                steps=[
+                    DashboardStepPlan(
+                        step_id="only",
+                        tool="run_sql",
+                        args={"sql": "SELECT COUNT(*) AS total FROM accounts"},
+                    )
+                ],
+            ),
+            DashboardWidgetPlan(
+                title="Категории",
+                chart=_chart("ch_categories"),
+                steps=[
+                    DashboardStepPlan(
+                        step_id="only",
+                        tool="run_sql",
+                        args={
+                            "sql": (
+                                "SELECT category, COUNT(*) AS count FROM accounts GROUP BY category"
+                            )
+                        },
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+def _sensitive_dispatcher():
+    calls: list[tuple[str, dict[str, Any], ToolResult | None]] = []
+
+    def dispatch(tool: str, args: dict[str, Any], source_result: ToolResult | None = None):
+        calls.append((tool, args, source_result))
+        if tool == "run_sql":
+            if args["sql"] == "SELECT password AS value FROM accounts":
+                return ToolResult(
+                    result_id="r_prep",
+                    status="ok",
+                    tool=tool,
+                    sql=args["sql"],
+                    params=args,
+                    data=ToolResultData(columns=["value"], rows=[[SECRET_VALUE]], row_count=1),
+                )
+            return ToolResult(
+                result_id=f"r_extra_{len(calls)}",
+                status="ok",
+                tool=tool,
+                sql=args["sql"],
+                params=args,
+                data=ToolResultData(columns=["category", "count"], rows=[["a", 1]]),
+            )
+        assert source_result is not None
+        return ToolResult(
+            result_id="r_profile",
+            status="ok",
+            tool=tool,
+            params=args,
+            data=ToolResultData(columns=["value", "count"], rows=[[SECRET_VALUE, 2]], row_count=2),
+            facts=[
+                Fact(
+                    text=f"Значение '{SECRET_VALUE}' встречается 2 раз.",
+                    kind="freq",
+                    values={"value": SECRET_VALUE, "count": 2},
+                )
+            ],
+        )
+
+    dispatch.calls = calls  # type: ignore[attr-defined]
+    return dispatch
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_dashboard_dependency_inherits_parent_sensitive_columns(policy) -> None:
+    """Нейтральный алиас родителя остаётся чувствительным в зависимом шаге."""
+    dispatcher = _sensitive_dispatcher()
+
+    result = execute_dashboard(
+        {
+            "chat_id": "chat_test",
+            "dataset_id": "ds_test",
+            "sensitive_columns": ("password",),
+            "dashboard_plan": _sensitive_dashboard_plan(),
+            "results": [],
+        },
+        {"configurable": {"tool_dispatcher": dispatcher, "data_policy": policy}},
+    )
+
+    by_id = {item.result_id: item for item in result["results"]}
+    prep = by_id["r_prep"]
+    profile = by_id["r_profile"]
+    assert prep.sensitive_columns == ["value"]
+    assert profile.source_result_id == "r_prep"
+    assert profile.sensitive_columns == ["value"]
+    # Секрет остаётся в локальных данных, но не в фактах для модели.
+    assert profile.data is not None
+    assert profile.data.rows == [[SECRET_VALUE, 2]]
+    assert SECRET_VALUE not in str(profile.facts)
+    assert REDACTED in str(profile.facts)
+
+    calls = dispatcher.calls  # type: ignore[attr-defined]
+    assert calls[1][2] is not None
+    assert calls[1][2].sensitive_columns == ["value"]
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_history_restores_sensitive_columns_for_next_turn(policy) -> None:
+    """Сохранённая чувствительность дочернего результата очищает контекст хода."""
+    child = ToolResult(
+        result_id="r_history_child",
+        status="ok",
+        tool="describe_column",
+        params={"table": "source_result", "column": "value"},
+        data=ToolResultData(columns=["value", "count"], rows=[[SECRET_VALUE, 2]], row_count=2),
+        facts=[
+            Fact(
+                text=f"Значение '{SECRET_VALUE}' встречается 2 раз.",
+                kind="freq",
+                values={"value": SECRET_VALUE, "count": 2},
+            )
+        ],
+        sensitive_columns=["value"],
+    )
+    client = FakeClient({"understand": [Understanding(intent="data_question")]})
+
+    understand(
+        {
+            "chat_id": "chat_test",
+            "dataset_id": "ds_test",
+            "messages": [Message(role="user", content="Что было в первой колонке?")],
+            "catalog_prompt": "Catalog",
+            "history_results": [child],
+            "focus_result_ids": [child.result_id],
+            "sensitive_columns": ("password",),
+        },
+        {"configurable": {"client": client, "data_policy": policy}},
+    )
+
+    prompt = client.system_prompts[-1]
+    assert SECRET_VALUE not in prompt
+    assert REDACTED in prompt

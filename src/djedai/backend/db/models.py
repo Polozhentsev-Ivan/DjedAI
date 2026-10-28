@@ -231,6 +231,9 @@ class ToolResultModel(Base):
     data_ref = Column(String(512), nullable=True)  # ссылка на Parquet/DuckDB
     data_preview = Column(JSON, nullable=True)  # превью таблицы для небольших данных
     source_result_id = Column(String(64), nullable=True)
+    sensitive_columns = Column(
+        JSON, nullable=True
+    )  # выходные колонки, унаследовавшие чувствительность источника
     duration_ms = Column(Integer, nullable=True)
     metric = Column(JSON, nullable=True)  # MetricProvenance: версия определения метрики
     quality = Column(JSON, nullable=True)  # QualityReport: потери типизации колонок расчёта

@@ -68,6 +68,22 @@ def _policy(config: RunnableConfig | None) -> DataTransferPolicy:
     return policy_for_client(configurable.get("client"))
 
 
+def _result_sensitive_columns(
+    policy: DataTransferPolicy,
+    result: ToolResult,
+    *,
+    sensitive_columns: Collection[str] = (),
+) -> set[str]:
+    """Выходные колонки результата, которые нельзя передавать модели.
+
+    ``sensitive_columns`` — исходные чувствительные имена, известные шагу. Для
+    зависимого шага сюда заранее добавлены выходные колонки родителя: если он
+    скрывал значение под нейтральным алиасом (``password AS value``), имя
+    ``value`` должно оставаться чувствительным и для потомка.
+    """
+    return policy.sensitive_result_columns(result, sensitive_columns=sensitive_columns)
+
+
 def _result_context(state: AgentState, result: ToolResult) -> DataContext:
     current_ids = {item.result_id for item in state.get("results", [])}
     return DataContext.CURRENT_RESULT if result.result_id in current_ids else DataContext.HISTORY
@@ -362,6 +378,7 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                 break
 
             parent: ToolResult | None = None
+            parent_sensitive: set[str] = set()
             if step.source_step_id is not None:
                 parent = execution.results.get(step.source_step_id)
                 if parent is None or parent.status == "error":
@@ -374,6 +391,12 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                         )
                     )
                     break
+                # Данные родителя регистрируются как source_result. Его скрытые
+                # выходные колонки остаются скрытыми и в производных шагах.
+                parent_sensitive = _result_sensitive_columns(
+                    policy, parent, sensitive_columns=sensitive_columns
+                )
+            step_sensitive = (*sensitive_columns, *parent_sensitive)
 
             calls += 1
             try:
@@ -402,6 +425,13 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                 updates: dict = {
                     "tool": step.tool,
                     "params": policy.sanitize_value(dict(step.args)),
+                    "sensitive_columns": sorted(
+                        _result_sensitive_columns(
+                            policy,
+                            res,
+                            sensitive_columns=step_sensitive,
+                        )
+                    ),
                 }
                 if parent is not None:
                     updates["source_result_id"] = parent.result_id
@@ -409,7 +439,7 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                     updates["error"] = policy.sanitize_error(res.error)
                 if res.facts:
                     sensitive = policy.result_has_sensitive_source(
-                        res, sensitive_columns=sensitive_columns
+                        res, sensitive_columns=step_sensitive
                     )
                     updates["facts"] = [
                         policy.sanitize_fact_model(fact, sensitive=sensitive) for fact in res.facts
@@ -430,6 +460,13 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                         code="execution_failed",
                         message=policy.sanitize_text(str(exc)) or "Ошибка выполнения инструмента.",
                     ),
+                )
+                res = res.model_copy(
+                    update={
+                        "sensitive_columns": sorted(
+                            _result_sensitive_columns(policy, res, sensitive_columns=step_sensitive)
+                        )
+                    }
                 )
 
             new_results.append(res)
@@ -531,6 +568,9 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             updates: dict = {
                 "tool": step.tool,
                 "params": policy.sanitize_value(step.args),
+                "sensitive_columns": sorted(
+                    _result_sensitive_columns(policy, res, sensitive_columns=sensitive_columns)
+                ),
             }
             if res.error is not None:
                 updates["error"] = policy.sanitize_error(res.error)
@@ -549,16 +589,25 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
         except (TurnTimeout, TurnCancelled):
             raise
         except Exception as e:
+            error_res = ToolResult(
+                result_id=f"r_{uuid.uuid4().hex[:6]}",
+                status="error",
+                tool=step.tool,
+                params=policy.sanitize_value(step.args),
+                error=ToolError(
+                    code="execution_failed",
+                    message=policy.sanitize_text(str(e)) or "Ошибка выполнения инструмента.",
+                ),
+            )
             new_results.append(
-                ToolResult(
-                    result_id=f"r_{uuid.uuid4().hex[:6]}",
-                    status="error",
-                    tool=step.tool,
-                    params=policy.sanitize_value(step.args),
-                    error=ToolError(
-                        code="execution_failed",
-                        message=policy.sanitize_text(str(e)) or "Ошибка выполнения инструмента.",
-                    ),
+                error_res.model_copy(
+                    update={
+                        "sensitive_columns": sorted(
+                            _result_sensitive_columns(
+                                policy, error_res, sensitive_columns=sensitive_columns
+                            )
+                        )
+                    }
                 )
             )
 

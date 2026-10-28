@@ -622,6 +622,9 @@ def save_tool_result(
         tool_result.quality.model_dump(mode="json") if tool_result.quality is not None else None
     )
     read_data = tool_result.read.model_dump(mode="json") if tool_result.read is not None else None
+    sensitive_columns_data = (
+        list(tool_result.sensitive_columns) if tool_result.sensitive_columns else None
+    )
 
     if record is None:
         record = ToolResultModel(
@@ -638,6 +641,7 @@ def save_tool_result(
             data_ref=data_ref,
             data_preview=data_preview,
             source_result_id=tool_result.source_result_id,
+            sensitive_columns=sensitive_columns_data,
             duration_ms=tool_result.duration_ms,
             metric=metric_data,
             quality=quality_data,
@@ -659,6 +663,7 @@ def save_tool_result(
         record.data_ref = data_ref
         record.data_preview = data_preview
         record.source_result_id = tool_result.source_result_id
+        record.sensitive_columns = sensitive_columns_data
         record.duration_ms = tool_result.duration_ms
         record.metric = metric_data
         record.quality = quality_data
@@ -808,6 +813,11 @@ def load_tool_result(
         params=record.params or {},
         sql=record.sql,
         source_result_id=record.source_result_id,
+        sensitive_columns=(
+            [str(name) for name in record.sensitive_columns]
+            if isinstance(record.sensitive_columns, list)
+            else []
+        ),
         duration_ms=record.duration_ms,
         metric=MetricProvenance.model_validate(record.metric) if record.metric else None,
         quality=QualityReport.model_validate(record.quality) if record.quality else None,

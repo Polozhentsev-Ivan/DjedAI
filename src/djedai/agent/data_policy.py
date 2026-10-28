@@ -279,8 +279,13 @@ class DataTransferPolicy:
         сохраняет значение пароля под нейтральным алиасом. Поэтому для SQL
         прослеживаются проекции до исходных колонок, а ``params.group_by`` и
         другие исходные параметры инструментов проверяются отдельно.
+
+        ``result.sensitive_columns`` фиксирует выходные колонки, унаследованные
+        от родительского шага. Без этого нейтральный алиас ``value`` терял бы
+        связь с ``password`` после сохранения результата и загрузки из истории.
         """
-        known = _folded_names(sensitive_columns)
+        declared = _result_declared_sensitive(result)
+        known = _folded_names((*sensitive_columns, *declared))
         output_names = _result_output_names(result)
         sensitive_outputs = {
             name for name in output_names if name and _is_sensitive_name(name, known)
@@ -288,6 +293,9 @@ class DataTransferPolicy:
         source_sensitive = any(
             _is_sensitive_name(name, known) for name in _result_source_names(result) if name
         )
+        if declared:
+            source_sensitive = True
+            sensitive_outputs.update(declared)
         sql = _result_sql(result)
         if sql is not None:
             sql_outputs, unresolved = _sensitive_sql_outputs(sql, known)
@@ -570,7 +578,23 @@ def _folded_names(names: Collection[str]) -> set[str]:
 
 def _is_sensitive_name(name: str, known: Collection[str]) -> bool:
     """Имя колонки чувствительно по каталогу или встроенной эвристике."""
-    return name.casefold() in known or _is_sensitive_key(name)
+    if name.casefold() in known or _is_sensitive_key(name):
+        return True
+    # Параметры инструментов могут ссылаться на колонку с именем таблицы
+    # (``source_result.value``). Чувствительность определяется по самой колонке.
+    tail = re.split(r"[.\s]+", name.strip())[-1]
+    return bool(tail) and tail != name and (tail.casefold() in known or _is_sensitive_key(tail))
+
+
+def _result_declared_sensitive(result: Any) -> list[str]:
+    """Выходные колонки, чувствительность которых уже зафиксирована в результате."""
+    raw = getattr(result, "sensitive_columns", ()) or ()
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    try:
+        return [str(name) for name in raw if name]
+    except TypeError:
+        return []
 
 
 def _result_output_names(result: Any) -> list[str]:

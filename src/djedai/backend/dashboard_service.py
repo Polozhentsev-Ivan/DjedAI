@@ -13,6 +13,7 @@ import pandas as pd
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from djedai.agent.data_policy import DataTransferPolicy, sensitive_column_names
 from djedai.analytics.metrics import MetricContext
 from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
@@ -434,6 +435,10 @@ class DashboardService:
         catalog = context.catalog
         metrics = metric_service.confirmed(owner_id, dashboard.dataset_id)
         semantics = MetricContext(catalog, metrics)
+        # Режим политики не влияет на определение чувствительности: важен только
+        # набор исходных колонок и происхождение выходных значений.
+        policy = DataTransferPolicy.restricted()
+        catalog_sensitive = sensitive_column_names(catalog)
 
         budget_calls = self.settings.dashboard_max_tool_calls
         calls_count = 0
@@ -503,7 +508,15 @@ class DashboardService:
                         reads.append(read)
                         new_res_id = f"r_{uuid4().hex[:16]}"
                         tool_res = tool_res.model_copy(
-                            update={"result_id": new_res_id, "read": read}
+                            update={
+                                "result_id": new_res_id,
+                                "read": read,
+                                "sensitive_columns": sorted(
+                                    policy.sensitive_result_columns(
+                                        tool_res, sensitive_columns=catalog_sensitive
+                                    )
+                                ),
+                            }
                         )
                         save_tool_result(
                             db,
@@ -569,6 +582,7 @@ class DashboardService:
 
                             step_allowed_tables = set(allowed_base_tables)
                             registered_view = False
+                            step_sensitive: tuple[str, ...] = tuple(catalog_sensitive)
 
                             if step.source_step_id is not None:
                                 parent_res = step_results.get(step.source_step_id)
@@ -585,6 +599,14 @@ class DashboardService:
                                         )
                                     )
                                     break
+                                # Чувствительные выходные колонки родителя
+                                # остаются чувствительными и в source_result.
+                                step_sensitive = (
+                                    *catalog_sensitive,
+                                    *policy.sensitive_result_columns(
+                                        parent_res, sensitive_columns=catalog_sensitive
+                                    ),
+                                )
 
                                 parent_data = parent_res.data
                                 if parent_data is not None and (
@@ -687,6 +709,11 @@ class DashboardService:
                                     "result_id": new_step_id,
                                     "source_result_id": parent_res_id,
                                     "read": read,
+                                    "sensitive_columns": sorted(
+                                        policy.sensitive_result_columns(
+                                            step_res, sensitive_columns=step_sensitive
+                                        )
+                                    ),
                                 }
                             )
                             save_tool_result(

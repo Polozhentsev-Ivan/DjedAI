@@ -791,6 +791,102 @@ def test_intermediate_step_failure_stops_downstream_and_isolates_widget(dashboar
     assert w_other["error"] is None
 
 
+def test_refresh_preserves_inherited_sensitive_columns(dashboard_env):
+    """Refresh сохраняет чувствительность нейтрального алиаса для истории."""
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+    secret = "ordinaryCredential9!"
+
+    duck_file = Path(settings.datasets_data_dir) / "ds_alice" / "dataset.duckdb"
+    with duckdb.connect(str(duck_file)) as con:
+        con.execute("CREATE TABLE accounts (password VARCHAR)")
+        con.execute("INSERT INTO accounts VALUES (?)", [secret])
+
+    with factory() as db:
+        dataset = db.get(DatasetModel, dataset_id)
+        assert dataset is not None
+        catalog = DatasetCatalog.model_validate(dataset.catalog)
+        catalog.tables.append(
+            Table(
+                table_id="accounts",
+                original_name="accounts",
+                row_count=1,
+                duplicate_rows=0,
+                columns=[
+                    Column(
+                        name="password",
+                        original_name="password",
+                        physical_type="VARCHAR",
+                        semantic_type="category",
+                        role="dimension",
+                        null_ratio=0.0,
+                        distinct_count=1,
+                        is_unique=False,
+                    )
+                ],
+            )
+        )
+        dataset.catalog = catalog.model_dump(mode="json")
+        db.commit()
+
+        parent = ToolResult(
+            result_id="r_sensitive_parent",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT password AS value FROM accounts",
+            params={"sql": "SELECT password AS value FROM accounts"},
+            data=ToolResultData(columns=["value"], rows=[[secret]], row_count=1),
+        )
+        child = ToolResult(
+            result_id="r_sensitive_child",
+            source_result_id=parent.result_id,
+            status="ok",
+            tool="run_sql",
+            sql="SELECT value AS v FROM source_result",
+            params={"sql": "SELECT value AS v FROM source_result"},
+            data=ToolResultData(columns=["v"], rows=[[secret]], row_count=1),
+        )
+        for result in (parent, child):
+            save_tool_result(
+                db,
+                result,
+                chat_id="chat_alice",
+                owner_id="u_alice",
+                storage_dir=results_dir,
+            )
+
+    chart = {
+        "chart_id": "c_sensitive",
+        "result_id": "r_sensitive_child",
+        "type": "kpi",
+        "title": "Sensitive",
+    }
+    created = client.post(
+        "/api/dashboards",
+        json={
+            "dataset_id": dataset_id,
+            "result_id": "r_sensitive_child",
+            "chart": chart,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200
+    dashboard_id = created.json()["dashboard_id"]
+
+    refreshed = client.post(f"/api/dashboards/{dashboard_id}/refresh", headers=headers)
+    assert refreshed.status_code == 200
+    widget = refreshed.json()["widgets"][0]
+    assert widget["status"] == "ok"
+
+    with factory() as db:
+        output = db.get(ToolResultModel, widget["result_id"])
+        assert output is not None
+        assert output.sensitive_columns == ["v"]
+        parent_record = db.get(ToolResultModel, output.source_result_id)
+        assert parent_record is not None
+        assert parent_record.sensitive_columns == ["value"]
+
+
 def test_broken_dependency_chain_rejected_on_widget_creation(dashboard_env):
     """Превышение лимита шагов рецепта (MAX_RECIPE_STEPS) отвергается с кодом 422."""
     client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env

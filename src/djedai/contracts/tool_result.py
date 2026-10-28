@@ -145,6 +145,13 @@ class ToolResult(BaseModel):
     source_result_id: str | None = Field(
         default=None, description="ID исходного результата при цепочке расчётов"
     )
+    sensitive_columns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Выходные колонки, значения которых происходят из чувствительного источника; "
+            "нужны для очистки промптов и восстановления чувствительности из истории"
+        ),
+    )
     duration_ms: int | None = Field(default=None, description="Время выполнения в миллисекундах")
     metric: MetricProvenance | None = Field(
         default=None, description="Версия определения метрики и применённые ограничения (B2-9)"
