@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,6 +127,7 @@ def conversation_context(
     results: Sequence[ToolResult],
     previous_blocks: Sequence[Block] = (),
     policy: DataTransferPolicy | None = None,
+    sensitive_columns: Collection[str] = (),
 ) -> str:
     """Текст для промптов: summary, последние реплики, фокус и структура ответа.
 
@@ -148,7 +149,7 @@ def conversation_context(
     if recent:
         sections.append("Последние сообщения диалога:\n" + "\n".join(recent))
 
-    focus = _focus_descriptions(focus_result_ids, results, policy)
+    focus = _focus_descriptions(focus_result_ids, results, policy, sensitive_columns)
     if focus:
         sections.append(
             "Результаты в фокусе разговора (нумерованы для ссылок «первый», "
@@ -166,6 +167,7 @@ def _focus_descriptions(
     focus_result_ids: Sequence[str],
     results: Sequence[ToolResult],
     policy: DataTransferPolicy,
+    sensitive_columns: Collection[str] = (),
 ) -> list[str]:
     by_id = {result.result_id: result for result in results}
     lines: list[str] = []
@@ -183,13 +185,18 @@ def _focus_descriptions(
                 result.data,
                 context=DataContext.HISTORY,
                 max_rows=CONTEXT_RESULT_ROWS,
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
             )
             if data.get("rows"):
                 parts.append(f"sample_rows={data['rows']}")
             elif data.get("rows_omitted"):
                 parts.append("sample_rows=omitted_by_data_policy")
         if result.facts:
-            sensitive = policy.result_has_sensitive_source(result)
+            sensitive = policy.result_has_sensitive_source(
+                result, sensitive_columns=sensitive_columns
+            )
             facts = [
                 policy.sanitize_fact(fact, sensitive=sensitive)["text"]
                 for fact in result.facts[:CONTEXT_FACTS]

@@ -5,6 +5,7 @@ import json
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.memory import (
     HISTORY_WINDOW,
     HistoryEntry,
@@ -210,6 +211,35 @@ def test_conversation_context_contains_summary_messages_focus_and_blocks() -> No
     assert "4. dashboard: Обзор" in context
     assert "5. clarification: Уточните" in context
     assert "6. suggestions: 1" in context
+
+
+def test_focus_redacts_normalized_sensitive_column_from_catalog() -> None:
+    marker = "ordinaryCredential9!"
+    result = ToolResult(
+        result_id="r_password",
+        status="ok",
+        tool="describe_column",
+        params={"table": "orders", "column": "dbpasswordtext"},
+        data=ToolResultData(columns=["dbpasswordtext", "count"], rows=[[marker, 2]]),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                values={"value": marker, "count": 2},
+            )
+        ],
+    )
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[],
+        focus_result_ids=["r_password"],
+        results=[result],
+        policy=DataTransferPolicy.sharing(),
+        sensitive_columns=("dbpasswordtext", "dbPasswordText"),
+    )
+
+    assert marker not in context
+    assert "[REDACTED]" in context
 
 
 def test_conversation_context_is_explicit_when_there_is_no_history() -> None:

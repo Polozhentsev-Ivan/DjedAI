@@ -13,12 +13,15 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
+import sqlglot
 from dotenv import dotenv_values
+from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 REDACTED = "[REDACTED]"
 POLICY_RESTRICTED_MESSAGE = "Запрос содержит данные, запрещённые к передаче модели."
@@ -104,6 +107,31 @@ _SENSITIVE_KEY_WORDS = {
     "credentials",
     "privatekey",
     "dsn",
+}
+# После нормализации compound-имя теряет границы слов. Чувствительный компонент
+# в конце (`dbPassword` -> `dbpassword`) или перед суффиксом, который может
+# хранить значение (`dbPasswordHash` -> `dbpasswordhash`), всё ещё означает
+# credential. Суффиксы выбраны так, чтобы `tokenizer`, `secretary` и
+# `passwordless` не считались секретами.
+_SENSITIVE_DERIVED_SUFFIXES = {
+    "hash",
+    "hashed",
+    "digest",
+    "salt",
+    "pepper",
+    "value",
+    "values",
+    "data",
+    "raw",
+    "plain",
+    "plaintext",
+    "cleartext",
+    "encoded",
+    "encrypted",
+    "ciphertext",
+    "cipher",
+    "key",
+    "keys",
 }
 
 
@@ -242,28 +270,57 @@ class DataTransferPolicy:
             return fact.model_copy(update={"text": safe["text"], "values": safe["values"]})
         return safe
 
-    def result_has_sensitive_source(self, result: Any) -> bool:
-        """Есть ли у результата колонка-источник с чувствительным именем.
+    def _result_sensitivity(
+        self, result: Any, sensitive_columns: Collection[str]
+    ) -> tuple[bool, set[str]]:
+        """Чувствительность результата и его выходные колонки, которые нужно скрыть.
 
-        У ``describe_column``/``value_counts`` имя источника лежит в ``params``;
-        у SQL-результатов — в ``data.columns``. Проверяются и нормализованное
-        имя, и исходный заголовок, если он сохранён.
+        Имена выходных колонок недостаточны: ``SELECT dbpasswordtext AS value``
+        сохраняет значение пароля под нейтральным алиасом. Поэтому для SQL
+        прослеживаются проекции до исходных колонок, а ``params.group_by`` и
+        другие исходные параметры инструментов проверяются отдельно.
         """
-        names: list[str] = []
-        params = getattr(result, "params", None)
-        if isinstance(params, Mapping):
-            for key in ("column", "column_name"):
-                value = params.get(key)
-                if value:
-                    names.append(str(value))
-            params_columns = params.get("columns")
-            if isinstance(params_columns, (list, tuple)):
-                names.extend(_column_name(column) for column in params_columns)
-        data = getattr(result, "data", None)
-        raw_data = _as_mapping(data)
-        for column in raw_data.get("columns") or []:
-            names.append(_column_name(column))
-        return any(_is_sensitive_key(name) for name in names if name)
+        known = _folded_names(sensitive_columns)
+        output_names = _result_output_names(result)
+        sensitive_outputs = {
+            name for name in output_names if name and _is_sensitive_name(name, known)
+        }
+        source_sensitive = any(
+            _is_sensitive_name(name, known) for name in _result_source_names(result) if name
+        )
+        sql = _result_sql(result)
+        if sql is not None:
+            sql_outputs, unresolved = _sensitive_sql_outputs(sql, known)
+            source_sensitive = source_sensitive or bool(sql_outputs) or unresolved
+            if unresolved:
+                sensitive_outputs.update(output_names)
+            else:
+                sensitive_outputs.update(sql_outputs)
+        if source_sensitive and not sensitive_outputs:
+            # Источник чувствителен, но выходной алиас не удалось сопоставить:
+            # безопаснее скрыть все значения строк, чем пропустить пароль.
+            sensitive_outputs.update(output_names)
+        return source_sensitive or bool(sensitive_outputs), sensitive_outputs
+
+    def result_has_sensitive_source(
+        self, result: Any, *, sensitive_columns: Collection[str] = ()
+    ) -> bool:
+        """Есть ли у результата чувствительный источник или выходная колонка.
+
+        У ``describe_column``/``value_counts``/``segment_profile`` имя источника
+        лежит в ``params``; у SQL-результатов — в проекции запроса, поэтому
+        алиас ``value`` не скрывает происхождение из ``dbpasswordtext``.
+        Проверяются нормализованное имя, исходный заголовок и
+        ``sensitive_columns`` — набор имён, полученных из ``original_name``
+        каталога (``dbPasswordText`` -> ``dbpasswordtext``).
+        """
+        return self._result_sensitivity(result, sensitive_columns)[0]
+
+    def sensitive_result_columns(
+        self, result: Any, *, sensitive_columns: Collection[str] = ()
+    ) -> set[str]:
+        """Выходные имена результата, значения которых нельзя передавать модели."""
+        return self._result_sensitivity(result, sensitive_columns)[1]
 
     def sanitize_catalog(self, catalog: Any) -> Any:
         """Копия каталога без значений чувствительных колонок.
@@ -332,6 +389,7 @@ class DataTransferPolicy:
         *,
         context: DataContext,
         max_rows: int = MAX_PROMPT_ROWS,
+        sensitive_columns: Collection[str] = (),
     ) -> dict[str, Any]:
         """Данные результата для промпта: метаданные всегда, строки — по политике."""
         raw = _as_mapping(data)
@@ -345,16 +403,28 @@ class DataTransferPolicy:
 
         rows = raw.get("rows") or []
         if rows and self.allows(DataCategory.CELL_VALUE, context):
-            payload["rows"] = [self._sanitize_row(row, names) for row in rows[:max_rows]]
+            payload["rows"] = [
+                self._sanitize_row(row, names, sensitive_columns=sensitive_columns)
+                for row in rows[:max_rows]
+            ]
             if len(rows) > max_rows:
                 payload["rows_truncated"] = True
         elif rows:
             payload["rows_omitted"] = "data_policy"
         return payload
 
-    def chart_result(self, result: Any, *, context: DataContext) -> dict[str, Any]:
+    def chart_result(
+        self,
+        result: Any,
+        *,
+        context: DataContext,
+        sensitive_columns: Collection[str] = (),
+    ) -> dict[str, Any]:
         """Компактное описание результата для стадии visualize."""
         data = getattr(result, "data", None)
+        sensitive_outputs = self.sensitive_result_columns(
+            result, sensitive_columns=sensitive_columns
+        )
         payload: dict[str, Any] = {
             "result_id": getattr(result, "result_id", ""),
             "tool": getattr(result, "tool", None),
@@ -369,13 +439,16 @@ class DataTransferPolicy:
             rows = raw.get("rows") or []
             if rows and self.allows(DataCategory.CELL_VALUE, context):
                 payload["sample_rows"] = [
-                    self._sanitize_row(row, names) for row in rows[:MAX_CHART_ROWS]
+                    self._sanitize_row(row, names, sensitive_columns=sensitive_outputs)
+                    for row in rows[:MAX_CHART_ROWS]
                 ]
             elif rows:
                 payload["sample_rows_omitted"] = "data_policy"
         facts = getattr(result, "facts", [])
         if facts:
-            sensitive = self.result_has_sensitive_source(result)
+            sensitive = self.result_has_sensitive_source(
+                result, sensitive_columns=sensitive_columns
+            )
             payload["facts"] = [
                 fact["text"]
                 for fact in (self.sanitize_fact(item, sensitive=sensitive) for item in facts)
@@ -433,10 +506,18 @@ class DataTransferPolicy:
                             period[key] = REDACTED
         return safe
 
-    def _sanitize_row(self, row: Any, names: list[str]) -> list[Any]:
+    def _sanitize_row(
+        self,
+        row: Any,
+        names: list[str],
+        *,
+        sensitive_columns: Collection[str] = (),
+    ) -> list[Any]:
+        known = _folded_names(sensitive_columns)
         return [
             REDACTED
-            if index < len(names) and _is_sensitive_key(names[index])
+            if index < len(names)
+            and (names[index].casefold() in known or _is_sensitive_key(names[index]))
             else self.sanitize_value(value)
             for index, value in enumerate(row)
         ]
@@ -473,6 +554,8 @@ def _column_name(column: Any) -> str:
 
 def _column_names(column: Any) -> list[str]:
     """Имена колонки, по которым определяется чувствительность."""
+    if isinstance(column, str):
+        return [column]
     raw = _as_mapping(column)
     return [
         str(raw.get("name") or ""),
@@ -481,8 +564,390 @@ def _column_names(column: Any) -> list[str]:
     ]
 
 
+def _folded_names(names: Collection[str]) -> set[str]:
+    return {str(name).casefold() for name in names if name}
+
+
+def _is_sensitive_name(name: str, known: Collection[str]) -> bool:
+    """Имя колонки чувствительно по каталогу или встроенной эвристике."""
+    return name.casefold() in known or _is_sensitive_key(name)
+
+
+def _result_output_names(result: Any) -> list[str]:
+    raw = _as_mapping(getattr(result, "data", None))
+    return [_column_name(column) for column in raw.get("columns") or []]
+
+
+def _result_source_names(result: Any) -> list[str]:
+    """Имена исходных колонок из параметров инструмента."""
+    names: list[str] = []
+    params = getattr(result, "params", None)
+    if not isinstance(params, Mapping):
+        return names
+    for key in (
+        "column",
+        "column_name",
+        "original_name",
+        "segment_col",
+        "measure",
+        "time_col",
+        "id_column",
+    ):
+        value = params.get(key)
+        if value:
+            names.append(str(value))
+    for key in ("columns", "group_by", "measures"):
+        values = params.get(key)
+        if isinstance(values, (list, tuple)):
+            names.extend(name for column in values for name in _column_names(column))
+    return names
+
+
+def _result_sql(result: Any) -> str | None:
+    params = getattr(result, "params", None)
+    if isinstance(params, Mapping):
+        sql = params.get("sql")
+        if isinstance(sql, str) and sql.strip():
+            return sql
+    sql = getattr(result, "sql", None)
+    return sql if isinstance(sql, str) and sql.strip() else None
+
+
+def _root_select_scopes(root: Scope) -> list[Scope]:
+    """SELECT-ветви, формирующие выходные колонки корневого запроса."""
+    if isinstance(root.expression, exp.Select):
+        return [root]
+    if not isinstance(root.expression, exp.SetOperation):
+        return []
+    branches: list[Scope] = []
+    for branch in root.set_operation_scopes:
+        if isinstance(branch.expression, exp.Select):
+            branches.append(branch)
+        elif isinstance(branch.expression, exp.SetOperation):
+            branches.extend(_root_select_scopes(branch))
+    return branches
+
+
+def _source_for_table(scope: Scope, table: str) -> Any:
+    source = scope.sources.get(table)
+    if source is not None:
+        return source
+    return next(
+        (value for alias, value in scope.sources.items() if alias.casefold() == table.casefold()),
+        None,
+    )
+
+
+def _scope_output_aliases(scope: Scope) -> list[str]:
+    """Имена, заданные списком колонок у CTE или подзапроса (``t(a, b)``)."""
+    parent = scope.expression.parent
+    alias = parent.args.get("alias") if parent is not None else None
+    if isinstance(alias, exp.TableAlias):
+        return [column.name for column in alias.columns]
+    return []
+
+
+def _output_index(selects: list[Scope], aliases: list[str], name: str) -> int | None:
+    """Позиция выходной колонки по имени или по списку псевдонимов."""
+    folded = name.casefold()
+    if aliases:
+        return next(
+            (index for index, alias in enumerate(aliases) if alias.casefold() == folded),
+            None,
+        )
+    first = selects[0].expression
+    return next(
+        (
+            index
+            for index, projection in enumerate(first.expressions)
+            if projection.alias_or_name.casefold() == folded
+        ),
+        None,
+    )
+
+
+def _projection_sensitive(
+    scope: Scope,
+    name: str,
+    sensitive: Collection[str],
+    seen: set[tuple[int, str]],
+) -> bool:
+    key = (id(scope), name)
+    if key in seen:
+        return True  # An unresolved recursive projection must remain private.
+    # Track only the current recursion path. Sibling projections may reuse the
+    # same CTE column and must independently retain its sensitivity.
+    seen = seen | {key}
+    selects = _root_select_scopes(scope)
+    if not selects:
+        return False
+    aliases = _scope_output_aliases(scope)
+    index = _output_index(selects, aliases, name)
+    if index is not None:
+        for select in selects:
+            projections = select.expression.expressions
+            if index >= len(projections):
+                continue
+            projection = projections[index]
+            is_star, _ = _star_projection(projection)
+            if is_star:
+                if aliases:
+                    # Переименованная звёздочка: позицию колонки в источнике
+                    # без схемы определить нельзя, поэтому скрываем её.
+                    return True
+                names, unresolved = _star_sensitive_names(select, projection, sensitive, seen)
+                if names or unresolved:
+                    return True
+                continue
+            if _expression_mentions_sensitive(projection, select, sensitive, seen):
+                return True
+        return False
+    # Звёздочка раскрывается в набор колонок; имя могло прийти из неё.
+    for select in selects:
+        for projection in select.expression.expressions:
+            is_star, _ = _star_projection(projection)
+            if not is_star:
+                continue
+            star_names, star_unresolved = _star_sensitive_names(select, projection, sensitive, seen)
+            if star_unresolved or name.casefold() in _folded_names(star_names):
+                return True
+    # СУБД может сгенерировать имя из выражения без алиаса. Сопоставить его
+    # с проекцией нельзя, поэтому проверяем все безымянные выражения.
+    return any(
+        not projection.alias_or_name
+        and _expression_mentions_sensitive(projection, select, sensitive, seen)
+        for select in selects
+        for projection in select.expression.expressions
+    )
+
+
+def _column_mentions_sensitive(
+    column: exp.Column,
+    scope: Scope,
+    sensitive: Collection[str],
+    seen: set[tuple[int, str]],
+) -> bool:
+    is_star, _ = _star_projection(column)
+    if is_star:
+        names, _ = _star_sensitive_names(scope, column, sensitive, seen)
+        return bool(names)
+    name = column.name.casefold()
+    if name in sensitive or _is_sensitive_key(column.name):
+        return True
+    sources = (
+        [_source_for_table(scope, column.table)] if column.table else list(scope.sources.values())
+    )
+    return any(
+        isinstance(source, Scope) and _projection_sensitive(source, name, sensitive, seen)
+        for source in sources
+        if source is not None
+    )
+
+
+def _expression_mentions_sensitive(
+    expression: exp.Expression,
+    scope: Scope,
+    sensitive: Collection[str],
+    seen: set[tuple[int, str]],
+) -> bool:
+    return any(
+        _column_mentions_sensitive(column, scope, sensitive, seen)
+        for column in expression.find_all(exp.Column)
+    )
+
+
+def _star_expression(expression: exp.Expression) -> exp.Star | None:
+    """Узел звёздочки у проекции ``*`` или ``a.*``."""
+    if isinstance(expression, exp.Star):
+        return expression
+    if isinstance(expression, exp.Column) and isinstance(expression.this, exp.Star):
+        return expression.this
+    return None
+
+
+def _star_projection(expression: exp.Expression) -> tuple[bool, str | None]:
+    """Является ли проекция звёздочкой и какая таблица у неё указана."""
+    star = _star_expression(expression)
+    if star is None:
+        return False, None
+    table = expression.table if isinstance(expression, exp.Column) else None
+    return True, table
+
+
+def _star_modifier_items(star: exp.Star) -> list[exp.Alias]:
+    items: list[exp.Alias] = []
+    for key in ("replace", "rename"):
+        items.extend(item for item in star.args.get(key) or [] if isinstance(item, exp.Alias))
+    return items
+
+
+def _star_modifier_names(
+    star: exp.Star,
+    scope: Scope,
+    sensitive: Collection[str],
+    seen: set[tuple[int, str]],
+) -> set[str]:
+    """Выходные имена ``* REPLACE``/``* RENAME``, куда попадает чувствительное значение."""
+    return {
+        item.alias
+        for item in _star_modifier_items(star)
+        if item.alias and _expression_mentions_sensitive(item.this, scope, sensitive, seen)
+    }
+
+
+def _star_sensitive_names(
+    scope: Scope,
+    expression: exp.Expression,
+    sensitive: Collection[str],
+    seen: set[tuple[int, str]],
+) -> tuple[set[str], bool]:
+    """Чувствительные колонки, раскрываемые звёздочкой; ``unresolved`` — если их не видно."""
+    is_star, table = _star_projection(expression)
+    if not is_star:
+        return set(), False
+    key = (id(scope), f"*{id(expression)}")
+    if key in seen:
+        return set(), True
+    seen = seen | {key}
+    star = _star_expression(expression)
+    names = _star_modifier_names(star, scope, sensitive, seen) if star is not None else set()
+    # REPLACE/RENAME могут создать одинаковые имена колонок; СУБД добавит
+    # суффикс, и позицию чувствительного значения нельзя сопоставить с именем.
+    # Без единого чувствительного признака модификатор безопасен.
+    modifiers = _star_modifier_items(star) if star is not None else []
+    unresolved = bool(
+        modifiers
+        and (
+            bool(sensitive)
+            or bool(names)
+            or any(item.alias and _is_sensitive_key(item.alias) for item in modifiers)
+        )
+    )
+    sources = [_source_for_table(scope, table)] if table else list(scope.sources.values())
+    for source in sources:
+        if not isinstance(source, Scope):
+            # Состав таблицы неизвестен; прямые имена колонок проверит результат.
+            continue
+        selects = _root_select_scopes(source)
+        if not selects:
+            continue
+        aliases = _scope_output_aliases(source)
+        first = selects[0].expression
+        for index, projection in enumerate(first.expressions):
+            output_name = aliases[index] if index < len(aliases) else projection.alias_or_name
+            is_star, _ = _star_projection(projection)
+            if is_star:
+                if aliases:
+                    # Переименованная звёздочка: позиции выходных колонок
+                    # нельзя сопоставить с исходными без схемы.
+                    unresolved = True
+                    continue
+                inner_names, inner_unresolved = _star_sensitive_names(
+                    source, projection, sensitive, seen
+                )
+                names.update(inner_names)
+                unresolved = unresolved or inner_unresolved
+                continue
+            hit = any(
+                index < len(branch.expression.expressions)
+                and _expression_mentions_sensitive(
+                    branch.expression.expressions[index], branch, sensitive, seen
+                )
+                for branch in selects
+            )
+            if not hit:
+                continue
+            if output_name:
+                names.add(output_name)
+            else:
+                unresolved = True
+    return names, unresolved
+
+
+def _sql_mentions_sensitive(sql: str, sensitive: Collection[str]) -> bool:
+    folded = sql.casefold()
+    return any(name in folded for name in sensitive if name)
+
+
+def _sensitive_sql_outputs(sql: str, sensitive: Collection[str]) -> tuple[set[str], bool]:
+    """Выходные имена SQL, которые происходят из чувствительных колонок.
+
+    Второе значение — ``unresolved``: SQL содержит чувствительную проекцию, но
+    её выходное имя нельзя сопоставить с ``ToolResultData.columns`` (например,
+    выражение без алиаса). Тогда вызывающий очищает все выходные колонки.
+    """
+    known = _folded_names(sensitive)
+    try:
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception:
+        return set(), _sql_mentions_sensitive(sql, known)
+    if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.Union)):
+        return set(), _sql_mentions_sensitive(sql, known)
+    try:
+        scopes = list(traverse_scope(statements[0]))
+    except Exception:
+        return set(), _sql_mentions_sensitive(sql, known)
+    branches = _root_select_scopes(scopes[-1]) if scopes else []
+    if not branches:
+        return set(), _sql_mentions_sensitive(sql, known)
+
+    seen: set[tuple[int, str]] = set()
+    names: set[str] = set()
+    unresolved = False
+    first = branches[0].expression
+    for index, projection in enumerate(first.expressions):
+        hit = False
+        for branch in branches:
+            if index >= len(branch.expression.expressions):
+                continue
+            expression = branch.expression.expressions[index]
+            is_star, _ = _star_projection(expression)
+            if is_star:
+                star_names, star_unresolved = _star_sensitive_names(branch, expression, known, seen)
+                names.update(star_names)
+                unresolved = unresolved or star_unresolved
+                hit = hit or bool(star_names) or star_unresolved
+            elif _expression_mentions_sensitive(expression, branch, known, seen):
+                hit = True
+        if not hit:
+            continue
+        is_star, _ = _star_projection(projection)
+        if is_star:
+            # В UNION звёздочка первой ветви раскрывается в несколько выходных
+            # колонок, поэтому позицию чувствительной ветви нельзя сопоставить
+            # с именем. Безопаснее очистить весь результат.
+            if len(branches) > 1:
+                unresolved = True
+            continue
+        alias = projection.alias_or_name
+        if alias:
+            names.add(alias)
+        else:
+            unresolved = True
+    return names, unresolved
+
+
 def _is_sensitive_column(column: Any) -> bool:
     return any(_is_sensitive_key(name) for name in _column_names(column) if name)
+
+
+def sensitive_column_names(catalog: Any) -> tuple[str, ...]:
+    """Нормализованные имена колонок, чувствительные по исходному заголовку.
+
+    ``dbPasswordText`` после нормализации становится ``dbpasswordtext``: границы
+    слов потеряны, и суффикс ``text`` сам по себе ничего не говорит о секрете.
+    Поэтому чувствительность определяется по ``original_name`` каталога, а в
+    результат добавляется и нормализованное имя — по нему колонку можно найти в
+    ``ToolResult``.
+    """
+    names: set[str] = set()
+    for table in _as_mapping(catalog).get("tables") or []:
+        for column in table.get("columns") or []:
+            name = str(column.get("name") or "")
+            original = str(column.get("original_name") or "")
+            if (name and _is_sensitive_key(name)) or (original and _is_sensitive_key(original)):
+                names.update(item for item in (name, original) if item)
+    return tuple(sorted(names))
 
 
 def _column_values(column: Mapping[str, Any]) -> list[Any]:
@@ -538,6 +1003,9 @@ _SAFE_FACT_VALUE_KEYS = {
     "row_count",
     "rows",
     "columns",
+    "segment_count",
+    "total_rows",
+    "size",
     "table",
     "column",
     "name",
@@ -584,11 +1052,32 @@ def _key_parts(key: str) -> list[str]:
     return [part for part in re.split(r"[^a-zA-Z0-9]+", spaced.lower()) if part]
 
 
+def _is_sensitive_suffix(suffix: str) -> bool:
+    """Может ли хвост после чувствительного слова хранить его значение."""
+    if not suffix:
+        return True
+    for derived in _SENSITIVE_DERIVED_SUFFIXES:
+        if suffix == derived:
+            return True
+        if suffix.startswith(derived) and _is_sensitive_suffix(suffix[len(derived) :]):
+            return True
+    return False
+
+
 def _is_sensitive_key(key: str) -> bool:
     parts = _key_parts(key)
-    if "".join(parts) in _SENSITIVE_KEY_NAMES:
+    joined = "".join(parts)
+    if joined in _SENSITIVE_KEY_NAMES:
         return True
-    return any(part in _SENSITIVE_KEY_WORDS for part in parts)
+    if any(part in _SENSITIVE_KEY_WORDS for part in parts):
+        return True
+    for word in _SENSITIVE_KEY_WORDS:
+        start = joined.find(word)
+        while start != -1:
+            if _is_sensitive_suffix(joined[start + len(word) :]):
+                return True
+            start = joined.find(word, start + 1)
+    return False
 
 
 def _sanitize_json_fragments(text: str) -> str:
