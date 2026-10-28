@@ -69,6 +69,38 @@ uv run --locked pytest tests/integration/test_cp1_smoke.py -q
 
 Python-команды запускаем в среде проекта через uv. Серверная логика приложения остаётся в `src/djedai/`, браузерный интерфейс — в [frontend/](../frontend/README.md); отчёты и выгрузки — вне исходного кода. Текущие `check-repository.mjs` и его тесты проверяют структуру, UTF-8, локальные ссылки и запрет сгенерированных файлов. Frontend npm scripts и его CI появятся в B4-1 / #83 вместе с рабочим каркасом.
 
+## Прогон данных организаторов HK_Datasets без LLM
+
+Протокол и результаты — в [отчёте PL-3](../docs/pl3-hk-datasets-run.md).
+`hk_datasets.py` скачивает девять CSV закреплённой ревизии по манифесту
+[`eval/hk_datasets_manifest.json`](../eval/hk_datasets_manifest.json): докачка по HTTP Range,
+повтор при обрыве соединения, проверка Git blob. Файлы кэшируются в `artifacts/hk-datasets/`.
+
+`check_hk_datasets.py` проверяет штатные загрузку, типизацию, профиль и ключевые аналитические
+запросы. Эталон строится без кода платформы: `csv.reader` считает записи, отдельная DuckDB
+читает файлы с типами из README организаторов. Каждый этап пишет время и пиковую память;
+результат — `artifacts/hk-check/<UTC>-<суффикс>/report.json` и `report.md`.
+
+```sh
+# Скачать данные, построить эталон, загрузить CSV одним датасетом, выполнить запросы.
+uv run --locked python scripts/check_hk_datasets.py
+
+# Только часть файлов.
+uv run --locked python scripts/check_hk_datasets.py --tables 08,09
+
+# Прямое подключение к демо-БД: таблицы загружаются с типами README, затем подключаются
+# штатно. Нужны DJEDAI_DEMO_{PG_LOADER_DSN,PG_READER_DSN,CH_LOADER_URL,CH_READER_URL}.
+# --ch-max-rows повторяет подключение ClickHouse с другим лимитом строк, если штатный не прошёл.
+OPENSSL_CONF=/dev/null uv run --locked python scripts/check_hk_datasets.py \
+  --stages postgres,clickhouse --reference artifacts/hk-check/<run>/reference.duckdb
+
+# Сравнить два прогона: время этапов, память, типы, статусы и сверку запросов.
+uv run --locked python scripts/check_hk_datasets.py --compare before.json after.json
+```
+
+Код выхода 0 и `status: finished` означают, что все этапы выполнены. Расхождения с эталоном
+не прерывают прогон, а отмечаются в отчёте (`match: false`, `type_mismatches`).
+
 ## Команды
 
 - `verify_golden.py` — проверка [golden-набора](../eval/README.md) для сценариев 1–10 и edge cases (#79/#80). Проверяет минимумы всех групп, контекст, рубрики графиков/дашбордов и отдельно ошибки ввода. Сверяет закреплённый полный CSV HK_Datasets по размеру/SHA-256/Git blob и независимо пересчитывает группировки, корреляции, лаги и условные прогнозы средствами стандартной библиотеки Python.

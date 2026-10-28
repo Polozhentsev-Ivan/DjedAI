@@ -13,7 +13,8 @@
 
 Колонка получает тип, если распознана доля ``TYPE_PARSE_THRESHOLD`` непустых значений;
 иначе она остаётся текстом. ID с ведущими нулями (``00123``) и колонки ``*_id``
-с целыми числами остаются текстом.
+с целыми числами остаются текстом. Валюта денег берётся из значений, а если там её нет —
+из единицы в конце заголовка (``Цена, руб.``).
 """
 
 from __future__ import annotations
@@ -55,6 +56,11 @@ CURRENCIES = {
     "CHF": ("chf",),
 }
 _CURRENCY_ANY = "|".join(token for tokens in CURRENCIES.values() for token in tokens)
+# Единица в конце заголовка: «Цена, руб.», «Сумма (USD)», «Выручка ₽».
+_HEADER_CURRENCY = {
+    code: re.compile(rf"(?i)(?:^|[\s,(]){_WS}(?:{'|'.join(tokens)}){_WS}\)?{_WS}$")
+    for code, tokens in CURRENCIES.items()
+}
 
 TRUE_WORDS = ("true", "yes", "да")
 FALSE_WORDS = ("false", "no", "нет")
@@ -420,7 +426,7 @@ def _infer_column(
         outcome = _Reject("empty_column")
     else:
         for step in (_try_bool, _try_number, _try_date):
-            outcome = step(connection, table, column, name, stats)
+            outcome = step(connection, table, column, name, stats, original)
             if outcome is not None:
                 break
     value = f"trim({column})"
@@ -515,7 +521,7 @@ def _rename_entries(original: str, name: str) -> tuple[tuple[str, dict], ...]:
     return (("rename_column", {"from": original, "to": name}),)
 
 
-def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
+def _try_bool(connection, table, column, name, stats, header) -> _Candidate | None:
     if not _meets_threshold(stats["bool"], stats["ne"]):
         return None
     value = f"lower(trim({column}))"
@@ -528,7 +534,7 @@ def _try_bool(connection, table, column, name, stats) -> _Candidate | None:
     return _Candidate("parse_bool", "BOOLEAN", "bool", None, expr, {})
 
 
-def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject | None:
+def _try_number(connection, table, column, name, stats, header) -> _Candidate | _Reject | None:
     fits = {d: _meets_threshold(stats[f"num{d}"], stats["ne"]) for d in (",", ".")}
     if not any(fits.values()):
         return None
@@ -568,6 +574,13 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
 
     separator = "decimal_comma" if decimal == "," else "decimal_point"
     detail: dict = {"decimal_separator": decimal}
+    if not currencies and not percent:
+        # Валюта указана только в заголовке («Цена, руб.»), значения — просто числа.
+        currencies = [code for code, unit in _HEADER_CURRENCY.items() if unit.search(header)]
+        if len(currencies) == 1:
+            detail["currency_source"] = "header"
+        else:
+            currencies = []
     if ambiguous:
         detail["note"] = "ambiguous_separator: одиночный разделитель принят за десятичный"
     scale = min(max(scale, 2), MAX_SCALE)
@@ -588,7 +601,7 @@ def _try_number(connection, table, column, name, stats) -> _Candidate | _Reject 
     return _Candidate(action, physical, semantic, fmt, expr, detail)
 
 
-def _try_date(connection, table, column, name, stats) -> _Candidate | _Reject | None:
+def _try_date(connection, table, column, name, stats, header) -> _Candidate | _Reject | None:
     counts = [(stats[f"fmt{i}"], i) for i in range(len(_TEMPORAL))]
     best = max(count for count, _ in counts)
     if not _meets_threshold(best, stats["ne"]):

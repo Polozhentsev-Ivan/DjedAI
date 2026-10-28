@@ -375,3 +375,52 @@ def test_column_just_below_threshold_keeps_candidate_and_ratio(con, tmp_path):
     assert column.semantic_type == "text"
     detail = journal(con, "keep_text")[0].detail
     assert detail == {"reason": "below_threshold", "candidate": "number", "success_ratio": 0.94}
+
+
+def typed_header(con, tmp_path, header: str, values: list[str]):
+    """Заголовок с запятой («Цена, руб.») целиком — одна колонка: разделитель ``;``."""
+    path = tmp_path / "t.csv"
+    path.write_text(
+        "\n".join([f'"{header}";k', *(f'"{value}";x' for value in values)]) + "\n",
+        encoding="utf-8",
+    )
+    view = create_typed_view(con, load_raw_csv(con, path))
+    column = view.columns[0]
+    out = [r[0] for r in con.execute(f'SELECT "{column.name}" FROM "{view.view_name}"').fetchall()]
+    return view, column, out
+
+
+@pytest.mark.parametrize(
+    ("header", "currency"),
+    [
+        ("Цена до скидки за единицу, руб.", "RUB"),
+        ("Выручка (₽)", "RUB"),
+        ("Revenue, USD", "USD"),
+        ("Сумма €", "EUR"),
+    ],
+)
+def test_currency_from_header_unit_when_values_have_none(con, tmp_path, header, currency):
+    # HK_Datasets (#49): «Цена до скидки за единицу, руб.» со значениями «298,70».
+    view, column, out = typed_header(con, tmp_path, header, ["298,70", "1 116,00"])
+    assert column.semantic_type == "money"
+    assert out == [Decimal("298.70"), Decimal("1116.00")]
+    entry = journal(con, "parse_money")[0]
+    assert entry.detail["currency"] == currency
+    assert entry.detail["currency_source"] == "header"
+    assert read_currencies(con) == {(view.view_name, column.name): currency}
+
+
+@pytest.mark.parametrize(
+    "header", ["Скидка, %", "Количество, шт.", "Рубрика", "Время обработки, мс", "rubric"]
+)
+def test_header_without_currency_unit_keeps_number(con, tmp_path, header):
+    _, column, _ = typed_header(con, tmp_path, header, ["28", "7"])
+    assert column.semantic_type == "integer"
+    assert read_currencies(con) == {}
+
+
+def test_currency_in_values_wins_over_header(con, tmp_path):
+    typed_header(con, tmp_path, "Цена, руб.", ["$10.50", "$20.00"])
+    entry = journal(con, "parse_money")[0]
+    assert entry.detail["currency"] == "USD"
+    assert "currency_source" not in entry.detail

@@ -105,7 +105,7 @@ class SourceTooLargeError(ClickHouseError):
 class ClickHouseLimits:
     """Порог материализации: суммарно по выбранным таблицам и на сервере для каждой выгрузки."""
 
-    max_rows: int = 5_000_000
+    max_rows: int = 10_000_000
     max_bytes: int = 1_000_000_000
     query_timeout: int = QUERY_TIMEOUT
 

@@ -1,0 +1,873 @@
+{
+  "source": "https://gitverse.ru/kban/HK_Datasets",
+  "revision": "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d",
+  "raw_url": "https://gitverse.ru/api/repos/kban/HK_Datasets/raw/commit/{revision}/{file}",
+  "format": {
+    "encoding": "utf-8",
+    "delimiter": ";",
+    "decimal": ",",
+    "header": true
+  },
+  "note": "Типы, число строк и полей перенесены из README.md этой ревизии; key, self_refs и category_codes — из описаний полей там же.",
+  "tables": [
+    {
+      "file": "01_Продажи.csv",
+      "size": 188324476,
+      "blob": "d9173eebe2679edd67a164ca5c0baaf709fbd7cb",
+      "rows": 500000,
+      "key": [
+        "Код позиции"
+      ],
+      "self_refs": [
+        [
+          "Код исходной позиции",
+          "Код позиции"
+        ]
+      ],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код позиции",
+          "type": "text",
+          "example": "ПР-ПЗ-0000001"
+        },
+        {
+          "name": "Код заказа",
+          "type": "text",
+          "example": "ПР-ЗК-0000001"
+        },
+        {
+          "name": "Номер позиции",
+          "type": "integer",
+          "example": "1"
+        },
+        {
+          "name": "Дата операции (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 02:27:58"
+        },
+        {
+          "name": "Код покупателя",
+          "type": "text",
+          "example": "ПР-КЛ-038799"
+        },
+        {
+          "name": "Уровень программы лояльности",
+          "type": "text",
+          "example": "Серебряный"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Пермь"
+        },
+        {
+          "name": "Регион",
+          "type": "text",
+          "example": "Пермский край"
+        },
+        {
+          "name": "Федеральный округ",
+          "type": "text",
+          "example": "Приволжский"
+        },
+        {
+          "name": "Канал продажи",
+          "type": "text",
+          "example": "Интернет-магазин"
+        },
+        {
+          "name": "Код магазина",
+          "type": "text",
+          "example": "ПР-ТТ-01-03"
+        },
+        {
+          "name": "Артикул",
+          "type": "text",
+          "example": "ПР-ТВ-0058"
+        },
+        {
+          "name": "Категория товара",
+          "type": "text",
+          "example": "Канцелярия"
+        },
+        {
+          "name": "Товар",
+          "type": "text",
+          "example": "Ручки шариковые, 10 шт."
+        },
+        {
+          "name": "Количество, шт.",
+          "type": "integer",
+          "example": "9"
+        },
+        {
+          "name": "Цена до скидки за единицу, руб.",
+          "type": "decimal",
+          "example": "298,70"
+        },
+        {
+          "name": "Скидка, %",
+          "type": "integer",
+          "example": "28"
+        },
+        {
+          "name": "Себестоимость единицы, руб.",
+          "type": "decimal",
+          "example": "116,00"
+        },
+        {
+          "name": "Способ оплаты",
+          "type": "text",
+          "example": "Банковская карта"
+        },
+        {
+          "name": "Тип покупателя",
+          "type": "text",
+          "example": "Физическое лицо"
+        },
+        {
+          "name": "Тип операции",
+          "type": "text",
+          "example": "Продажа"
+        },
+        {
+          "name": "Код исходной позиции",
+          "type": "text",
+          "example": "ПР-ПЗ-0000313"
+        }
+      ]
+    },
+    {
+      "file": "02_Техническая_поддержка.csv",
+      "size": 181721714,
+      "blob": "9aa36cbea675f54ae3d1f4c7f815eb6feddfc48d",
+      "rows": 500000,
+      "key": [
+        "Код обращения"
+      ],
+      "self_refs": [
+        [
+          "Код предыдущего обращения",
+          "Код обращения"
+        ]
+      ],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код обращения",
+          "type": "text",
+          "example": "ПД-ОБ-0000001"
+        },
+        {
+          "name": "Создано (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 00:25:29"
+        },
+        {
+          "name": "Первый ответ (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 01:12:29"
+        },
+        {
+          "name": "Закрыто (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 18:00:29"
+        },
+        {
+          "name": "Код клиента",
+          "type": "text",
+          "example": "ПД-КЛ-015478"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Ростов-на-Дону"
+        },
+        {
+          "name": "Регион",
+          "type": "text",
+          "example": "Ростовская область"
+        },
+        {
+          "name": "Канал обращения",
+          "type": "text",
+          "example": "Чат в приложении"
+        },
+        {
+          "name": "Тема",
+          "type": "text",
+          "example": "Доставка"
+        },
+        {
+          "name": "Заголовок",
+          "type": "text",
+          "example": "Курьер не связался перед приездом"
+        },
+        {
+          "name": "Приоритет",
+          "type": "text",
+          "example": "Обычный"
+        },
+        {
+          "name": "Группа поддержки",
+          "type": "text",
+          "example": "Доставка заказов"
+        },
+        {
+          "name": "Код оператора",
+          "type": "text",
+          "example": "ПД-ОП-03-013"
+        },
+        {
+          "name": "Статус",
+          "type": "text",
+          "example": "Закрыто"
+        },
+        {
+          "name": "Норматив решения, ч",
+          "type": "integer",
+          "example": "48"
+        },
+        {
+          "name": "Повторные открытия",
+          "type": "integer",
+          "example": "0"
+        },
+        {
+          "name": "Оценка клиента",
+          "type": "integer",
+          "example": "3"
+        },
+        {
+          "name": "Код предыдущего обращения",
+          "type": "text",
+          "example": "ПД-ОБ-0000078"
+        }
+      ]
+    },
+    {
+      "file": "03_Задачи_команд.csv",
+      "size": 189362335,
+      "blob": "77e5407c3521451a0c28e73b2294955fcb9bd392",
+      "rows": 500000,
+      "key": [
+        "Код задачи"
+      ],
+      "self_refs": [],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код задачи",
+          "type": "text",
+          "example": "ЗД-ЗД-0000001"
+        },
+        {
+          "name": "Название задачи",
+          "type": "text",
+          "example": "Уточнить характеристики новых товаров"
+        },
+        {
+          "name": "Направление",
+          "type": "text",
+          "example": "Каталог товаров"
+        },
+        {
+          "name": "Тип задачи",
+          "type": "text",
+          "example": "Подготовка данных"
+        },
+        {
+          "name": "Команда",
+          "type": "text",
+          "example": "Каталог товаров / Екатеринбург"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Екатеринбург"
+        },
+        {
+          "name": "Код исполнителя",
+          "type": "text",
+          "example": "ЗД-СП-030405"
+        },
+        {
+          "name": "Приоритет",
+          "type": "text",
+          "example": "Обычный"
+        },
+        {
+          "name": "Статус",
+          "type": "text",
+          "example": "Завершена"
+        },
+        {
+          "name": "Создано (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 14:43:22"
+        },
+        {
+          "name": "Начало работы (МСК)",
+          "type": "datetime",
+          "example": "2024-10-03 23:28:23"
+        },
+        {
+          "name": "Срок выполнения (МСК)",
+          "type": "datetime",
+          "example": "2024-10-06 14:43:22"
+        },
+        {
+          "name": "Завершено (МСК)",
+          "type": "datetime",
+          "example": "2024-10-04 13:51:32"
+        },
+        {
+          "name": "Обновлено (МСК)",
+          "type": "datetime",
+          "example": "2024-10-04 13:51:32"
+        },
+        {
+          "name": "Плановые трудозатраты, ч",
+          "type": "decimal",
+          "example": "4,00"
+        },
+        {
+          "name": "Фактические трудозатраты, ч",
+          "type": "decimal",
+          "example": "3,00"
+        }
+      ]
+    },
+    {
+      "file": "04_Доставка.csv",
+      "size": 148423087,
+      "blob": "b2308185e97c3899aeb752b92d791f145b7814ec",
+      "rows": 500000,
+      "key": [
+        "Код отправления"
+      ],
+      "self_refs": [],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код отправления",
+          "type": "text",
+          "example": "ДС-ОТ-0000001"
+        },
+        {
+          "name": "Принято (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 14:20:19"
+        },
+        {
+          "name": "Передано перевозчику (МСК)",
+          "type": "datetime",
+          "example": "2024-10-02 04:03:10"
+        },
+        {
+          "name": "Обещанный срок (МСК)",
+          "type": "datetime",
+          "example": "2024-10-02 21:00:00"
+        },
+        {
+          "name": "Доставлено (МСК)",
+          "type": "datetime",
+          "example": "2024-10-02 17:27:41"
+        },
+        {
+          "name": "Возвращено отправителю (МСК)",
+          "type": "datetime",
+          "example": "2024-10-12 18:39:49"
+        },
+        {
+          "name": "Город отправления",
+          "type": "text",
+          "example": "Новосибирск"
+        },
+        {
+          "name": "Регион отправления",
+          "type": "text",
+          "example": "Новосибирская область"
+        },
+        {
+          "name": "Город получения",
+          "type": "text",
+          "example": "Новосибирск"
+        },
+        {
+          "name": "Регион получения",
+          "type": "text",
+          "example": "Новосибирская область"
+        },
+        {
+          "name": "Перевозчик",
+          "type": "text",
+          "example": "Курьерская служба"
+        },
+        {
+          "name": "Способ доставки",
+          "type": "text",
+          "example": "Пункт выдачи"
+        },
+        {
+          "name": "Вес, кг",
+          "type": "decimal",
+          "example": "0,880"
+        },
+        {
+          "name": "Стоимость доставки, руб.",
+          "type": "decimal",
+          "example": "152,06"
+        },
+        {
+          "name": "Статус",
+          "type": "text",
+          "example": "Доставлено"
+        },
+        {
+          "name": "Попытки вручения",
+          "type": "integer",
+          "example": "1"
+        },
+        {
+          "name": "Причина отмены или возврата",
+          "type": "text",
+          "example": "Отмена получателем"
+        }
+      ]
+    },
+    {
+      "file": "05_События_приложения.csv",
+      "size": 223284610,
+      "blob": "cad817ab50dc9baa9d28ef5b7b909485430758d6",
+      "rows": 1000000,
+      "key": [
+        "Код события"
+      ],
+      "self_refs": [],
+      "category_codes": [
+        "Версия приложения"
+      ],
+      "columns": [
+        {
+          "name": "Код события",
+          "type": "text",
+          "example": "СП-СБ-00000001"
+        },
+        {
+          "name": "Время события (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 00:56:26"
+        },
+        {
+          "name": "Код пользователя",
+          "type": "text",
+          "example": "СП-ПЛ-042459"
+        },
+        {
+          "name": "Код сессии",
+          "type": "text",
+          "example": "СП-СС-0000001"
+        },
+        {
+          "name": "Номер события в сессии",
+          "type": "integer",
+          "example": "1"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Нижний Новгород"
+        },
+        {
+          "name": "Регион",
+          "type": "text",
+          "example": "Нижегородская область"
+        },
+        {
+          "name": "Платформа",
+          "type": "text",
+          "example": "iOS"
+        },
+        {
+          "name": "Версия приложения",
+          "type": "text",
+          "example": "2.0.1"
+        },
+        {
+          "name": "Источник сессии",
+          "type": "text",
+          "example": "Прямой переход"
+        },
+        {
+          "name": "Событие",
+          "type": "text",
+          "example": "Начало сессии"
+        },
+        {
+          "name": "Экран",
+          "type": "text",
+          "example": "Главная"
+        },
+        {
+          "name": "Время обработки, мс",
+          "type": "integer",
+          "example": "0"
+        },
+        {
+          "name": "Товаров в корзине, шт.",
+          "type": "integer",
+          "example": "0"
+        },
+        {
+          "name": "Сумма оплаты, руб.",
+          "type": "decimal",
+          "example": "0,00"
+        },
+        {
+          "name": "Текст ошибки",
+          "type": "text",
+          "example": "Платёж отклонён банком"
+        }
+      ]
+    },
+    {
+      "file": "06_Рекламные_кампании.csv",
+      "size": 134326591,
+      "blob": "d92867028c87e781bc40f589628fd83afc2b28fc",
+      "rows": 500000,
+      "key": [
+        "Код записи"
+      ],
+      "self_refs": [],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код записи",
+          "type": "text",
+          "example": "РК-СТ-0000001"
+        },
+        {
+          "name": "Дата",
+          "type": "date",
+          "example": "2024-10-01"
+        },
+        {
+          "name": "Код кампании",
+          "type": "text",
+          "example": "РК-КМ-0001"
+        },
+        {
+          "name": "Название кампании",
+          "type": "text",
+          "example": "Товары для дома. Новые покупатели"
+        },
+        {
+          "name": "Площадка",
+          "type": "text",
+          "example": "VK Реклама"
+        },
+        {
+          "name": "Категория товаров",
+          "type": "text",
+          "example": "Товары для дома"
+        },
+        {
+          "name": "Аудитория",
+          "type": "text",
+          "example": "Новые покупатели"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Екатеринбург"
+        },
+        {
+          "name": "Регион",
+          "type": "text",
+          "example": "Свердловская область"
+        },
+        {
+          "name": "Показы",
+          "type": "integer",
+          "example": "25572"
+        },
+        {
+          "name": "Клики",
+          "type": "integer",
+          "example": "204"
+        },
+        {
+          "name": "Расходы, руб.",
+          "type": "decimal",
+          "example": "6011,95"
+        },
+        {
+          "name": "Заказы по рекламе",
+          "type": "integer",
+          "example": "0"
+        },
+        {
+          "name": "Выручка по рекламе, руб.",
+          "type": "decimal",
+          "example": "0,00"
+        }
+      ]
+    },
+    {
+      "file": "07_Заявки_на_закупку.csv",
+      "size": 190300753,
+      "blob": "abab32f5e08fb423117083183a5af9968c4ee1a5",
+      "rows": 500000,
+      "key": [
+        "Код заявки"
+      ],
+      "self_refs": [],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код заявки",
+          "type": "text",
+          "example": "ЗК-ЗВ-0000001"
+        },
+        {
+          "name": "Подана (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 10:39:34"
+        },
+        {
+          "name": "Подразделение",
+          "type": "text",
+          "example": "Информационные технологии"
+        },
+        {
+          "name": "Город",
+          "type": "text",
+          "example": "Калининград"
+        },
+        {
+          "name": "Регион",
+          "type": "text",
+          "example": "Калининградская область"
+        },
+        {
+          "name": "Категория закупки",
+          "type": "text",
+          "example": "Офисные расходники"
+        },
+        {
+          "name": "Предмет закупки",
+          "type": "text",
+          "example": "Чековая лента для касс"
+        },
+        {
+          "name": "Код инициатора",
+          "type": "text",
+          "example": "ЗК-ИЦ-032707"
+        },
+        {
+          "name": "Код поставщика",
+          "type": "text",
+          "example": "ЗК-ПС-02-019"
+        },
+        {
+          "name": "Срочность",
+          "type": "text",
+          "example": "Обычная"
+        },
+        {
+          "name": "Запрошенная сумма, руб.",
+          "type": "decimal",
+          "example": "9183,78"
+        },
+        {
+          "name": "Согласованная сумма, руб.",
+          "type": "decimal",
+          "example": "9055,21"
+        },
+        {
+          "name": "Оплаченная сумма, руб.",
+          "type": "decimal",
+          "example": "9055,21"
+        },
+        {
+          "name": "Требуется к дате",
+          "type": "date",
+          "example": "2024-10-14"
+        },
+        {
+          "name": "Согласована (МСК)",
+          "type": "datetime",
+          "example": "2024-10-08 08:45:46"
+        },
+        {
+          "name": "Отклонена (МСК)",
+          "type": "datetime",
+          "example": "2024-10-07 12:09:05"
+        },
+        {
+          "name": "Отменена (МСК)",
+          "type": "datetime",
+          "example": "2024-10-07 04:14:27"
+        },
+        {
+          "name": "Исполнена (МСК)",
+          "type": "datetime",
+          "example": "2024-10-16 08:45:46"
+        },
+        {
+          "name": "Оплачена (МСК)",
+          "type": "datetime",
+          "example": "2024-10-20 08:45:46"
+        },
+        {
+          "name": "Статус",
+          "type": "text",
+          "example": "Оплачена"
+        },
+        {
+          "name": "Причина отклонения",
+          "type": "text",
+          "example": "Потребность уже закрыта другой заявкой"
+        }
+      ]
+    },
+    {
+      "file": "08_Фоновые_задания.csv",
+      "size": 122084672,
+      "blob": "015d0caef35010d12184f8d2f8a6dd19dd955319",
+      "rows": 500000,
+      "key": [
+        "Код запуска"
+      ],
+      "self_refs": [],
+      "category_codes": [],
+      "columns": [
+        {
+          "name": "Код запуска",
+          "type": "text",
+          "example": "ФЗ-ЗП-0000001"
+        },
+        {
+          "name": "Код цепочки запусков",
+          "type": "text",
+          "example": "ФЗ-ЦК-0000001"
+        },
+        {
+          "name": "Задание",
+          "type": "text",
+          "example": "Обновление статусов доставки"
+        },
+        {
+          "name": "Сервис",
+          "type": "text",
+          "example": "Доставка"
+        },
+        {
+          "name": "Окружение",
+          "type": "text",
+          "example": "production"
+        },
+        {
+          "name": "Способ запуска",
+          "type": "text",
+          "example": "По расписанию"
+        },
+        {
+          "name": "Номер попытки",
+          "type": "integer",
+          "example": "1"
+        },
+        {
+          "name": "Начало (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 00:00:57"
+        },
+        {
+          "name": "Окончание (МСК)",
+          "type": "datetime",
+          "example": "2024-10-01 00:04:09"
+        },
+        {
+          "name": "Статус",
+          "type": "text",
+          "example": "Успешно"
+        },
+        {
+          "name": "Записей к обработке",
+          "type": "integer",
+          "example": "37083"
+        },
+        {
+          "name": "Обработано записей",
+          "type": "integer",
+          "example": "37083"
+        },
+        {
+          "name": "Код ошибки",
+          "type": "text",
+          "example": "SOURCE_UNAVAILABLE"
+        },
+        {
+          "name": "Описание ошибки",
+          "type": "text",
+          "example": "Источник данных недоступен"
+        },
+        {
+          "name": "Узел выполнения",
+          "type": "text",
+          "example": "production-worker-10"
+        }
+      ]
+    },
+    {
+      "file": "09_Лекарственные_препараты.csv",
+      "size": 98278281,
+      "blob": "e0355e1a08d1e15ea858468506c172bef975fa7b",
+      "rows": 876000,
+      "key": [
+        "Дата",
+        "ID_Аптеки",
+        "ID_Лекарства"
+      ],
+      "self_refs": [],
+      "category_codes": [
+        "ID_Аптеки",
+        "ID_Лекарства"
+      ],
+      "columns": [
+        {
+          "name": "Дата",
+          "type": "date",
+          "example": "2024-10-01"
+        },
+        {
+          "name": "ID_Аптеки",
+          "type": "text",
+          "example": "10029"
+        },
+        {
+          "name": "ID_Лекарства",
+          "type": "text",
+          "example": "1001"
+        },
+        {
+          "name": "Тип_Лекарства",
+          "type": "text",
+          "example": "Жаропонижающее и обезболивающее средство"
+        },
+        {
+          "name": "Действующее_Вещество",
+          "type": "text",
+          "example": "Парацетамол"
+        },
+        {
+          "name": "Сколько_Купили",
+          "type": "integer",
+          "example": "0"
+        }
+      ]
+    }
+  ]
+}
