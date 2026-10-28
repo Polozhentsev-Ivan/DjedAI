@@ -47,7 +47,7 @@ def model_endpoint() -> Callable:
                         if self.connection.recv(1) == b"":
                             peer_closed.set()
                         return
-                    schema = payload["response_format"]["json_schema"]["name"]
+                    schema = payload.get("response_format", {}).get("json_schema", {}).get("name")
                     bodies = {
                         "Understanding": {"intent": "data_question"},
                         "PlanResponse": {
@@ -78,7 +78,9 @@ def model_endpoint() -> Callable:
                     }
                     status = options.get("status", 200)
                     encoded = json.dumps(
-                        body if status == 200 else {"error": {"message": "fixture"}}
+                        body
+                        if status == 200
+                        else options.get("error_body", {"error": {"message": "fixture"}})
                     ).encode()
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
@@ -92,7 +94,7 @@ def model_endpoint() -> Callable:
                                 return
                             self.wfile.write(bytes([byte]))
                             self.wfile.flush()
-                            time.sleep(0.03)
+                            time.sleep(options.get("byte_delay_seconds", 0.03))
                     else:
                         self.wfile.write(encoded)
                 except OSError:

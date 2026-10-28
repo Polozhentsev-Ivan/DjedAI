@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, HTTPException
@@ -30,6 +31,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from djedai.agent.client import valid_api_key, valid_base_url
 from djedai.agent.config import ModelValues, env_model_values, get_agent_client
 from djedai.agent.diagnostics import Tariff
+from djedai.agent.transport import attempt_lease
 from djedai.backend.config import Settings
 from djedai.backend.db.models import ModelSettingsModel
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
@@ -39,6 +41,7 @@ from djedai.contracts.settings import (
     ModelSettingsRead,
     ModelSettingsUpdate,
 )
+from djedai.execution import ExecutionBudget, TurnTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +189,7 @@ class ModelSettingsService:
 
     def check(self, change: ModelSettingsUpdate) -> ModelCheckResult:
         """Один короткий запрос к модели с введёнными значениями поверх сохранённых."""
+        budget = ExecutionBudget(CHECK_TIMEOUT_SECONDS)
         values = self._validated(change)
         stored = self._stored()
         saved_key = None
@@ -211,18 +215,21 @@ class ModelSettingsService:
         except ValueError:
             return _check_result("not_configured")
         try:
-            client.client.with_options(
-                timeout=CHECK_TIMEOUT_SECONDS, max_retries=0
-            ).chat.completions.create(
-                model=client.model,
-                messages=[{"role": "user", "content": "ping"}],
-                max_tokens=1,
-            )
+            # Socket timeouts alone do not stop a peer that keeps dripping bytes.
+            # The shared transport cancels the entire in-flight buffered request.
+            with budget.activate(), attempt_lease(budget, budget.remaining, read_error_body=True):
+                client.client.with_options(
+                    timeout=CHECK_TIMEOUT_SECONDS, max_retries=0
+                ).chat.completions.create(
+                    model=client.model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
         except (AuthenticationError, PermissionDeniedError):
             return _check_result("invalid_key")
         except NotFoundError:
             return _check_result("unknown_model")
-        except (APIConnectionError, APITimeoutError):
+        except (APIConnectionError, APITimeoutError, TurnTimeout):
             return _check_result("unreachable")
         except APIStatusError as error:
             # Some providers answer 400/422 for an unknown model; the body is never echoed.
@@ -232,6 +239,9 @@ class ModelSettingsService:
         except Exception as error:  # The provider text may echo request details.
             logger.warning("Model check failed (error_type=%s)", type(error).__name__)
             return _check_result("model_error")
+        finally:
+            with suppress(Exception):
+                client.client.close()
         return _check_result("ok")
 
 

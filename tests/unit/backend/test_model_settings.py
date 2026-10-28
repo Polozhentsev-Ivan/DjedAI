@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -332,6 +333,9 @@ class _FailingClient:
         if self.error is not None:
             raise self.error
 
+    def close(self) -> None:
+        self.closed = True
+
 
 def _status_error(cls: type[openai.APIStatusError], status: int) -> openai.APIStatusError:
     request = httpx.Request("POST", "http://model.test/v1/chat/completions")
@@ -384,6 +388,60 @@ def test_check_reports_missing_configuration(
     monkeypatch.delenv("MODEL_API_KEY")
     response = api(model_settings_from_ui=True).post("/api/settings/model/check", json={})
     assert response.json()["code"] == "not_configured"
+
+
+@pytest.mark.parametrize("status", [200, 400])
+def test_check_has_a_total_deadline_and_closes_the_slow_response(
+    make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, model_endpoint: Callable, status: int
+) -> None:
+    from djedai.agent.client import BIModelClient
+
+    with model_endpoint(
+        lambda *_: {
+            "mode": "drip",
+            "status": status,
+            "byte_delay_seconds": 0.01,
+            "body": {"reply": "pong"},
+            "error_body": {"error": {"message": "unknown model " + "x" * 200}},
+        }
+    ) as endpoint:
+        model = BIModelClient("fixture-key", endpoint.base_url, "fixture", max_retries=3)
+        monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", lambda _: model)
+        monkeypatch.setattr("djedai.backend.model_settings.CHECK_TIMEOUT_SECONDS", 0.25)
+        started = time.monotonic()
+        try:
+            result = model_settings_for(make_app()).check(ModelSettingsUpdate())
+            elapsed = time.monotonic() - started
+            assert not result.ok and result.code == "unreachable"
+            assert elapsed < 1.25
+            assert len(endpoint.calls) == 1
+            assert endpoint.peer_closed.wait(1)
+            assert model.client.is_closed()
+        finally:
+            model.client.close()
+
+
+def test_check_preserves_fast_provider_error_classification(
+    make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, model_endpoint: Callable
+) -> None:
+    from djedai.agent.client import BIModelClient
+
+    with model_endpoint(
+        lambda *_: {
+            "status": 400,
+            "body": {},
+            "error_body": {"error": {"message": "unknown model"}},
+        }
+    ) as endpoint:
+        model = BIModelClient("fixture-key", endpoint.base_url, "fixture")
+        monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", lambda _: model)
+        try:
+            result = model_settings_for(make_app()).check(ModelSettingsUpdate())
+            assert result.code == "unknown_model"
+            assert len(endpoint.calls) == 1
+            assert model.client.is_closed()
+        finally:
+            model.client.close()
 
 
 def test_check_does_not_replace_unreadable_key_with_environment(
