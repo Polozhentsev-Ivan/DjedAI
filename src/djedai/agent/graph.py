@@ -289,7 +289,7 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
 
     if client:
         response = client.generate_typed_response(
-            sys_prompt, user_prompt, DashboardPlanResponse, stage="plan_dashboard"
+            sys_prompt, user_prompt, DashboardPlanResponse, stage="plan"
         )
         if response.status == "success" and response.data:
             try:

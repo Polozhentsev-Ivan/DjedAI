@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.reasoning import REASONING_STAGES
 from djedai.backend import chat_service
 from djedai.backend.app import create_app
 from djedai.backend.config import Settings
@@ -120,13 +121,14 @@ class DashboardPlanner:
 
     def generate_typed_response(self, _system_prompt, user_prompt, response_model, **kwargs):
         stage = kwargs["stage"]
+        assert stage in REASONING_STAGES, f"Unknown reasoning stage: {stage}"
         self.stages.append(stage)
         if stage == "understand":
             return ModelResponse(
                 status="success",
                 data=Understanding(intent="dashboard", resolved_question=user_prompt),
             )
-        if stage == "plan_dashboard":
+        if stage == "plan" and response_model is DashboardPlanResponse:
             return ModelResponse(status="success", data=self.plan)
         raise AssertionError(f"Unexpected model stage: {stage}")
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph
+from djedai.agent.reasoning import REASONING_STAGES
 from djedai.contracts.agent import (
     DashboardPlanResponse,
     DashboardStepPlan,
@@ -95,10 +96,16 @@ class FakeClient:
     def __init__(self, responses: dict[str, list[Any]]) -> None:
         self.responses = {stage: list(items) for stage, items in responses.items()}
         self.stages: list[str] = []
+        self.response_models: list[str] = []
 
     def generate_typed_response(self, _system_prompt, _user_prompt, response_model, **kwargs):
         stage = kwargs["stage"]
+        # Повторяем проверку BIModelClient.reasoning_for: неизвестная стадия
+        # должна падать до планирования дашборда, а не в реальном клиенте.
+        if stage not in REASONING_STAGES:
+            raise ValueError(f"Неизвестная стадия reasoning: {stage!r}")
         self.stages.append(stage)
+        self.response_models.append(response_model.__name__)
         return ModelResponse(status="success", data=self.responses[stage].pop(0))
 
 
@@ -164,7 +171,7 @@ def test_dashboard_branch_plans_executes_and_saves_without_standard_plan():
     client = FakeClient(
         {
             "understand": [Understanding(intent="dashboard")],
-            "plan_dashboard": [_dashboard_plan()],
+            "plan": [_dashboard_plan()],
         }
     )
     dispatcher = _dispatcher(_rows())
@@ -186,7 +193,8 @@ def test_dashboard_branch_plans_executes_and_saves_without_standard_plan():
         },
     )
 
-    assert client.stages == ["understand", "plan_dashboard"]
+    assert client.stages == ["understand", "plan"]
+    assert client.response_models == ["Understanding", "DashboardPlanResponse"]
     assert result.get("plan", []) == []
     assert result["dashboard_plan"] is not None
     assert len(result["dashboard_plan"].widgets) == 3
@@ -229,7 +237,7 @@ def test_dashboard_branch_retries_the_whole_plan_when_all_widgets_fail():
     client = FakeClient(
         {
             "understand": [Understanding(intent="dashboard")],
-            "plan_dashboard": [_dashboard_plan(), _dashboard_plan()],
+            "plan": [_dashboard_plan(), _dashboard_plan()],
         }
     )
     rows = _rows()
@@ -272,7 +280,7 @@ def test_dashboard_branch_retries_the_whole_plan_when_all_widgets_fail():
         },
     )
 
-    assert client.stages == ["understand", "plan_dashboard", "plan_dashboard"]
+    assert client.stages == ["understand", "plan", "plan"]
     assert result["dashboard_retries"] == 2
     assert len(saver.calls) == 1
     assert [widget.status for widget in saver.calls[0][2]] == ["ok", "ok", "ok"]
@@ -289,7 +297,7 @@ def test_dashboard_branch_retries_a_partial_failure_before_saving():
     client = FakeClient(
         {
             "understand": [Understanding(intent="dashboard")],
-            "plan_dashboard": [_dashboard_plan(), _dashboard_plan()],
+            "plan": [_dashboard_plan(), _dashboard_plan()],
         }
     )
     rows = _rows()
@@ -333,7 +341,7 @@ def test_dashboard_branch_retries_a_partial_failure_before_saving():
         },
     )
 
-    assert client.stages == ["understand", "plan_dashboard", "plan_dashboard"]
+    assert client.stages == ["understand", "plan", "plan"]
     assert [widget.status for widget in saver.calls[0][2]] == ["ok", "ok", "ok"]
 
 
@@ -341,7 +349,7 @@ def test_dashboard_branch_reports_unavailable_saver():
     client = FakeClient(
         {
             "understand": [Understanding(intent="dashboard")],
-            "plan_dashboard": [_dashboard_plan()],
+            "plan": [_dashboard_plan()],
         }
     )
 
