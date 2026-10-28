@@ -2374,6 +2374,11 @@ export interface components {
              */
             source_result_id?: string | null;
             /**
+             * Sensitive Columns
+             * @description Выходные колонки, значения которых происходят из чувствительного источника; нужны для очистки промптов и восстановления чувствительности из истории
+             */
+            sensitive_columns?: string[];
+            /**
              * Duration Ms
              * @description Время выполнения в миллисекундах
              * @default null
