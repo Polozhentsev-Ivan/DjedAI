@@ -26,6 +26,7 @@
 - [ui-design/README.md](ui-design/README.md) — hi-fi макет интерфейса: токены, компоненты, все экраны и состояния; эталон для вёрстки `frontend/`.
 - [issues-plan.md](issues-plan.md) — план опубликованных issues с актуализированными критериями React + TypeScript UI.
 - [cp1-smoke-run.md](cp1-smoke-run.md) — протокол минимального сквозного прогона без UI: способ проверки, фактический результат, артефакты и повторение запуска.
+- [pl3-hk-datasets-run.md](pl3-hk-datasets-run.md) — PL-3 / #49: прогон данных организаторов HK_Datasets через CSV, PostgreSQL и ClickHouse; типы, профиль, ключевые запросы с замерами, дефекты и сравнение до/после.
 - [source/ai-native-bi-plan.html](source/ai-native-bi-plan.html) — исходная визуальная схема плана.
 - [source/case-2-ai-native-bi.docx](source/case-2-ai-native-bi.docx) — исходное описание кейса организаторов.
 
