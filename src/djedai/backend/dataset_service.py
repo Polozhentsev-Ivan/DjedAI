@@ -245,6 +245,13 @@ class DatasetJobQueue:
         if key in self._active_jobs or any(dataset_id in q for q in self._queued_by_owner.values()):
             return
 
+        if (
+            self._active_total < self.max_concurrent
+            and self._active_by_owner[owner_id] < self.max_concurrent_per_owner
+        ):
+            self._start_task(owner_id, dataset_id)
+            return
+
         if self._queued_counts[owner_id] >= self.max_queued_per_owner:
             raise HTTPException(
                 status_code=429,
@@ -266,22 +273,17 @@ class DatasetJobQueue:
 
     def enqueue_recovery(self, owner_id: str, dataset_id: str) -> bool:
         """Постановка в очередь при рестарте; если очередь полна, возвращает False."""
-        key = (owner_id, dataset_id)
-        if key in self._active_jobs or any(dataset_id in q for q in self._queued_by_owner.values()):
+        try:
+            self.enqueue(owner_id, dataset_id)
             return True
-
-        if (
-            self._queued_total >= self.max_queued
-            or self._queued_counts[owner_id] >= self.max_queued_per_owner
-        ):
+        except HTTPException:
             return False
 
-        self._queued_by_owner[owner_id].append(dataset_id)
-        self._queued_counts[owner_id] += 1
-        self._queued_total += 1
-        if owner_id not in self._owner_order:
-            self._owner_order.append(owner_id)
-        return True
+    def contains(self, owner_id: str, dataset_id: str) -> bool:
+        return (
+            owner_id,
+            dataset_id,
+        ) in self._active_jobs or dataset_id in self._queued_by_owner.get(owner_id, ())
 
     def _dispatch(self) -> None:
         while self._active_total < self.max_concurrent and self._queued_total > 0:
@@ -335,7 +337,7 @@ class DatasetJobQueue:
         task.add_done_callback(on_done)
 
     async def close(self) -> None:
-        if self._tasks:
+        while self._tasks:
             await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     def snapshot(self) -> dict[str, Any]:
@@ -369,12 +371,11 @@ class DatasetService:
         self._description_client = description_client
         self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
         self._catalog_max_age = timedelta(hours=catalog_max_age_hours)
-        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self.quota_manager = StorageQuotaManager(
             self.get_owner_disk_usage, self.limits.max_owner_storage_bytes
         )
         self._job_queue = DatasetJobQueue(
-            self._process,
+            self._process_dataset_job,
             max_concurrent=self.limits.max_concurrent_dataset_jobs,
             max_concurrent_per_owner=self.limits.max_concurrent_dataset_jobs_per_owner,
             max_queued=self.limits.max_queued_dataset_jobs,
@@ -879,6 +880,18 @@ class DatasetService:
                 ).model_dump(mode="json")
                 db.commit()
 
+    def _process_dataset_job(self, owner_id: str, dataset_id: str) -> None:
+        """Imports and refreshes share the same global and per-owner permits."""
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            refreshing = (
+                model.status == "ready" and (model.refresh or {}).get("status") == "processing"
+            )
+        if refreshing:
+            self._refresh(owner_id, dataset_id)
+        else:
+            self._process(owner_id, dataset_id)
+
     def _process(self, owner_id: str, dataset_id: str) -> None:
         try:
             with self.session_factory() as db:
@@ -992,19 +1005,22 @@ class DatasetService:
         The dataset stays ready with its current revision until the new one is
         published; a failure keeps it and is reported in ``DatasetDetail.refresh``.
         """
-        detail = await asyncio.to_thread(self._accept_refresh, owner_id, dataset_id)
-        self._start_refresh(owner_id, dataset_id)
-        return detail
+        self._job_queue.reserve(owner_id)
+        try:
+            detail = await asyncio.to_thread(self._accept_refresh, owner_id, dataset_id)
+            self._start_refresh(owner_id, dataset_id)
+            return detail
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     def _accept_refresh(self, owner_id: str, dataset_id: str) -> DatasetDetail:
         with self.session_factory() as db:
             model = self._owned(db, owner_id, dataset_id)
             if model.status != "ready" or not model.catalog:
                 raise HTTPException(status_code=409, detail="Датасет ещё не готов к запросам")
-            if (model.refresh or {}).get("status") == "processing" or (
-                owner_id,
-                dataset_id,
-            ) in self._tasks:
+            if (model.refresh or {}).get("status") == "processing" or self._job_queue.contains(
+                owner_id, dataset_id
+            ):
                 raise HTTPException(status_code=409, detail="Перепрофилировка уже идёт")
             if model.source_kind in {"postgres", "clickhouse"}:
                 try:
@@ -1020,12 +1036,24 @@ class DatasetService:
             return self._detail(model)
 
     def _start_refresh(self, owner_id: str, dataset_id: str) -> None:
-        key = (owner_id, dataset_id)
-        if key in self._tasks:
-            return
-        task = asyncio.create_task(asyncio.to_thread(self._refresh, owner_id, dataset_id))
-        self._tasks[key] = task
-        task.add_done_callback(lambda _: self._tasks.pop(key, None))
+        try:
+            self._job_queue.enqueue(owner_id, dataset_id)
+        except Exception:
+            self._reject_refresh(owner_id, dataset_id)
+            raise
+
+    def _reject_refresh(self, owner_id: str, dataset_id: str) -> None:
+        """Keep the published revision usable when a refresh cannot be scheduled."""
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            model.refresh = DatasetRefresh(
+                status="error",
+                started_at=(model.refresh or {}).get("started_at") or datetime.now(UTC),
+                message=(
+                    "Очередь обработки датасетов переполнена. Повторите перепрофилировку позже."
+                ),
+            ).model_dump(mode="json")
+            db.commit()
 
     def _refresh(self, owner_id: str, dataset_id: str) -> None:
         started_at = None
@@ -1123,15 +1151,12 @@ class DatasetService:
                         )
                 db.commit()
 
-        self._job_queue._dispatch()
-
         for owner_id, dataset_id in await asyncio.to_thread(refreshing):
-            self._start_refresh(owner_id, dataset_id)
+            if not self._job_queue.enqueue_recovery(owner_id, dataset_id):
+                await asyncio.to_thread(self._reject_refresh, owner_id, dataset_id)
 
     async def close(self) -> None:
         await self._job_queue.close()
-        if self._tasks:
-            await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     def snapshot(self) -> dict[str, Any]:
         result = self._job_queue.snapshot()

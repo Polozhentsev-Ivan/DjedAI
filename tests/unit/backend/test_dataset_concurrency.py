@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,143 @@ from djedai.backend.db.models import DatasetModel, UserModel
 from djedai.backend.db.session import create_db_engine, init_db
 from djedai.config import LimitSettings
 from djedai.data.service import CsvSource
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recover", [False, True], ids=["refresh", "recovery"])
+@pytest.mark.parametrize("global_limit", [1, 2])
+async def test_refresh_uses_the_shared_dataset_budget(
+    tmp_path: Path, db_factory, monkeypatch, recover: bool, global_limit: int
+) -> None:
+    limits = LimitSettings(
+        _env_file=None,
+        max_concurrent_dataset_jobs=global_limit,
+        max_concurrent_dataset_jobs_per_owner=1,
+        max_queued_dataset_jobs=5,
+        max_queued_dataset_jobs_per_owner=5,
+    )
+    service = DatasetService(db_factory, tmp_path / "refresh-budget", limits=limits)
+    csv = tmp_path / "input.csv"
+    csv.write_text("amount\n10\n20\n", encoding="utf-8")
+    ids = []
+    for _ in range(3):
+        accepted = await service.ingest_csv("owner1", [CsvSource(csv, csv.name)])
+        await service.close()
+        ids.append(accepted.dataset_id)
+
+    started, release = threading.Event(), threading.Event()
+    build = service._build
+    active, peak = 0, 0
+    lock = threading.Lock()
+
+    def blocked_build(*args, **kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        started.set()
+        try:
+            assert release.wait(10), "Test did not release the refresh worker"
+            return build(*args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(service, "_build", blocked_build)
+    try:
+        if recover:
+            with db_factory() as db:
+                for dataset_id in ids:
+                    db.get(DatasetModel, dataset_id).refresh = {
+                        "status": "processing",
+                        "started_at": datetime.now(UTC).isoformat(),
+                    }
+                db.commit()
+            await service.recover_interrupted()
+        else:
+            for dataset_id in ids:
+                await service.refresh("owner1", dataset_id)
+        assert await asyncio.to_thread(started.wait, 5)
+        snapshot = service.snapshot()
+        assert snapshot["active_dataset_jobs_total"] == 1
+        assert snapshot["active_dataset_jobs_by_owner"]["owner1"] == 1
+        assert snapshot["queued_dataset_jobs_total"] == 2
+        # A new import shares the remaining queue capacity with these refreshes.
+        another = await service.ingest_csv("owner1", [CsvSource(csv, csv.name)])
+        assert service.snapshot()["queued_dataset_jobs_total"] == 3
+    finally:
+        release.set()
+        await service.close()
+    assert peak == 1
+    assert service.snapshot()["active_dataset_jobs_total"] == 0
+    with db_factory() as db:
+        for dataset_id in ids:
+            dataset = db.get(DatasetModel, dataset_id)
+            assert dataset.status == "ready" and dataset.refresh is None
+            assert dataset.catalog["revision"]["number"] == 2
+        assert db.get(DatasetModel, another.dataset_id).status == "ready"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recover", [False, True], ids=["refresh", "recovery"])
+@pytest.mark.parametrize("queued", [0, 1])
+async def test_refresh_overflow_preserves_the_published_catalog(
+    tmp_path: Path, db_factory, monkeypatch, recover: bool, queued: int
+) -> None:
+    limits = LimitSettings(
+        _env_file=None,
+        max_concurrent_dataset_jobs=1,
+        max_concurrent_dataset_jobs_per_owner=1,
+        max_queued_dataset_jobs=queued,
+        max_queued_dataset_jobs_per_owner=queued,
+    )
+    service = DatasetService(db_factory, tmp_path / "refresh-overflow", limits=limits)
+    csv = tmp_path / "input.csv"
+    csv.write_text("amount\n10\n", encoding="utf-8")
+    ids = []
+    for _ in range(3):
+        accepted = await service.ingest_csv("owner1", [CsvSource(csv, csv.name)])
+        await service.close()
+        ids.append(accepted.dataset_id)
+    started, release = threading.Event(), threading.Event()
+    build = service._build
+
+    def blocked_build(*args, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_build", blocked_build)
+    try:
+        if recover:
+            with db_factory() as db:
+                for dataset_id in ids:
+                    db.get(DatasetModel, dataset_id).refresh = {
+                        "status": "processing",
+                        "started_at": datetime.now(UTC).isoformat(),
+                    }
+                db.commit()
+            await service.recover_interrupted()
+        else:
+            for index, dataset_id in enumerate(ids):
+                if index <= queued:
+                    await service.refresh("owner1", dataset_id)
+                else:
+                    with pytest.raises(HTTPException) as failure:
+                        await service.refresh("owner1", dataset_id)
+                    assert failure.value.status_code == 429
+        assert await asyncio.to_thread(started.wait, 5)
+        assert service.snapshot()["active_dataset_jobs_total"] == 1
+        assert service.snapshot()["queued_dataset_jobs_total"] == queued
+        assert service.snapshot()["reserved_dataset_jobs_total"] == 0
+        with db_factory() as db:
+            for dataset_id in ids[queued + 1 :]:
+                model = db.get(DatasetModel, dataset_id)
+                assert model.status == "ready" and model.catalog["revision"]["number"] == 1
+                assert (model.refresh or {}).get("status") == ("error" if recover else None)
+    finally:
+        release.set()
+        await service.close()
 
 
 @pytest.fixture
