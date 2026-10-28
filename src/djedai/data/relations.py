@@ -149,10 +149,12 @@ class _Key:  # колонка-кандидат: различные значен�
     entity: str  # имя таблицы для сопоставления: из исходного файла, без суффиксов
     padded: bool  # есть значения с пробелами по краям
     trim: bool = False  # сравнение после trim — только для предупреждения о пробелах
+    values: str | None = None  # временная таблица различных значений (``k``) без NULL
 
 
 def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
     """Ищет связи по сохранённым профилям и записывает их; повторный вызов заменяет записи."""
+    keys: list[_Key] = []
     try:
         _ensure_table(connection)
         keys = _keys(connection, read_profiles(connection))
@@ -187,6 +189,10 @@ def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
             raise
     except duckdb.Error as error:
         raise RelationError(f"не удалось посчитать ({error})") from error
+    finally:
+        for key in keys:
+            if key.values:
+                connection.execute(f"DROP TABLE IF EXISTS {_ident(key.values)}")
     return report
 
 
@@ -387,6 +393,12 @@ def _entities(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
 
 
 def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -> list[_Key]:
+    """Кандидаты и их различные значения во временных таблицах.
+
+    Каждая таблица источника читается один раз на ключ, а не на каждую пару ключей: для
+    подключённого PostgreSQL это сетевые сканы, и на 25 ключах HK_Datasets (272 пары)
+    поиск связей занимал 60 с из 121 с подключения (#49).
+    """
     entities = _entities(connection)
     keys = []
     for table in profiles:
@@ -394,13 +406,31 @@ def _keys(connection: duckdb.DuckDBPyConnection, profiles: list[TableProfile]) -
         for column in table.columns:
             if not _is_candidate(table, column):
                 continue
+            values = f"_djedai_key_values_{len(keys)}"
+            value = _key(column.name)
+            connection.execute(
+                f"CREATE OR REPLACE TEMP TABLE {_ident(values)} AS SELECT {value} AS k, "
+                f"count(*) AS n FROM {_ident(table.view_name)} WHERE {value} IS NOT NULL "
+                "GROUP BY 1"
+            )
             present, distinct, padded = connection.execute(
-                f"SELECT count({_key(column.name)}), count(DISTINCT {_key(column.name)}), "
-                f"count(*) FILTER (WHERE {_key(column.name)} <> trim({_key(column.name)})) "
-                f"FROM {_ident(table.view_name)}"
+                f"SELECT coalesce(sum(n), 0), count(*), count(*) FILTER (WHERE k <> trim(k)) "
+                f"FROM {_ident(values)}"
             ).fetchone()
             if distinct >= MIN_DISTINCT:
-                keys.append(_Key(table, column, distinct, present == distinct, entity, padded > 0))
+                keys.append(
+                    _Key(
+                        table,
+                        column,
+                        distinct,
+                        present == distinct,
+                        entity,
+                        padded > 0,
+                        values=values,
+                    )
+                )
+            else:
+                connection.execute(f"DROP TABLE {_ident(values)}")
     return keys
 
 
@@ -439,6 +469,8 @@ def _padding_warning(
 
 def _intersection(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> int:
     def values(key: _Key) -> str:
+        if key.values and not key.trim:
+            return f"SELECT k FROM {_ident(key.values)}"
         value = _key(key.column.name, key.trim)
         return f"SELECT DISTINCT {value} AS k FROM {_ident(key.table.view_name)}"
 
