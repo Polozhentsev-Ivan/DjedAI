@@ -47,7 +47,7 @@ def model_endpoint() -> Callable:
                         if self.connection.recv(1) == b"":
                             peer_closed.set()
                         return
-                    schema = payload["response_format"]["json_schema"]["name"]
+                    schema = payload.get("response_format", {}).get("json_schema", {}).get("name")
                     bodies = {
                         "Understanding": {"intent": "data_question"},
                         "PlanResponse": {
@@ -61,7 +61,7 @@ def model_endpoint() -> Callable:
                         "TableDescriptions": {"table": "orders", "columns": []},
                         "DatasetSummary": {"summary": "Данные заказа"},
                     }
-                    content = options.get("body", bodies[schema])
+                    content = options["body"] if "body" in options else bodies[schema]
                     if not isinstance(content, str):
                         content = json.dumps(content)
                     body = {
@@ -95,7 +95,7 @@ def model_endpoint() -> Callable:
                                 return
                             self.wfile.write(bytes([byte]))
                             self.wfile.flush()
-                            time.sleep(0.03)
+                            time.sleep(options.get("byte_delay_seconds", 0.03))
                     else:
                         self.wfile.write(encoded)
                 except OSError:

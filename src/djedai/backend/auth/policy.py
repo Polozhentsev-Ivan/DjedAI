@@ -64,7 +64,7 @@ class AuthPolicyMiddleware:
         self.prefix = prefix.rstrip("/") + "/auth"
         self.private_prefixes = tuple(
             prefix.rstrip("/") + "/" + resource
-            for resource in ("auth", "datasets", "chats", "results", "dashboards")
+            for resource in ("auth", "datasets", "chats", "results", "dashboards", "settings")
         )
         self.limiter = limiter
 

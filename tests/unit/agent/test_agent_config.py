@@ -2,7 +2,12 @@
 
 import pytest
 
-from djedai.agent.config import get_agent_client, reasoning_profile
+from djedai.agent.config import (
+    ModelValues,
+    data_sharing_allowed,
+    get_agent_client,
+    reasoning_profile,
+)
 from djedai.config import get_limits
 
 
@@ -101,3 +106,58 @@ def test_config_missing_keys_raises_error(monkeypatch):
         get_agent_client()
 
     assert "Отсутствует или неверна конфигурация модели" in str(exc.value)
+
+
+def _env_model(monkeypatch, **extra):
+    monkeypatch.setattr("djedai.agent.config.load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setenv("MODEL_BASE_URL", "https://api.test.com/v1")
+    monkeypatch.setenv("MODEL_NAME", "env-model")
+    monkeypatch.setenv("MODEL_API_KEY", "sk-env-key")
+    for name, value in extra.items():
+        monkeypatch.setenv(name, value)
+    get_limits.cache_clear()
+
+
+def test_override_takes_precedence_over_env_per_field(monkeypatch):
+    _env_model(monkeypatch)
+    client = get_agent_client(ModelValues(name="ui-model", api_key="sk-ui-key"))
+    assert client.model == "ui-model"
+    assert client.client.api_key == "sk-ui-key"
+    assert client.client.base_url == "https://api.test.com/v1/"
+    # Blank values keep the .env value, as before the interface existed.
+    assert get_agent_client(ModelValues(name="", base_url="")).model == "env-model"
+
+
+def test_override_works_without_env_values(monkeypatch):
+    monkeypatch.setattr("djedai.agent.config.load_dotenv", lambda *args, **kwargs: None)
+    for name in ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    client = get_agent_client(
+        ModelValues(base_url="http://localhost:8000/v1", name="local", api_key="sk-local")
+    )
+    assert client.model == "local"
+    assert "sk-local" not in repr(ModelValues(api_key="sk-local"))
+
+
+def test_reasoning_is_dropped_for_an_unconfirmed_pair(monkeypatch):
+    _env_model(monkeypatch, MODEL_REASONING_PLAN="high", MODEL_REASONING_SUPPORTED="true")
+    try:
+        assert get_agent_client().reasoning_for("plan") == "high"
+        # Same pair given explicitly (a trailing slash is not a new endpoint).
+        same = ModelValues(base_url="https://api.test.com/v1/", name="env-model")
+        assert get_agent_client(same).reasoning_for("plan") == "high"
+        for other in (ModelValues(name="ui-model"), ModelValues(base_url="http://other/v1")):
+            client = get_agent_client(other)
+            assert client.reasoning_for("plan") == "provider_default"
+    finally:
+        get_limits.cache_clear()
+
+
+def test_data_sharing_applies_only_to_the_env_pair(monkeypatch):
+    _env_model(monkeypatch, ALLOW_DATA_SHARING="true")
+    assert data_sharing_allowed() is True
+    assert data_sharing_allowed(ModelValues(api_key="sk-ui")) is True
+    assert data_sharing_allowed(ModelValues(name="ui-model")) is False
+    assert data_sharing_allowed(ModelValues(base_url="http://other/v1")) is False
+    monkeypatch.setenv("ALLOW_DATA_SHARING", "false")
+    assert data_sharing_allowed() is False

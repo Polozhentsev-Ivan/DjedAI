@@ -128,7 +128,7 @@ def ingest_csv_dataset(
 
 
 def describe_dataset(
-    database_path: Path, catalog: DatasetCatalog, client: ModelClient
+    database_path: Path, catalog: DatasetCatalog, client: ModelClient, *, share_values: bool = True
 ) -> DatasetCatalog:
     """Add LLM descriptions to a built, unpublished dataset; model failures become warnings.
 
@@ -136,7 +136,7 @@ def describe_dataset(
     needs no live source here. The statistical catalog stays valid without the model.
     """
     with duckdb.connect(str(database_path)) as connection:
-        report = describe_catalog(connection, catalog, client)
+        report = describe_catalog(connection, catalog, client, share_values=share_values)
         connection.execute("CHECKPOINT")
     return report.catalog
 

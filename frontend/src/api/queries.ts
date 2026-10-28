@@ -20,6 +20,7 @@ export const keys = {
   dashboard: (id: string) => ['dashboard', id] as const,
   result: (id: string) => ['result', id] as const,
   resultData: (id: string) => ['result', id, 'data'] as const,
+  modelSettings: ['settings', 'model'] as const,
 };
 
 export function createQueryClient(): QueryClient {
@@ -106,6 +107,32 @@ export function useConnectDatabase() {
 export function useCheckDatabase() {
   return useMutation({
     mutationFn: (body: Schemas['SourceCheckRequest']) => request<Schemas['SourceCheckResult']>('/datasets/connect/check', { method: 'POST', json: body }),
+    gcTime: 0,
+  });
+}
+
+/** Effective model settings (#209); the API key itself never comes back. */
+export function useModelSettings() {
+  return useQuery({
+    queryKey: keys.modelSettings,
+    queryFn: ({ signal }) => request<Schemas['ModelSettingsRead']>('/settings/model', { signal }),
+  });
+}
+
+// Both mutations may carry the API key: like the DSN, it leaves the cache with the form.
+export function useUpdateModelSettings() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Schemas['ModelSettingsUpdate']) => request<Schemas['ModelSettingsRead']>('/settings/model', { method: 'PUT', json: body }),
+    onSuccess: (settings) => { client.setQueryData(keys.modelSettings, settings); },
+    gcTime: 0,
+  });
+}
+
+/** One short request to the model with the entered values; the server stores nothing. */
+export function useCheckModelSettings() {
+  return useMutation({
+    mutationFn: (body: Schemas['ModelSettingsUpdate']) => request<Schemas['ModelCheckResult']>('/settings/model/check', { method: 'POST', json: body }),
     gcTime: 0,
   });
 }
