@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.graph import MODEL_ERROR_MARKDOWN, build_agent_graph
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.agent import (
     Block,
@@ -102,4 +102,5 @@ def test_graph_api_error_fallback():
     assert result["understanding"].intent == "ambiguous"
     assert len(result["answer_blocks"]) == 1
     assert result["answer_blocks"][0].type == "error"
-    assert "401 Unauthorized" in result["answer_blocks"][0].markdown
+    assert result["answer_blocks"][0].markdown == MODEL_ERROR_MARKDOWN
+    assert "401 Unauthorized" not in result["answer_blocks"][0].markdown

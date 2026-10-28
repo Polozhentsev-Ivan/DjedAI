@@ -1,5 +1,11 @@
 """Память чата: summary старых сообщений, фокус результатов и контекст промпта."""
 
+import json
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.memory import (
     HISTORY_WINDOW,
     HistoryEntry,
@@ -103,6 +109,64 @@ def test_focus_prefers_new_successful_results_then_references_then_previous() ->
     assert next_focus_result_ids(["r_old", "r_old"], available_ids=known) == ["r_old"]
 
 
+def test_private_key_is_redacted_before_message_truncation() -> None:
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    body = pem.splitlines()[1]
+    text = "P" * 140 + " " + pem
+    assert len(text) > 250
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[Message(role="user", content=text)],
+        focus_result_ids=[],
+        results=[],
+    )
+
+    assert body[:40] not in context
+    assert "PRIVATE KEY" not in context
+    assert "[REDACTED]" in context
+
+
+def test_summary_sanitizes_private_key_before_truncation() -> None:
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    body = pem.splitlines()[1]
+    entries = [
+        _entry("user", "P" * 140 + " " + pem),
+        *[_entry("user", f"новый вопрос {index}") for index in range(HISTORY_WINDOW)],
+    ]
+
+    summary = summarize_history(entries)
+
+    assert summary is not None
+    assert body[:40] not in summary
+    assert "PRIVATE KEY" not in summary
+    assert "[REDACTED]" in summary
+
+
+def test_json_escaped_quote_is_redacted_before_history_truncation() -> None:
+    text = json.dumps({"password": 'prefix"ESCAPED_PASSWORD_TAIL_173'})
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[Message(role="user", content=text)],
+        focus_result_ids=[],
+        results=[],
+    )
+
+    assert "ESCAPED_PASSWORD_TAIL_173" not in context
+    assert json.loads(context.split("Пользователь: ", 1)[1]) == {"password": "[REDACTED]"}
+
+
 def test_conversation_context_contains_summary_messages_focus_and_blocks() -> None:
     result = ToolResult(
         result_id="r_second",
@@ -147,6 +211,35 @@ def test_conversation_context_contains_summary_messages_focus_and_blocks() -> No
     assert "4. dashboard: Обзор" in context
     assert "5. clarification: Уточните" in context
     assert "6. suggestions: 1" in context
+
+
+def test_focus_redacts_normalized_sensitive_column_from_catalog() -> None:
+    marker = "ordinaryCredential9!"
+    result = ToolResult(
+        result_id="r_password",
+        status="ok",
+        tool="describe_column",
+        params={"table": "orders", "column": "dbpasswordtext"},
+        data=ToolResultData(columns=["dbpasswordtext", "count"], rows=[[marker, 2]]),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                values={"value": marker, "count": 2},
+            )
+        ],
+    )
+
+    context = conversation_context(
+        summary=None,
+        recent_messages=[],
+        focus_result_ids=["r_password"],
+        results=[result],
+        policy=DataTransferPolicy.sharing(),
+        sensitive_columns=("dbpasswordtext", "dbPasswordText"),
+    )
+
+    assert marker not in context
+    assert "[REDACTED]" in context
 
 
 def test_conversation_context_is_explicit_when_there_is_no_history() -> None:

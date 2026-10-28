@@ -69,6 +69,9 @@ class AgentState(TypedDict, total=False):
     dataset_id: str
     messages: list[Message]
     catalog_prompt: str
+    # Normalized column names whose original header is sensitive; keeps
+    # `dbPasswordText` sensitive after normalization to `dbpasswordtext`.
+    sensitive_columns: tuple[str, ...]
     history_summary: str | None
     user_context: str | None
     understanding: Understanding | None

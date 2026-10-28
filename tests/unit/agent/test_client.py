@@ -7,7 +7,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 from pydantic import RootModel
 
-from djedai.agent.client import BIModelClient
+from djedai.agent.client import SERVER_ERROR_MESSAGE, BIModelClient
 from djedai.contracts.agent import PlannedCall, Understanding
 
 
@@ -122,7 +122,8 @@ def test_client_does_not_replace_rejected_reasoning_with_default(mocker):
 
     assert response.status == "error"
     assert response.error_type == "SERVER_ERROR"
-    assert "not supported" in response.message
+    assert response.message == SERVER_ERROR_MESSAGE
+    assert "reasoning_effort" not in response.message
     assert client.client.chat.completions.create.call_count == 1
     assert client.client.chat.completions.create.call_args.kwargs["extra_body"] == {
         "reasoning_effort": "high"
