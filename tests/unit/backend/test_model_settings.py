@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from djedai.agent.config import data_sharing_allowed
+from djedai.agent.data_policy import DataCategory, DataContext
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
 from djedai.backend.chat_service import get_agent_runtime
@@ -43,7 +44,7 @@ UI_KEY = "sk-ui-key-marker-7f3a"
 def model_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # The developer's .env must not leak into these checks.
     monkeypatch.setattr("djedai.agent.config.load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr("djedai.agent.config.dotenv_values", lambda *args, **kwargs: {})
+    monkeypatch.setattr("djedai.agent.data_policy.dotenv_values", lambda *args, **kwargs: {})
     monkeypatch.setenv("MODEL_BASE_URL", ENV_URL)
     monkeypatch.setenv("MODEL_NAME", ENV_MODEL)
     monkeypatch.setenv("MODEL_API_KEY", ENV_KEY)
@@ -158,12 +159,14 @@ def test_new_pair_resets_unconfirmed_flags(make_app: AppFactory, change: dict[st
     assert runtime.client.reasoning_for("plan") == "provider_default"
     assert runtime.tariff is None
     assert data_sharing_allowed(service.override()) is False
+    assert not runtime.client.data_policy.allows(DataCategory.CELL_VALUE, DataContext.CATALOG)
     # Returning to the .env pair restores what the administrator confirmed for it.
     _update(app, model_name="", base_url="")
     runtime = _runtime(app)
     assert runtime.client.reasoning_for("plan") == "high"
     assert runtime.tariff is not None
     assert data_sharing_allowed(service.override()) is True
+    assert runtime.client.data_policy.allows(DataCategory.CELL_VALUE, DataContext.CATALOG)
 
 
 def test_only_a_new_key_keeps_the_confirmed_pair(make_app: AppFactory) -> None:

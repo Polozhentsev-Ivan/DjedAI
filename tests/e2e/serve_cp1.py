@@ -95,8 +95,14 @@ def model_app() -> FastAPI:
                 ]
             }
         elif name == "ComposeResponse":
-            row = re.search(r"rows=\[\[([^\]]+)\]\]", system).group(1)
-            numbers = re.findall(r"-?\d+(?:\.\d+)?", row)
+            facts, _ = json.JSONDecoder().raw_decode(
+                system.split("Facts and Data:\n", 1)[1].lstrip()
+            )
+            numbers = next(
+                item["data"]["rows"][0]
+                for item in reversed(facts)
+                if item.get("data", {}).get("rows")
+            )
             markdown = (
                 f"COUNT={numbers[0]};SUM={numbers[1]}"
                 if "COUNT=" in question

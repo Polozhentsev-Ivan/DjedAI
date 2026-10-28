@@ -31,7 +31,12 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from djedai.agent.client import MODEL_UNAVAILABLE
-from djedai.agent.config import data_sharing_allowed
+from djedai.agent.data_policy import (
+    DataCategory,
+    DataContext,
+    DataTransferPolicy,
+    policy_for_client,
+)
 from djedai.agent.prompts import load_prompt
 from djedai.contracts.catalog import Column, DatasetCatalog, Table
 
@@ -90,11 +95,16 @@ class _ModelUnavailable(Exception):
 
 class _Describer:
     def __init__(
-        self, connection: duckdb.DuckDBPyConnection, client: ModelClient, share_values: bool
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        client: ModelClient,
+        share_values: bool,
+        policy: DataTransferPolicy,
     ) -> None:
         self.connection = connection
         self.client = client
         self.share_values = share_values
+        self.policy = policy
         self.calls = 0
 
     def ask[T: _Answer](
@@ -106,8 +116,12 @@ class _Describer:
         прошли проверку. Отвергнутый или неполный ответ не кэшируется, поэтому при
         следующем вызове пустые поля можно получить заново. Ответ из кэша тоже
         проверяется ``complete`` для текущего вызова: неполный заменяется новым.
+        Вход очищается той же политикой, что и промпты агента: секреты и примеры
+        значений чувствительных колонок не попадают ни в запрос, ни в ключ кэша.
         """
-        user = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        user = json.dumps(
+            self.policy.sanitize_description_payload(payload), ensure_ascii=False, sort_keys=True
+        )
         system = load_prompt(prompt)
         schema = json.dumps(answer.model_json_schema(), sort_keys=True)
         key = hashlib.sha256(
@@ -151,14 +165,16 @@ def describe_catalog(
 ) -> DescriptionReport:
     """Копия каталога с описаниями колонок, таблиц и ``summary``; сбой модели — в warnings.
 
-    Значения ячеек (примеры и частые значения) уходят модели, только если администратор
-    разрешил это явно (``ALLOW_DATA_SHARING=true``, см. ``data_sharing_allowed``): по
-    умолчанию ``MODEL_BASE_URL`` считается внешним API. ``share_values=False`` запрещает
-    передачу и при разрешении, но разрешить её в обход настройки нельзя. Без значений
-    остаются имена, типы и агрегаты; описания при этом обычно менее точны.
+    Значения ячеек (примеры и частые значения) уходят модели, только если единая
+    политика клиента разрешает категорию ``CELL_VALUE`` в контексте каталога
+    (``ALLOW_DATA_SHARING=true``). Безопасный режим не запрещает внешний инференс:
+    имена, типы, статистика и агрегаты передаются. ``share_values=False`` запрещает
+    выборки и при разрешении, но разрешить их в обход политики нельзя.
     """
     _ensure_table(connection)
-    describer = _Describer(connection, client, share_values and data_sharing_allowed())
+    policy = policy_for_client(client)
+    share_values = share_values and policy.allows(DataCategory.CELL_VALUE, DataContext.CATALOG)
+    describer = _Describer(connection, client, share_values, policy)
     warnings: list[str] = []
     tables = list(catalog.tables)
     summary = catalog.summary
@@ -321,7 +337,14 @@ def _dataset_payload(catalog: DatasetCatalog, tables: list[Table]) -> dict:
         for name in table.time_columns:
             column = table.column(name)
             if column is not None and column.stats.min is not None:
-                result.append({"column": name, "min": column.stats.min, "max": column.stats.max})
+                result.append(
+                    {
+                        "column": name,
+                        "original_name": column.original_name,
+                        "min": column.stats.min,
+                        "max": column.stats.max,
+                    }
+                )
         return result
 
     return {

@@ -3,12 +3,20 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
 from djedai.agent.client import BIModelClient
+from djedai.agent.data_policy import (
+    DataTransferPolicy,
+)
+from djedai.agent.data_policy import (
+    data_sharing_allowed as _policy_data_sharing_allowed,
+)
 from djedai.agent.reasoning import ReasoningConfigurationError
 from djedai.config import LimitSettings, ReasoningEffort, get_limits
+
+__all__ = ["ModelConfig", "data_sharing_allowed", "get_agent_client", "reasoning_profile"]
 
 
 class ModelConfig(BaseModel):
@@ -74,10 +82,7 @@ def data_sharing_allowed(override: ModelValues | None = None) -> bool:
     берётся из окружения, затем из ``.env``; окружение процесса не меняется. Разрешение
     относится к паре «адрес + модель» из ``.env``: для другой пары из ``override`` нельзя.
     """
-    value = os.environ.get("ALLOW_DATA_SHARING")
-    if value is None:
-        value = dotenv_values().get("ALLOW_DATA_SHARING")
-    if (value or "false").strip().lower() != "true":
+    if not _policy_data_sharing_allowed():
         return False
     if override is None:
         return True
@@ -124,6 +129,11 @@ def get_agent_client(override: ModelValues | None = None) -> BIModelClient:
             retry_delay=limits.model_retry_delay_seconds,
             reasoning=reasoning_profile(limits) if confirmed else None,
             reasoning_supported=limits.model_reasoning_supported and confirmed,
+            data_policy=(
+                DataTransferPolicy.sharing()
+                if confirmed and _policy_data_sharing_allowed()
+                else DataTransferPolicy.restricted()
+            ),
         )
     except ValidationError as e:
         if any(

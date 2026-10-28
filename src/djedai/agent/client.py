@@ -9,6 +9,11 @@ from urllib.parse import urlsplit
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
+from djedai.agent.data_policy import (
+    POLICY_RESTRICTED_MESSAGE,
+    DataTransferPolicy,
+    DataTransferRestricted,
+)
 from djedai.agent.diagnostics import (
     DiagnosticHttpClient,
     capture_usage,
@@ -36,9 +41,24 @@ from djedai.execution import (
 # INVALID_JSON / SCHEMA_MISMATCH / OUTPUT_LIMIT — модель ответила, но ответ не принят;
 # TIMEOUT / SERVER_ERROR — модель недоступна; UNKNOWN_ERROR — прочие исключения.
 ModelErrorType = Literal[
-    "INVALID_JSON", "SCHEMA_MISMATCH", "OUTPUT_LIMIT", "TIMEOUT", "SERVER_ERROR", "UNKNOWN_ERROR"
+    "INVALID_JSON",
+    "SCHEMA_MISMATCH",
+    "OUTPUT_LIMIT",
+    "TIMEOUT",
+    "SERVER_ERROR",
+    "UNKNOWN_ERROR",
+    "POLICY_RESTRICTED",
 ]
 MODEL_UNAVAILABLE: tuple[ModelErrorType, ...] = ("TIMEOUT", "SERVER_ERROR")
+
+# Failure messages stay content-free: provider bodies and model output are never
+# copied into user-visible errors or diagnostics.
+INVALID_JSON_MESSAGE = "Модель вернула ответ не в формате JSON."
+SCHEMA_MISMATCH_MESSAGE = "Ответ модели не соответствует ожидаемой схеме."
+OUTPUT_LIMIT_MESSAGE = "Модель достигла лимита вывода."
+TIMEOUT_MESSAGE = "Модель не ответила за отведённое время."
+SERVER_ERROR_MESSAGE = "Модель недоступна или вернула ошибку сервера."
+UNKNOWN_ERROR_MESSAGE = "Не удалось получить ответ модели."
 
 
 class ModelResponse[T: BaseModel](BaseModel):
@@ -74,6 +94,7 @@ class BIModelClient:
         retry_delay: float = 0.5,
         reasoning: Mapping[str, ReasoningEffort] | None = None,
         reasoning_supported: bool = False,
+        data_policy: DataTransferPolicy | None = None,
     ):
         if not valid_base_url(base_url):
             raise ValueError("MODEL_BASE_URL должен быть полным HTTP(S)-адресом")
@@ -105,6 +126,9 @@ class BIModelClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # One policy per client. Callers that build structured prompts use the same
+        # instance, so retries and repairs cannot bypass the category rules.
+        self.data_policy = data_policy or DataTransferPolicy.from_env()
 
     def reasoning_for(self, stage: str | None) -> ReasoningEffort:
         """Return the configured effort for a stage; an omitted stage keeps the default."""
@@ -186,6 +210,19 @@ class BIModelClient:
             reasoning_setting=setting,
         ) as call:
             try:
+                self.data_policy.guard(system_prompt, user_prompt, stage=stage)
+            except DataTransferRestricted:
+                # Rejection happens before _generate_typed_response and therefore
+                # before any network attempt or retry.
+                result = ModelResponse(
+                    status="error",
+                    error_type="POLICY_RESTRICTED",
+                    message=POLICY_RESTRICTED_MESSAGE,
+                )
+                if call:
+                    call.finish(result.error_type)
+                return result
+            try:
                 result = self._generate_typed_response(
                     system_prompt, user_prompt, response_model, reasoning_effort=effort
                 )
@@ -247,7 +284,7 @@ class BIModelClient:
                 return ModelResponse(
                     status="error",
                     error_type="OUTPUT_LIMIT",
-                    message="Model output token limit reached.",
+                    message=OUTPUT_LIMIT_MESSAGE,
                     raw_response=response.choices[0].message.content,
                     **metadata,
                 )
@@ -270,19 +307,19 @@ class BIModelClient:
 
         except (TurnTimeout, TurnCancelled):
             raise
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             return ModelResponse(
                 status="error",
                 error_type="INVALID_JSON",
-                message=str(e),
+                message=INVALID_JSON_MESSAGE,
                 raw_response=raw_content if "raw_content" in locals() else None,
                 **metadata,
             )
-        except ValidationError as e:
+        except ValidationError:
             return ModelResponse(
                 status="error",
                 error_type="SCHEMA_MISMATCH",
-                message=str(e),
+                message=SCHEMA_MISMATCH_MESSAGE,
                 raw_response=parsed_json if "parsed_json" in locals() else None,
                 **metadata,
             )
@@ -290,19 +327,19 @@ class BIModelClient:
             return ModelResponse(
                 status="error",
                 error_type="TIMEOUT",
-                message="Модель не ответила за отведённое время.",
+                message=TIMEOUT_MESSAGE,
             )
         except (APIError, APIConnectionError, RateLimitError) as e:
             return ModelResponse(
                 status="error",
                 error_type="SERVER_ERROR",
-                message=str(e),
+                message=SERVER_ERROR_MESSAGE,
                 http_status=getattr(e, "status_code", None),
             )
-        except Exception as e:
+        except Exception:
             return ModelResponse(
                 status="error",
                 error_type="UNKNOWN_ERROR",
-                message=str(e),
+                message=UNKNOWN_ERROR_MESSAGE,
                 **metadata,
             )
