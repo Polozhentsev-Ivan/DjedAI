@@ -1,3 +1,4 @@
+import math
 import time
 import uuid
 from collections.abc import Collection
@@ -79,6 +80,16 @@ _AGG_FUNCS = {
     "median": "MEDIAN",
     "stddev": "STDDEV_POP",
 }
+_FREQ_MIN_SECONDS = {
+    "minute": 60,
+    "hour": 3_600,
+    "day": 86_400,
+    "week": 7 * 86_400,
+    "month": 28 * 86_400,
+    "quarter": 89 * 86_400,
+    "year": 365 * 86_400,
+}
+_MAX_CALENDAR_BUCKETS = 200_000
 _ANOMALY_METHODS = {"iqr", "zscore", "mad", "stl-residual"}
 _DEFAULT_THRESHOLDS = {
     "iqr": 1.5,
@@ -521,7 +532,7 @@ def describe_column(
         # --- Частоты (табличное представление) + факты ---
         freqs = con.execute(
             f"SELECT {safe_col}, COUNT(*) FROM {safe_table} "
-            f"GROUP BY {safe_col} ORDER BY COUNT(*) DESC LIMIT 10"
+            f"GROUP BY {safe_col} ORDER BY COUNT(*) DESC, {safe_col} LIMIT 10"
         ).fetchall()
 
         freq_rows = [[val, cnt] for val, cnt in freqs]
@@ -628,7 +639,8 @@ def value_counts(
                     error=ToolError(code="invalid_filter", message="Некорректный фильтр"),
                 )
 
-        query += f" GROUP BY {safe_col} ORDER BY cnt DESC LIMIT {top_n}"
+        # Равные частоты упорядочены по значению: иначе состав top_n меняется от запуска.
+        query += f" GROUP BY {safe_col} ORDER BY cnt DESC, {safe_col} LIMIT {top_n}"
 
         if allowed_tables is not None:
             validate_dataset_query(parse_read_query(query), allowed_tables)
@@ -1064,7 +1076,7 @@ def find_duplicates(
             f"WHERE 1=1{filter_sql} "
             f"GROUP BY {group_positions} "
             f"HAVING COUNT(*) > 1 "
-            f"ORDER BY duplicate_count DESC "
+            f"ORDER BY duplicate_count DESC, {group_positions} "
             f"LIMIT {effective_limit + 1}"
         )
 
@@ -2325,7 +2337,10 @@ def segment_profile(
             f"SELECT {', '.join(select_parts)} FROM {safe_table} "
             f"WHERE 1=1{filter_sql} GROUP BY {group_positions}"
         )
-        query = f"{base_query} ORDER BY {_quote_id(size_column)} DESC LIMIT {effective_limit + 1}"
+        query = (
+            f"{base_query} ORDER BY {_quote_id(size_column)} DESC, {group_positions} "
+            f"LIMIT {effective_limit + 1}"
+        )
         summary_columns = ["COUNT(*)", f"COALESCE(SUM({_quote_id(size_column)}), 0)"]
         for aliases in measure_columns:
             mean_alias = _quote_id(aliases[0])
@@ -2849,6 +2864,634 @@ def compare_segments(
                 truncated=len(rows) > get_limits().sql_max_rows,
             ),
             facts=facts,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# CORRELATION
+# ============================================================================
+
+_CORRELATION_METHODS = {"pearson", "spearman", "kendall"}
+_FREQ_UNIT_RU = {
+    "minute": "мин.",
+    "hour": "ч.",
+    "day": "дн.",
+    "week": "нед.",
+    "month": "мес.",
+    "quarter": "кв.",
+    "year": "г.",
+}
+
+
+def _is_numeric_type(dtype: str) -> bool:
+    return any(t in dtype.upper() for t in _NUMERIC_TYPES)
+
+
+def _corr_coefficient(x: np.ndarray, y: np.ndarray, method: str) -> tuple[float, float, int]:
+    """Pearson/Spearman/Kendall на парах без NaN. Возвращает (r, p, n)."""
+    mask = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[mask], y[mask]
+    n = int(x.size)
+    if n < 3 or np.std(x) == 0 or np.std(y) == 0:
+        return float("nan"), float("nan"), n
+    from scipy import stats
+
+    if method == "pearson":
+        r, p = stats.pearsonr(x, y)
+    elif method == "spearman":
+        r, p = stats.spearmanr(x, y)
+    else:
+        r, p = stats.kendalltau(x, y)
+    return float(r), float(p), n
+
+
+def _strength_label(r: float) -> str:
+    a = abs(r)
+    if math.isnan(a):
+        return "не определена"
+    if a < 0.1:
+        return "связи не обнаружено"
+    if a < 0.3:
+        return "слабая"
+    if a < 0.5:
+        return "умеренная"
+    if a < 0.7:
+        return "заметная"
+    return "сильная"
+
+
+def _direction_label(r: float) -> str:
+    if math.isnan(r):
+        return ""
+    if r > 0:
+        return "положительная"
+    if r < 0:
+        return "отрицательная"
+    return "нулевая"
+
+
+def correlation(
+    table: str,
+    columns: list[str],
+    *,
+    method: str = "pearson",
+    filter: str | None = None,
+    min_n: int = 10,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Попарные корреляции между числовыми колонками (B2-6)."""
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    params_dict = {
+        "table": table,
+        "columns": columns,
+        "method": method,
+        "filter": filter,
+        "min_n": min_n,
+    }
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+
+        if method not in _CORRELATION_METHODS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимый метод корреляции: '{method}'.",
+                    suggestion=f"Допустимо: {sorted(_CORRELATION_METHODS)}",
+                )
+            )
+        if not isinstance(min_n, int) or isinstance(min_n, bool) or min_n < 3:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="min_n должен быть целым >= 3.",
+                )
+            )
+        if not columns or len(columns) < 2:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="Укажите минимум две колонки.",
+                )
+            )
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        for col in columns:
+            if col not in all_cols:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                        suggestion=f"Доступно: {', '.join(all_cols)}",
+                    )
+                )
+            dtype = (_column_type(con, table, col) or "").upper()
+            if not _is_numeric_type(dtype):
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' должна быть числовой (тип: {dtype}).",
+                    )
+                )
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        safe_table = _quote_id(table)
+        safe_cols = [_quote_id(c) for c in columns]
+        query = f"SELECT {', '.join(safe_cols)} FROM {safe_table} WHERE 1=1{filter_sql}"
+        raw = execute(query).fetchall()
+
+        if not raw:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="correlation",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=["from", "to", "r", "p_value", "n"],
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[
+                    Fact(
+                        text="По заданным условиям нет строк для расчёта корреляции.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        arr = np.array(
+            [[float(v) if v is not None else np.nan for v in row] for row in raw],
+            dtype=float,
+        )
+        index = {c: i for i, c in enumerate(columns)}
+        rows: list[list] = []
+        facts: list[Fact] = []
+        for i, c1 in enumerate(columns):
+            for c2 in columns[i + 1 :]:
+                check_budget()
+                r, p, n = _corr_coefficient(arr[:, i], arr[:, index[c2]], method)
+                rows.append([c1, c2, r, p, n])
+                if n < min_n:
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"Для пары {c1}–{c2} только {n} наблюдений "
+                                f"(< {min_n}); оценка ненадёжна."
+                            ),
+                            kind="warning",
+                            values={"a": c1, "b": c2, "n": n},
+                        )
+                    )
+                else:
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"{method.capitalize()} r({c1}, {c2}) = {round(r, 2)}, "
+                                f"n = {n}: {_direction_label(r)} {_strength_label(r)} связь."
+                            ),
+                            kind="metric",
+                            values={"a": c1, "b": c2, "r": r, "p": p, "n": n},
+                        )
+                    )
+        facts.append(
+            Fact(
+                text=("Корреляция показывает статистическую связь, а не доказанную причинность."),
+                kind="caveat",
+                values={},
+            )
+        )
+
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="correlation",
+            params=params_dict,
+            data=ToolResultData(
+                columns=["from", "to", "r", "p_value", "n"],
+                rows=rows,
+                row_count=len(rows),
+                truncated=False,
+            ),
+            facts=facts,
+            chart_hint=ChartHint(type="heatmap", x="from", y=["to"]),
+            sql=query,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except (TurnCancelled, TurnTimeout):
+        raise
+    except DatasetScopeError:
+        return _err(
+            error=ToolError(
+                code="dataset_scope_violation",
+                message="Запрос выходит за область выбранного датасета.",
+            )
+        )
+    except Exception as e:
+        return _err(error=ToolError(code="db_error", message=str(e)))
+    finally:
+        timer.cancel()
+        if connection is None:
+            con.close()
+
+
+# ============================================================================
+# LAGGED CORRELATION
+# ============================================================================
+
+
+def _estimate_calendar_buckets(start, end, freq: str) -> int:
+    """Оценка сверху числа бакетов между start и end для выбранной частоты."""
+    delta_seconds = (end - start).total_seconds()
+    unit = _FREQ_MIN_SECONDS[freq]
+    return int(delta_seconds // unit) + 1
+
+
+def _agg_expression(agg: str, column: str) -> str:
+    if agg == "count":
+        return f"COUNT({_quote_id(column)})"
+    return f"{_AGG_FUNCS[agg]}({_quote_id(column)})"
+
+
+def lagged_correlation(
+    table: str,
+    time_col: str,
+    a: str,
+    b: str,
+    *,
+    freq: str = "day",
+    agg: str = "sum",
+    max_lag: int = 14,
+    min_n: int = 10,
+    method: str = "pearson",
+    filter: str | None = None,
+    include_granger: bool = False,
+    connection: duckdb.DuckDBPyConnection | None = None,
+    allowed_tables: Collection[str] | None = None,
+) -> ToolResult:
+    """Кросс-корреляция a и b по лагам (B2-6).
+
+    Конвенция: lag=k — сравниваем a(t) и b(t+k). Положительный лаг — a опережает b.
+    """
+    started = time.perf_counter()
+    con = connection if connection is not None else _get_mock_connection()
+    timer = query_timer(get_limits().tool_timeout_seconds, con.interrupt)
+    timer.start()
+    params_dict = {
+        "table": table,
+        "time_col": time_col,
+        "a": a,
+        "b": b,
+        "freq": freq,
+        "agg": agg,
+        "max_lag": max_lag,
+        "min_n": min_n,
+        "method": method,
+        "filter": filter,
+        "include_granger": include_granger,
+    }
+    try:
+        check_dataset_table(table, allowed_tables)
+        execute = partial(execute_dataset_query, con, allowed_tables=allowed_tables)
+
+        if freq not in _FREQ_UNITS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая частота: '{freq}'.",
+                    suggestion=f"Допустимо: {sorted(_FREQ_UNITS)}",
+                )
+            )
+        if agg not in _AGG_FUNCS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Недопустимая агрегация: '{agg}'.",
+                    suggestion=f"Допустимо: {sorted(_AGG_FUNCS)}",
+                )
+            )
+        if method not in ("pearson", "spearman"):
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=f"Для лагов допустимы pearson и spearman, получено '{method}'.",
+                )
+            )
+        if not isinstance(max_lag, int) or isinstance(max_lag, bool) or max_lag < 0:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="max_lag должен быть целым >= 0.",
+                )
+            )
+        if not isinstance(min_n, int) or isinstance(min_n, bool) or min_n < 3:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message="min_n должен быть целым >= 3.",
+                )
+            )
+        all_cols = _list_columns(con, table)
+        if not all_cols:
+            return _err(
+                error=ToolError(
+                    code="invalid_table",
+                    message=f"Таблица '{table}' не найдена.",
+                )
+            )
+        for col in (time_col, a, b):
+            if col not in all_cols:
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' не найдена.",
+                        suggestion=f"Доступно: {', '.join(all_cols)}",
+                    )
+                )
+        for col in (a, b):
+            dtype = (_column_type(con, table, col) or "").upper()
+            if not _is_numeric_type(dtype):
+                return _err(
+                    error=ToolError(
+                        code="invalid_column",
+                        message=f"Колонка '{col}' должна быть числовой (тип: {dtype}).",
+                    )
+                )
+        time_dtype = (_column_type(con, table, time_col) or "").upper()
+        if "DATE" not in time_dtype and "TIMESTAMP" not in time_dtype:
+            return _err(
+                error=ToolError(
+                    code="invalid_column",
+                    message=f"Колонка времени '{time_col}' должна быть DATE или TIMESTAMP "
+                    f"(тип: {time_dtype}).",
+                )
+            )
+        try:
+            filter_expr = _parse_filter_sql(filter)
+        except ValueError as e:
+            return _err(
+                error=ToolError(
+                    code="invalid_filter",
+                    message=f"Некорректный фильтр: {e}",
+                )
+            )
+        filter_sql = f" AND {filter_expr.sql(dialect='duckdb')}" if filter_expr else ""
+
+        safe_table = _quote_id(table)
+        safe_time = _quote_id(time_col)
+        query = (
+            f"SELECT DATE_TRUNC('{freq}', CAST({safe_time} AS TIMESTAMP)) AS time_bucket, "
+            f"{_agg_expression(agg, a)} AS a, {_agg_expression(agg, b)} AS b "
+            f"FROM {safe_table} "
+            f"WHERE {safe_time} IS NOT NULL{filter_sql} "
+            f"GROUP BY 1 ORDER BY 1"
+        )
+        raw = execute(query).fetchall()
+
+        if not raw:
+            return ToolResult(
+                result_id=f"r_{uuid.uuid4().hex}",
+                status="empty",
+                tool="lagged_correlation",
+                params=params_dict,
+                data=ToolResultData(
+                    columns=["lag", "r", "p_value", "n"],
+                    rows=[],
+                    row_count=0,
+                    truncated=False,
+                ),
+                facts=[
+                    Fact(
+                        text="По заданным условиям нет временных бакетов.",
+                        kind="empty_result",
+                    )
+                ],
+                sql=query,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+        import pandas as pd
+
+        df = pd.DataFrame(raw, columns=["time_bucket", "a", "b"])
+        df["time_bucket"] = pd.to_datetime(df["time_bucket"])
+        df = df.set_index("time_bucket").sort_index()
+        # Защита от раздувания календарной сетки: одна ошибочная дата
+        # (например, 1970-01-01 рядом с 2026-10-26) при freq='minute'
+        # даёт десятки миллионов бакетов до первой CPU-проверки бюджета.
+        n_buckets = _estimate_calendar_buckets(df.index.min(), df.index.max(), freq)
+        if n_buckets > _MAX_CALENDAR_BUCKETS:
+            return _err(
+                error=ToolError(
+                    code="invalid_parameter",
+                    message=(
+                        f"Календарная сетка частоты '{freq}' между "
+                        f"{df.index.min().isoformat()} и {df.index.max().isoformat()} "
+                        f"содержит около {n_buckets} бакетов "
+                        f"(лимит {_MAX_CALENDAR_BUCKETS})."
+                    ),
+                    suggestion=(
+                        "Укрупните частоту (например, 'day' вместо 'minute'), "
+                        "сузьте диапазон фильтром или проверьте колонку времени — "
+                        "возможно, в данных есть ошибочная дата вне основного периода."
+                    ),
+                )
+            )
+        df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq=_PANDAS_FREQ[freq]))
+        # sum/count — отсутствующий бакет = 0; остальные — неизвестно (NaN)
+        if agg in ("sum", "count"):
+            df = df.fillna({"a": 0.0, "b": 0.0})
+
+        lags = list(range(-max_lag, max_lag + 1))
+        a_vals = df["a"].to_numpy(dtype=float)
+        rows: list[list] = []
+        best = {"lag": None, "r": float("nan"), "p": float("nan"), "n": 0}
+        for k in lags:
+            check_budget()
+            # lag=k: a(t) vs b(t+k) => b.shift(-k)
+            shifted = df["b"].shift(-k).to_numpy(dtype=float)
+            r, p, n = _corr_coefficient(a_vals, shifted, method)
+            rows.append([k, r, p, n])
+            if n >= min_n and not math.isnan(r):
+                if best["lag"] is None or abs(r) > abs(best["r"]):
+                    best = {"lag": k, "r": r, "p": p, "n": n}
+
+        facts: list[Fact] = []
+        if best["lag"] is None:
+            facts.append(
+                Fact(
+                    text=(
+                        f"Не удалось оценить лаг: слишком мало наблюдений "
+                        f"(< {min_n} на всех сдвигах)."
+                    ),
+                    kind="empty_result",
+                )
+            )
+        else:
+            k = best["lag"]
+            unit = _FREQ_UNIT_RU[freq]
+            if k == 0:
+                rel = "одновременно"
+            elif k > 0:
+                rel = f"изменения {a} опережают {b} на {abs(k)} {unit}"
+            else:
+                rel = f"изменения {b} опережают {a} на {abs(k)} {unit}"
+            facts.append(
+                Fact(
+                    text=(
+                        f"Максимальная корреляция {round(best['r'], 2)} при сдвиге {k} "
+                        f"({rel}); n = {best['n']}. Это статистическая связь, "
+                        f"не доказательство причинности."
+                    ),
+                    kind="metric",
+                    values={
+                        "a": a,
+                        "b": b,
+                        "lag": k,
+                        "r": best["r"],
+                        "p": best["p"],
+                        "n": best["n"],
+                    },
+                )
+            )
+            facts.append(
+                Fact(
+                    text=(
+                        f"Лучший лаг выбран как максимум по {2 * max_lag + 1} сдвигам — "
+                        f"возможна ложная находка; проверьте на отложенном периоде "
+                        f"и скорректируйте p-value."
+                    ),
+                    kind="caveat",
+                    values={"multiple_tests": 2 * max_lag + 1},
+                )
+            )
+
+        if include_granger:
+            if len(df) < 30:
+                facts.append(
+                    Fact(
+                        text="Тест Грейнджера не рассчитан: нужно минимум 30 наблюдений.",
+                        kind="warning",
+                        values={},
+                    )
+                )
+            elif df[["a", "b"]].isna().any().any():
+                # Granger определён на регулярной сетке. При agg != sum/count
+                # отсутствующие бакеты остаются NaN, и dropna() сжал бы ряд:
+                # «лаг 1» в сжатом ряду соответствовал бы 2 дням, max_lag
+                # перестал бы ограничивать календарный сдвиг. Отказываемся
+                # явно вместо того, чтобы молча публиковать неверные единицы.
+                missing = int(df[["a", "b"]].isna().any(axis=1).sum())
+                facts.append(
+                    Fact(
+                        text=(
+                            f"Тест Грейнджера не рассчитан: в ряду {missing} "
+                            f"пропущенных бакетов, а Granger требует регулярной "
+                            f"сетки. Используйте agg='sum' или agg='count', "
+                            f"либо сузьте диапазон до непрерывного периода."
+                        ),
+                        kind="warning",
+                        values={"n": len(df), "missing_buckets": missing},
+                    )
+                )
+            else:
+                try:
+                    check_budget()
+                    import warnings
+
+                    from statsmodels.tsa.stattools import grangercausalitytests
+
+                    # df уже на полной календарной сетке (reindex выше),
+                    # NaN нет — dropna() не нужен и только сжал бы периоды.
+                    x = df[["b", "a"]].to_numpy(dtype=float)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        g = grangercausalitytests(x, maxlag=min(max_lag, 10))
+
+                    pvals: dict[int, float] = {}
+                    for lag, (results, _) in g.items():
+                        ftest = results.get("ssr_ftest")
+                        if ftest is None:
+                            continue
+                        p = float(ftest[1])
+                        if not math.isnan(p):
+                            pvals[lag] = p
+                    if not pvals:
+                        raise ValueError("все p-value нечисловые")
+
+                    best_g = min(pvals, key=pvals.get)
+                    facts.append(
+                        Fact(
+                            text=(
+                                f"Тест Грейнджера: p = {round(pvals[best_g], 3)} "
+                                f"на лаге {best_g} для {a}→{b}. Это потенциальная "
+                                f"предсказуемость, а не причинность; на "
+                                f"нестационарных рядах ненадёжно."
+                            ),
+                            kind="granger",
+                            values={"p": pvals[best_g], "lag": best_g},
+                        )
+                    )
+                except (TurnCancelled, TurnTimeout):
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    facts.append(
+                        Fact(
+                            text=f"Тест Грейнджера не рассчитан: {type(e).__name__}: {e}",
+                            kind="warning",
+                            values={"error": type(e).__name__, "message": str(e)},
+                        )
+                    )
+        return ToolResult(
+            result_id=f"r_{uuid.uuid4().hex}",
+            status="ok",
+            tool="lagged_correlation",
+            params=params_dict,
+            data=ToolResultData(
+                columns=["lag", "r", "p_value", "n"],
+                rows=rows,
+                row_count=len(rows),
+                truncated=False,
+            ),
+            facts=facts,
+            chart_hint=ChartHint(type="bar", x="lag", y=["r"]),
+            sql=query,
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
     except (TurnCancelled, TurnTimeout):

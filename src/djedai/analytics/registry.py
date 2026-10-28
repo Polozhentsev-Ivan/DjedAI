@@ -7,10 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from djedai.analytics.metrics import TIME_GRAINS, MetricContext, compute_metric
 from djedai.analytics.tools import (
     compare_segments,
+    correlation,
     describe_column,
     describe_dataset,
     detect_anomalies,
     find_duplicates,
+    lagged_correlation,
     run_sql,
     seasonality,
     segment_profile,
@@ -335,6 +337,91 @@ class ComputeMetricParams(BaseModel):
     )
 
 
+class CorrelationParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"table": "events", "columns": ["amount", "id"], "method": "pearson"},
+                {"table": "test", "columns": ["age", "id"], "method": "spearman", "min_n": 3},
+            ]
+        }
+    )
+    table: str = Field(description="Имя таблицы")
+    columns: list[str] = Field(
+        description="Числовые колонки (минимум две)",
+        min_length=2,
+    )
+    method: Literal["pearson", "spearman", "kendall"] = Field(
+        default="pearson",
+        description="Метод корреляции",
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+    min_n: int = Field(
+        default=10,
+        description="Минимальное число наблюдений для оценки",
+        ge=3,
+    )
+
+
+class LaggedCorrelationParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "a": "amount",
+                    "b": "id",
+                    "freq": "day",
+                    "max_lag": 7,
+                },
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "a": "amount",
+                    "b": "id",
+                    "freq": "day",
+                    "agg": "sum",
+                    "max_lag": 14,
+                    "include_granger": True,
+                },
+            ]
+        }
+    )
+    table: str = Field(description="Имя таблицы")
+    time_col: str = Field(description="Колонка DATE или TIMESTAMP")
+    a: str = Field(description="Числовая колонка A")
+    b: str = Field(description="Числовая колонка B")
+    freq: Literal["minute", "hour", "day", "week", "month", "quarter", "year"] = Field(
+        default="day",
+        description="Частота агрегации",
+    )
+    agg: Literal["count", "sum", "avg", "min", "max", "median", "stddev"] = Field(
+        default="sum",
+        description="Агрегация",
+    )
+    max_lag: int = Field(
+        default=14,
+        description="Максимальный сдвиг в периодах",
+        ge=0,
+        le=180,
+    )
+    min_n: int = Field(
+        default=10,
+        description="Минимальное число наблюдений на лаг",
+        ge=3,
+    )
+    method: Literal["pearson", "spearman"] = Field(
+        default="pearson",
+        description="Метод корреляции",
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+    include_granger: bool = Field(
+        default=False,
+        description="Добавить тест Грейнджера (потенциальная предсказуемость, не причинность)",
+    )
+
+
 class ToolDefinition(BaseModel):
     """Внутреннее описание инструмента с моделью для валидации параметров."""
 
@@ -440,6 +527,25 @@ TOOLS_REGISTRY = [
         ),
         parameters_model=ComputeMetricParams,
     ),
+    ToolDefinition(
+        name="correlation",
+        description=(
+            "Считает попарные корреляции между числовыми колонками "
+            "(Pearson/Spearman/Kendall). Возвращает r, p-value и n для каждой пары. "
+            "Показывает статистическую связь, а не доказанную причинность."
+        ),
+        parameters_model=CorrelationParams,
+    ),
+    ToolDefinition(
+        name="lagged_correlation",
+        description=(
+            "Кросс-корреляция двух числовых рядов по лагам. Находит сдвиг, при котором "
+            "|r| максимален. lag=k означает: a(t) сравнивается с b(t+k); положительный "
+            "лаг — a опережает b, отрицательный — b опережает a. Опционально тест "
+            "Грейнджера (потенциальная предсказуемость, не причинность)."
+        ),
+        parameters_model=LaggedCorrelationParams,
+    ),
 ]
 
 
@@ -467,6 +573,8 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
     "segment_profile": segment_profile,
     "compare_segments": compare_segments,
     "compute_metric": compute_metric,
+    "correlation": correlation,
+    "lagged_correlation": lagged_correlation,
 }
 
 

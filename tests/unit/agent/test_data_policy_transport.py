@@ -60,6 +60,7 @@ def _catalog(
     sensitive_sample: str | None = None,
     sensitive_stats: bool = False,
     sensitive_period: tuple[str, str] | None = None,
+    compound_column: tuple[str, str] | None = None,
 ) -> DatasetCatalog:
     data = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     data["name"] = META_MARKER
@@ -110,6 +111,11 @@ def _catalog(
             "granularity": "day",
         }
         table["time_columns"] = ["userpassword"]
+    if compound_column is not None:
+        column = table["columns"][-1]
+        column["name"], column["original_name"] = compound_column
+        column["sample_values"] = []
+        column["top_values"] = []
     return DatasetCatalog.model_validate(data)
 
 
@@ -807,6 +813,331 @@ def test_json_credentials_are_rejected_before_network(
     assert result["answer_blocks"][0].markdown == RESTRICTED_CONTEXT_MESSAGE
     assert "ordinaryCredential9!" not in result["answer_blocks"][0].markdown
     assert "reviewFixtureCredential9!" not in result["answer_blocks"][0].markdown
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_normalized_compound_sensitive_column_facts_never_reach_compose(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_db_password",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "dbpassword"},
+        data=ToolResultData(columns=["dbpassword", "count"], rows=[[marker, 2]], row_count=1),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            ),
+            Fact(
+                text=f"Примеры значений: {marker}",
+                kind="examples",
+                values={"examples": [marker]},
+            ),
+        ],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "describe_column"
+        assert params["column"] == "dbpassword"
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {
+                            "tool": "describe_column",
+                            "args": {"table": "s", "column": "dbpassword"},
+                        }
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(client, dispatcher=dispatcher),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_original_compound_column_sensitivity_survives_normalization(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_db_password_text",
+        status="ok",
+        tool="describe_column",
+        params={"table": "orders", "column": "dbpasswordtext"},
+        data=ToolResultData(columns=["dbpasswordtext", "count"], rows=[[marker, 2]], row_count=1),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            ),
+            Fact(
+                text=f"Примеры значений: {marker}",
+                kind="examples",
+                values={"examples": [marker]},
+            ),
+        ],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "describe_column"
+        assert params["column"] == "dbpasswordtext"
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {
+                            "tool": "describe_column",
+                            "args": {"table": "orders", "column": "dbpasswordtext"},
+                        }
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    dispatcher=dispatcher,
+                    catalog=_catalog(compound_column=("dbpasswordtext", "dbPasswordText")),
+                ),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+def test_segment_profile_grouped_by_sensitive_column_never_reaches_network(
+    model_endpoint: Callable, policy: DataTransferPolicy
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_segment_password",
+        status="ok",
+        tool="segment_profile",
+        params={
+            "table": "orders",
+            "group_by": ["dbpasswordtext"],
+            "measures": [],
+            "filter": None,
+            "top_n": 100,
+        },
+        data=ToolResultData(
+            columns=["dbpasswordtext", "segment_size"],
+            rows=[[marker, 3]],
+            row_count=1,
+        ),
+        facts=[
+            Fact(
+                text=f"Сегмент {{'dbpasswordtext': '{marker}'}}: 3 строк.",
+                kind="segment_sample",
+                values={"group": {"dbpasswordtext": marker}, "size": 3},
+            )
+        ],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "segment_profile"
+        assert params["group_by"] == ["dbpasswordtext"]
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {
+                "body": {
+                    "plan": [
+                        {
+                            "tool": "segment_profile",
+                            "args": {"table": "orders", "group_by": ["dbpasswordtext"]},
+                        }
+                    ]
+                }
+            }
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    dispatcher=dispatcher,
+                    catalog=_catalog(compound_column=("dbpasswordtext", "dbPasswordText")),
+                ),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
+    ids=["restricted", "sharing"],
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT dbpasswordtext AS value FROM accounts",
+        "WITH c(p) AS (SELECT dbpasswordtext FROM accounts) SELECT p AS value FROM c",
+    ],
+    ids=["alias", "cte-alias-list"],
+)
+def test_sql_alias_of_sensitive_column_never_reaches_network(
+    model_endpoint: Callable, policy: DataTransferPolicy, sql: str
+) -> None:
+    marker = "ordinaryCredential9!"
+    described = ToolResult(
+        result_id="r_sql_alias_password",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql, "max_rows": 100},
+        data=ToolResultData(columns=["value"], rows=[[marker]], row_count=1),
+        facts=[Fact(text="Запрос выполнен успешно, получено строк: 1", values={"row_count": 1})],
+    )
+
+    def dispatcher(tool: str, params: dict[str, Any]) -> ToolResult:
+        assert tool == "run_sql"
+        assert params["sql"] == sql
+        return described
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {"body": {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}}
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint:
+        client = _client(endpoint, policy)
+        try:
+            result = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    dispatcher=dispatcher,
+                    catalog=_catalog(compound_column=("dbpasswordtext", "dbPasswordText")),
+                ),
+            )
+        finally:
+            client.client.close()
+
+    network = _network_text(endpoint)
+    assert marker not in network
+    assert REDACTED in network
+    assert all(block.type != "error" for block in result["answer_blocks"])
+
+
+@pytest.mark.parametrize("policy", [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT v AS first, v AS second FROM s",
+        "SELECT t.v AS first, t.v AS second FROM (SELECT dbpasswordtext AS v FROM accounts) t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts), t AS (SELECT * FROM s) "
+        "SELECT v AS first, v AS second FROM t",
+    ],
+    ids=["cte", "subquery", "star"],
+)
+def test_real_csv_repeated_projection_never_sends_a_credential(
+    model_endpoint: Callable, tmp_path: Path, policy: DataTransferPolicy, sql: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from djedai.analytics.registry import execute_tool
+    from djedai.data.service import CsvSource, ingest_csv_dataset
+
+    marker = "ordinaryCredential9!"
+    csv = tmp_path / "accounts.csv"
+    csv.write_text(f"dbPasswordText\n{marker}\n", encoding="utf-8")
+    database = tmp_path / "dataset.duckdb"
+    catalog = ingest_csv_dataset(
+        [CsvSource(csv, csv.name)],
+        database,
+        dataset_id="ds_173",
+        name="accounts",
+        created_at=datetime.now(UTC),
+    )
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {"body": {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}}
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint, duckdb.connect(str(database), read_only=True) as conn:
+        client = _client(endpoint, policy)
+        try:
+            state = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    catalog=catalog,
+                    dispatcher=lambda tool, args: execute_tool(
+                        tool, args, connection=conn, allowed_tables={"accounts"}
+                    ),
+                ),
+            )
+        finally:
+            client.client.close()
+    stages = _stage_calls(endpoint)
+    assert stages["ComposeResponse"] and stages["VerifyResponse"]
+    assert marker not in _network_text(endpoint)
+    assert REDACTED in _network_text(endpoint)
+    assert all(block.type != "error" for block in state["answer_blocks"])
 
 
 @pytest.mark.parametrize(

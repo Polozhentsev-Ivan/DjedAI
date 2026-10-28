@@ -1,6 +1,6 @@
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +21,7 @@ from djedai.agent.data_policy import (
     DataContext,
     DataTransferPolicy,
     policy_for_client,
+    sensitive_column_names,
 )
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
@@ -77,16 +78,25 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
     """
     entries: list[dict] = []
     usable = False
+    sensitive_columns = state.get("sensitive_columns", ())
     for result in answer_results(state):
         entry: dict = {"result_id": result.result_id, "tool": result.tool}
         if result.facts:
-            sensitive = policy.result_has_sensitive_source(result)
+            sensitive = policy.result_has_sensitive_source(
+                result, sensitive_columns=sensitive_columns
+            )
             facts = [policy.sanitize_fact(fact, sensitive=sensitive) for fact in result.facts]
             entry["facts"] = facts
             if any(fact.get("text") or fact.get("values") for fact in facts):
                 usable = True
         if result.data is not None:
-            data = policy.result_data(result.data, context=_result_context(state, result))
+            data = policy.result_data(
+                result.data,
+                context=_result_context(state, result),
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
+            )
             entry["data"] = data
             if data.get("rows"):
                 usable = True
@@ -103,9 +113,10 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
     """Loads the catalog and context for the specific dataset, and resets per-turn state."""
     policy = _policy(config)
     catalog_loader = config.get("configurable", {}).get("catalog_loader")
+    catalog = catalog_loader(state["dataset_id"]) if catalog_loader is not None else None
     catalog_prompt = (
-        policy.sanitize_catalog(catalog_loader(state["dataset_id"])).to_prompt()
-        if catalog_loader is not None
+        policy.sanitize_catalog(catalog).to_prompt()
+        if catalog is not None
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
     metrics_loader = config.get("configurable", {}).get("metrics_loader")
@@ -122,6 +133,10 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
             known_ids.add(result.result_id)
     return {
         "catalog_prompt": catalog_prompt,
+        # Normalized column names whose original header is sensitive. Results keep
+        # the normalized name, so this is what preserves `dbPasswordText` after
+        # normalization to `dbpasswordtext`.
+        "sensitive_columns": sensitive_column_names(catalog) if catalog is not None else (),
         "history_results": history_results,
         # Memory belongs to this chat only; the backend loads it by chat_id and owner.
         "focus_result_ids": list(state.get("focus_result_ids", [])),
@@ -149,6 +164,7 @@ def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
         results=[*state.get("history_results", []), *state.get("results", [])],
         previous_blocks=state.get("previous_blocks", []),
         policy=policy,
+        sensitive_columns=state.get("sensitive_columns", ()),
     )
 
 
@@ -319,6 +335,7 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
 
     dispatcher = config.get("configurable", {}).get("tool_dispatcher")
     policy = _policy(config)
+    sensitive_columns = state.get("sensitive_columns", ())
     limit = get_limits().dashboard_max_tool_calls
     existing_results = state.get("results", [])
     new_results: list[ToolResult] = []
@@ -383,7 +400,9 @@ def execute_dashboard(state: AgentState, config: RunnableConfig) -> dict:
                 if res.error is not None:
                     updates["error"] = policy.sanitize_error(res.error)
                 if res.facts:
-                    sensitive = policy.result_has_sensitive_source(res)
+                    sensitive = policy.result_has_sensitive_source(
+                        res, sensitive_columns=sensitive_columns
+                    )
                     updates["facts"] = [
                         policy.sanitize_fact_model(fact, sensitive=sensitive) for fact in res.facts
                     ]
@@ -467,6 +486,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     plan_steps = state.get("plan", [])
     existing_results = state.get("results", [])
     policy = _policy(config)
+    sensitive_columns = state.get("sensitive_columns", ())
     new_results = []
 
     # In production, dispatcher comes from djedai.analytics.registry
@@ -505,7 +525,9 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
             if res.error is not None:
                 updates["error"] = policy.sanitize_error(res.error)
             if res.facts:
-                sensitive = policy.result_has_sensitive_source(res)
+                sensitive = policy.result_has_sensitive_source(
+                    res, sensitive_columns=sensitive_columns
+                )
                 updates["facts"] = [
                     policy.sanitize_fact_model(fact, sensitive=sensitive) for fact in res.facts
                 ]
@@ -687,10 +709,14 @@ def updated_focus_result_ids(state: AgentState) -> list[str]:
 
 
 def describe_result_for_chart(
-    result: ToolResult, policy: DataTransferPolicy, context: DataContext
+    result: ToolResult,
+    policy: DataTransferPolicy,
+    context: DataContext,
+    *,
+    sensitive_columns: Collection[str] = (),
 ) -> dict:
     """Краткое описание результата для модели по правилам политики."""
-    return policy.chart_result(result, context=context)
+    return policy.chart_result(result, context=context, sensitive_columns=sensitive_columns)
 
 
 NUMERIC_TYPES = {
@@ -826,7 +852,12 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
 
     policy = _policy(config)
     results_summary = [
-        describe_result_for_chart(result, policy, _result_context(state, result))
+        describe_result_for_chart(
+            result,
+            policy,
+            _result_context(state, result),
+            sensitive_columns=state.get("sensitive_columns", ()),
+        )
         for result in valid_results
     ]
 

@@ -16,12 +16,44 @@ from djedai.agent.data_policy import (
     DataTransferRestricted,
     data_sharing_allowed,
     policy_for_client,
+    sensitive_column_names,
 )
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.tool_result import ChartHint, Fact, ToolError, ToolResult, ToolResultData
 
 SECRET = "sk-live-1234567890abcdef"
 DSN = "postgresql://analyst:s3cr3t@db.internal:5432/warehouse"
+
+
+def _catalog_with_column(name: str, original_name: str) -> DatasetCatalog:
+    return DatasetCatalog.model_validate(
+        {
+            "dataset_id": "ds",
+            "name": "ds",
+            "created_at": "2026-01-01T00:00:00Z",
+            "source": {"kind": "csv_upload"},
+            "tables": [
+                {
+                    "table_id": "s",
+                    "original_name": "s.csv",
+                    "row_count": 1,
+                    "duplicate_rows": 0,
+                    "columns": [
+                        {
+                            "name": name,
+                            "original_name": original_name,
+                            "physical_type": "VARCHAR",
+                            "semantic_type": "text",
+                            "role": "text",
+                            "null_ratio": 0.0,
+                            "distinct_count": 1,
+                            "is_unique": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -276,8 +308,9 @@ def test_sanitize_description_payload_uses_period_original_name() -> None:
         ("userpassword", "userPassword"),
         ("passwordhash", "passwordHash"),
         ("apitoken", "apiToken"),
+        ("dbpassword", "dbPassword"),
     ],
-    ids=["name", "original-name", "normalized-name", "camel-case-name"],
+    ids=["name", "original-name", "normalized-name", "camel-case-name", "db-prefix"],
 )
 def test_sanitize_catalog_redacts_sensitive_numeric_column_values(
     name: str, original_name: str
@@ -396,6 +429,445 @@ def test_result_has_sensitive_source_checks_params_and_result_columns() -> None:
     assert policy.result_has_sensitive_source(described) is True
     assert policy.result_has_sensitive_source(normalized) is True
     assert policy.result_has_sensitive_source(sql_result) is False
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "dbpassword",
+        "dbPassword",
+        "db_password",
+        "dbpasswordhash",
+        "dbpasswordhashvalue",
+        "mytoken",
+        "appsecret",
+    ],
+)
+def test_normalized_compound_column_is_sensitive(column: str) -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_compound",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": column},
+        data=ToolResultData(columns=[column, "count"], rows=[["ordinaryCredential9!", 2]]),
+    )
+
+    assert policy.result_has_sensitive_source(result) is True
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["tokenizer", "secretary", "passwordless", "credentialed"],
+)
+def test_normalized_metadata_column_is_not_sensitive(column: str) -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_metadata",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": column},
+        data=ToolResultData(columns=[column, "count"], rows=[["ordinary value", 2]]),
+    )
+
+    assert policy.result_has_sensitive_source(result) is False
+
+
+def test_sensitive_column_names_preserves_original_compound_name() -> None:
+    catalog = _catalog_with_column("dbpasswordtext", "dbPasswordText")
+
+    names = sensitive_column_names(catalog)
+
+    assert "dbpasswordtext" in names
+    assert "dbPasswordText" in names
+
+
+def test_sensitive_column_names_keeps_metadata_words_non_sensitive() -> None:
+    catalog = _catalog_with_column("tokenizer", "tokenizer")
+
+    assert sensitive_column_names(catalog) == ()
+
+
+def test_result_has_sensitive_source_accepts_normalized_catalog_names() -> None:
+    policy = DataTransferPolicy.restricted()
+    result = ToolResult(
+        result_id="r_db_password_text",
+        status="ok",
+        tool="describe_column",
+        params={"table": "s", "column": "dbpasswordtext"},
+        data=ToolResultData(
+            columns=["dbpasswordtext", "count"], rows=[["ordinaryCredential9!", 2]]
+        ),
+    )
+
+    assert policy.result_has_sensitive_source(result) is False
+    assert (
+        policy.result_has_sensitive_source(
+            result, sensitive_columns=("dbpasswordtext", "dbPasswordText")
+        )
+        is True
+    )
+
+
+def test_result_data_redacts_normalized_catalog_column() -> None:
+    data = ToolResultData(
+        columns=["dbpasswordtext", "count"],
+        rows=[["ordinaryCredential9!", 2]],
+    )
+
+    payload = DataTransferPolicy.sharing().result_data(
+        data,
+        context=DataContext.CURRENT_RESULT,
+        sensitive_columns=("dbpasswordtext", "dbPasswordText"),
+    )
+
+    assert payload["rows"] == [[REDACTED, 2]]
+    assert "ordinaryCredential9!" not in str(payload)
+
+
+def test_string_result_columns_and_group_by_preserve_sensitivity() -> None:
+    marker = "ordinaryCredential9!"
+    policy = DataTransferPolicy.sharing()
+    result = ToolResult(
+        result_id="r_segment",
+        status="ok",
+        tool="segment_profile",
+        params={"table": "accounts", "group_by": ["dbpasswordtext"]},
+        data=ToolResultData(
+            columns=["dbpasswordtext", "segment_size"],
+            rows=[[marker, 3]],
+            row_count=1,
+        ),
+        facts=[
+            Fact(
+                text=f"Сегмент {{'dbpasswordtext': '{marker}'}}: 3 строк.",
+                kind="segment_sample",
+                values={"group": {"dbpasswordtext": marker}, "size": 3},
+            )
+        ],
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    assert policy.result_has_sensitive_source(result, sensitive_columns=names) is True
+    outputs = policy.sensitive_result_columns(result, sensitive_columns=names)
+    assert outputs == {"dbpasswordtext"}
+    payload = policy.result_data(
+        result.data,
+        context=DataContext.CURRENT_RESULT,
+        sensitive_columns=outputs,
+    )
+    safe_fact = policy.sanitize_fact(result.facts[0], sensitive=True)
+
+    assert payload["rows"] == [[REDACTED, 3]]
+    assert marker not in str(payload)
+    assert marker not in str(safe_fact)
+    assert safe_fact["values"]["group"] == {"dbpasswordtext": REDACTED}
+    assert safe_fact["values"]["size"] == 3
+
+
+def test_string_result_columns_alone_are_sensitive() -> None:
+    marker = "ordinaryCredential9!"
+    result = ToolResult(
+        result_id="r_string_columns",
+        status="ok",
+        tool="segment_profile",
+        params={"table": "accounts"},
+        data=ToolResultData(columns=["dbpasswordtext", "segment_size"], rows=[[marker, 3]]),
+    )
+
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(
+            result, sensitive_columns=("dbpasswordtext", "dbPasswordText")
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT dbpasswordtext AS value FROM accounts",
+        "SELECT p AS value FROM (SELECT dbpasswordtext AS p FROM accounts) t",
+        "WITH c AS (SELECT dbpasswordtext AS p FROM accounts) SELECT p AS value FROM c",
+    ],
+    ids=["alias", "subquery", "cte"],
+)
+def test_sql_projection_alias_preserves_sensitive_source(sql: str) -> None:
+    marker = "ordinaryCredential9!"
+    policy = DataTransferPolicy.sharing()
+    result = ToolResult(
+        result_id="r_sql_alias",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=["value"], rows=[[marker]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    outputs = policy.sensitive_result_columns(result, sensitive_columns=names)
+
+    assert outputs == {"value"}
+    assert policy.result_has_sensitive_source(result, sensitive_columns=names) is True
+    payload = policy.result_data(
+        result.data,
+        context=DataContext.CURRENT_RESULT,
+        sensitive_columns=outputs,
+    )
+    assert payload["rows"] == [[REDACTED]]
+    assert marker not in str(payload)
+
+
+def test_sql_alias_of_heuristic_sensitive_column_is_sensitive() -> None:
+    result = ToolResult(
+        result_id="r_sql_heuristic_alias",
+        status="ok",
+        tool="run_sql",
+        params={"sql": "SELECT password AS value FROM users"},
+        data=ToolResultData(columns=["value"], rows=[["ordinaryCredential9!"]], row_count=1),
+    )
+
+    outputs = DataTransferPolicy.sharing().sensitive_result_columns(result)
+
+    assert outputs == {"value"}
+    assert DataTransferPolicy.sharing().result_has_sensitive_source(result) is True
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT v AS first, v AS second FROM s",
+        "SELECT t.v AS first, t.v AS second FROM (SELECT dbpasswordtext AS v FROM accounts) t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts), t AS (SELECT * FROM s) "
+        "SELECT v AS first, v AS second FROM t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT a.v AS first, b.v AS second FROM s a CROSS JOIN s b",
+    ],
+    ids=["cte", "subquery", "star", "reused-source"],
+)
+def test_repeated_sql_projection_preserves_sensitivity_for_every_output(sql: str) -> None:
+    result = ToolResult(
+        result_id="repeated-projection",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=["first", "second"], rows=[["credential", "credential"]]),
+    )
+    assert DataTransferPolicy.sharing().sensitive_result_columns(
+        result, sensitive_columns=("dbpasswordtext",)
+    ) == {"first", "second"}
+
+
+def test_sql_alias_of_non_sensitive_column_is_not_sensitive() -> None:
+    result = ToolResult(
+        result_id="r_sql_safe_alias",
+        status="ok",
+        tool="run_sql",
+        params={"sql": "SELECT name AS value FROM accounts"},
+        data=ToolResultData(columns=["value"], rows=[["visible"]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    assert (
+        DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+        == set()
+    )
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(result, sensitive_columns=names)
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH c(p) AS (SELECT dbpasswordtext FROM accounts) SELECT p AS value FROM c",
+        "SELECT p AS value FROM (SELECT dbpasswordtext FROM accounts) t(p)",
+        (
+            "WITH c(p) AS (SELECT dbpasswordtext FROM accounts "
+            "UNION ALL SELECT name FROM other) SELECT p AS value FROM c"
+        ),
+        "WITH c(p, q) AS (SELECT name, dbpasswordtext FROM accounts) SELECT q AS value FROM c",
+    ],
+    ids=["cte-alias-list", "subquery-alias-list", "union-alias-list", "positional-alias-list"],
+)
+def test_sql_column_alias_list_preserves_sensitive_source(sql: str) -> None:
+    marker = "ordinaryCredential9!"
+    policy = DataTransferPolicy.sharing()
+    result = ToolResult(
+        result_id="r_sql_column_alias",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=["value"], rows=[[marker]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    outputs = policy.sensitive_result_columns(result, sensitive_columns=names)
+
+    assert outputs == {"value"}
+    assert policy.result_has_sensitive_source(result, sensitive_columns=names) is True
+    payload = policy.result_data(
+        result.data,
+        context=DataContext.CURRENT_RESULT,
+        sensitive_columns=outputs,
+    )
+    assert payload["rows"] == [[REDACTED]]
+    assert marker not in str(payload)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH c(p, q) AS (SELECT name, dbpasswordtext FROM accounts) SELECT p AS value FROM c",
+        "SELECT p AS value FROM (SELECT name, dbpasswordtext FROM accounts) t(p, q)",
+    ],
+    ids=["cte", "subquery"],
+)
+def test_sql_column_alias_list_of_non_sensitive_column_is_not_sensitive(sql: str) -> None:
+    result = ToolResult(
+        result_id="r_sql_column_alias_safe",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=["value"], rows=[["visible"]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    assert (
+        DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+        == set()
+    )
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(result, sensitive_columns=names)
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("sql", "columns", "expected"),
+    [
+        (
+            "SELECT x FROM (SELECT * FROM (SELECT dbpasswordtext AS x FROM accounts) t) u",
+            ["x"],
+            {"x"},
+        ),
+        (
+            "SELECT name FROM (SELECT * FROM (SELECT dbpasswordtext AS x, name FROM accounts) t) u",
+            ["name"],
+            set(),
+        ),
+    ],
+    ids=["sensitive-star", "safe-star"],
+)
+def test_sql_nested_star_preserves_sensitive_source(
+    sql: str, columns: list[str], expected: set[str]
+) -> None:
+    result = ToolResult(
+        result_id="r_sql_nested_star",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=columns, rows=[["ordinaryCredential9!"]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    assert (
+        DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+        == expected
+    )
+
+
+def test_sql_generated_output_name_of_sensitive_expression_is_redacted() -> None:
+    marker = "ordinaryCredential9!"
+    result = ToolResult(
+        result_id="r_sql_generated_name",
+        status="ok",
+        tool="run_sql",
+        params={
+            "sql": (
+                "SELECT \"(dbpasswordtext || '')\" AS value "
+                "FROM (SELECT dbpasswordtext || '' FROM accounts) t"
+            )
+        },
+        data=ToolResultData(columns=["value"], rows=[[marker]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    outputs = DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+
+    assert outputs == {"value"}
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(result, sensitive_columns=names)
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("sql", "columns"),
+    [
+        (
+            "SELECT * REPLACE (dbpasswordtext AS name) FROM accounts",
+            ["dbpasswordtext", "name"],
+        ),
+        (
+            "SELECT * RENAME (dbpasswordtext AS name) FROM accounts",
+            ["name"],
+        ),
+    ],
+    ids=["replace", "rename"],
+)
+def test_sql_star_modifier_preserves_sensitive_source(sql: str, columns: list[str]) -> None:
+    result = ToolResult(
+        result_id="r_sql_star_modifier",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=columns, rows=[["ordinaryCredential9!"]] * len(columns)),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    outputs = DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+
+    assert set(columns) <= outputs
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(result, sensitive_columns=names)
+        is True
+    )
+
+
+def test_sql_star_replace_of_non_sensitive_expression_is_not_sensitive() -> None:
+    result = ToolResult(
+        result_id="r_sql_star_replace_safe",
+        status="ok",
+        tool="run_sql",
+        params={"sql": "SELECT * REPLACE (upper(name) AS name) FROM accounts"},
+        data=ToolResultData(columns=["name"], rows=[["ALICE"]], row_count=1),
+    )
+
+    policy = DataTransferPolicy.sharing()
+    assert policy.sensitive_result_columns(result) == set()
+    assert policy.result_has_sensitive_source(result) is False
+
+
+def test_sql_union_with_star_and_sensitive_branch_redacts_all_outputs() -> None:
+    marker = "ordinaryCredential9!"
+    result = ToolResult(
+        result_id="r_sql_union_star",
+        status="ok",
+        tool="run_sql",
+        params={"sql": "SELECT * FROM safe UNION ALL SELECT dbpasswordtext AS value FROM accounts"},
+        data=ToolResultData(columns=["value"], rows=[[marker]], row_count=1),
+    )
+
+    names = ("dbpasswordtext", "dbPasswordText")
+    outputs = DataTransferPolicy.sharing().sensitive_result_columns(result, sensitive_columns=names)
+
+    assert outputs == {"value"}
+    assert (
+        DataTransferPolicy.sharing().result_has_sensitive_source(result, sensitive_columns=names)
+        is True
+    )
 
 
 @pytest.mark.parametrize(
