@@ -17,18 +17,17 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import duckdb  # noqa: E402
-import httpx  # noqa: E402
 import sqlglot  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from dotenv import dotenv_values  # noqa: E402
+from hk_datasets import DownloadError, download, load_manifest, manifest_files  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 from sqlglot import exp  # noqa: E402
@@ -55,13 +54,7 @@ from djedai.data.csv_ingest import load_raw_csv  # noqa: E402
 from djedai.data.profiler import profile_table  # noqa: E402
 from djedai.data.typed_views import create_typed_view  # noqa: E402
 
-REVISION = "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d"
-DATASET_FILE = "08_Фоновые_задания.csv"
-DATASET_SIZE = 122084672
-DATASET_BLOB = "015d0caef35010d12184f8d2f8a6dd19dd955319"
-DATASET_URL = (
-    f"https://gitverse.ru/api/repos/kban/HK_Datasets/raw/commit/{REVISION}/{quote(DATASET_FILE)}"
-)
+DATASET = manifest_files(load_manifest())["08_Фоновые_задания.csv"]
 BASE_URL = "https://api.deepinfra.com/v1/openai"
 MODEL = "Qwen/Qwen3.6-35B-A3B"
 
@@ -110,36 +103,10 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def download_dataset(cache: Path) -> Path:
-    """Скачивает закреплённый Git blob; докачка частями переживает обрывы GitVerse."""
-    cache.mkdir(parents=True, exist_ok=True)
-    target = cache / DATASET_FILE
-    partial = target.with_suffix(".csv.part")
-    if not target.exists():
-        with httpx.Client(timeout=60, follow_redirects=True) as client:
-            offset = partial.stat().st_size if partial.exists() else 0
-            while offset < DATASET_SIZE:
-                end = min(offset + 4 * 1024 * 1024, DATASET_SIZE) - 1
-                response = client.get(DATASET_URL, headers={"Range": f"bytes={offset}-{end}"})
-                response.raise_for_status()
-                require(response.status_code == 206, "GitVerse не поддержал докачку по Range")
-                require(
-                    response.headers.get("content-range") == f"bytes {offset}-{end}/{DATASET_SIZE}",
-                    "GitVerse вернул другой диапазон или размер файла",
-                )
-                require(len(response.content) == end - offset + 1, "Неполный фрагмент CSV")
-                with partial.open("ab") as output:
-                    output.write(response.content)
-                offset = end + 1
-                print(f"CSV: {offset}/{DATASET_SIZE} bytes", flush=True)
-        partial.replace(target)
-    require(target.stat().st_size == DATASET_SIZE, f"Повреждён кэш CSV: {target}")
-    # Git blob hash also protects an existing cache from stale or altered source data.
-    digest = hashlib.sha1(f"blob {DATASET_SIZE}\0".encode(), usedforsecurity=False)
-    with target.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    require(digest.hexdigest() == DATASET_BLOB, f"Не совпал Git blob CSV: {target}")
-    return target.resolve()
+    try:
+        return download(DATASET, cache)
+    except DownloadError as error:
+        raise SmokeFailure(str(error)) from error
 
 
 def model_client(args: argparse.Namespace) -> BIModelClient:
@@ -253,8 +220,8 @@ def run_smoke(args: argparse.Namespace) -> Path:
         report["source"] = {
             "file": str(source),
             "sha256": checksum,
-            "url": DATASET_URL if not args.csv else None,
-            "revision": REVISION if not args.csv else None,
+            "url": DATASET.url if not args.csv else None,
+            "revision": load_manifest()["revision"] if not args.csv else None,
         }
         print("Загрузка, типизация и профилирование CSV…", flush=True)
         dataset_id = "ds_smoke"
