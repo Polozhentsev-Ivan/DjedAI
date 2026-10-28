@@ -11,8 +11,11 @@ from djedai.backend.diagnostics import read_events
 def main() -> None:
     parser = argparse.ArgumentParser(description="Read local operator-only agent diagnostics")
     parser.add_argument("--run", help="Filter by run_id")
+    parser.add_argument(
+        "--type", help="Filter by event type (e.g. admission_rejected, run_started)"
+    )
     args = parser.parse_args()
-    for event in read_events(Path(get_settings().diagnostics_dir), args.run):
+    for event in read_events(Path(get_settings().diagnostics_dir), args.run, args.type):
         print(json.dumps(event, ensure_ascii=False))
 
 

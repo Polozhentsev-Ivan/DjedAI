@@ -19,7 +19,7 @@ from langgraph.config import get_stream_writer
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
-from djedai.agent.config import get_agent_client
+from djedai.agent.config import ModelValues, get_agent_client
 from djedai.agent.diagnostics import RunDiagnostics, Tariff
 from djedai.agent.graph import build_agent_graph
 from djedai.agent.memory import HISTORY_WINDOW, HistoryEntry, summarize_history
@@ -46,7 +46,9 @@ from djedai.backend.db.session import budgeted_write
 from djedai.backend.diagnostics import DiagnosticJournal
 from djedai.backend.metric_service import MetricService
 from djedai.backend.model_errors import ModelConfigurationHTTPError
+from djedai.backend.model_settings import model_settings_for
 from djedai.backend.source_reads import CatalogStaleError
+from djedai.backend.source_secrets import SourceSecretError
 from djedai.config import get_limits
 from djedai.contracts.agent import Block, Message
 from djedai.contracts.catalog import DatasetCatalog
@@ -122,15 +124,18 @@ class AgentRuntime:
         return ExecutionBudget(seconds, is_cancelled)
 
 
-def build_agent_runtime() -> AgentRuntime:
-    """Создаёт реальный runtime; отсутствие конфигурации не имитирует ответ модели."""
+def build_agent_runtime(override: ModelValues | None = None) -> AgentRuntime:
+    """Создаёт реальный runtime; отсутствие конфигурации не имитирует ответ модели.
+
+    ``override`` — модель, адрес и ключ из интерфейса поверх ``.env`` (#209).
+    """
     try:
-        client = get_agent_client()
+        client = get_agent_client(override) if override is not None else get_agent_client()
     except ReasoningConfigurationError as exc:
         raise ModelConfigurationHTTPError(exc) from exc
     except ValueError as exc:
         raise HTTPException(
-            status_code=503, detail="Настройте MODEL_BASE_URL, MODEL_NAME и MODEL_API_KEY"
+            status_code=503, detail="Модель не настроена: задайте адрес API, модель и ключ"
         ) from exc
     return AgentRuntime(
         graph=build_agent_graph(),
@@ -139,19 +144,22 @@ def build_agent_runtime() -> AgentRuntime:
 
 
 def get_agent_runtime(request: Request) -> AgentRuntime:
-    """Привязывает каждый HTTP-ход к постоянному хранилищу приложения."""
+    """Привязывает каждый HTTP-ход к постоянному хранилищу приложения.
+
+    Настройки модели читаются на каждый ход: изменение в интерфейсе действует со
+    следующего хода без перезапуска.
+    """
     settings = request.app.state.settings
-    tariff = (
-        Tariff(
-            settings.model_input_price_usd,
-            settings.model_output_price_usd,
-            settings.model_price_reference,
-        )
-        if settings.model_input_price_usd is not None
-        else None
-    )
+    model_settings = model_settings_for(request.app)
+    tariff: Tariff | None = None
     try:
-        runtime = build_agent_runtime()
+        override = model_settings.override()
+        tariff = model_settings.tariff(override)
+        runtime = build_agent_runtime(override)
+    except SourceSecretError:
+        # A key saved under another SOURCE_ENCRYPTION_KEY is never replaced by .env silently.
+        logger.error("Saved model API key cannot be decrypted")
+        runtime = AgentRuntime(graph=None, unavailable=True)
     except ModelConfigurationHTTPError:
         runtime = AgentRuntime(graph=None, unavailable=True, unavailable_code="model_configuration")
     except HTTPException as exc:
@@ -163,8 +171,8 @@ def get_agent_runtime(request: Request) -> AgentRuntime:
         dataset_context=request.app.state.dataset_service.get_context,
         metric_service=getattr(request.app.state, "metric_service", None),
         dashboard_service=getattr(request.app.state, "dashboard_service", None),
-        results_storage_dir=request.app.state.settings.results_data_dir,
-        turn_timeout_seconds=request.app.state.settings.agent_turn_timeout_seconds,
+        results_storage_dir=settings.results_data_dir,
+        turn_timeout_seconds=settings.agent_turn_timeout_seconds,
         diagnostics=request.app.state.diagnostics,
         tariff=tariff,
     )

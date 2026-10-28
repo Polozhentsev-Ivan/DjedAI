@@ -772,6 +772,116 @@ EXPECTED_TOOLS = [
             "type": "object",
         },
     },
+    {
+        "name": "forecast",
+        "description": (
+            "Строит прогноз числового показателя на горизонт с интервалами "
+            "неопределённости. Методы: ets (Holt-Winters), arima (ARIMA/SARIMAX), "
+            "naive (сезонный naive). Если передан holdout — считает MAE/RMSE/MAPE "
+            "на отложенном периоде. Прогноз — статистическая экстраполяция, "
+            "не гарантия."
+        ),
+        "parameters_schema": {
+            "examples": [
+                {
+                    "agg": "sum",
+                    "freq": "month",
+                    "holdout": 3,
+                    "horizon": 6,
+                    "measure": "amount",
+                    "method": "ets",
+                    "table": "events",
+                    "time_col": "ts",
+                }
+            ],
+            "properties": {
+                "table": {
+                    "description": "Имя таблицы",
+                    "title": "Table",
+                    "type": "string",
+                },
+                "time_col": {
+                    "description": "Колонка DATE или TIMESTAMP",
+                    "title": "Time Col",
+                    "type": "string",
+                },
+                "horizon": {
+                    "description": "Горизонт прогноза в периодах",
+                    "maximum": 180,
+                    "minimum": 1,
+                    "title": "Horizon",
+                    "type": "integer",
+                },
+                "measure": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Колонка метрики (обязательна при agg != 'count')",
+                    "title": "Measure",
+                },
+                "agg": {
+                    "default": "sum",
+                    "description": "Агрегация",
+                    "enum": ["count", "sum", "avg", "min", "max", "median", "stddev"],
+                    "title": "Agg",
+                    "type": "string",
+                },
+                "freq": {
+                    "default": "day",
+                    "description": "Частота агрегации",
+                    "enum": [
+                        "minute",
+                        "hour",
+                        "day",
+                        "week",
+                        "month",
+                        "quarter",
+                        "year",
+                    ],
+                    "title": "Freq",
+                    "type": "string",
+                },
+                "period": {
+                    "anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": (
+                        "Период сезонности (>= 1). 1 — без сезонности (для naive). "
+                        "По умолчанию из частоты: 7/day, 52/week, 12/month, 4/quarter."
+                    ),
+                    "title": "Period",
+                },
+                "method": {
+                    "default": "ets",
+                    "description": "Метод прогноза",
+                    "enum": ["ets", "arima", "naive"],
+                    "title": "Method",
+                    "type": "string",
+                },
+                "alpha": {
+                    "default": 0.05,
+                    "description": "Уровень значимости (0, 1); 0.05 → интервал 95%",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "title": "Alpha",
+                    "type": "number",
+                },
+                "holdout": {
+                    "anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Число последних точек для валидации на отложенном периоде",
+                    "title": "Holdout",
+                },
+                "filter": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "SQL WHERE",
+                    "title": "Filter",
+                },
+            },
+            "required": ["table", "time_col", "horizon"],
+            "title": "ForecastParams",
+            "type": "object",
+        },
+    },
 ]
 
 

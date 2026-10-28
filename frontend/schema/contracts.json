@@ -2588,6 +2588,154 @@
         "title": "MetricVersionRef",
         "type": "object"
       },
+      "ModelCheckResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "not_configured",
+              "invalid_key",
+              "unreachable",
+              "unknown_model",
+              "model_error"
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ok",
+          "code",
+          "message"
+        ],
+        "title": "ModelCheckResult",
+        "description": "Итог одного короткого запроса к модели; текст ошибки провайдера не передаётся."
+      },
+      "ModelSettingsRead": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url",
+            "description": "Действующий адрес API"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name",
+            "description": "Действующая модель"
+          },
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Models",
+            "description": "Модели, разрешённые администратором"
+          },
+          "api_key_set": {
+            "type": "boolean",
+            "title": "Api Key Set",
+            "description": "Ключ API задан в интерфейсе или в .env"
+          },
+          "api_key_from_ui": {
+            "type": "boolean",
+            "title": "Api Key From Ui",
+            "description": "Ключ задан в интерфейсе, а не в .env"
+          },
+          "editable_connection": {
+            "type": "boolean",
+            "title": "Editable Connection",
+            "description": "Ключ и адрес API можно менять в интерфейсе (MODEL_SETTINGS_FROM_UI)"
+          },
+          "matches_env": {
+            "type": "boolean",
+            "title": "Matches Env",
+            "description": "Пара «адрес + модель» совпадает с .env. Иначе reasoning, цены и передача значений ячеек модели отключены: они подтверждены только для пары из .env"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "base_url",
+          "model_name",
+          "allowed_models",
+          "api_key_set",
+          "api_key_from_ui",
+          "editable_connection",
+          "matches_env"
+        ],
+        "title": "ModelSettingsRead",
+        "description": "Действующие настройки модели; ключ не возвращается."
+      },
+      "ModelSettingsUpdate": {
+        "properties": {
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ModelSettingsUpdate",
+        "description": "Изменение настроек; не переданное поле не меняется, пустая строка возвращает .env."
+      },
       "ParseInfo": {
         "additionalProperties": false,
         "properties": {

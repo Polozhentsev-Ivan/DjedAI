@@ -293,7 +293,7 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f178sens0001"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f211merge0001"]
     command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)

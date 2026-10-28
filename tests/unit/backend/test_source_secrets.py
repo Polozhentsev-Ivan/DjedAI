@@ -100,3 +100,31 @@ def test_authenticated_but_invalid_payload_is_rejected(payload) -> None:
     ciphertext = Fernet(key).encrypt(json.dumps(payload).encode()).decode()
     with pytest.raises(SourceSecretError):
         SourceSecrets(key.decode()).decrypt("alice", "dataset-a", ciphertext)
+
+
+MODEL_KEY = "sk-model-private-key"
+
+
+def test_model_key_round_trip_hides_plaintext() -> None:
+    store = SourceSecrets(Fernet.generate_key().decode())
+    ciphertext = store.encrypt_model_key(MODEL_KEY)
+    assert MODEL_KEY not in ciphertext
+    assert ciphertext != store.encrypt_model_key(MODEL_KEY)
+    assert store.decrypt_model_key(ciphertext) == MODEL_KEY
+
+
+def test_model_key_and_source_ciphertexts_are_not_interchangeable() -> None:
+    store = SourceSecrets(Fernet.generate_key().decode())
+    with pytest.raises(SourceSecretError):
+        store.decrypt_model_key(store.encrypt("alice", "dataset-a", DSN, None))
+    with pytest.raises(SourceSecretError):
+        store.decrypt("alice", "dataset-a", store.encrypt_model_key(MODEL_KEY))
+
+
+def test_model_key_requires_server_key_and_fails_closed() -> None:
+    with pytest.raises(SourceSecretError):
+        SourceSecrets(None).encrypt_model_key(MODEL_KEY)
+    ciphertext = SourceSecrets(Fernet.generate_key().decode()).encrypt_model_key(MODEL_KEY)
+    with pytest.raises(SourceSecretError) as error:
+        SourceSecrets(Fernet.generate_key().decode()).decrypt_model_key(ciphertext)
+    assert MODEL_KEY not in str(error.value)

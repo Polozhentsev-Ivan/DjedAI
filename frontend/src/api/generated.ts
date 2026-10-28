@@ -138,6 +138,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Effective model settings; the API key is never returned (#209) */
+        get: operations["getModelSettings"];
+        /** Change the model; the key and address only with MODEL_SETTINGS_FROM_UI=true (else 403) */
+        put: operations["updateModelSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/model/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** One short request to the model with the given values; nothing is stored */
+        post: operations["checkModelSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/datasets/{dataset_id}": {
         parameters: {
             query?: never;
@@ -791,6 +826,74 @@ export interface components {
              * @default false
              */
             truncated?: boolean;
+        };
+        /**
+         * ModelSettingsRead
+         * @description Действующие настройки модели; ключ не возвращается.
+         */
+        ModelSettingsRead: {
+            /**
+             * Base Url
+             * @description Действующий адрес API
+             */
+            base_url: string | null;
+            /**
+             * Model Name
+             * @description Действующая модель
+             */
+            model_name: string | null;
+            /**
+             * Allowed Models
+             * @description Модели, разрешённые администратором
+             */
+            allowed_models: string[];
+            /**
+             * Api Key Set
+             * @description Ключ API задан в интерфейсе или в .env
+             */
+            api_key_set: boolean;
+            /**
+             * Api Key From Ui
+             * @description Ключ задан в интерфейсе, а не в .env
+             */
+            api_key_from_ui: boolean;
+            /**
+             * Editable Connection
+             * @description Ключ и адрес API можно менять в интерфейсе (MODEL_SETTINGS_FROM_UI)
+             */
+            editable_connection: boolean;
+            /**
+             * Matches Env
+             * @description Пара «адрес + модель» совпадает с .env. Иначе reasoning, цены и передача значений ячеек модели отключены: они подтверждены только для пары из .env
+             */
+            matches_env: boolean;
+        };
+        /**
+         * ModelSettingsUpdate
+         * @description Изменение настроек; не переданное поле не меняется, пустая строка возвращает .env.
+         */
+        ModelSettingsUpdate: {
+            /** Model Name */
+            model_name?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Api Key */
+            api_key?: string | null;
+        };
+        /**
+         * ModelCheckResult
+         * @description Итог одного короткого запроса к модели; текст ошибки провайдера не передаётся.
+         */
+        ModelCheckResult: {
+            /** Ok */
+            ok: boolean;
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "ok" | "not_configured" | "invalid_key" | "unreachable" | "unknown_model" | "model_error";
+            /** Message */
+            message: string;
         };
         /** @enum {string} */
         SemanticType: "id" | "integer" | "float" | "money" | "percent" | "datetime" | "date" | "category" | "text" | "bool";
@@ -2744,6 +2847,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourceCheckResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getModelSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Address, model, allowed models and whether the key and address are editable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateModelSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Settings applied from the next chat turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    checkModelSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Outcome code and a fixed message, never the provider text */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCheckResult"];
                 };
             };
             default: components["responses"]["Error"];

@@ -9,6 +9,7 @@
 - dashboards: дашборды с перевычисляемыми виджетами
 - metric_definitions: версии подтверждённых определений бизнес-метрик (B2-9)
 - metric_proposals: кандидаты определений из уточнений агента до выбора пользователя
+- model_settings: общие на установку настройки модели из интерфейса (#209)
 """
 
 from __future__ import annotations
@@ -332,3 +333,20 @@ class MetricProposalModel(Base):
     option = Column(Text, nullable=False)  # текст варианта, который отправит кнопка
     definition = Column(JSON, nullable=False)  # MetricDefinition со status="proposed"
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)
+
+
+class ModelSettingsModel(Base):
+    """Модель, адрес API и ключ из интерфейса; одна строка на установку (#209).
+
+    Пустое поле означает значение из ``.env``. Ключ хранится только зашифрованным
+    ``SOURCE_ENCRYPTION_KEY`` и наружу не возвращается.
+    """
+
+    __tablename__ = "model_settings"
+
+    id = Column(String(32), primary_key=True)
+    base_url = Column(Text, nullable=True)
+    model_name = Column(String(255), nullable=True)
+    api_key_ciphertext = Column(Text, nullable=True)
+    updated_by = Column(String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)

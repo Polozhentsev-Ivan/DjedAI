@@ -134,6 +134,51 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SourceCheckResult' }
         default: { $ref: '#/components/responses/Error' }
+  /settings/model:
+    get:
+      operationId: getModelSettings
+      summary: Effective model settings; the API key is never returned (#209)
+      security: [{ BearerSession: [] }]
+      responses:
+        '200':
+          description: Address, model, allowed models and whether the key and address are editable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelSettingsRead' }
+        default: { $ref: '#/components/responses/Error' }
+    put:
+      operationId: updateModelSettings
+      summary: Change the model; the key and address only with MODEL_SETTINGS_FROM_UI=true (else 403)
+      security: [{ BearerSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelSettingsUpdate' }
+      responses:
+        '200':
+          description: Settings applied from the next chat turn
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelSettingsRead' }
+        default: { $ref: '#/components/responses/Error' }
+  /settings/model/check:
+    post:
+      operationId: checkModelSettings
+      summary: One short request to the model with the given values; nothing is stored
+      security: [{ BearerSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelSettingsUpdate' }
+      responses:
+        '200':
+          description: Outcome code and a fixed message, never the provider text
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelCheckResult' }
+        default: { $ref: '#/components/responses/Error' }
   /datasets/{dataset_id}:
     parameters:
       - { name: dataset_id, in: path, required: true, schema: { type: string } }
@@ -418,6 +463,12 @@ components:
       $ref: './contracts.json#/components/schemas/SourceCheckRequest'
     SourceCheckResult:
       $ref: './contracts.json#/components/schemas/SourceCheckResult'
+    ModelSettingsRead:
+      $ref: './contracts.json#/components/schemas/ModelSettingsRead'
+    ModelSettingsUpdate:
+      $ref: './contracts.json#/components/schemas/ModelSettingsUpdate'
+    ModelCheckResult:
+      $ref: './contracts.json#/components/schemas/ModelCheckResult'
 
     SemanticType:
       type: string
