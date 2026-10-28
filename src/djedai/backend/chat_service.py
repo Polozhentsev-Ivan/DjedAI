@@ -696,6 +696,7 @@ def stream_chat_turn(
                     description=description,
                     source_chat_id=chat_model.chat_id,
                     widgets=widgets,
+                    budget=budget,
                 )
 
             configurable["dashboard_saver"] = save_generated_dashboard
