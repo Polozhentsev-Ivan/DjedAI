@@ -602,3 +602,22 @@ def test_mixed_types_without_similarity_are_silent(con, tmp_path):
         },
     )
     assert report == RelationReport(relations=(), warnings=())
+
+
+def test_key_values_are_read_once_per_key_and_dropped(con, tmp_path):
+    # #49: на PostgreSQL каждая пара ключей заново сканировала обе таблицы источника.
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "orders": {"order_id": ["1", "2", "3"], "client_id": ["10", "11", "10"]},
+            "clients": {"client_id": ["10", "11", "12"], "name": ["А", "Б", "В"]},
+            "payments": {"payment_id": ["7", "8"], "client_id": ["11", "12"]},
+        },
+    )
+    found = {(r.from_table, r.to_table) for r in report.relations}
+    assert {("orders", "clients"), ("payments", "clients")} <= found
+    left = con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '_djedai_key_values_%'"
+    ).fetchone()[0]
+    assert left == 0
