@@ -632,6 +632,32 @@ def test_sql_alias_of_heuristic_sensitive_column_is_sensitive() -> None:
     assert DataTransferPolicy.sharing().result_has_sensitive_source(result) is True
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT v AS first, v AS second FROM s",
+        "SELECT t.v AS first, t.v AS second FROM (SELECT dbpasswordtext AS v FROM accounts) t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts), t AS (SELECT * FROM s) "
+        "SELECT v AS first, v AS second FROM t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT a.v AS first, b.v AS second FROM s a CROSS JOIN s b",
+    ],
+    ids=["cte", "subquery", "star", "reused-source"],
+)
+def test_repeated_sql_projection_preserves_sensitivity_for_every_output(sql: str) -> None:
+    result = ToolResult(
+        result_id="repeated-projection",
+        status="ok",
+        tool="run_sql",
+        params={"sql": sql},
+        data=ToolResultData(columns=["first", "second"], rows=[["credential", "credential"]]),
+    )
+    assert DataTransferPolicy.sharing().sensitive_result_columns(
+        result, sensitive_columns=("dbpasswordtext",)
+    ) == {"first", "second"}
+
+
 def test_sql_alias_of_non_sensitive_column_is_not_sensitive() -> None:
     result = ToolResult(
         result_id="r_sql_safe_alias",

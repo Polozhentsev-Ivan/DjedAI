@@ -674,8 +674,10 @@ def _projection_sensitive(
 ) -> bool:
     key = (id(scope), name)
     if key in seen:
-        return False
-    seen.add(key)
+        return True  # An unresolved recursive projection must remain private.
+    # Track only the current recursion path. Sibling projections may reuse the
+    # same CTE column and must independently retain its sensitivity.
+    seen = seen | {key}
     selects = _root_select_scopes(scope)
     if not selects:
         return False
@@ -805,8 +807,8 @@ def _star_sensitive_names(
         return set(), False
     key = (id(scope), f"*{id(expression)}")
     if key in seen:
-        return set(), False
-    seen.add(key)
+        return set(), True
+    seen = seen | {key}
     star = _star_expression(expression)
     names = _star_modifier_names(star, scope, sensitive, seen) if star is not None else set()
     # REPLACE/RENAME могут создать одинаковые имена колонок; СУБД добавит

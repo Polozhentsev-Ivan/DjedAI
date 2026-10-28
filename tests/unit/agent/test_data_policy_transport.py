@@ -1080,6 +1080,66 @@ def test_sql_alias_of_sensitive_column_never_reaches_network(
     assert all(block.type != "error" for block in result["answer_blocks"])
 
 
+@pytest.mark.parametrize("policy", [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts) "
+        "SELECT v AS first, v AS second FROM s",
+        "SELECT t.v AS first, t.v AS second FROM (SELECT dbpasswordtext AS v FROM accounts) t",
+        "WITH s AS (SELECT dbpasswordtext AS v FROM accounts), t AS (SELECT * FROM s) "
+        "SELECT v AS first, v AS second FROM t",
+    ],
+    ids=["cte", "subquery", "star"],
+)
+def test_real_csv_repeated_projection_never_sends_a_credential(
+    model_endpoint: Callable, tmp_path: Path, policy: DataTransferPolicy, sql: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from djedai.analytics.registry import execute_tool
+    from djedai.data.service import CsvSource, ingest_csv_dataset
+
+    marker = "ordinaryCredential9!"
+    csv = tmp_path / "accounts.csv"
+    csv.write_text(f"dbPasswordText\n{marker}\n", encoding="utf-8")
+    database = tmp_path / "dataset.duckdb"
+    catalog = ingest_csv_dataset(
+        [CsvSource(csv, csv.name)],
+        database,
+        dataset_id="ds_173",
+        name="accounts",
+        created_at=datetime.now(UTC),
+    )
+
+    def reply(_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "PlanResponse":
+            return {"body": {"plan": [{"tool": "run_sql", "args": {"sql": sql}}]}}
+        return {"body": _body_for(schema)}
+
+    with model_endpoint(reply) as endpoint, duckdb.connect(str(database), read_only=True) as conn:
+        client = _client(endpoint, policy)
+        try:
+            state = build_agent_graph().invoke(
+                _state(),
+                config=_config(
+                    client,
+                    catalog=catalog,
+                    dispatcher=lambda tool, args: execute_tool(
+                        tool, args, connection=conn, allowed_tables={"accounts"}
+                    ),
+                ),
+            )
+        finally:
+            client.client.close()
+    stages = _stage_calls(endpoint)
+    assert stages["ComposeResponse"] and stages["VerifyResponse"]
+    assert marker not in _network_text(endpoint)
+    assert REDACTED in _network_text(endpoint)
+    assert all(block.type != "error" for block in state["answer_blocks"])
+
+
 @pytest.mark.parametrize(
     "policy",
     [DataTransferPolicy.restricted(), DataTransferPolicy.sharing()],
