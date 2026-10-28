@@ -25,7 +25,7 @@ class Model:
         self.fail_verify = fail_verify
         self.calls = 0
 
-    def generate_typed_response(self, system_prompt, user_prompt, schema):
+    def generate_typed_response(self, system_prompt, user_prompt, schema, **kwargs):
         self.calls += 1
         if self.fail_verify and schema.__name__ == "VerifyResponse":
             return ModelResponse(status="error", error_type="TIMEOUT", message="controlled timeout")

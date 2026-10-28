@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from djedai.contracts.freshness import ReadProvenance
 from djedai.contracts.metrics import MetricProvenance
 from djedai.contracts.quality import QualityReport
 
@@ -151,6 +152,10 @@ class ToolResult(BaseModel):
     quality: QualityReport | None = Field(
         default=None,
         description="Потери и неоднозначности преобразования использованных колонок (B2-10)",
+    )
+    read: ReadProvenance | None = Field(
+        default=None,
+        description="Ревизия каталога, режим и время чтения источника (B1-11)",
     )
 
     @model_validator(mode="after")

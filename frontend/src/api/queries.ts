@@ -51,6 +51,20 @@ export function useDataset(id: string | null) {
     queryKey: keys.dataset(id ?? ''),
     queryFn: ({ signal }) => request<Schemas['DatasetDetail']>(`/datasets/${enc(id ?? '')}`, { signal }),
     enabled: id !== null,
+    // Re-profiling runs in the background while the dataset stays ready.
+    refetchInterval: (query) => query.state.data?.refresh?.status === 'processing' ? 2000 : false,
+  });
+}
+
+/** Re-profile a ready dataset into the next catalog revision (B1-11). */
+export function useRefreshDataset() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => request<Schemas['DatasetDetail']>(`/datasets/${enc(id)}/refresh`, { method: 'POST' }),
+    onSuccess: (detail) => {
+      client.setQueryData(keys.dataset(detail.dataset_id), detail);
+      return client.invalidateQueries({ queryKey: keys.datasets });
+    },
   });
 }
 

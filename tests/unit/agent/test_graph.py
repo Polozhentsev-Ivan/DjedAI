@@ -1,8 +1,20 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph
-from djedai.contracts.agent import Message
+from djedai.contracts.agent import (
+    Block,
+    ComposeResponse,
+    Message,
+    PlannedCall,
+    PlanResponse,
+    Understanding,
+    VerifyResponse,
+    VisualizeResponse,
+)
 from djedai.contracts.catalog import DatasetCatalog
+from djedai.contracts.tool_result import ChartHint, ToolResult, ToolResultData
 
 EXAMPLE = (
     Path(__file__).parents[3] / "src" / "djedai" / "contracts" / "examples" / "dataset_catalog.json"
@@ -63,6 +75,56 @@ def test_graph_shortest_path_and_isolation():
     assert result_2["chat_id"] == "chat_2"
     assert result_2["dataset_id"] == "ds_beta"
     assert result_2["history_summary"] == "New chat context."
+
+
+def test_graph_passes_each_model_stage_to_the_client():
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(status="success", data=Understanding(intent="visualize")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(plan=[PlannedCall(tool="run_sql", args={"sql": "SELECT 1"})]),
+        ),
+        ModelResponse(status="success", data=VisualizeResponse(charts=[])),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Готово")]),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    def dispatcher(_tool, _args):
+        return ToolResult(
+            result_id="r_stage",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["n"], rows=[[1]]),
+            chart_hint=ChartHint(type="bar", x="n", y=["n"]),
+        )
+
+    result = build_agent_graph().invoke(
+        {
+            "chat_id": "c_stage",
+            "dataset_id": "ds_stage",
+            "messages": [Message(role="user", content="Покажи график")],
+        },
+        config={
+            "configurable": {
+                "thread_id": "c_stage",
+                "client": client,
+                "tool_dispatcher": dispatcher,
+            }
+        },
+    )
+
+    assert result["answer_blocks"][0].markdown == "Готово"
+    assert [call.kwargs["stage"] for call in client.generate_typed_response.call_args_list] == [
+        "understand",
+        "plan",
+        "visualize",
+        "compose",
+        "verify",
+    ]
 
 
 def test_graph_uses_catalog_prompt_from_loader():
