@@ -8,6 +8,7 @@ from typing import Any
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph
 from djedai.agent.reasoning import REASONING_STAGES
+from djedai.config import get_limits
 from djedai.contracts.agent import (
     DashboardPlanResponse,
     DashboardStepPlan,
@@ -97,8 +98,10 @@ class FakeClient:
         self.responses = {stage: list(items) for stage, items in responses.items()}
         self.stages: list[str] = []
         self.response_models: list[str] = []
+        self.system_prompts: list[str] = []
+        self.max_output_tokens: list[int | None] = []
 
-    def generate_typed_response(self, _system_prompt, _user_prompt, response_model, **kwargs):
+    def generate_typed_response(self, system_prompt, _user_prompt, response_model, **kwargs):
         stage = kwargs["stage"]
         # Повторяем проверку BIModelClient.reasoning_for: неизвестная стадия
         # должна падать до планирования дашборда, а не в реальном клиенте.
@@ -106,6 +109,8 @@ class FakeClient:
             raise ValueError(f"Неизвестная стадия reasoning: {stage!r}")
         self.stages.append(stage)
         self.response_models.append(response_model.__name__)
+        self.system_prompts.append(system_prompt)
+        self.max_output_tokens.append(kwargs.get("max_output_tokens"))
         return ModelResponse(status="success", data=self.responses[stage].pop(0))
 
 
@@ -195,6 +200,10 @@ def test_dashboard_branch_plans_executes_and_saves_without_standard_plan():
 
     assert client.stages == ["understand", "plan"]
     assert client.response_models == ["Understanding", "DashboardPlanResponse"]
+    assert client.max_output_tokens == [None, get_limits().dashboard_max_output_tokens]
+    assert "run_sql" in client.system_prompts[-1]
+    assert "compute_metric" in client.system_prompts[-1]
+    assert "detect_anomalies" not in client.system_prompts[-1]
     assert result.get("plan", []) == []
     assert result["dashboard_plan"] is not None
     assert len(result["dashboard_plan"].widgets) == 3

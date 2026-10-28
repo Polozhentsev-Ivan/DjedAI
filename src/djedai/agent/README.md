@@ -9,7 +9,8 @@
 Запрос с интентом `dashboard` идёт мимо обычного плана на пять шагов:
 `plan_dashboard → execute_dashboard → save_dashboard`. `dashboard.py` проверяет
 лимиты ветки (3–8 виджетов, 1–5 шагов на виджет, общий бюджет
-`DASHBOARD_MAX_TOOL_CALLS`), нормализует `step_id`, собирает `tool_call` или
+`DASHBOARD_MAX_TOOL_CALLS`, отдельный потолок вывода
+`DASHBOARD_MAX_OUTPUT_TOKENS`), нормализует `step_id`, собирает `tool_call` или
 `WidgetRecipe` с зависимостями `source_step_id`, чинит график по фактическим
 колонкам и формирует превью. Зависимый шаг получает данные родителя как
 `source_result`; временные `source_result_id` в рецепт не сохраняются. Если хотя бы

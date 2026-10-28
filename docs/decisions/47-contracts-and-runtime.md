@@ -194,6 +194,7 @@ Backend Settings наследует эти поля; аналитика и ти�
 | SQL_MAX_ROWS | 5000 | Верхняя граница строк SQL; аргумент max_rows может её только уменьшить |
 | TOOL_TIMEOUT_SECONDS | 30 | Таймер выполнения SQL и описательных DuckDB-инструментов |
 | DASHBOARD_MAX_TOOL_CALLS | 20 | Весь refresh, включая зависимости и повторы |
+| DASHBOARD_MAX_OUTPUT_TOKENS | 4096 | Отдельный потолок генерации плана дашборда; не меняет `MODEL_MAX_OUTPUT_TOKENS` обычного чата |
 | CATALOG_MAX_AGE_HOURS | 24 | Профиль живого PostgreSQL старше порога — ограничение `aged` в ответе ([#169](169-catalog-revision.md)) |
 | MODEL_TIMEOUT_SECONDS | 60 | Timeout API на попытку; SDK допускает ещё два повтора транспортных ошибок |
 | MODEL_MAX_OUTPUT_TOKENS | 2048 | Максимум генерации; finish_reason=length считается ошибкой |

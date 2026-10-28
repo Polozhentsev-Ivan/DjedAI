@@ -191,6 +191,7 @@ class BIModelClient:
         response_model: type[T],
         *,
         stage: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> ModelResponse[T]:
         setting = self.reasoning_for(stage)
         effort = actual_reasoning_effort(setting)
@@ -216,7 +217,11 @@ class BIModelClient:
                 return result
             try:
                 result = self._generate_typed_response(
-                    system_prompt, user_prompt, response_model, reasoning_effort=effort
+                    system_prompt,
+                    user_prompt,
+                    response_model,
+                    reasoning_effort=effort,
+                    max_output_tokens=max_output_tokens,
                 )
             except (TurnTimeout, TurnCancelled) as exc:
                 if call:
@@ -237,6 +242,7 @@ class BIModelClient:
         response_model: type[T],
         *,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
 
@@ -254,8 +260,11 @@ class BIModelClient:
             "response_format": structured_format,
             "temperature": 0.1,
         }
-        if self.max_output_tokens:
-            request["max_tokens"] = self.max_output_tokens
+        output_limit = (
+            max_output_tokens if max_output_tokens is not None else self.max_output_tokens
+        )
+        if output_limit:
+            request["max_tokens"] = output_limit
         if reasoning_effort is not None:
             # DeepInfra documents reasoning_effort inside extra_body for the
             # OpenAI-compatible Chat Completions API.

@@ -19,6 +19,7 @@ from djedai.backend.app import create_app
 from djedai.backend.config import Settings
 from djedai.backend.db.models import ToolResultModel
 from djedai.backend.db.session import init_db
+from djedai.config import get_limits
 from djedai.contracts.agent import (
     DashboardPlanResponse,
     DashboardStepPlan,
@@ -118,11 +119,13 @@ class DashboardPlanner:
     def __init__(self, plan: DashboardPlanResponse) -> None:
         self.plan = plan
         self.stages: list[str] = []
+        self.max_output_tokens: list[int | None] = []
 
     def generate_typed_response(self, _system_prompt, user_prompt, response_model, **kwargs):
         stage = kwargs["stage"]
         assert stage in REASONING_STAGES, f"Unknown reasoning stage: {stage}"
         self.stages.append(stage)
+        self.max_output_tokens.append(kwargs.get("max_output_tokens"))
         if stage == "understand":
             return ModelResponse(
                 status="success",
@@ -241,6 +244,8 @@ def test_agent_dashboard_is_saved_and_refreshes_without_old_results(
     )
 
     assert response.status_code == 200, response.text
+    assert planner.stages == ["understand", "plan"]
+    assert planner.max_output_tokens == [None, get_limits().dashboard_max_output_tokens]
     events = parse_sse(response.text)
     assert [name for name, _ in events][-1] == "done"
     assert not [data for name, data in events if name == "error"], response.text

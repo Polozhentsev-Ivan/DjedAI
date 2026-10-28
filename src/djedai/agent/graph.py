@@ -48,6 +48,10 @@ from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 MODEL_ERROR_MARKDOWN = "Не удалось получить ответ модели. Попробуйте повторить запрос."
+# Dashboard widgets must be independently refreshable. The exploratory analytics
+# tools do not produce a stable widget result, and their schemas make the planner
+# prompt large enough for a real endpoint to time out.
+DASHBOARD_TOOL_NAMES = frozenset({"run_sql", "compute_metric"})
 POLICY_NOTE = (
     "\n\nData policy: raw rows from earlier results are not included. "
     "Use only the provided facts, aggregates and metadata; do not invent values. "
@@ -262,7 +266,7 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
     policy = _policy(config)
     limits = get_limits()
 
-    registry = get_tools_for_llm()
+    registry = [tool for tool in get_tools_for_llm() if tool["name"] in DASHBOARD_TOOL_NAMES]
     tools_desc = "\n".join(
         f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
         for t in registry
@@ -289,7 +293,11 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
 
     if client:
         response = client.generate_typed_response(
-            sys_prompt, user_prompt, DashboardPlanResponse, stage="plan"
+            sys_prompt,
+            user_prompt,
+            DashboardPlanResponse,
+            stage="plan",
+            max_output_tokens=limits.dashboard_max_output_tokens,
         )
         if response.status == "success" and response.data:
             try:

@@ -27,7 +27,9 @@ understand ──(intent=dashboard)──▶ plan_dashboard ──▶ execute_da
 
 - `route_after_understand` отправляет `intent="dashboard"` в `plan_dashboard`.
 - `plan_dashboard` вызывает модель со схемой `DashboardPlanResponse` и промптом
-  `prompts/dashboard.md`; обычный `PlanResponse` не используется.
+  `prompts/dashboard.md`; обычный `PlanResponse` не используется. В промпт
+  попадают только инструменты, пригодные для воспроизводимого виджета:
+  `run_sql` и `compute_metric`.
 - `execute_dashboard` выполняет шаги всех виджетов и складывает `ToolResult` в
   общий `results` хода, чтобы backend сохранил их с происхождением чата.
 - `save_dashboard` собирает `WidgetSnapshot` из плана и фактических результатов,
@@ -45,6 +47,7 @@ understand ──(intent=dashboard)──▶ plan_dashboard ──▶ execute_da
 | Виджетов в дашборде | 3–8 | контракт `DashboardPlanResponse` и `normalize_dashboard_plan` |
 | Шагов в одном виджете | 1–5 | контракт `DashboardWidgetPlan.steps` и `normalize_dashboard_plan` |
 | Вызовов на весь план/refresh | `DASHBOARD_MAX_TOOL_CALLS=20` | планирование (сумма шагов) и выполнение |
+| Токенов на план дашборда | `DASHBOARD_MAX_OUTPUT_TOKENS=4096` | `plan_dashboard`; обычный чат сохраняет `MODEL_MAX_OUTPUT_TOKENS` |
 | Шагов обычного чат-плана | 5 | `PlanResponse` (не меняется) |
 
 Бюджет 20 — это отдельный бюджет дашборда, а не расширение чат-плана. Он общий для
