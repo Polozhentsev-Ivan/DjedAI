@@ -3520,6 +3520,7 @@ def _forecast_ets(y: np.ndarray, horizon: int, period: int | None, alpha: float)
     Для ETS(A,A,N)/ETS(A,A,A): Var(e_{t+h}) = σ²·(1 + Σ_{j=1}^{h-1} c_j²),
     c_j = α + j·β + γ·1_{j ≡ 0 mod m}. sqrt(h) — это случайное блуждание,
     оно завышает интервалы в разы на почти-постоянных рядах.
+    Здесь β — коэффициент инновации ETS, равный α·smoothing_trend в statsmodels.
     """
     import warnings
 
@@ -3543,7 +3544,7 @@ def _forecast_ets(y: np.ndarray, horizon: int, period: int | None, alpha: float)
     point = np.asarray(fit.forecast(horizon), dtype=float)
 
     alpha_s = float(fit.params.get("smoothing_level", 0.0))
-    beta_s = float(fit.params.get("smoothing_trend", 0.0))
+    beta_s = alpha_s * float(fit.params.get("smoothing_trend", 0.0))
     gamma_s = float(fit.params.get("smoothing_seasonal", 0.0)) if use_seasonal else 0.0
 
     resid = np.asarray(fit.resid, dtype=float)

@@ -547,6 +547,72 @@ def test_forecast_arima_seasonal_path(long_monthly_conn):
 # ---------- дисперсия интервалов ----------
 
 
+@pytest.mark.parametrize("period", [None, 7], ids=["holt", "holt-winters"])
+@pytest.mark.parametrize("alpha", [0.05, 0.2])
+def test_ets_intervals_match_innovations_of_the_fitted_model(monkeypatch, period, alpha):
+    from scipy.stats import norm
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    from djedai.analytics.tools import _forecast_ets
+
+    rng = np.random.default_rng(42068)
+    level, trend = 100.0, 0.2
+    seasons = np.array([5.0, -3.0, 2.0, -1.0, 0.0, 1.0, -4.0]) if period else np.zeros(1)
+    observations = []
+    for index, innovation in enumerate(rng.normal(size=300)):
+        old_level, old_trend = level, trend
+        slot = index % len(seasons)
+        seasonal = seasons[slot]
+        observed = old_level + old_trend + seasonal + innovation
+        level = 0.25 * (observed - seasonal) + 0.75 * (old_level + old_trend)
+        trend = 0.6 * (level - old_level) + 0.4 * old_trend
+        seasons[slot] = 0.2 * (observed - old_level - old_trend) + 0.8 * seasonal
+        observations.append(observed)
+    fitted = []
+    original_fit = ExponentialSmoothing.fit
+
+    def capture(model, *args, **kwargs):
+        result = original_fit(model, *args, **kwargs)
+        fitted.append(result)
+        return result
+
+    monkeypatch.setattr(ExponentialSmoothing, "fit", capture)
+    horizon = 20
+    point, lower, upper = _forecast_ets(np.asarray(observations), horizon, period, alpha)
+    assert len(fitted) == 1
+    fit = fitted[0]
+    smoothing = fit.params
+    if period is None:
+        assert 0.05 < smoothing["smoothing_level"] < 0.95
+        assert smoothing["smoothing_trend"] > 0.05
+
+    def component_path(innovations):
+        # Independent Holt-Winters component updates, not the interval formula:
+        # smoothing_trend weights the *change in level*, rather than the noise.
+        level, trend = 0.0, 0.0
+        seasonal = [0.0] * (period or 1)
+        values = []
+        for index, innovation in enumerate(innovations):
+            slot = index % len(seasonal)
+            old_level, old_trend = level, trend
+            observed = old_level + old_trend + seasonal[slot] + innovation
+            a, b = smoothing["smoothing_level"], smoothing["smoothing_trend"]
+            level = a * (observed - seasonal[slot]) + (1 - a) * (old_level + old_trend)
+            trend = b * (level - old_level) + (1 - b) * old_trend
+            if period:
+                g = smoothing["smoothing_seasonal"]
+                seasonal[slot] = g * (observed - old_level - old_trend) + (1 - g) * seasonal[slot]
+            values.append(observed)
+        return np.asarray(values)
+
+    assert point == pytest.approx(np.asarray(fit.forecast(horizon)))
+    responses = np.asarray([component_path(pulse) for pulse in np.eye(horizon)])
+    sigma = np.std(fit.resid, ddof=1)
+    expected_width = norm.ppf(1 - alpha / 2) * sigma * np.sqrt((responses**2).sum(axis=0))
+    assert (upper - lower) / 2 == pytest.approx(expected_width, abs=1e-7)
+    assert point - lower == pytest.approx(upper - point)
+
+
 def test_forecast_ets_intervals_not_random_walk():
     """ETS на почти постоянном ряду: ширины не растут как sqrt(h).
 
