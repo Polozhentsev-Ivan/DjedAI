@@ -158,3 +158,18 @@ def test_small_percentage_limit_is_not_expanded_to_row_cap():
     result = run_sql("SELECT range FROM range(10) ORDER BY range LIMIT 10%", max_rows=5)
     assert result.status == "ok"
     assert result.data["rows"] == [[0]]
+
+
+def test_correlation_reports_quality_losses(quality_dataset):
+    connection, catalog = quality_dataset
+    allowed = {t.table_id for t in catalog.tables}
+    from djedai.analytics.quality import assess
+
+    result = run_sql(
+        "SELECT amount, order_id FROM orders",
+        connection=connection,
+        allowed_tables=allowed,
+    )
+    result = assess(result, connection, catalog)
+    assert result.quality is not None
+    assert any(c.column == "amount" for c in result.quality.columns)
