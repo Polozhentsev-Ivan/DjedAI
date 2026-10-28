@@ -3925,6 +3925,14 @@
             "description": "ID исходного результата при цепочке расчётов",
             "title": "Source Result Id"
           },
+          "sensitive_columns": {
+            "description": "Выходные колонки, значения которых происходят из чувствительного источника; нужны для очистки промптов и восстановления чувствительности из истории",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sensitive Columns",
+            "type": "array"
+          },
           "duration_ms": {
             "anyOf": [
               {

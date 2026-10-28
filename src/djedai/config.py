@@ -32,6 +32,11 @@ class LimitSettings(BaseSettings):
     sql_max_rows: int = Field(default=5000, ge=1, alias="SQL_MAX_ROWS")
     tool_timeout_seconds: float = Field(default=30, gt=0, alias="TOOL_TIMEOUT_SECONDS")
     dashboard_max_tool_calls: int = Field(default=20, ge=1, alias="DASHBOARD_MAX_TOOL_CALLS")
+    # Dashboard plans are larger than a five-step chat plan; keep their output
+    # budget separate from MODEL_MAX_OUTPUT_TOKENS.
+    dashboard_max_output_tokens: int = Field(
+        default=4096, ge=1, alias="DASHBOARD_MAX_OUTPUT_TOKENS"
+    )
     # Профиль живого PostgreSQL старше порога — ограничение «aged» в ответе (B1-11)
     catalog_max_age_hours: float = Field(default=24, gt=0, alias="CATALOG_MAX_AGE_HOURS")
     model_timeout_seconds: float = Field(default=60, gt=0, le=600, alias="MODEL_TIMEOUT_SECONDS")
@@ -105,6 +110,8 @@ class LimitSettings(BaseSettings):
     def validate_budgets(self) -> LimitSettings:
         if self.model_max_output_tokens >= self.model_context_tokens:
             raise ValueError("В контексте модели должно оставаться место для входного запроса")
+        if self.dashboard_max_output_tokens >= self.model_context_tokens:
+            raise ValueError("План дашборда не должен занимать весь контекст модели")
         if self.relation_unnamed_min_overlap < self.relation_min_overlap:
             raise ValueError("Порог без совпадения имён не может быть слабее общего overlap")
         if self.max_upload_file_bytes > self.max_upload_request_bytes:

@@ -14,11 +14,12 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import delete, inspect, select
+from sqlalchemy import MetaData, Table, delete, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from djedai.backend.auth.storage import create_session, create_user, get_session_user
+from djedai.backend.db.base import Base
 from djedai.backend.db.models import (
     ChatModel,
     DashboardModel,
@@ -160,7 +161,19 @@ def test_upgrade_and_auth_downgrade_preserve_existing_owners(tmp_path: Path) -> 
                 )
             )
             db.commit()
-            create_dashboard(db, "dashboard", "legacy", "dataset", "Обзор")
+            # This fixture predates dashboard consistency/provenance columns.
+            dashboards = Table("dashboards", MetaData(), autoload_with=db.connection())
+            db.execute(
+                dashboards.insert().values(
+                    dashboard_id="dashboard",
+                    owner_id="legacy",
+                    dataset_id="dataset",
+                    title="Обзор",
+                    widgets=[],
+                    created_at=datetime.now(UTC),
+                )
+            )
+            db.commit()
             db.execute(
                 ToolResultModel.__table__.insert().values(
                     result_id="result", owner_id="legacy", status="empty"
@@ -271,5 +284,127 @@ def test_model_settings_migration_matches_model_and_downgrades(tmp_path: Path) -
     engine = create_db_engine(url)
     try:
         assert "model_settings" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("deployed_revision", ["f209model0001", "f178sens0001"])
+def test_merge_upgrade_preserves_both_deployed_branches(
+    tmp_path: Path, deployed_revision: str
+) -> None:
+    """Existing installations on either branch must receive the other branch's schema."""
+    from djedai.backend.db.models import ModelSettingsModel
+
+    url = f"sqlite:///{(tmp_path / f'{deployed_revision}.db').as_posix()}"
+    cfg = migration_config(url)
+    command.upgrade(cfg, deployed_revision)
+    engine = create_db_engine(url)
+    now = datetime(2026, 10, 29, 12, tzinfo=UTC)
+    try:
+        # Reflect the deployed schema: current ORM defaults/columns do not belong
+        # in fixtures for revisions which predate them.
+        historical = MetaData()
+        historical.reflect(bind=engine)
+        with engine.begin() as connection:
+            connection.execute(
+                historical.tables["users"]
+                .insert()
+                .values(
+                    id="existing-owner",
+                    username="existing-owner",
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                historical.tables["datasets"]
+                .insert()
+                .values(
+                    dataset_id="existing-dataset",
+                    owner_id="existing-owner",
+                    name="Existing",
+                    source_kind="csv",
+                    status="ready",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            dashboard_values = dict(
+                dashboard_id="existing-dashboard",
+                owner_id="existing-owner",
+                dataset_id="existing-dataset",
+                title="Existing dashboard",
+                widgets=[],
+                created_at=now,
+            )
+            result_values = dict(
+                result_id="existing-result",
+                owner_id="existing-owner",
+                status="ok",
+                created_at=now,
+            )
+            if deployed_revision == "f178sens0001":
+                dashboard_values["consistency"] = "snapshot"
+                result_values["sensitive_columns"] = ["email", "phone"]
+            else:
+                connection.execute(
+                    historical.tables["model_settings"]
+                    .insert()
+                    .values(
+                        id="default",
+                        base_url="https://models.example/v1",
+                        model_name="existing",
+                        api_key_ciphertext="existing-ciphertext",
+                        updated_by="existing-owner",
+                        updated_at=now,
+                    )
+                )
+            connection.execute(historical.tables["dashboards"].insert().values(**dashboard_values))
+            connection.execute(historical.tables["results"].insert().values(**result_values))
+
+        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "head")
+        schema = inspect(engine)
+        for table in Base.metadata.sorted_tables:
+            assert set(table.columns.keys()) == {
+                column["name"] for column in schema.get_columns(table.name)
+            }, table.name
+        with engine.connect() as connection:
+            versions = Table("alembic_version", MetaData(), autoload_with=connection)
+            assert connection.scalars(select(versions.c.version_num)).all() == ["f211merge0001"]
+        with Session(engine) as db:
+            dashboard = db.get(DashboardModel, "existing-dashboard")
+            result = db.get(ToolResultModel, "existing-result")
+            assert dashboard.owner_id == result.owner_id == "existing-owner"
+            assert dashboard.dataset_id == "existing-dataset"
+            assert dashboard.title == "Existing dashboard"
+            assert result.status == "ok"
+            if deployed_revision == "f178sens0001":
+                assert dashboard.consistency == "snapshot"
+                assert result.sensitive_columns == ["email", "phone"]
+            else:
+                assert dashboard.consistency == "independent"
+                assert result.sensitive_columns is None
+                settings = db.get(ModelSettingsModel, "default")
+                assert settings.base_url == "https://models.example/v1"
+                assert settings.model_name == "existing"
+                assert settings.api_key_ciphertext == "existing-ciphertext"
+                assert settings.updated_by == "existing-owner"
+                assert settings.updated_at == now
+    finally:
+        engine.dispose()
+    command.downgrade(cfg, "f169read0001")
+    engine = create_db_engine(url)
+    try:
+        schema = inspect(engine)
+        assert "model_settings" not in schema.get_table_names()
+        assert "consistency" not in {c["name"] for c in schema.get_columns("dashboards")}
+        assert "sensitive_columns" not in {c["name"] for c in schema.get_columns("results")}
+        with engine.connect() as connection:
+            dashboards = Table("dashboards", MetaData(), autoload_with=connection)
+            results = Table("results", MetaData(), autoload_with=connection)
+            assert connection.scalar(select(dashboards.c.title)) == "Existing dashboard"
+            assert connection.scalar(select(results.c.status)) == "ok"
     finally:
         engine.dispose()

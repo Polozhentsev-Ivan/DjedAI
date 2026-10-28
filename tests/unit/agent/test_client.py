@@ -143,6 +143,20 @@ def test_client_records_usage_and_applies_output_cap(client):
     assert client.client.chat.completions.create.call_args.kwargs["max_tokens"] == 512
 
 
+def test_client_explicit_output_cap_overrides_the_default(client):
+    client.client.chat.completions.create.return_value = create_mock_response(
+        '{"intent":"data_question"}'
+    )
+    client.max_output_tokens = 512
+
+    client.generate_typed_response(
+        "sys", "user", Understanding, stage="plan", max_output_tokens=4096
+    )
+
+    request = client.client.chat.completions.create.call_args.kwargs
+    assert request["max_tokens"] == 4096
+
+
 def test_client_does_not_accept_a_token_limited_response(client):
     raw = create_mock_response('{"intent":"data_question"}').model_dump()
     raw["choices"][0]["finish_reason"] = "length"

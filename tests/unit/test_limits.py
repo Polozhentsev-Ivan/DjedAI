@@ -26,6 +26,7 @@ def clear_limits_cache():
         ("TOOL_TIMEOUT_SECONDS", 0),
         ("TOOL_TIMEOUT_SECONDS", float("inf")),
         ("DASHBOARD_MAX_TOOL_CALLS", 0),
+        ("DASHBOARD_MAX_OUTPUT_TOKENS", 0),
         ("MODEL_TIMEOUT_SECONDS", 0),
         ("MODEL_MAX_OUTPUT_TOKENS", 0),
         ("MODEL_CONTEXT_TOKENS", 2048),
@@ -45,6 +46,12 @@ def clear_limits_cache():
 def test_invalid_limits_fail_before_execution(field: str, value: float):
     with pytest.raises(ValueError):
         LimitSettings(_env_file=None, **{field: value})
+
+
+def test_dashboard_output_limit_is_separate_from_chat_limit():
+    limits = LimitSettings(_env_file=None)
+    assert limits.model_max_output_tokens == 2048
+    assert limits.dashboard_max_output_tokens == 4096
 
 
 def test_reasoning_defaults_keep_the_provider_profile(monkeypatch):

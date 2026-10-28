@@ -13,27 +13,39 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from djedai.backend.app import create_app
 from djedai.backend.auth import create_session, hash_password
 from djedai.backend.config import Settings, get_settings
+from djedai.backend.dashboard_service import DashboardService, _dashboard_consistency
 from djedai.backend.db.models import (
     ChatModel,
+    DashboardModel,
     DatasetModel,
+    ToolResultModel,
     UserModel,
 )
 from djedai.backend.db.repositories import save_tool_result
 from djedai.backend.db.session import create_db_engine, get_db, init_db
+from djedai.config import get_limits
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
+from djedai.contracts.chart import ChartSpec
+from djedai.contracts.dashboard import WidgetLayout, WidgetSnapshot, WidgetToolCall
+from djedai.contracts.freshness import ReadProvenance
 from djedai.contracts.tool_result import ToolResult, ToolResultData
+from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 
 
 @pytest.fixture(scope="module")
@@ -220,9 +232,7 @@ def test_create_and_read_independent_dashboard(dashboard_env):
     }
 
     headers = {"Authorization": f"Bearer {alice_token}"}
-    print("--> BEFORE POST")
     resp = client.post("/api/dashboards", json=payload, headers=headers)
-    print("--> AFTER POST", resp.status_code)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["title"] == "Дашборд продаж"
@@ -408,8 +418,12 @@ def test_refresh_generates_new_results_and_executes_dependencies(dashboard_env):
     assert refresh_resp.status_code == 200, refresh_resp.text
     snapshot = refresh_resp.json()
     assert snapshot["refreshed_at"] is not None
+    # CSV — неизменяемый снимок: все виджеты читают одну ревизию источника.
+    assert snapshot["consistency"] == "immutable"
     widget = snapshot["widgets"][0]
     assert widget["status"] == "ok"
+    assert widget["read_started_at"] is not None
+    assert widget["read_finished_at"] is not None
     new_res_id = widget["result_id"]
     # Идентификатор должен быть НОВЫМ
     assert new_res_id != "r_initial_2"
@@ -420,6 +434,69 @@ def test_refresh_generates_new_results_and_executes_dependencies(dashboard_env):
     assert data_resp.status_code == 200
     rows = data_resp.json()["rows"]
     assert rows == [[3]]
+
+    # Согласованность последнего refresh сохраняется при повторном открытии.
+    reopened = client.get(f"/api/dashboards/{dash_id}", headers=headers)
+    assert reopened.status_code == 200
+    assert reopened.json()["consistency"] == "immutable"
+
+
+def test_refresh_rejects_truncated_dependency(dashboard_env, monkeypatch):
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+
+    with factory() as db:
+        r1 = ToolResult(
+            result_id="r_trunc_parent",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT id, category, amount FROM sales"},
+            data=ToolResultData(
+                columns=["id", "category", "amount"],
+                rows=[[1, "electronics", 100.0], [2, "electronics", 200.0], [3, "books", 50.0]],
+                row_count=3,
+            ),
+        )
+        r2 = ToolResult(
+            result_id="r_trunc_child",
+            source_result_id="r_trunc_parent",
+            status="ok",
+            tool="run_sql",
+            params={"sql": "SELECT SUM(amount) AS total FROM source_result"},
+            data=ToolResultData(columns=["total"], rows=[[350.0]], row_count=1),
+        )
+        save_tool_result(db, r1, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+        save_tool_result(db, r2, chat_id="chat_alice", owner_id="u_alice", storage_dir=results_dir)
+
+    chart = {
+        "chart_id": "c_truncated",
+        "result_id": "r_trunc_child",
+        "type": "kpi",
+        "title": "Total",
+    }
+    create_resp = client.post(
+        "/api/dashboards",
+        json={"dataset_id": dataset_id, "result_id": "r_trunc_child", "chart": chart},
+        headers=headers,
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    dash_id = create_resp.json()["dashboard_id"]
+
+    # Preliminary JOIN is longer than the configured row cap, so refresh must not
+    # aggregate the truncated rows as if they were the complete parent result.
+    monkeypatch.setenv("SQL_MAX_ROWS", "2")
+    get_limits.cache_clear()
+    try:
+        refresh_resp = client.post(f"/api/dashboards/{dash_id}/refresh", headers=headers)
+    finally:
+        # monkeypatch restores the env after the test; do not keep the lowered cap cached.
+        get_limits.cache_clear()
+    assert refresh_resp.status_code == 200, refresh_resp.text
+    widget = refresh_resp.json()["widgets"][0]
+    assert widget["status"] == "error"
+    assert widget["result_id"] is None
+    assert widget["error"]["code"] == "dependency_truncated"
+    assert "усеч" in widget["error"]["message"]
 
 
 def test_partial_failure_isolates_errors_and_preserves_good_widgets(dashboard_env):
@@ -714,6 +791,102 @@ def test_intermediate_step_failure_stops_downstream_and_isolates_widget(dashboar
     assert w_other["error"] is None
 
 
+def test_refresh_preserves_inherited_sensitive_columns(dashboard_env):
+    """Refresh сохраняет чувствительность нейтрального алиаса для истории."""
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    headers = {"Authorization": f"Bearer {alice_token}"}
+    secret = "ordinaryCredential9!"
+
+    duck_file = Path(settings.datasets_data_dir) / "ds_alice" / "dataset.duckdb"
+    with duckdb.connect(str(duck_file)) as con:
+        con.execute("CREATE TABLE accounts (password VARCHAR)")
+        con.execute("INSERT INTO accounts VALUES (?)", [secret])
+
+    with factory() as db:
+        dataset = db.get(DatasetModel, dataset_id)
+        assert dataset is not None
+        catalog = DatasetCatalog.model_validate(dataset.catalog)
+        catalog.tables.append(
+            Table(
+                table_id="accounts",
+                original_name="accounts",
+                row_count=1,
+                duplicate_rows=0,
+                columns=[
+                    Column(
+                        name="password",
+                        original_name="password",
+                        physical_type="VARCHAR",
+                        semantic_type="category",
+                        role="dimension",
+                        null_ratio=0.0,
+                        distinct_count=1,
+                        is_unique=False,
+                    )
+                ],
+            )
+        )
+        dataset.catalog = catalog.model_dump(mode="json")
+        db.commit()
+
+        parent = ToolResult(
+            result_id="r_sensitive_parent",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT password AS value FROM accounts",
+            params={"sql": "SELECT password AS value FROM accounts"},
+            data=ToolResultData(columns=["value"], rows=[[secret]], row_count=1),
+        )
+        child = ToolResult(
+            result_id="r_sensitive_child",
+            source_result_id=parent.result_id,
+            status="ok",
+            tool="run_sql",
+            sql="SELECT value AS v FROM source_result",
+            params={"sql": "SELECT value AS v FROM source_result"},
+            data=ToolResultData(columns=["v"], rows=[[secret]], row_count=1),
+        )
+        for result in (parent, child):
+            save_tool_result(
+                db,
+                result,
+                chat_id="chat_alice",
+                owner_id="u_alice",
+                storage_dir=results_dir,
+            )
+
+    chart = {
+        "chart_id": "c_sensitive",
+        "result_id": "r_sensitive_child",
+        "type": "kpi",
+        "title": "Sensitive",
+    }
+    created = client.post(
+        "/api/dashboards",
+        json={
+            "dataset_id": dataset_id,
+            "result_id": "r_sensitive_child",
+            "chart": chart,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200
+    dashboard_id = created.json()["dashboard_id"]
+
+    refreshed = client.post(f"/api/dashboards/{dashboard_id}/refresh", headers=headers)
+    assert refreshed.status_code == 200
+    widget = refreshed.json()["widgets"][0]
+    assert widget["status"] == "ok"
+
+    with factory() as db:
+        output = db.get(ToolResultModel, widget["result_id"])
+        assert output is not None
+        assert output.sensitive_columns == ["v"]
+        parent_record = db.get(ToolResultModel, output.source_result_id)
+        assert parent_record is not None
+        assert parent_record.sensitive_columns == ["value"]
+
+
 def test_broken_dependency_chain_rejected_on_widget_creation(dashboard_env):
     """Превышение лимита шагов рецепта (MAX_RECIPE_STEPS) отвергается с кодом 422."""
     client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
@@ -883,3 +1056,223 @@ def test_save_refreshed_dependent_widget_result_to_another_dashboard(dashboard_e
     assert dash2_refreshed["widgets"][0]["status"] == "ok"
     assert dash2_refreshed["widgets"][0]["result_id"] is not None
     assert dash2_refreshed["widgets"][0]["result_id"] != new_res_id
+
+
+def _read(consistency: str, snapshot_id: str | None) -> ReadProvenance:
+    return ReadProvenance.model_validate(
+        {
+            "revision_known": True,
+            "dataset_id": "ds_alice",
+            "catalog_revision": 1,
+            "schema_fingerprint": "a" * 64,
+            "source_fingerprint": "b" * 64,
+            "transform_version": "2026.10.1",
+            "read_mode": "live" if consistency == "turn_snapshot" else "snapshot",
+            "consistency": consistency,
+            "snapshot_id": snapshot_id,
+            "started_at": "2026-10-26T10:00:00Z",
+            "finished_at": "2026-10-26T10:00:01Z",
+            "freshness": {"state": "fresh", "profiled_at": "2026-10-26T09:00:00Z"},
+        }
+    )
+
+
+def test_dashboard_consistency_reports_one_snapshot_or_independent():
+    assert _dashboard_consistency([]) == "unknown"
+    assert _dashboard_consistency([_read("immutable", "r1")]) == "immutable"
+    assert (
+        _dashboard_consistency(
+            [_read("turn_snapshot", "dashboard:d_1:1"), _read("turn_snapshot", "dashboard:d_1:1")]
+        )
+        == "turn_snapshot"
+    )
+    assert (
+        _dashboard_consistency(
+            [_read("turn_snapshot", "dashboard:d_1:1"), _read("turn_snapshot", "dashboard:d_1:2")]
+        )
+        == "independent"
+    )
+
+
+def _generated_widget(result_id: str, chart_id: str, title: str) -> WidgetSnapshot:
+    return WidgetSnapshot(
+        widget_id=f"w_{chart_id}",
+        tool_call=WidgetToolCall(
+            tool="run_sql",
+            params={"sql": "SELECT category, amount FROM sales"},
+        ),
+        recipe=None,
+        chart=ChartSpec(
+            chart_id=chart_id,
+            result_id=result_id,
+            type="bar",
+            title=title,
+            y=[{"field": "amount"}],
+            x={"field": "category"},
+        ),
+        caption=title,
+        layout=WidgetLayout(x=0, y=0, w=6, h=4),
+        result_id=result_id,
+        status="ok",
+        read_started_at=datetime.now(UTC),
+        read_finished_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.parametrize("lock_kind", ["reader", "writer"])
+@pytest.mark.parametrize("abort", ["timeout", "cancel"])
+def test_generated_dashboard_does_not_commit_after_budget_abort(dashboard_env, lock_kind, abort):
+    _, factory, settings, _, _, dataset_id, results_dir = dashboard_env
+    result_ids = [f"r_budget_{index}" for index in range(3)]
+    with factory() as db:
+        for result_id in result_ids:
+            save_tool_result(
+                db,
+                ToolResult(
+                    result_id=result_id,
+                    status="ok",
+                    tool="run_sql",
+                    data=ToolResultData(
+                        columns=["category", "amount"], rows=[["books", 50]], row_count=1
+                    ),
+                ),
+                chat_id="chat_alice",
+                owner_id="u_alice",
+                storage_dir=results_dir,
+            )
+    widgets = [_generated_widget(rid, f"ch_budget_{i}", str(i)) for i, rid in enumerate(result_ids)]
+    engine = factory.kw["bind"]
+    blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
+    if lock_kind == "writer":
+        blocker.execute("BEGIN IMMEDIATE")
+    else:
+        blocker.execute("BEGIN")
+        blocker.execute("SELECT dashboard_id FROM dashboards").fetchall()
+    cancelled = threading.Event()
+    budget = ExecutionBudget(0.15 if abort == "timeout" else 5, cancelled.is_set)
+    cancel_timer = threading.Timer(0.1, cancelled.set)
+    unlock_timer = threading.Timer(0.65, blocker.rollback)
+    if abort == "cancel":
+        cancel_timer.start()
+    unlock_timer.start()
+    started = time.monotonic()
+    try:
+        with factory() as db, pytest.raises(TurnTimeout if abort == "timeout" else TurnCancelled):
+            with budget.activate():
+                DashboardService(settings).save_generated_dashboard(
+                    db,
+                    "u_alice",
+                    dataset_id,
+                    title="Must roll back",
+                    widgets=widgets,
+                    source_chat_id="chat_alice",
+                )
+        assert time.monotonic() - started < 0.55
+    finally:
+        cancel_timer.cancel()
+        unlock_timer.join()
+        blocker.close()
+    with factory() as db:
+        assert db.query(DashboardModel).count() == 0
+        assert db.query(ToolResultModel).count() == 3
+
+
+def test_save_generated_dashboard_persists_agent_snapshot(dashboard_env):
+    client, factory, settings, alice_token, _, dataset_id, results_dir = dashboard_env
+    result_ids = ["r_generated_1", "r_generated_2", "r_generated_3"]
+
+    with factory() as db:
+        for index, result_id in enumerate(result_ids):
+            save_tool_result(
+                db,
+                ToolResult(
+                    result_id=result_id,
+                    status="ok",
+                    tool="run_sql",
+                    params={"sql": "SELECT category, amount FROM sales"},
+                    data=ToolResultData(
+                        columns=["category", "amount"],
+                        rows=[["books", 50.0 + index]],
+                        row_count=1,
+                    ),
+                ),
+                chat_id="chat_alice",
+                owner_id="u_alice",
+                storage_dir=results_dir,
+            )
+
+    widgets = [
+        _generated_widget(result_id, f"ch_generated_{index}", f"Виджет {index}")
+        for index, result_id in enumerate(result_ids, start=1)
+    ]
+    service = DashboardService(settings)
+    with factory() as db:
+        snapshot = service.save_generated_dashboard(
+            db,
+            "u_alice",
+            dataset_id,
+            title="Дашборд агента",
+            description="Собран в чате",
+            source_chat_id="chat_alice",
+            widgets=widgets,
+        )
+
+    assert snapshot.title == "Дашборд агента"
+    assert snapshot.source_chat_id == "chat_alice"
+    assert snapshot.refreshed_at is not None
+    assert snapshot.consistency == "immutable"
+    assert [widget.widget_id for widget in snapshot.widgets] == [
+        widget.widget_id for widget in widgets
+    ]
+    assert [widget.status for widget in snapshot.widgets] == ["ok", "ok", "ok"]
+
+    headers = {"Authorization": f"Bearer {alice_token}"}
+    reopened = client.get(f"/api/dashboards/{snapshot.dashboard_id}", headers=headers)
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["widgets"] == snapshot.model_dump(mode="json")["widgets"]
+    assert reopened.json()["consistency"] == "immutable"
+
+    with factory() as db, pytest.raises(HTTPException) as too_few:
+        service.save_generated_dashboard(
+            db,
+            "u_alice",
+            dataset_id,
+            title="Мало виджетов",
+            widgets=widgets[:2],
+        )
+    assert too_few.value.status_code == 422
+
+    duplicate = [
+        widgets[0],
+        widgets[1].model_copy(update={"widget_id": widgets[0].widget_id}),
+        widgets[2],
+    ]
+    with factory() as db, pytest.raises(HTTPException) as repeated:
+        service.save_generated_dashboard(
+            db,
+            "u_alice",
+            dataset_id,
+            title="Повтор виджета",
+            widgets=duplicate,
+        )
+    assert repeated.value.status_code == 422
+
+    missing = [
+        widgets[0].model_copy(
+            update={
+                "result_id": "r_missing",
+                "chart": widgets[0].chart.model_copy(update={"result_id": "r_missing"}),
+            }
+        ),
+        widgets[1],
+        widgets[2],
+    ]
+    with factory() as db, pytest.raises(HTTPException) as no_result:
+        service.save_generated_dashboard(
+            db,
+            "u_alice",
+            dataset_id,
+            title="Нет результата",
+            widgets=missing,
+        )
+    assert no_result.value.status_code == 404

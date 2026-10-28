@@ -612,6 +612,36 @@ def test_agent_error_block_becomes_error_event(
     assert "15 секунд" not in events[-1][1]["detail"]
 
 
+def test_plan_dashboard_error_block_becomes_error_event(
+    chat_api: tuple[TestClient, sessionmaker[Session], Callable[[AgentRuntime], None]],
+) -> None:
+    client, factory, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    use_runtime(
+        _runtime(
+            {
+                "plan_dashboard": {
+                    "dashboard_plan": None,
+                    "answer_blocks": [Block(type="error", markdown="Модель временно недоступна")],
+                }
+            }
+        )
+    )
+
+    response = client.post(
+        f"/api/chats/{chat_id}/messages",
+        json={"text": "Собери дашборд"},
+    )
+
+    events = parse_sse(response.text)
+    assert events[-1][0] == "error"
+    assert events[-1][1]["code"] == "agent_error"
+    assert not any(name in {"block", "done"} for name, _data in events)
+    with factory() as db:
+        messages = get_chat_messages(db, chat_id)
+        assert [message.role for message in messages] == ["user"]
+
+
 def test_send_message_rejects_blank_text(
     chat_api: tuple[TestClient, Any, Any],
 ) -> None:

@@ -37,8 +37,17 @@
 - Для зависимых шагов результат родительского шага регистрируется в DuckDB как in-memory
   представление `source_result` через pandas DataFrame. Представление гарантированно
   удаляется (`connection.unregister("source_result")`) сразу после завершения шага в блоке `finally`.
+- Если результат родительского шага усечён лимитом строк (`truncated=true` или
+  `row_count > len(rows)`), зависимый шаг не выполняется: виджет получает `status="error"`,
+  `result_id=null` и `ToolError(code="dependency_truncated")`. Неполные строки не используются
+  как полный источник для агрегата.
 - Для каждого успешного пересчёта генерируются **новые `result_id`**, сохраняющие
   родословную (`source_result_id`), а данные доступны через Data API `/api/results/{id}/data`.
+- Refresh открывает `SourceReader` и вызывает `share_snapshot`: все виджеты PostgreSQL
+  читают один снимок источника. Каждый результат получает `ToolResult.read`, каждый
+  `WidgetSnapshot` — `read_started_at`/`read_finished_at`, а `DashboardSnapshot.consistency`
+  сохраняется в дашборде (`turn_snapshot` для PostgreSQL, `immutable` для CSV/ClickHouse,
+  `independent` при перезапуске транзакции, `unknown` без чтений).
 - Бюджет вызовов: `dashboard_max_tool_calls = 20`. При исчерпании виджет получает статус
   `error` с кодом `tool_budget_exceeded`.
 

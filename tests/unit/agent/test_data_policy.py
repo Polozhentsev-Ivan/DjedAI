@@ -509,6 +509,60 @@ def test_result_has_sensitive_source_accepts_normalized_catalog_names() -> None:
     )
 
 
+def test_declared_sensitive_columns_keep_neutral_alias_sensitive() -> None:
+    """Выходная колонка, унаследованная от родителя, остаётся чувствительной."""
+    marker = "ordinaryCredential9!"
+    policy = DataTransferPolicy.sharing()
+    result = ToolResult(
+        result_id="r_child",
+        status="ok",
+        tool="describe_column",
+        params={"table": "source_result", "column": "value"},
+        data=ToolResultData(columns=["value", "count"], rows=[[marker, 2]]),
+        facts=[
+            Fact(
+                text=f"Значение '{marker}' встречается 2 раз.",
+                kind="freq",
+                values={"value": marker, "count": 2},
+            )
+        ],
+        sensitive_columns=["value"],
+    )
+
+    assert policy.result_has_sensitive_source(result) is True
+    assert policy.sensitive_result_columns(result) == {"value"}
+
+    payload = policy.result_data(
+        result.data,
+        context=DataContext.HISTORY,
+        sensitive_columns=policy.sensitive_result_columns(result),
+    )
+    safe_fact = policy.sanitize_fact(result.facts[0], sensitive=True)
+
+    assert payload["rows"] == [[REDACTED, 2]]
+    assert marker not in str(payload)
+    assert marker not in str(safe_fact)
+
+
+def test_dotted_source_column_keeps_parent_sensitivity() -> None:
+    """group_by вида ``source_result.value`` наследует чувствительность колонки."""
+    policy = DataTransferPolicy.sharing()
+    result = ToolResult(
+        result_id="r_metric",
+        status="ok",
+        tool="compute_metric",
+        params={"metric_id": "m", "group_by": ["source_result.value"]},
+        data=ToolResultData(
+            columns=["source_result.value", "value"], rows=[["ordinaryCredential9!", 1]]
+        ),
+    )
+
+    assert policy.result_has_sensitive_source(result, sensitive_columns=("value",)) is True
+    assert "source_result.value" in policy.sensitive_result_columns(
+        result, sensitive_columns=("value",)
+    )
+
+
 def test_result_data_redacts_normalized_catalog_column() -> None:
     data = ToolResultData(
         columns=["dbpasswordtext", "count"],

@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
 from fastapi import HTTPException, Request
 from langgraph.config import get_stream_writer
 from pydantic import TypeAdapter, ValidationError
@@ -27,6 +28,7 @@ from djedai.analytics.metrics import MetricContext
 from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
+from djedai.backend.dashboard_service import DashboardService
 from djedai.backend.dataset_service import DatasetContext
 from djedai.backend.db.models import ChatModel, DashboardModel, DatasetModel, MessageModel
 from djedai.backend.db.repositories import (
@@ -78,7 +80,7 @@ from djedai.contracts.sse import (
     SSEToolResultData,
     SSEToolResultEvent,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.tool_result import ToolError, ToolResult
 from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 
 _BLOCK_ADAPTER: TypeAdapter[MessageBlock] = TypeAdapter(MessageBlock)
@@ -105,6 +107,7 @@ class AgentRuntime:
     catalog_loader: Callable[[str], DatasetCatalog] | None = None
     dataset_context: Callable[[str, str], DatasetContext] | None = None
     metric_service: MetricService | None = None
+    dashboard_service: DashboardService | None = None
     results_storage_dir: Path | str | None = None
     turn_timeout_seconds: float | None = None
     diagnostics: DiagnosticJournal | None = None
@@ -167,6 +170,7 @@ def get_agent_runtime(request: Request) -> AgentRuntime:
         runtime,
         dataset_context=request.app.state.dataset_service.get_context,
         metric_service=getattr(request.app.state, "metric_service", None),
+        dashboard_service=getattr(request.app.state, "dashboard_service", None),
         results_storage_dir=settings.results_data_dir,
         turn_timeout_seconds=settings.agent_turn_timeout_seconds,
         diagnostics=request.app.state.diagnostics,
@@ -532,20 +536,71 @@ def stream_chat_turn(
             allowed_tables = frozenset(table.table_id for table in context.catalog.tables)
             semantics = MetricContext(context.catalog, metrics)
 
-            def dispatch(tool: str, params: dict[str, Any]) -> ToolResult:
+            def dispatch(
+                tool: str,
+                params: dict[str, Any],
+                source_result: ToolResult | None = None,
+            ) -> ToolResult:
+                # В обычном плане зависимость от сохранённого результата пока не
+                # поддерживается; ветка дашборда передаёт родительский шаг явно.
                 if params.get("source_result_id") is not None:
-                    raise ValueError("Вычисления поверх source_result_id будут доступны позднее")
+                    raise ValueError("source_result_id передаётся отдельно от параметров")
+                clean_params = {
+                    key: value for key, value in params.items() if key != "source_result_id"
+                }
+                step_allowed_tables = allowed_tables
+                registered_view = False
+                if source_result is not None:
+                    data = source_result.data
+                    if data is None:
+                        raise ValueError("Данные предыдущего шага недоступны")
+                    if data.truncated or (
+                        data.row_count is not None and data.row_count > len(data.rows)
+                    ):
+                        return ToolResult(
+                            result_id=_new_id("r"),
+                            status="error",
+                            tool=tool,
+                            params=clean_params,
+                            source_result_id=source_result.result_id,
+                            error=ToolError(
+                                code="dependency_truncated",
+                                message=(
+                                    "Промежуточный результат усечён лимитом строк; "
+                                    "зависимый расчёт по неполным данным не выполняется"
+                                ),
+                                suggestion=(
+                                    "Сократите промежуточный результат или агрегируйте "
+                                    "данные до зависимого шага."
+                                ),
+                            ),
+                        )
+                    columns = [
+                        column.name if hasattr(column, "name") else str(column)
+                        for column in data.columns
+                    ]
+                    frame = pd.DataFrame(data.rows, columns=columns)
+                    connection.register("source_result", frame)
+                    registered_view = True
+                    step_allowed_tables = allowed_tables | {"source_result"}
 
                 def compute() -> ToolResult:
-                    result = execute_tool(
-                        tool,
-                        params,
-                        connection=connection,
-                        allowed_tables=allowed_tables,
-                        semantics=semantics,
-                    )
-                    # Потери типизации в колонках именно этого расчёта (B2-10).
-                    return assess(result, connection, context.catalog)
+                    try:
+                        result = execute_tool(
+                            tool,
+                            clean_params,
+                            connection=connection,
+                            allowed_tables=step_allowed_tables,
+                            semantics=semantics,
+                        )
+                        # Потери типизации в колонках именно этого расчёта (B2-10).
+                        return assess(result, connection, context.catalog)
+                    finally:
+                        if registered_view:
+                            try:
+                                connection.unregister("source_result")
+                            except Exception:
+                                pass
 
                 # Ревизия каталога, режим и время чтения источника (B1-11).
                 result, read = reader.run(compute)
@@ -638,6 +693,21 @@ def stream_chat_turn(
             configurable["catalog_loader"] = runtime.catalog_loader
         if runtime.metric_service is not None:
             configurable["metrics_loader"] = lambda _dataset_id: metrics
+        if runtime.dashboard_service is not None:
+
+            def save_generated_dashboard(title, description, widgets):
+                return runtime.dashboard_service.save_generated_dashboard(
+                    db,
+                    owner_id,
+                    chat_model.dataset_id,
+                    title=title,
+                    description=description,
+                    source_chat_id=chat_model.chat_id,
+                    widgets=widgets,
+                    budget=budget,
+                )
+
+            configurable["dashboard_saver"] = save_generated_dashboard
 
         trace: list[TraceStep] = []
         results: list[ToolResult] = []
@@ -681,7 +751,7 @@ def stream_chat_turn(
                 if node in ("understand", "load_ctx"):
                     continue
 
-                if node == "execute":
+                if node in ("execute", "execute_dashboard"):
                     execute_update = data if isinstance(data, dict) else {}
                     for result in execute_update.get("results", []):
                         budget.check()
@@ -710,9 +780,17 @@ def stream_chat_turn(
                             )
                         )
 
-                if node in ("visualize", "compose", "verify", "clarify", "cite_metrics"):
+                if node in (
+                    "visualize",
+                    "compose",
+                    "verify",
+                    "clarify",
+                    "cite_metrics",
+                    "plan_dashboard",
+                    "save_dashboard",
+                ):
                     node_update = data if isinstance(data, dict) else {}
-                    if node in ("visualize", "compose", "clarify") and (
+                    if node in ("visualize", "compose", "clarify", "save_dashboard") and (
                         "focus_result_ids" in node_update
                     ):
                         stream_focus = list(node_update["focus_result_ids"] or [])
