@@ -47,6 +47,84 @@ async def test_same_chat_conflict_raises_409() -> None:
 
 
 @pytest.mark.anyio
+async def test_confirmed_cancellation_waits_for_physical_worker_release() -> None:
+    controller = ChatAdmissionController(max_concurrent=2, max_concurrent_per_owner=2)
+    old = await controller.acquire_permit("owner", "chat", run_id="old")
+    followup = asyncio.create_task(
+        controller.acquire_permit(
+            "owner",
+            "chat",
+            run_id="new",
+            cancelled_run_id="old",
+        )
+    )
+    other = None
+    try:
+        await asyncio.sleep(0.02)
+        assert not followup.done()
+        assert controller.snapshot()["active_chats_total"] == 1
+        assert controller.snapshot()["queued_chats_total"] == 1
+        with pytest.raises(HTTPException) as duplicate:
+            await controller.acquire_permit(
+                "owner", "chat", run_id="duplicate", cancelled_run_id="old"
+            )
+        assert duplicate.value.status_code == 409
+        # A blocked same-chat waiter must remain queued without blocking a
+        # different eligible chat of this owner or consuming its permit.
+        other = await controller.acquire_permit("owner", "other", run_id="other")
+        assert controller.snapshot()["active_chats_total"] == 2
+        assert not followup.done()
+        old.release()
+        new = await asyncio.wait_for(followup, 1)
+        assert controller.snapshot()["active_chats_total"] == 2
+        with pytest.raises(HTTPException) as stale:
+            await controller.acquire_permit("owner", "chat", run_id="stale", cancelled_run_id="old")
+        assert stale.value.status_code == 409
+        new.release()
+    finally:
+        old.release()
+        if other:
+            other.release()
+        if not followup.done():
+            followup.cancel()
+        await asyncio.gather(followup, return_exceptions=True)
+        await asyncio.sleep(0.01)
+    assert controller.snapshot()["active_chats_total"] == 0
+    assert controller.snapshot()["queued_chats_total"] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_stopping_worker_remains_counted_when_followup_abandons(cancel_waiter) -> None:
+    controller = ChatAdmissionController(timeout_seconds=0.08)
+    old = await controller.acquire_permit("owner", "chat", run_id="old")
+    followup = asyncio.create_task(
+        controller.acquire_permit(
+            "owner",
+            "chat",
+            run_id="new",
+            cancelled_run_id="old",
+        )
+    )
+    try:
+        if cancel_waiter:
+            await asyncio.sleep(0.02)
+            followup.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await followup
+        else:
+            with pytest.raises(HTTPException) as failure:
+                await followup
+            assert failure.value.status_code == 429
+        assert controller.snapshot()["active_chats_total"] == 1
+        assert controller.snapshot()["queued_chats_total"] == 0
+        assert not old.is_released
+    finally:
+        old.release()
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.anyio
 async def test_owner_queue_limit_rejection() -> None:
     controller = ChatAdmissionController(
         max_concurrent=4,

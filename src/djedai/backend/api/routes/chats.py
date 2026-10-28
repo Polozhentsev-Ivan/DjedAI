@@ -12,6 +12,7 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Receive, Scope, Send
@@ -205,10 +206,23 @@ async def send_chat_message(
     admission = getattr(request.app.state, "chat_admission", None)
     permit = None
     if admission is not None:
+
+        def previous_cancelled_run() -> str | None:
+            with session_factory() as db:
+                state = db.scalar(
+                    select(MessageModel.turn)
+                    .where(MessageModel.chat_id == chat_id, MessageModel.role == "user")
+                    .order_by(MessageModel.created_at.desc())
+                    .limit(1)
+                )
+                return state.get("run_id") if state and state.get("status") == "cancelled" else None
+
         permit = await admission.acquire_permit(
             owner_id,
             chat_id,
             is_disconnected=request.is_disconnected,
+            run_id=run_id,
+            cancelled_run_id=await asyncio.to_thread(previous_cancelled_run),
         )
     cancel_event = threading.Event()
     budget = runtime.budget(lambda: cancelled())

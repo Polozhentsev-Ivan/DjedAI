@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1696,6 +1697,62 @@ def test_explicit_cancellation_is_durable_and_suppresses_late_success(chat_api):
         client.post(f"/api/chats/{chat_id}/messages/{message_id}/cancel").json()["status"]
         == "cancelled"
     )
+
+
+def test_followup_after_confirmed_cancel_waits_for_the_old_worker(chat_api):
+    from uuid import uuid4
+
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    class StoppingGraph:
+        def stream(self, *_args, **_kwargs):
+            calls.append(len(calls) + 1)
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(5)
+            yield "updates", {"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}
+
+    use_runtime(AgentRuntime(graph=StoppingGraph()))
+    request_id = uuid4()
+    admission = client.app.state.chat_admission
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            client.post,
+            f"/api/chats/{chat_id}/messages",
+            json={
+                "text": "First",
+                "request_id": str(request_id),
+            },
+        )
+        try:
+            assert started.wait(3)
+            cancelled = client.post(f"/api/chats/{chat_id}/messages/m_{request_id.hex}/cancel")
+            assert cancelled.status_code == 200
+            assert cancelled.json()["status"] == "cancelled"
+            followup = pool.submit(
+                client.post, f"/api/chats/{chat_id}/messages", json={"text": "Next"}
+            )
+            until = time.monotonic() + 2
+            while admission.snapshot()["queued_chats_total"] != 1 and time.monotonic() < until:
+                time.sleep(0.01)
+            assert admission.snapshot()["queued_chats_total"] == 1
+            assert admission.snapshot()["active_chats_total"] == 1
+            assert calls == [1]
+            assert not followup.done()
+            release.set()
+            response = followup.result(5)
+            assert response.status_code == 200, response.text
+            assert parse_sse(response.text)[-1][0] == "done"
+            assert calls == [1, 2]
+        finally:
+            release.set()
+            first.result(5)
+    history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert [m["role"] for m in history] == ["user", "user", "assistant"]
+    assert history[0]["turn"]["status"] == "cancelled"
 
 
 def test_duplicate_request_does_not_run_graph_or_overwrite_success(chat_api):

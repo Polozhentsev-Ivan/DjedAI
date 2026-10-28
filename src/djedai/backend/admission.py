@@ -92,6 +92,7 @@ class StreamingUploadLimitMiddleware:
 class ChatWaiter:
     owner_id: str
     chat_id: str
+    run_id: str | None = None
     event: asyncio.Event = field(default_factory=asyncio.Event)
     enqueued_at: float = field(default_factory=monotonic)
     cancelled: bool = False
@@ -169,6 +170,7 @@ class ChatAdmissionController:
 
         self._lock = asyncio.Lock()
         self._active_chat_ids: set[str] = set()
+        self._active_run_ids: dict[str, str | None] = {}
         self._active_by_owner: dict[str, int] = defaultdict(int)
         self._active_total: int = 0
 
@@ -196,6 +198,8 @@ class ChatAdmissionController:
         chat_id: str,
         *,
         is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+        run_id: str | None = None,
+        cancelled_run_id: str | None = None,
     ) -> Permit:
         """Атомарно запрашивает допуск к вычислениям или ожидает слот в очереди."""
         loop = asyncio.get_running_loop()
@@ -203,7 +207,16 @@ class ChatAdmissionController:
 
         async with self._lock:
             # 1. Запрет одновременных вычислений в одном и том же чате
-            if chat_id in self._active_chat_ids:
+            stopping_previous = (
+                cancelled_run_id is not None
+                and self._active_run_ids.get(chat_id) == cancelled_run_id
+            )
+            queued_chat = any(
+                waiter.chat_id == chat_id
+                for queue in self._waiters_by_owner.values()
+                for waiter in queue
+            )
+            if queued_chat or (chat_id in self._active_chat_ids and not stopping_previous):
                 self._log_event(
                     "admission_rejected",
                     owner_id=owner_id,
@@ -224,10 +237,12 @@ class ChatAdmissionController:
                 and self._active_by_owner[owner_id] < self.max_concurrent_per_owner
                 and self._queued_by_owner[owner_id] == 0
                 and not self._has_eligible_waiter()
+                and chat_id not in self._active_chat_ids
             ):
                 self._active_total += 1
                 self._active_by_owner[owner_id] += 1
                 self._active_chat_ids.add(chat_id)
+                self._active_run_ids[chat_id] = run_id
                 self._log_event(
                     "admission_acquired",
                     owner_id=owner_id,
@@ -265,7 +280,7 @@ class ChatAdmissionController:
                 )
 
             # 4. Постановка в очередь ожидания
-            waiter = ChatWaiter(owner_id=owner_id, chat_id=chat_id)
+            waiter = ChatWaiter(owner_id=owner_id, chat_id=chat_id, run_id=run_id)
             self._waiters_by_owner[owner_id].append(waiter)
             self._queued_by_owner[owner_id] += 1
             self._queued_total += 1
@@ -382,6 +397,7 @@ class ChatAdmissionController:
     def _on_permit_released(self, owner_id: str, chat_id: str, duration_ms: int) -> None:
         """Обратный вызов освобождения слота (выполняется в цикле событий FastAPI)."""
         self._active_chat_ids.discard(chat_id)
+        self._active_run_ids.pop(chat_id, None)
         self._active_by_owner[owner_id] = max(0, self._active_by_owner[owner_id] - 1)
         self._active_total = max(0, self._active_total - 1)
 
@@ -418,7 +434,13 @@ class ChatAdmissionController:
                 if self._active_by_owner[candidate_owner] < self.max_concurrent_per_owner:
                     owner_waiters = self._waiters_by_owner.get(candidate_owner)
                     while owner_waiters:
-                        next_waiter = owner_waiters.popleft()
+                        next_waiter = next(
+                            (w for w in owner_waiters if w.chat_id not in self._active_chat_ids),
+                            None,
+                        )
+                        if next_waiter is None:
+                            break
+                        owner_waiters.remove(next_waiter)
                         self._queued_by_owner[candidate_owner] = max(
                             0, self._queued_by_owner[candidate_owner] - 1
                         )
@@ -438,6 +460,7 @@ class ChatAdmissionController:
                         self._active_total += 1
                         self._active_by_owner[candidate_owner] += 1
                         self._active_chat_ids.add(next_waiter.chat_id)
+                        self._active_run_ids[next_waiter.chat_id] = next_waiter.run_id
                         next_waiter.event.set()
                         dispatched = True
                         break
