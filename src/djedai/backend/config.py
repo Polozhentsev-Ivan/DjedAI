@@ -183,6 +183,18 @@ class Settings(LimitSettings):
         "tool_timeout_seconds",
         "allowed_outbound_hosts",
         "session_secret",
+        "max_concurrent_chats",
+        "max_concurrent_chats_per_owner",
+        "max_queued_chats",
+        "max_queued_chats_per_owner",
+        "chat_admission_timeout_seconds",
+        "max_concurrent_dataset_jobs",
+        "max_concurrent_dataset_jobs_per_owner",
+        "max_queued_dataset_jobs",
+        "max_queued_dataset_jobs_per_owner",
+        "max_upload_file_bytes",
+        "max_upload_request_bytes",
+        "max_owner_storage_bytes",
         mode="before",
     )
     @classmethod

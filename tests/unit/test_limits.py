@@ -32,6 +32,14 @@ def clear_limits_cache():
         ("MODEL_REASONING_UNDERSTAND", "turbo"),
         ("MODEL_REASONING_VERIFY", "HIGH"),
         ("MODEL_REASONING_SUPPORTED", "maybe"),
+        ("MAX_CONCURRENT_CHATS", 0),
+        ("MAX_CONCURRENT_CHATS_PER_OWNER", 0),
+        ("MAX_QUEUED_CHATS", -1),
+        ("CHAT_ADMISSION_TIMEOUT_SECONDS", 0),
+        ("MAX_CONCURRENT_DATASET_JOBS", 0),
+        ("MAX_UPLOAD_FILE_BYTES", 0),
+        ("MAX_UPLOAD_REQUEST_BYTES", 0),
+        ("MAX_OWNER_STORAGE_BYTES", 0),
     ],
 )
 def test_invalid_limits_fail_before_execution(field: str, value: float):
@@ -62,6 +70,42 @@ def test_blank_reasoning_value_uses_provider_default(monkeypatch):
     monkeypatch.setenv("MODEL_REASONING_PLAN", "")
     limits = LimitSettings(_env_file=None)
     assert limits.model_reasoning_plan == "provider_default"
+
+
+def test_concurrency_and_upload_budget_validation():
+    # File limit cannot exceed request limit
+    with pytest.raises(ValueError, match="Лимит отдельного файла"):
+        LimitSettings(
+            _env_file=None,
+            max_upload_file_bytes=100,
+            max_upload_request_bytes=50,
+            max_owner_storage_bytes=200,
+        )
+
+    # Request limit cannot exceed storage limit
+    with pytest.raises(ValueError, match="Лимит запроса загрузки"):
+        LimitSettings(
+            _env_file=None,
+            max_upload_file_bytes=50,
+            max_upload_request_bytes=300,
+            max_owner_storage_bytes=200,
+        )
+
+    # Per-owner chats cannot exceed total chats
+    with pytest.raises(ValueError, match="Лимит чатов на владельца"):
+        LimitSettings(
+            _env_file=None,
+            max_concurrent_chats=2,
+            max_concurrent_chats_per_owner=5,
+        )
+
+    # Per-owner dataset jobs cannot exceed total dataset jobs
+    with pytest.raises(ValueError, match="Лимит задач датасета на владельца"):
+        LimitSettings(
+            _env_file=None,
+            max_concurrent_dataset_jobs=2,
+            max_concurrent_dataset_jobs_per_owner=5,
+        )
 
 
 def test_sql_uses_configured_cap_even_when_caller_requests_more(monkeypatch):
