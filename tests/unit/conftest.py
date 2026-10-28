@@ -68,7 +68,9 @@ def model_endpoint() -> Callable:
                                 "index": 0,
                                 "message": {
                                     "role": "assistant",
-                                    "content": json.dumps(bodies[schema]),
+                                    "content": json.dumps(
+                                        options["body"] if "body" in options else bodies[schema]
+                                    ),
                                 },
                                 "finish_reason": "stop",
                             }

@@ -23,10 +23,10 @@ export function SettingsPage() {
   // it settles and the key never stays in the cache.
   const [notice, setNotice] = useState<Notice | null>(null);
 
-  const save = (body: Update) => {
+  const save = (body: Update, onSaved?: (settings: Schemas['ModelSettingsRead']) => void) => {
     setNotice(null);
     update.mutate(body, {
-      onSuccess: () => { setNotice({ ok: true, text: 'Сохранено. Новые настройки действуют со следующего вопроса.' }); },
+      onSuccess: (saved) => { onSaved?.(saved); setNotice({ ok: true, text: 'Сохранено. Новые настройки действуют со следующего вопроса.' }); },
       onError: (error) => { setNotice({ ok: false, text: error.message }); },
       onSettled: () => { update.reset(); },
     });
@@ -53,7 +53,7 @@ export function SettingsPage() {
           {settings.isError && (
             <ErrorState size="compact" title="Не удалось получить настройки модели" text={settings.error.message} onAction={() => { void settings.refetch(); }} />
           )}
-          {/* Saved values remount the form, so typed values never outlive a save. */}
+          {/* Public changes remount the form; an unchanged key replacement resets it explicitly. */}
           {settings.isSuccess && (
             <ModelForm
               key={JSON.stringify(settings.data)}
@@ -78,7 +78,7 @@ interface ModelFormProps {
   saving: boolean;
   checking: boolean;
   onEdit: () => void;
-  onSave: (body: Update) => void;
+  onSave: (body: Update, onSaved?: (settings: Schemas['ModelSettingsRead']) => void) => void;
   onCheck: (body: Update) => void;
 }
 
@@ -105,7 +105,7 @@ function ModelForm({ settings, notice, saving, checking, onEdit, onSave, onCheck
 
   const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
-    onSave(changes());
+    onSave(changes(), (saved) => { setApiKey(''); setReplacingKey(!saved.api_key_from_ui); });
   };
 
   return (

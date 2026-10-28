@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Iterator
 from decimal import Decimal
@@ -27,7 +28,7 @@ from djedai.backend.config import Settings
 from djedai.backend.db.models import ModelSettingsModel
 from djedai.backend.db.repositories import get_or_create_user
 from djedai.backend.db.session import create_db_engine, init_db
-from djedai.backend.model_settings import model_settings_for
+from djedai.backend.model_settings import ModelSettingsService, model_settings_for
 from djedai.config import get_limits
 from djedai.contracts.settings import ModelSettingsUpdate
 
@@ -383,6 +384,107 @@ def test_check_reports_missing_configuration(
     monkeypatch.delenv("MODEL_API_KEY")
     response = api(model_settings_from_ui=True).post("/api/settings/model/check", json={})
     assert response.json()["code"] == "not_configured"
+
+
+def test_check_does_not_replace_unreadable_key_with_environment(
+    api: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = api(model_settings_from_ui=True)
+    assert first.put("/api/settings/model", json={"api_key": UI_KEY}).status_code == 200
+    rotated = api(model_settings_from_ui=True, source_encryption_key=Fernet.generate_key())
+    built = []
+    monkeypatch.setattr(
+        "djedai.backend.model_settings.get_agent_client", lambda value: built.append(value)
+    )
+    for change in ({}, {"model_name": "other-model"}):
+        result = rotated.post("/api/settings/model/check", json=change)
+        assert result.status_code == 200 and result.json()["ok"] is False
+    assert built == []
+
+
+@pytest.mark.parametrize("replacement", ["sk-explicit-replacement", ""])
+def test_check_can_explicitly_replace_an_unreadable_key(
+    api: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    first = api(model_settings_from_ui=True)
+    saved_url = "https://saved.example/v1"
+    first.put("/api/settings/model", json={"api_key": UI_KEY, "base_url": saved_url})
+    rotated = api(model_settings_from_ui=True, source_encryption_key=Fernet.generate_key())
+    seen = []
+
+    def build(value):
+        seen.append(value)
+        return _FailingClient(None)
+
+    monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", build)
+    result = rotated.post("/api/settings/model/check", json={"api_key": replacement})
+    assert result.status_code == 200 and result.json()["ok"] is True
+    assert seen[0].base_url == saved_url and seen[0].api_key == replacement
+    runtime = get_agent_runtime(Request({"type": "http", "app": rotated.app}))
+    assert runtime.unavailable  # A check never persists the replacement.
+
+
+def test_description_client_and_sharing_use_one_snapshot(
+    api: Callable[..., TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    model_endpoint: Callable,
+    tmp_path: Path,
+) -> None:
+    marker = "CATALOG_RACE_CELL_MARKER"
+
+    def reply(_number, payload):
+        schema = payload["response_format"]["json_schema"]["name"]
+        if schema == "TableDescriptions":
+            data = json.loads(payload["messages"][1]["content"])
+            return {
+                "body": {
+                    "table": "Описание таблицы",
+                    "columns": [
+                        {"name": column["name"], "description": "Описание колонки"}
+                        for column in data["columns"]
+                    ],
+                }
+            }
+        assert schema == "DatasetSummary"
+        return {"body": {"summary": "Описание набора"}}
+
+    with model_endpoint(reply) as allowed, model_endpoint(reply) as other:
+        monkeypatch.setenv("MODEL_BASE_URL", allowed.base_url)
+        client = api(
+            model_settings_from_ui=True,
+            catalog_descriptions=True,
+            datasets_data_dir=str(tmp_path / "catalogs"),
+        )
+        original = ModelSettingsService.override
+        reads = []
+
+        def snapshot(service):
+            captured = original(service)
+            reads.append(captured)
+            if len(reads) == 1:
+                switched = client.put("/api/settings/model", json={"base_url": other.base_url})
+                assert switched.status_code == 200
+            return captured
+
+        monkeypatch.setattr(ModelSettingsService, "override", snapshot)
+        upload = client.post(
+            "/api/datasets/upload",
+            files={"files": ("accounts.csv", f"label\n{marker}\n".encode(), "text/csv")},
+        )
+        assert upload.status_code == 202
+        events = client.get(f"/api/datasets/{upload.json()['dataset_id']}/events")
+        assert "event: done" in events.text
+        assert allowed.calls and not other.calls
+        assert marker in json.dumps(allowed.calls)
+        assert len(reads) == 1
+
+        upload = client.post(
+            "/api/datasets/upload",
+            files={"files": ("second.csv", f"label\n{marker}\n".encode(), "text/csv")},
+        )
+        assert upload.status_code == 202
+        client.get(f"/api/datasets/{upload.json()['dataset_id']}/events")
+        assert other.calls and marker not in json.dumps(other.calls)
 
 
 def test_ui_key_never_leaves_the_server(

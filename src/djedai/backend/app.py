@@ -51,6 +51,7 @@ from djedai.contracts import (
     UserRead,
 )
 from djedai.data.clickhouse import ClickHouseLimits
+from djedai.data.descriptions import ModelClient
 
 # Корневые модели контрактов для включения в OpenAPI / components.schemas
 CONTRACT_ROOT_MODELS = [
@@ -92,6 +93,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from djedai.backend.metric_service import MetricService
 
     cfg = app.state.settings
+
+    def description_context() -> tuple[ModelClient, bool]:
+        # The permission and the recipient must come from the same UI snapshot.
+        override = model_settings_for(app).override()
+        return get_agent_client(override), data_sharing_allowed(override)
+
     app.state.dataset_service = DatasetService(
         app.state.session_factory,
         cfg.datasets_data_dir,
@@ -99,10 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         if cfg.source_encryption_key
         else None,
         # Descriptions follow the model chosen in the interface, like chat turns (#209).
-        description_client=(lambda: get_agent_client(model_settings_for(app).override()))
-        if cfg.catalog_descriptions
-        else None,
-        description_sharing=lambda: data_sharing_allowed(model_settings_for(app).override()),
+        description_context=description_context if cfg.catalog_descriptions else None,
         clickhouse_limits=ClickHouseLimits(
             max_rows=cfg.clickhouse_max_rows,
             max_bytes=cfg.clickhouse_max_bytes,

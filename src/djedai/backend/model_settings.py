@@ -187,10 +187,14 @@ class ModelSettingsService:
     def check(self, change: ModelSettingsUpdate) -> ModelCheckResult:
         """Один короткий запрос к модели с введёнными значениями поверх сохранённых."""
         values = self._validated(change)
-        try:
-            saved = self.override() or ModelValues()
-        except SourceSecretError:
-            saved = ModelValues()
+        stored = self._stored()
+        saved_key = None
+        if values.api_key is None and stored.api_key_ciphertext:
+            try:
+                saved_key = self.secrets.decrypt_model_key(stored.api_key_ciphertext)
+            except SourceSecretError:
+                return _check_result("not_configured")
+        saved = ModelValues(stored.base_url, stored.model_name, saved_key)
         # An explicit empty value means ".env" here too, not "keep the saved value".
         merged = ModelValues(
             *(

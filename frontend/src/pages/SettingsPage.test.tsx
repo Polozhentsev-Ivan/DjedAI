@@ -79,4 +79,28 @@ describe('SettingsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Проверить' }));
     expect(await screen.findByText('Модель ответила')).toBeInTheDocument();
   });
+
+  it('clears a replacement key even when public settings do not change', async () => {
+    const stored = { ...serverSettings, editable_connection: true, api_key_from_ui: true };
+    const sent: Schemas['ModelSettingsUpdate'][] = [];
+    server.use(
+      http.get(api('/settings/model'), () => HttpResponse.json(stored)),
+      http.put(api('/settings/model'), async ({ request }) => {
+        sent.push((await request.json()) as Schemas['ModelSettingsUpdate']);
+        return HttpResponse.json(stored);
+      }),
+    );
+    const { client } = await renderRoute('/settings');
+    await userEvent.click(await screen.findByRole('button', { name: 'Заменить' }));
+    await userEvent.type(screen.getByLabelText('Ключ API'), 'sk-replacement-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    expect(await screen.findByText(/Сохранено/)).toBeInTheDocument();
+    expect(sent).toEqual([{ api_key: 'sk-replacement-secret' }]);
+    expect(screen.queryByLabelText('Ключ API')).not.toBeInTheDocument();
+    expect(screen.getByText('Ключ задан')).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain('sk-replacement-secret');
+    await waitFor(() => { expect(JSON.stringify(client.getMutationCache().getAll().map((m) => m.state))).not.toContain('sk-replacement-secret'); });
+    await userEvent.click(screen.getByRole('button', { name: 'Заменить' }));
+    expect(screen.getByLabelText('Ключ API')).toHaveValue('');
+  });
 });
