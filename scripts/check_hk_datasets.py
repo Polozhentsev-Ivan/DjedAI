@@ -153,13 +153,20 @@ def _windows_peak_mb() -> float | None:
             ]  # fmt: skip
 
         kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.argtypes = []
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.K32GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(Counters),
+            wintypes.DWORD,
+        ]
+        kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
         counters = Counters(cb=ctypes.sizeof(Counters))
         process = kernel32.GetCurrentProcess()
         if not kernel32.K32GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
             return None
         return round(counters.PeakWorkingSetSize / 1024 / 1024, 1)
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, ctypes.ArgumentError, OverflowError):
         return None
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -41,3 +43,39 @@ def test_windows_memory_falls_back_to_none_without_win32_api(monkeypatch):
 def test_unix_memory_is_measured(monkeypatch):
     module = load_script(monkeypatch)
     assert module.peak_rss_mb() > 0
+
+
+def test_windows_memory_api_uses_pointer_sized_handle(monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+
+    module = load_script(monkeypatch)
+    handle = 0x123456789ABC
+    process = Mock(return_value=handle)
+    memory = Mock()
+
+    def read(actual, counters, size):
+        assert process.argtypes == [] and process.restype is wintypes.HANDLE
+        assert memory.argtypes[0] is wintypes.HANDLE
+        assert memory.argtypes[1]._type_ is type(counters._obj)
+        assert memory.argtypes[2] is wintypes.DWORD and memory.restype is wintypes.BOOL
+        assert actual == handle and size == ctypes.sizeof(counters._obj)
+        counters._obj.PeakWorkingSetSize = 64 * 1024 * 1024
+        return True
+
+    memory.side_effect = read
+    kernel = SimpleNamespace(GetCurrentProcess=process, K32GetProcessMemoryInfo=memory)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    assert module._windows_peak_mb() == 64.0
+
+
+def test_memory_probe_failure_does_not_block_the_dataset_check(monkeypatch):
+    import ctypes
+
+    module = load_script(monkeypatch)
+    kernel = SimpleNamespace(
+        GetCurrentProcess=Mock(return_value=0x123456789ABC),
+        K32GetProcessMemoryInfo=Mock(side_effect=ctypes.ArgumentError("unsupported probe")),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    assert module._windows_peak_mb() is None
