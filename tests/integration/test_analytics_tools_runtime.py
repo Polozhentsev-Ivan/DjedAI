@@ -20,6 +20,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from scipy.stats import pearsonr
 from sqlalchemy import select
 
 from djedai.agent.client import ModelResponse
@@ -66,6 +67,15 @@ CASES = {
         "measures": ["amount"],
     },
     "compute_metric": {"metric_id": "runtime_amount"},
+    "correlation": {"table": "events", "columns": ["g", "amount"]},
+    "lagged_correlation": {
+        "table": "events",
+        "time_col": "ts",
+        "a": "g",
+        "b": "amount",
+        "freq": "day",
+        "max_lag": 2,
+    },
 }
 SQL_FILTER_TOOLS = {
     "value_counts",
@@ -75,6 +85,8 @@ SQL_FILTER_TOOLS = {
     "seasonality",
     "segment_profile",
     "compare_segments",
+    "correlation",
+    "lagged_correlation",
 }
 TABLE_TOOLS = {name for name, args in CASES.items() if "table" in args}
 METADATA = (
@@ -420,6 +432,31 @@ def assert_success(tool, result, *, filtered=False):
         assert numerical["measure"] == "amount"
         assert numerical["mean_a"] == pytest.approx(mean(e[3] for e in source if e[2] == 1))
         assert numerical["mean_b"] == pytest.approx(mean(e[3] for e in source if e[2] == 2))
+    elif tool in {"correlation", "lagged_correlation"}:
+        groups = [event[2] for event in source]
+        amounts = [event[3] for event in source]
+        if tool == "correlation":
+            expected_r, expected_p = pearsonr(groups, amounts)
+            assert rows == [
+                ["g", "amount", pytest.approx(expected_r), pytest.approx(expected_p), len(source)]
+            ]
+            metric = fact(result, "metric")
+            assert (metric["a"], metric["b"], metric["n"]) == ("g", "amount", len(source))
+            assert metric["r"] == pytest.approx(expected_r)
+            assert metric["p"] == pytest.approx(expected_p)
+        else:
+            assert [row[0] for row in rows] == [-2, -1, 0, 1, 2]
+            for lag, coefficient, pvalue, count in rows:
+                left = groups[:-lag] if lag > 0 else groups[-lag:] if lag < 0 else groups
+                right = amounts[lag:] if lag > 0 else amounts[:lag] if lag < 0 else amounts
+                expected_r, expected_p = pearsonr(left, right)
+                assert count == len(source) - abs(lag)
+                assert coefficient == pytest.approx(expected_r)
+                assert pvalue == pytest.approx(expected_p)
+            best = max(rows, key=lambda row: abs(row[1]))
+            metric = fact(result, "metric")
+            assert [metric[key] for key in ("lag", "r", "p", "n")] == pytest.approx(best)
+        assert any(item["kind"] == "caveat" for item in result["facts"])
     elif tool == "compute_metric":
         assert rows == [[sum(event[3] for event in source)]]
         assert result["metric"]["unit"] == "money"
