@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from djedai.backend.api.routes import auth, chats, dashboards, datasets, health, metrics, results
+from djedai.backend.api.routes import (
+    auth,
+    chats,
+    dashboards,
+    datasets,
+    health,
+    metrics,
+    results,
+    settings,
+)
 
 api_router = APIRouter()
 
@@ -15,3 +24,4 @@ api_router.include_router(chats.router)
 api_router.include_router(results.router)
 api_router.include_router(dashboards.router)
 api_router.include_router(auth.router)
+api_router.include_router(settings.router)

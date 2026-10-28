@@ -58,6 +58,7 @@ describe('Sidebar', () => {
     render(<MemoryRouter><Sidebar active="catalog" chats={chats} /></MemoryRouter>);
     expect(screen.getByRole('link', { name: 'Каталог' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: 'Дашборды' })).toHaveAttribute('href', '/dashboards');
+    expect(screen.getByRole('link', { name: 'Настройки' })).toHaveAttribute('href', '/settings');
     expect(screen.queryByText('История чатов')).not.toBeInTheDocument();
   });
 

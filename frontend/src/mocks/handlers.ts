@@ -1,6 +1,6 @@
 import { http, HttpResponse } from 'msw/http';
 import { API_BASE, type Schemas } from '@/api/client';
-import { createDb, ordersCatalog, uploadedDataset, type MockDb } from './db';
+import { createDb, ENV_MODEL, ordersCatalog, uploadedDataset, type MockDb } from './db';
 
 /**
  * Scenario of the mock backend, picked with `?mock=` in dev:
@@ -190,6 +190,32 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
         ? [{ name: 'sales', row_count: 4376 }, { name: 'stores', row_count: 10 }]
         : [{ name: 'orders', row_count: null }, { name: 'customers', row_count: null }];
       return HttpResponse.json({ kind: body.kind, source: 'reader@db:5432/demo', tables, truncated: false });
+    }),
+
+    http.get(api('/settings/model'), () => HttpResponse.json(db.modelSettings)),
+
+    http.put(api('/settings/model'), async ({ request }) => {
+      const body = (await request.json()) as Schemas['ModelSettingsUpdate'];
+      const settings = db.modelSettings;
+      if (!settings.editable_connection && (body.api_key != null || body.base_url != null)) {
+        return errorJson(403, { code: 'forbidden', message: 'Ключ и адрес API задаёт администратор в .env' });
+      }
+      if (body.model_name && !settings.editable_connection && !settings.allowed_models.includes(body.model_name)) {
+        return errorJson(422, { code: 'http_422', message: 'Модель не входит в список разрешённых администратором' });
+      }
+      if (body.model_name != null) settings.model_name = body.model_name || ENV_MODEL.model_name;
+      if (body.base_url != null) settings.base_url = body.base_url || ENV_MODEL.base_url;
+      if (body.api_key != null) settings.api_key_from_ui = body.api_key !== '';
+      settings.matches_env = settings.model_name === ENV_MODEL.model_name && settings.base_url === ENV_MODEL.base_url;
+      return HttpResponse.json(settings);
+    }),
+
+    http.post(api('/settings/model/check'), async ({ request }) => {
+      const body = (await request.json()) as Schemas['ModelSettingsUpdate'];
+      const result: Schemas['ModelCheckResult'] = body.api_key?.includes('wrong')
+        ? { ok: false, code: 'invalid_key', message: 'Ключ API не принят. Проверьте ключ' }
+        : { ok: true, code: 'ok', message: 'Модель ответила' };
+      return HttpResponse.json(result);
     }),
 
     http.post(api('/datasets/connect'), async ({ request }) => {

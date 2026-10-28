@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import socket
@@ -10,6 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,6 +56,7 @@ from djedai.contracts.chat import ChatTurnState
 from djedai.contracts.message import AssistantMessage, ChartBlock, MessageBlock
 from djedai.contracts.sse import AgentStreamEvent, SSEBlockEvent
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
+from djedai.execution import current_budget
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "chat" / "blocks.json"
 
@@ -706,21 +709,45 @@ def _network_runtime(endpoint: Any, seconds: float) -> AgentRuntime:
     )
 
 
-def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpoint) -> None:
+def test_deadline_during_real_verify_never_publishes_draft(
+    chat_api, model_endpoint, monkeypatch
+) -> None:
     client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
 
+    verify_budgets = []
+    verify_started = []
+    real_verify = agent_graph.verify
+
+    def tracked_verify(state, config):
+        budget = current_budget()
+        assert budget is not None
+        verify_budgets.append(budget)
+        return real_verify(state, config)
+
+    monkeypatch.setattr(agent_graph, "verify", tracked_verify)
+
     def reply(_number, payload):
         schema = payload["response_format"]["json_schema"]["name"]
-        return {"mode": "stall"} if schema == "VerifyResponse" else {}
+        if schema == "VerifyResponse":
+            # Begin the short deadline only after real verify HTTP reaches the
+            # provider. Imports, earlier stages and transport setup are not the
+            # behavior this test measures.
+            verify_started.append(time.monotonic())
+            verify_budgets[-1].check()
+            verify_budgets[-1].deadline = min(
+                verify_budgets[-1].deadline, verify_started[-1] + 0.25
+            )
+            return {"mode": "stall"}
+        return {}
 
     with model_endpoint(reply) as endpoint:
-        runtime = _network_runtime(endpoint, 1)
+        runtime = _network_runtime(endpoint, 30)
         use_runtime(runtime)
         try:
-            started = time.monotonic()
             response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
-            assert time.monotonic() - started < 2.5
+            assert len(verify_started) == 1
+            assert time.monotonic() - verify_started[0] < 1.5
             events = parse_sse(response.text)
             assert [data["code"] for name, data in events if name == "error"] == ["turn_timeout"]
             assert all(name not in {"done", "block"} for name, _ in events)
@@ -734,7 +761,7 @@ def test_deadline_during_real_verify_never_publishes_draft(chat_api, model_endpo
 
 @pytest.mark.parametrize("lock_kind", ["writer", "reader"])
 def test_sqlite_contention_never_saves_a_late_assistant(
-    chat_api, model_endpoint, tmp_path, lock_kind: str
+    chat_api, model_endpoint, tmp_path, monkeypatch, lock_kind: str
 ) -> None:
     client, factory, use_runtime = chat_api
     chat_id = _create_chat(client)
@@ -746,17 +773,24 @@ def test_sqlite_contention_never_saves_a_late_assistant(
         db.commit()
     blocker = sqlite3.connect(engine.url.database, check_same_thread=False)
     locked, finished = threading.Event(), threading.Event()
+    write_started = []
 
-    def reply(_number, payload):
-        if payload["response_format"]["json_schema"]["name"] == "VerifyResponse":
-            if not locked.is_set():
-                if lock_kind == "writer":
-                    blocker.execute("BEGIN IMMEDIATE")
-                else:
-                    blocker.execute("BEGIN")
-                    blocker.execute("SELECT * FROM messages").fetchall()
-                locked.set()
-        return {}
+    def save_under_lock(*args, **kwargs):
+        if not locked.is_set():
+            if lock_kind == "writer":
+                blocker.execute("BEGIN IMMEDIATE")
+            else:
+                blocker.execute("BEGIN")
+                blocker.execute("SELECT * FROM messages").fetchall()
+            locked.set()
+            write_started.append(time.monotonic())
+            # Exercise the actual persistence gate with a fresh short budget;
+            # model and graph preparation must not consume this lock deadline.
+            kwargs["budget"].check()
+            kwargs["budget"].deadline = min(kwargs["budget"].deadline, write_started[-1] + 0.25)
+        return save_assistant_message(*args, **kwargs)
+
+    monkeypatch.setattr("djedai.backend.chat_service.save_assistant_message", save_under_lock)
 
     def tracked_factory():
         session = factory()
@@ -773,16 +807,16 @@ def test_sqlite_contention_never_saves_a_late_assistant(
     client.app.dependency_overrides[get_session_factory] = lambda: tracked_factory
     directory = tmp_path / "deadline-journal"
     try:
-        with model_endpoint(reply) as endpoint:
+        with model_endpoint(lambda *_: {}) as endpoint:
             runtime = replace(
-                _network_runtime(endpoint, 2),
+                _network_runtime(endpoint, 30),
                 diagnostics=DiagnosticJournal(directory, 1_000_000, 2),
             )
             use_runtime(runtime)
             try:
-                started = time.monotonic()
                 response = client.post(f"/api/chats/{chat_id}/messages", json={"text": "Сколько?"})
-                assert time.monotonic() - started < 3.5
+                assert len(write_started) == 1
+                assert time.monotonic() - write_started[0] < 1.5
                 events = parse_sse(response.text)
                 assert locked.is_set()
                 assert [data["code"] for name, data in events if name == "error"] == [
@@ -1696,6 +1730,214 @@ def test_explicit_cancellation_is_durable_and_suppresses_late_success(chat_api):
         client.post(f"/api/chats/{chat_id}/messages/{message_id}/cancel").json()["status"]
         == "cancelled"
     )
+
+
+def test_followup_after_confirmed_cancel_waits_for_the_old_worker(chat_api):
+    from uuid import uuid4
+
+    client, _, use_runtime = chat_api
+    chat_id = _create_chat(client)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    class StoppingGraph:
+        def stream(self, *_args, **_kwargs):
+            calls.append(len(calls) + 1)
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(5)
+            yield "updates", {"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}
+
+    use_runtime(AgentRuntime(graph=StoppingGraph()))
+    request_id = uuid4()
+    admission = client.app.state.chat_admission
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            client.post,
+            f"/api/chats/{chat_id}/messages",
+            json={
+                "text": "First",
+                "request_id": str(request_id),
+            },
+        )
+        try:
+            assert started.wait(3)
+            cancelled = client.post(f"/api/chats/{chat_id}/messages/m_{request_id.hex}/cancel")
+            assert cancelled.status_code == 200
+            assert cancelled.json()["status"] == "cancelled"
+            followup = pool.submit(
+                client.post, f"/api/chats/{chat_id}/messages", json={"text": "Next"}
+            )
+            until = time.monotonic() + 2
+            while admission.snapshot()["queued_chats_total"] != 1 and time.monotonic() < until:
+                time.sleep(0.01)
+            assert admission.snapshot()["queued_chats_total"] == 1
+            assert admission.snapshot()["active_chats_total"] == 1
+            assert calls == [1]
+            assert not followup.done()
+            release.set()
+            response = followup.result(5)
+            assert response.status_code == 200, response.text
+            assert parse_sse(response.text)[-1][0] == "done"
+            assert calls == [1, 2]
+        finally:
+            release.set()
+            first.result(5)
+    history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+    assert [m["role"] for m in history] == ["user", "user", "assistant"]
+    assert history[0]["turn"]["status"] == "cancelled"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["interrupted", "cancelled", "success", "error", "timeout"])
+async def test_terminal_followup_waits_for_physical_cleanup_over_tcp(
+    chat_api, monkeypatch, outcome
+):
+    """A durable outcome permits waiting, never overlapping the old OS worker."""
+    from uuid import uuid4
+
+    from djedai.backend.api.routes.chats import ClosableStreamingResponse
+    from djedai.execution import TurnTimeout
+
+    fixture, factory, use_runtime = chat_api
+    chat_id = _create_chat(fixture)
+    entered, leave_graph = threading.Event(), threading.Event()
+    cleanup_started, release_cleanup = threading.Event(), threading.Event()
+    calls = []
+    cancel_events = []
+    original_init = ClosableStreamingResponse.__init__
+
+    def response_init(self, *args, **kwargs):
+        cancel_events.append(kwargs["cancel_event"])
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(ClosableStreamingResponse, "__init__", response_init)
+
+    class ControlledGraph:
+        def stream(self, *_args, **_kwargs):
+            calls.append(len(calls) + 1)
+            if len(calls) == 1:
+                entered.set()
+                if outcome == "interrupted":
+                    # Wait for the actual response's TCP-disconnect cancellation.
+                    deadline = time.monotonic() + 5
+                    while not cancel_events or not cancel_events[0].is_set():
+                        assert time.monotonic() < deadline
+                        time.sleep(0.01)
+                else:
+                    assert leave_graph.wait(5)
+                if outcome == "timeout":
+                    raise TurnTimeout
+                if outcome == "error":
+                    raise RuntimeError("controlled tool failure")
+            yield "updates", {"compose": {"answer_blocks": [Block(type="text", markdown="OK")]}}
+
+    def tracked_factory():
+        session = factory()
+        original_close = session.close
+
+        def close():
+            original_close()
+            if session.info.get("chat_turn_worker") and not cleanup_started.is_set():
+                cleanup_started.set()
+                assert release_cleanup.wait(8)
+
+        session.close = close
+        return session
+
+    fixture.app.dependency_overrides[get_session_factory] = lambda: tracked_factory
+    use_runtime(AgentRuntime(graph=ControlledGraph()))
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(fixture.app, host="127.0.0.1", port=port, log_level="error", lifespan="off")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    request_id = uuid4()
+    try:
+        with anyio.fail_after(3):
+            while not server.started:
+                await anyio.sleep(0.01)
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}", headers=fixture.headers, trust_env=False
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"/api/chats/{chat_id}/messages",
+                json={"text": "First", "request_id": str(request_id)},
+            ) as response:
+                lines = response.aiter_lines()
+                async for line in lines:
+                    if line == "event: status":
+                        break
+                with anyio.fail_after(3):
+                    while not entered.is_set():
+                        await anyio.sleep(0.01)
+                # A genuinely running latest turn still rejects concurrent questions.
+                running_duplicate = await client.post(
+                    f"/api/chats/{chat_id}/messages", json={"text": "Too early"}
+                )
+                assert running_duplicate.status_code == 409
+                if outcome == "cancelled":
+                    cancelled = await client.post(
+                        f"/api/chats/{chat_id}/messages/m_{request_id.hex}/cancel"
+                    )
+                    assert cancelled.status_code == 200
+                if outcome != "interrupted":
+                    leave_graph.set()
+                    with anyio.fail_after(3):
+                        while not cleanup_started.is_set():
+                            await anyio.sleep(0.01)
+            # Exiting the stream above actually closes TCP in the interrupted case.
+            with anyio.fail_after(3):
+                while not cleanup_started.is_set():
+                    await anyio.sleep(0.01)
+            history = (await client.get(f"/api/chats/{chat_id}")).json()["messages"]
+            assert history[0]["turn"]["status"] == outcome
+            admission = fixture.app.state.chat_admission
+            assert admission.snapshot()["active_chats_total"] == 1
+
+            async def followup():
+                return await client.post(f"/api/chats/{chat_id}/messages", json={"text": "Next"})
+
+            pending = asyncio.create_task(followup())
+            try:
+                with anyio.fail_after(3):
+                    while admission.snapshot()["queued_chats_total"] != 1:
+                        assert not pending.done(), pending.result().text
+                        await anyio.sleep(0.01)
+                assert calls == [1]
+                duplicate = await client.post(
+                    f"/api/chats/{chat_id}/messages", json={"text": "Duplicate"}
+                )
+                assert duplicate.status_code == 409
+                assert admission.snapshot()["active_chats_total"] == 1
+                release_cleanup.set()
+                with anyio.fail_after(3):
+                    next_response = await pending
+                assert next_response.status_code == 200, next_response.text
+                assert parse_sse(next_response.text)[-1][0] == "done"
+                assert calls == [1, 2]
+            finally:
+                release_cleanup.set()
+                if not pending.done():
+                    pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            saved = (await client.get(f"/api/chats/{chat_id}")).json()["messages"]
+            assert saved[0]["turn"]["status"] == outcome
+            assert sum(m["role"] == "assistant" for m in saved) == (
+                2 if outcome == "success" else 1
+            )
+            assert [m for m in saved if m["role"] == "user"][-1]["turn"]["status"] == "success"
+            with anyio.fail_after(3):
+                while admission.snapshot()["active_chats_total"]:
+                    await anyio.sleep(0.01)
+            assert admission.snapshot()["queued_chats_total"] == 0
+    finally:
+        leave_graph.set()
+        release_cleanup.set()
+        server.should_exit = True
+        await anyio.to_thread.run_sync(thread.join, 5)
 
 
 def test_duplicate_request_does_not_run_graph_or_overwrite_success(chat_api):

@@ -16,12 +16,13 @@ from pydantic.json_schema import models_json_schema
 from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException
 
-from djedai.agent.config import get_agent_client
+from djedai.agent.config import data_sharing_allowed, get_agent_client
 from djedai.backend.api.router import api_router
 from djedai.backend.auth.policy import AUTH_CACHE_HEADERS, AuthPolicyMiddleware, AuthRateLimiter
 from djedai.backend.config import Settings, get_settings
 from djedai.backend.db.session import create_db_engine
 from djedai.backend.diagnostics import DiagnosticJournal
+from djedai.backend.model_settings import model_settings_for
 from djedai.contracts import (
     AgentStreamEvent,
     AssistantMessage,
@@ -50,6 +51,7 @@ from djedai.contracts import (
     UserRead,
 )
 from djedai.data.clickhouse import ClickHouseLimits
+from djedai.data.descriptions import ModelClient
 
 # Корневые модели контрактов для включения в OpenAPI / components.schemas
 CONTRACT_ROOT_MODELS = [
@@ -91,19 +93,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from djedai.backend.metric_service import MetricService
 
     cfg = app.state.settings
+
+    def description_context() -> tuple[ModelClient, bool]:
+        # The permission and the recipient must come from the same UI snapshot.
+        override = model_settings_for(app).override()
+        return get_agent_client(override), data_sharing_allowed(override)
+
     app.state.dataset_service = DatasetService(
         app.state.session_factory,
         cfg.datasets_data_dir,
         source_encryption_key=cfg.source_encryption_key.get_secret_value()
         if cfg.source_encryption_key
         else None,
-        description_client=get_agent_client if cfg.catalog_descriptions else None,
+        # Descriptions follow the model chosen in the interface, like chat turns (#209).
+        description_context=description_context if cfg.catalog_descriptions else None,
         clickhouse_limits=ClickHouseLimits(
             max_rows=cfg.clickhouse_max_rows,
             max_bytes=cfg.clickhouse_max_bytes,
             query_timeout=cfg.clickhouse_query_timeout,
         ),
         catalog_max_age_hours=cfg.catalog_max_age_hours,
+        limits=cfg,
     )
     app.state.metric_service = MetricService(app.state.session_factory, app.state.dataset_service)
     from djedai.backend.dashboard_service import DashboardService
@@ -187,6 +197,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bind=app.state.engine, autocommit=False, autoflush=False
     )
 
+    from djedai.backend.admission import ChatAdmissionController
+
+    app.state.chat_admission = ChatAdmissionController(
+        max_concurrent=cfg.max_concurrent_chats,
+        max_concurrent_per_owner=cfg.max_concurrent_chats_per_owner,
+        max_queued=cfg.max_queued_chats,
+        max_queued_per_owner=cfg.max_queued_chats_per_owner,
+        timeout_seconds=cfg.chat_admission_timeout_seconds,
+        diagnostics_logger=app.state.diagnostics,
+    )
+
     app.state.auth_limiter = AuthRateLimiter(
         cfg.auth_rate_limit_requests, cfg.auth_rate_limit_window_seconds
     )
@@ -201,6 +222,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    from djedai.backend.admission import StreamingUploadLimitMiddleware
+
+    app.add_middleware(
+        StreamingUploadLimitMiddleware,
+        max_bytes=cfg.max_upload_request_bytes,
+        path_prefix=f"{cfg.api_prefix}/datasets/upload",
+    )
+
     # Подключение всех API маршрутов с префиксом /api
     app.include_router(api_router, prefix=cfg.api_prefix)
 
@@ -211,6 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             403: "forbidden",
             404: "not_found",
             409: "conflict",
+            413: "payload_too_large",
             429: "rate_limit",
             503: "unavailable",
         }

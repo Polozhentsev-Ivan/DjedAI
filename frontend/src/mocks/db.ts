@@ -178,12 +178,16 @@ function daysAgoAt(daysAgo: number, hours: number, minutes: number): string {
   return date.toISOString();
 }
 
+/** Address and model the mock backend treats as configured in .env. */
+export const ENV_MODEL = { base_url: 'https://api.deepinfra.com/v1/openai', model_name: 'Qwen/Qwen3.6-35B-A3B' } as const;
+
 export interface MockDb {
   datasets: DatasetDetail[];
   results: Record<string, ToolResultMeta>;
   resultData: Record<string, ResultData>;
   dashboards: Dashboard[];
   chats: Schemas['ChatDetail'][];
+  modelSettings: Schemas['ModelSettingsRead'];
 }
 
 /** Fresh copy of the demo data; handlers mutate it like a real backend would. */
@@ -210,6 +214,10 @@ export function createDb(): MockDb {
       { chat_id: 'c_reg', dataset_id: 'ds_orders', title: 'Регионы', created_at: daysAgoAt(1, 17, 40), messages: [] },
       { chat_id: 'c_seg', dataset_id: 'ds_orders', title: 'Сегменты', created_at: '2026-10-12T09:30:00', messages: [] },
     ],
+    modelSettings: {
+      base_url: ENV_MODEL.base_url, model_name: ENV_MODEL.model_name, allowed_models: [ENV_MODEL.model_name, 'Qwen/Qwen3-235B-A22B'],
+      api_key_set: true, api_key_from_ui: false, editable_connection: true, matches_env: true,
+    },
   });
 }
 

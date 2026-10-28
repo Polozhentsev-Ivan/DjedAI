@@ -51,7 +51,7 @@ export async function errorFrom(response: Response): Promise<ApiError> {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** JSON body; use `form` for multipart uploads. */
   json?: unknown;
   form?: FormData;

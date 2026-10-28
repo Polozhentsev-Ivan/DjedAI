@@ -10,7 +10,7 @@ import { useWorkspace } from './workspaceContext';
 import { logout } from '@/api/auth';
 
 function sectionOf(first: string | undefined): Section {
-  return first === 'catalog' || first === 'chat' || first === 'dashboards' ? first : 'sources';
+  return first === 'catalog' || first === 'chat' || first === 'dashboards' || first === 'settings' ? first : 'sources';
 }
 
 function Shell() {

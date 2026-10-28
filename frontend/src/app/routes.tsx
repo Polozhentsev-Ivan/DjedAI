@@ -2,6 +2,7 @@ import { Navigate, Outlet, type RouteObject } from 'react-router';
 import { CatalogPage } from '@/pages/CatalogPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 import { SourcesPage } from '@/pages/SourcesPage';
 import { LoadingState } from '@/components/StateBlock';
 import { AppLayout } from './AppLayout';
@@ -22,6 +23,7 @@ export const routes: RouteObject[] = [
             { index: true, element: <Navigate to="/sources" replace /> },
             { path: 'sources', element: <SourcesPage /> },
             { path: 'catalog/:datasetId?', element: <CatalogPage /> },
+            { path: 'settings', element: <SettingsPage /> },
             // ECharts screens load on demand and stay out of the first bundle.
             { path: 'chat/:chatId?', lazy: async () => ({ Component: (await import('@/pages/ChatPage')).ChatPage }) },
             { path: 'dashboards/:dashboardId?', lazy: async () => ({ Component: (await import('@/pages/DashboardsPage')).DashboardsPage }) },

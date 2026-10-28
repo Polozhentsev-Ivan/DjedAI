@@ -43,7 +43,9 @@ class DiagnosticJournal:
             logger.error("Agent diagnostics unavailable (error_type=%s)", type(exc).__name__)
 
 
-def read_events(directory: Path, run_id: str | None = None) -> list[dict[str, Any]]:
+def read_events(
+    directory: Path, run_id: str | None = None, event_type: str | None = None
+) -> list[dict[str, Any]]:
     """Read retained events locally as the server operator, including rotated files."""
     paths = sorted(
         directory.glob("agent.jsonl.*"),
@@ -59,6 +61,10 @@ def read_events(directory: Path, run_id: str | None = None) -> list[dict[str, An
                 event = json.loads(line)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue  # An interrupted final write does not hide older complete events.
-            if isinstance(event, dict) and (run_id is None or event.get("run_id") == run_id):
+            if isinstance(event, dict):
+                if run_id is not None and event.get("run_id") != run_id:
+                    continue
+                if event_type is not None and event.get("type") != event_type:
+                    continue
                 events.append(event)
     return events

@@ -12,6 +12,7 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.types import Receive, Scope, Send
@@ -200,6 +201,40 @@ async def send_chat_message(
         raise HTTPException(
             status_code=409, detail="Этот вопрос уже принят. Обновите историю чата."
         )
+
+    # Допуск к вычислениям и ограничение очередей/слотов (CP2 / #172)
+    admission = getattr(request.app.state, "chat_admission", None)
+    permit = None
+    if admission is not None:
+
+        def previous_finished_run() -> str | None:
+            with session_factory() as db:
+                state = db.scalar(
+                    select(MessageModel.turn)
+                    .where(MessageModel.chat_id == chat_id, MessageModel.role == "user")
+                    .order_by(MessageModel.created_at.desc(), MessageModel.message_id.desc())
+                    .limit(1)
+                )
+                # A durable outcome can precede the worker's final cleanup. The
+                # next explicit question may wait for that exact worker, but must
+                # not overlap it or bypass a running turn or queued follow-up.
+                if state and state.get("status") in {
+                    "success",
+                    "error",
+                    "timeout",
+                    "cancelled",
+                    "interrupted",
+                }:
+                    return state.get("run_id")
+                return None
+
+        permit = await admission.acquire_permit(
+            owner_id,
+            chat_id,
+            is_disconnected=request.is_disconnected,
+            run_id=run_id,
+            finished_run_id=await asyncio.to_thread(previous_finished_run),
+        )
     cancel_event = threading.Event()
     budget = runtime.budget(lambda: cancelled())
     queue: asyncio.Queue[object] = asyncio.Queue()
@@ -271,10 +306,17 @@ async def send_chat_message(
                     session.close()
             except Exception:
                 pass
+            if permit is not None:
+                permit.release()
             enqueue(done_sentinel)
 
-    worker_thread = threading.Thread(target=worker, name=f"chat-agent-{chat_id}", daemon=True)
-    worker_thread.start()
+    try:
+        worker_thread = threading.Thread(target=worker, name=f"chat-agent-{chat_id}", daemon=True)
+        worker_thread.start()
+    except Exception:
+        if permit is not None:
+            permit.release()
+        raise
 
     async def frames() -> AsyncIterator[str]:
         terminal = False

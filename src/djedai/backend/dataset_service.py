@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import threading
+from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -25,6 +28,7 @@ from djedai.backend.source_reads import (
     snapshot_freshness,
 )
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
+from djedai.config import LimitSettings, get_limits
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.common import (
     DatasetDetail,
@@ -149,6 +153,204 @@ class DatasetContext:
             yield SourceReader(connection, self.catalog, freshness, live=postgres)
 
 
+class StorageQuotaManager:
+    """Атомарный менеджер дисковой квоты владельца и in-flight резервирования."""
+
+    def __init__(self, get_owner_disk_usage: Callable[[str], int], max_owner_bytes: int) -> None:
+        self._get_owner_disk_usage = get_owner_disk_usage
+        self.max_owner_bytes = max_owner_bytes
+        self._lock = threading.Lock()
+        self._reserved: dict[str, int] = defaultdict(int)
+
+    def reserve(self, owner_id: str, bytes_to_reserve: int) -> None:
+        with self._lock:
+            current = self._get_owner_disk_usage(owner_id)
+            total = current + self._reserved[owner_id] + bytes_to_reserve
+            if total > self.max_owner_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Превышена дисковая квота владельца (максимум {self.max_owner_bytes} байт)"
+                    ),
+                )
+            self._reserved[owner_id] += bytes_to_reserve
+
+    def release(self, owner_id: str, bytes_to_release: int) -> None:
+        with self._lock:
+            self._reserved[owner_id] = max(0, self._reserved[owner_id] - bytes_to_release)
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._reserved)
+
+
+class DatasetJobQueue:
+    """Ограниченная очередь и справедливый диспетчер обработки датасетов (§7.4 / #172)."""
+
+    def __init__(
+        self,
+        process_func: Callable[[str, str], None],
+        *,
+        max_concurrent: int = 2,
+        max_concurrent_per_owner: int = 1,
+        max_queued: int = 10,
+        max_queued_per_owner: int = 2,
+    ) -> None:
+        self.process_func = process_func
+        self.max_concurrent = max_concurrent
+        self.max_concurrent_per_owner = max_concurrent_per_owner
+        self.max_queued = max_queued
+        self.max_queued_per_owner = max_queued_per_owner
+
+        self._active_jobs: set[tuple[str, str]] = set()
+        self._active_by_owner: dict[str, int] = defaultdict(int)
+        self._active_total: int = 0
+
+        self._queued_by_owner: dict[str, deque[str]] = defaultdict(deque)
+        self._queued_counts: dict[str, int] = defaultdict(int)
+        self._queued_total: int = 0
+        self._owner_order: deque[str] = deque()
+        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._reserved_by_owner: dict[str, int] = defaultdict(int)
+        self._reserved_total: int = 0
+
+    def reserve(self, owner_id: str) -> None:
+        if (
+            self._active_by_owner[owner_id]
+            + self._queued_counts[owner_id]
+            + self._reserved_by_owner[owner_id]
+            >= self.max_concurrent_per_owner + self.max_queued_per_owner
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="Превышен лимит очереди обработки датасетов пользователя",
+            )
+        if (
+            self._active_total + self._queued_total + self._reserved_total
+            >= self.max_concurrent + self.max_queued
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="Очередь обработки датасетов сервера перегружена",
+            )
+        self._reserved_by_owner[owner_id] += 1
+        self._reserved_total += 1
+
+    def release_reservation(self, owner_id: str) -> None:
+        self._reserved_by_owner[owner_id] = max(0, self._reserved_by_owner[owner_id] - 1)
+        self._reserved_total = max(0, self._reserved_total - 1)
+
+    def enqueue(self, owner_id: str, dataset_id: str) -> None:
+        key = (owner_id, dataset_id)
+        if key in self._active_jobs or any(dataset_id in q for q in self._queued_by_owner.values()):
+            return
+
+        if (
+            self._active_total < self.max_concurrent
+            and self._active_by_owner[owner_id] < self.max_concurrent_per_owner
+        ):
+            self._start_task(owner_id, dataset_id)
+            return
+
+        if self._queued_counts[owner_id] >= self.max_queued_per_owner:
+            raise HTTPException(
+                status_code=429,
+                detail="Превышен лимит очереди обработки датасетов пользователя",
+            )
+        if self._queued_total >= self.max_queued:
+            raise HTTPException(
+                status_code=429,
+                detail="Очередь обработки датасетов сервера перегружена",
+            )
+
+        self._queued_by_owner[owner_id].append(dataset_id)
+        self._queued_counts[owner_id] += 1
+        self._queued_total += 1
+        if owner_id not in self._owner_order:
+            self._owner_order.append(owner_id)
+
+        self._dispatch()
+
+    def enqueue_recovery(self, owner_id: str, dataset_id: str) -> bool:
+        """Постановка в очередь при рестарте; если очередь полна, возвращает False."""
+        try:
+            self.enqueue(owner_id, dataset_id)
+            return True
+        except HTTPException:
+            return False
+
+    def contains(self, owner_id: str, dataset_id: str) -> bool:
+        return (
+            owner_id,
+            dataset_id,
+        ) in self._active_jobs or dataset_id in self._queued_by_owner.get(owner_id, ())
+
+    def _dispatch(self) -> None:
+        while self._active_total < self.max_concurrent and self._queued_total > 0:
+            dispatched = False
+            attempts = len(self._owner_order)
+            for _ in range(attempts):
+                if not self._owner_order:
+                    break
+                candidate_owner = self._owner_order[0]
+                self._owner_order.rotate(-1)
+
+                if self._active_by_owner[candidate_owner] < self.max_concurrent_per_owner:
+                    queue = self._queued_by_owner.get(candidate_owner)
+                    if queue:
+                        dataset_id = queue.popleft()
+                        self._queued_counts[candidate_owner] = max(
+                            0, self._queued_counts[candidate_owner] - 1
+                        )
+                        self._queued_total = max(0, self._queued_total - 1)
+                        if not queue and candidate_owner in self._owner_order:
+                            self._owner_order.remove(candidate_owner)
+
+                        self._start_task(candidate_owner, dataset_id)
+                        dispatched = True
+                        break
+            if not dispatched:
+                break
+
+    def _start_task(self, owner_id: str, dataset_id: str) -> None:
+        key = (owner_id, dataset_id)
+        self._active_jobs.add(key)
+        self._active_by_owner[owner_id] += 1
+        self._active_total += 1
+
+        task = asyncio.create_task(asyncio.to_thread(self.process_func, owner_id, dataset_id))
+        self._tasks[key] = task
+
+        def on_done(_t: asyncio.Task[None]) -> None:
+            self._tasks.pop(key, None)
+            self._active_jobs.discard(key)
+            self._active_by_owner[owner_id] = max(0, self._active_by_owner[owner_id] - 1)
+            self._active_total = max(0, self._active_total - 1)
+            if (
+                self._owner_order
+                and self._owner_order[0] == owner_id
+                and len(self._owner_order) > 1
+            ):
+                self._owner_order.rotate(-1)
+            self._dispatch()
+
+        task.add_done_callback(on_done)
+
+    async def close(self) -> None:
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "active_dataset_jobs_total": self._active_total,
+            "active_dataset_jobs_by_owner": dict(self._active_by_owner),
+            "queued_dataset_jobs_total": self._queued_total,
+            "queued_dataset_jobs_by_owner": dict(self._queued_counts),
+            "reserved_dataset_jobs_total": self._reserved_total,
+            "reserved_dataset_jobs_by_owner": dict(self._reserved_by_owner),
+        }
+
+
 class DatasetService:
     def __init__(
         self,
@@ -157,17 +359,50 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
+        description_context: Callable[[], tuple[ModelClient, bool]] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
         catalog_max_age_hours: float = 24,
+        limits: LimitSettings | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.data_dir = Path(data_dir).resolve()
-        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self.limits = limits or get_limits()
         self._secrets = SourceSecrets(source_encryption_key)
         # None disables LLM descriptions; the factory is called once per build.
         self._description_client = description_client
+        self._description_context = description_context
         self._clickhouse_limits = clickhouse_limits or ClickHouseLimits()
         self._catalog_max_age = timedelta(hours=catalog_max_age_hours)
+        self.quota_manager = StorageQuotaManager(
+            self.get_owner_disk_usage, self.limits.max_owner_storage_bytes
+        )
+        self._job_queue = DatasetJobQueue(
+            self._process_dataset_job,
+            max_concurrent=self.limits.max_concurrent_dataset_jobs,
+            max_concurrent_per_owner=self.limits.max_concurrent_dataset_jobs_per_owner,
+            max_queued=self.limits.max_queued_dataset_jobs,
+            max_queued_per_owner=self.limits.max_queued_dataset_jobs_per_owner,
+        )
+
+    def get_owner_disk_usage(self, owner_id: str) -> int:
+        """Подсчитывает суммарный размер файлов датасетов на диске для владельца."""
+        total = 0
+        with self.session_factory() as db:
+            dataset_ids = list(
+                db.scalars(
+                    select(DatasetModel.dataset_id).where(DatasetModel.owner_id == owner_id)
+                ).all()
+            )
+        for did in dataset_ids:
+            dir_path = self.data_dir / did
+            if dir_path.is_dir():
+                for p in dir_path.rglob("*"):
+                    if p.is_file():
+                        try:
+                            total += p.stat().st_size
+                        except OSError:
+                            pass
+        return total
 
     def _path(self, relative: str) -> Path:
         path = (self.data_dir / relative).resolve()
@@ -335,9 +570,18 @@ class DatasetService:
     async def ingest_uploads(
         self, owner_id: str, files: Sequence[UploadFile]
     ) -> DatasetUploadAccepted:
-        dataset_id = await asyncio.to_thread(self._persist_upload, owner_id, files)
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(self._persist_upload, owner_id, files)
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def ingest_csv(
         self, owner_id: str, sources: Sequence[CsvSource]
@@ -348,9 +592,18 @@ class DatasetService:
         change or remove their originals. This method requires no UploadFile or
         HTTP request and shares processing/recovery with the multipart adapter.
         """
-        dataset_id = await asyncio.to_thread(self._persist_csv_sources, owner_id, sources)
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(self._persist_csv_sources, owner_id, sources)
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def connect_db(
         self,
@@ -387,11 +640,20 @@ class DatasetService:
             raise HTTPException(
                 status_code=422, detail="Имя датасета должно содержать 1–255 символов"
             )
-        dataset_id = await asyncio.to_thread(
-            self._persist_db_source, owner_id, kind, dsn, tables, name
-        )
-        self._start(owner_id, dataset_id)
-        return DatasetUploadAccepted(dataset_id=dataset_id)
+        self._job_queue.reserve(owner_id)
+        dataset_id: str | None = None
+        try:
+            dataset_id = await asyncio.to_thread(
+                self._persist_db_source, owner_id, kind, dsn, tables, name
+            )
+            self._start(owner_id, dataset_id)
+            return DatasetUploadAccepted(dataset_id=dataset_id)
+        except BaseException:
+            if dataset_id is not None:
+                await asyncio.to_thread(self._rollback_dataset, owner_id, dataset_id)
+            raise
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     async def check_db(self, dsn: str, *, kind: str = "postgresql") -> SourceCheckResult:
         """Probe a read-only source and list its tables without storing anything.
@@ -464,29 +726,76 @@ class DatasetService:
             raise
         return dataset_id
 
-    def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
-        def copy_source(index: int, target: Path) -> None:
-            stream = files[index].file
-            stream.seek(0)
+    def _stream_copy_file(
+        self,
+        stream: Any,
+        target: Path,
+        owner_id: str,
+        name: str,
+        current_request_bytes: int,
+    ) -> tuple[int, int]:
+        file_bytes = 0
+        reserved_bytes = 0
+        stream.seek(0)
+        try:
             with target.open("wb") as handle:
-                shutil.copyfileobj(stream, handle, length=1024 * 1024)
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    chunk_len = len(chunk)
+                    file_bytes += chunk_len
+                    if file_bytes > self.limits.max_upload_file_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"Размер файла '{name}' превышает допустимый "
+                                f"лимит ({self.limits.max_upload_file_bytes} байт)"
+                            ),
+                        )
+                    if current_request_bytes + file_bytes > self.limits.max_upload_request_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"Суммарный размер файлов запроса превышает допустимый "
+                                f"лимит ({self.limits.max_upload_request_bytes} байт)"
+                            ),
+                        )
+                    self.quota_manager.reserve(owner_id, chunk_len)
+                    reserved_bytes += chunk_len
+                    handle.write(chunk)
+            return file_bytes, reserved_bytes
+        except Exception:
+            if reserved_bytes > 0:
+                self.quota_manager.release(owner_id, reserved_bytes)
+            raise
 
-        # FastAPI owns the multipart streams; copying never closes caller handles.
+    def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
+        def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
+            name = files[index].filename or "upload.csv"
+            return self._stream_copy_file(
+                files[index].file, target, owner_id, name, current_request_bytes
+            )
+
         return self._persist_sources(
             owner_id, [file.filename or "upload.csv" for file in files], copy_source
         )
 
     def _persist_csv_sources(self, owner_id: str, sources: Sequence[CsvSource]) -> str:
-        def copy_source(index: int, target: Path) -> None:
-            with Path(sources[index].path).open("rb") as source, target.open("wb") as handle:
-                shutil.copyfileobj(source, handle, length=1024 * 1024)
+        def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
+            name = sources[index].original_name
+            with Path(sources[index].path).open("rb") as stream:
+                return self._stream_copy_file(stream, target, owner_id, name, current_request_bytes)
 
         return self._persist_sources(
             owner_id, [source.original_name for source in sources], copy_source
         )
 
     def _persist_sources(
-        self, owner_id: str, original_names: Sequence[str], copy_source: Callable[[int, Path], None]
+        self,
+        owner_id: str,
+        original_names: Sequence[str],
+        copy_source: Callable[[int, Path, int], tuple[int, int]],
     ) -> str:
         if not original_names:
             raise HTTPException(status_code=422, detail="Загрузите хотя бы один CSV-файл")
@@ -496,13 +805,17 @@ class DatasetService:
         dataset_id = str(uuid4())
         directory = self._dataset_path(dataset_id, f"{dataset_id}/dataset.duckdb").parent
         directory.mkdir(parents=True)
+        total_reserved = 0
         try:
             raw_files = []
+            total_request_bytes = 0
             for index, name in enumerate(names):
                 relative = f"{dataset_id}/raw/{index:04d}.csv"
                 target = self._dataset_path(dataset_id, relative)
                 target.parent.mkdir(exist_ok=True)
-                copy_source(index, target)
+                file_bytes, reserved = copy_source(index, target, total_request_bytes)
+                total_request_bytes += file_bytes
+                total_reserved += reserved
                 raw_files.append({"path": relative, "name": name})
             with self.session_factory() as db:
                 db.add(
@@ -519,17 +832,38 @@ class DatasetService:
                 )
                 db.commit()
         except Exception:
-            shutil.rmtree(directory)
+            shutil.rmtree(directory, ignore_errors=True)
             raise
+        finally:
+            if total_reserved > 0:
+                self.quota_manager.release(owner_id, total_reserved)
         return dataset_id
 
+    def _rollback_dataset(self, owner_id: str, dataset_id: str) -> None:
+        """Откатывает сохраненные файлы и запись датасета при ошибке постановки в очередь (#172)."""
+        directory = self.data_dir / dataset_id
+        if directory.is_dir():
+            shutil.rmtree(directory, ignore_errors=True)
+        try:
+            with self.session_factory() as db:
+                model = db.scalar(
+                    select(DatasetModel).where(
+                        DatasetModel.dataset_id == dataset_id,
+                        DatasetModel.owner_id == owner_id,
+                    )
+                )
+                if model is not None:
+                    db.delete(model)
+                    db.commit()
+        except Exception:
+            logger.exception("Failed to rollback dataset record %s", dataset_id)
+
     def _start(self, owner_id: str, dataset_id: str) -> None:
-        key = (owner_id, dataset_id)
-        if key in self._tasks:
-            return
-        task = asyncio.create_task(asyncio.to_thread(self._process, owner_id, dataset_id))
-        self._tasks[key] = task
-        task.add_done_callback(lambda _: self._tasks.pop(key, None))
+        try:
+            self._job_queue.enqueue(owner_id, dataset_id)
+        except Exception:
+            self._rollback_dataset(owner_id, dataset_id)
+            raise
 
     def _update_progress(
         self, owner_id: str, dataset_id: str, stage: str, fraction: float, message: str
@@ -547,6 +881,18 @@ class DatasetService:
                     stage=stage, progress=max(previous, fraction), message=message
                 ).model_dump(mode="json")
                 db.commit()
+
+    def _process_dataset_job(self, owner_id: str, dataset_id: str) -> None:
+        """Imports and refreshes share the same global and per-owner permits."""
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            refreshing = (
+                model.status == "ready" and (model.refresh or {}).get("status") == "processing"
+            )
+        if refreshing:
+            self._refresh(owner_id, dataset_id)
+        else:
+            self._process(owner_id, dataset_id)
 
     def _process(self, owner_id: str, dataset_id: str) -> None:
         try:
@@ -644,7 +990,7 @@ class DatasetService:
             )
         else:
             raise ValueError("Неподдерживаемый источник")
-        if self._description_client is not None:
+        if self._description_client is not None or self._description_context is not None:
             # Keep the current UI stage: a zero fraction leaves stored progress unchanged.
             progress(
                 "relations" if source_kind in {"postgres", "clickhouse"} else "profile",
@@ -661,19 +1007,22 @@ class DatasetService:
         The dataset stays ready with its current revision until the new one is
         published; a failure keeps it and is reported in ``DatasetDetail.refresh``.
         """
-        detail = await asyncio.to_thread(self._accept_refresh, owner_id, dataset_id)
-        self._start_refresh(owner_id, dataset_id)
-        return detail
+        self._job_queue.reserve(owner_id)
+        try:
+            detail = await asyncio.to_thread(self._accept_refresh, owner_id, dataset_id)
+            self._start_refresh(owner_id, dataset_id)
+            return detail
+        finally:
+            self._job_queue.release_reservation(owner_id)
 
     def _accept_refresh(self, owner_id: str, dataset_id: str) -> DatasetDetail:
         with self.session_factory() as db:
             model = self._owned(db, owner_id, dataset_id)
             if model.status != "ready" or not model.catalog:
                 raise HTTPException(status_code=409, detail="Датасет ещё не готов к запросам")
-            if (model.refresh or {}).get("status") == "processing" or (
-                owner_id,
-                dataset_id,
-            ) in self._tasks:
+            if (model.refresh or {}).get("status") == "processing" or self._job_queue.contains(
+                owner_id, dataset_id
+            ):
                 raise HTTPException(status_code=409, detail="Перепрофилировка уже идёт")
             if model.source_kind in {"postgres", "clickhouse"}:
                 try:
@@ -689,12 +1038,24 @@ class DatasetService:
             return self._detail(model)
 
     def _start_refresh(self, owner_id: str, dataset_id: str) -> None:
-        key = (owner_id, dataset_id)
-        if key in self._tasks:
-            return
-        task = asyncio.create_task(asyncio.to_thread(self._refresh, owner_id, dataset_id))
-        self._tasks[key] = task
-        task.add_done_callback(lambda _: self._tasks.pop(key, None))
+        try:
+            self._job_queue.enqueue(owner_id, dataset_id)
+        except Exception:
+            self._reject_refresh(owner_id, dataset_id)
+            raise
+
+    def _reject_refresh(self, owner_id: str, dataset_id: str) -> None:
+        """Keep the published revision usable when a refresh cannot be scheduled."""
+        with self.session_factory() as db:
+            model = self._owned(db, owner_id, dataset_id)
+            model.refresh = DatasetRefresh(
+                status="error",
+                started_at=(model.refresh or {}).get("started_at") or datetime.now(UTC),
+                message=(
+                    "Очередь обработки датасетов переполнена. Повторите перепрофилировку позже."
+                ),
+            ).model_dump(mode="json")
+            db.commit()
 
     def _refresh(self, owner_id: str, dataset_id: str) -> None:
         started_at = None
@@ -735,7 +1096,11 @@ class DatasetService:
     def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
         """Descriptions are optional: any failure publishes the statistical catalog."""
         try:
-            return describe_dataset(database, catalog, self._description_client())
+            if self._description_context is not None:
+                client, share = self._description_context()
+            else:
+                client, share = self._description_client(), True
+            return describe_dataset(database, catalog, client, share_values=share)
         except Exception:
             # Model client errors can echo endpoint or key details; log no traceback.
             logger.warning("Catalog descriptions failed for owned dataset %s", dataset_id)
@@ -750,12 +1115,14 @@ class DatasetService:
             with self.session_factory() as db:
                 return list(
                     db.execute(
-                        select(DatasetModel.owner_id, DatasetModel.dataset_id).where(
+                        select(DatasetModel.owner_id, DatasetModel.dataset_id)
+                        .where(
                             DatasetModel.source_kind.in_(
                                 ["csv", "csv_upload", "postgres", "clickhouse"]
                             ),
                             DatasetModel.status.in_(["processing", "uploading", "profiling"]),
                         )
+                        .order_by(DatasetModel.created_at.asc())
                     )
                 )
 
@@ -772,15 +1139,35 @@ class DatasetService:
                     if (state or {}).get("status") == "processing"
                 ]
 
-        for owner_id, dataset_id in await asyncio.to_thread(pending):
-            self._start(owner_id, dataset_id)
+        items = await asyncio.to_thread(pending)
+        overflow_ids = []
+        for owner_id, dataset_id in items:
+            if not self._job_queue.enqueue_recovery(owner_id, dataset_id):
+                overflow_ids.append(dataset_id)
+
+        if overflow_ids:
+            with self.session_factory() as db:
+                for did in overflow_ids:
+                    model = db.get(DatasetModel, did)
+                    if model is not None:
+                        model.status = "error"
+                        model.error_message = (
+                            "Сервер был перезагружен; очередь задач переполнена. "
+                            "Запустите обработку повторно."
+                        )
+                db.commit()
+
         for owner_id, dataset_id in await asyncio.to_thread(refreshing):
-            self._start_refresh(owner_id, dataset_id)
+            if not self._job_queue.enqueue_recovery(owner_id, dataset_id):
+                await asyncio.to_thread(self._reject_refresh, owner_id, dataset_id)
 
     async def close(self) -> None:
-        # to_thread cannot be stopped safely; finish writes before disposing the engine.
-        if self._tasks:
-            await asyncio.gather(*list(self._tasks.values()))
+        await self._job_queue.close()
+
+    def snapshot(self) -> dict[str, Any]:
+        result = self._job_queue.snapshot()
+        result["quota_reserved_by_owner"] = self.quota_manager.snapshot()
+        return result
 
     def _snapshot(self, owner_id: str, dataset_id: str) -> tuple[DatasetDetail, dict | None]:
         with self.session_factory() as db:

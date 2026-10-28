@@ -90,11 +90,13 @@ class ControlledModel:
 def test_browser_model_supports_successful_numeric_verification(question: str) -> None:
     """The HTTP fixture must verify successfully, rather than rely on graph fail-open."""
     model_app = runpy.run_path(str(ROOT / "tests/e2e/serve_cp1.py"))["model_app"]
-    facts = str(
+    facts = json.dumps(
         [
             {
                 "tool": "run_sql",
-                "data": ToolResultData(columns=["n", "total"], rows=[[2, 30]], row_count=1),
+                "data": ToolResultData(
+                    columns=["n", "total"], rows=[[2, 30]], row_count=1
+                ).model_dump(mode="json"),
             }
         ]
     )

@@ -11,6 +11,9 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 let backend: ChildProcess | undefined;
 let directory: string;
 let python: string;
+// Cold Python imports and database initialization are test-server preparation,
+// separate from the application behavior asserted below.
+const BACKEND_STARTUP_TIMEOUT = 90_000;
 
 async function startBackend() {
   backend = spawn(python, ['tests/e2e/serve_auth.py', '--data-dir', directory], { cwd: root, stdio: 'pipe' });
@@ -20,7 +23,7 @@ async function startBackend() {
   await expect.poll(async () => {
     if (process.exitCode !== null || process.signalCode !== null) throw new Error(`Backend failed: ${output}`);
     try { return (await fetch('http://127.0.0.1:18082/health')).status; } catch { return 0; }
-  }, { timeout: 20_000 }).toBe(200);
+  }, { timeout: BACKEND_STARTUP_TIMEOUT }).toBe(200);
 }
 
 async function stopBackend() {
@@ -35,6 +38,7 @@ async function stopBackend() {
 }
 
 test.beforeAll(async () => {
+  test.setTimeout(BACKEND_STARTUP_TIMEOUT + 30_000);
   directory = await mkdtemp(path.join(tmpdir(), 'djedai-auth-browser-'));
   python = execFileSync('uv', ['run', '--locked', 'python', '-c', 'import sys; print(sys.executable)'], { cwd: root, encoding: 'utf8' }).trim();
   await startBackend();
