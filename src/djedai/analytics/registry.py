@@ -12,6 +12,7 @@ from djedai.analytics.tools import (
     describe_dataset,
     detect_anomalies,
     find_duplicates,
+    forecast,
     lagged_correlation,
     run_sql,
     seasonality,
@@ -422,6 +423,69 @@ class LaggedCorrelationParams(BaseModel):
     )
 
 
+class ForecastParams(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "table": "events",
+                    "time_col": "ts",
+                    "measure": "amount",
+                    "agg": "sum",
+                    "freq": "month",
+                    "horizon": 6,
+                    "method": "ets",
+                    "holdout": 3,
+                },
+            ]
+        }
+    )
+
+    table: str = Field(description="Имя таблицы")
+    time_col: str = Field(description="Колонка DATE или TIMESTAMP")
+    horizon: int = Field(
+        description="Горизонт прогноза в периодах",
+        ge=1,
+        le=180,
+    )
+    measure: str | None = Field(
+        default=None,
+        description="Колонка метрики (обязательна при agg != 'count')",
+    )
+    agg: Literal["count", "sum", "avg", "min", "max", "median", "stddev"] = Field(
+        default="sum",
+        description="Агрегация",
+    )
+    freq: Literal["minute", "hour", "day", "week", "month", "quarter", "year"] = Field(
+        default="day",
+        description="Частота агрегации",
+    )
+    period: int | None = Field(
+        default=None,
+        description=(
+            "Период сезонности (>= 1). 1 — без сезонности (для naive). "
+            "По умолчанию из частоты: 7/day, 52/week, 12/month, 4/quarter."
+        ),
+        ge=1,
+    )
+    method: Literal["ets", "arima", "naive"] = Field(
+        default="ets",
+        description="Метод прогноза",
+    )
+    alpha: float = Field(
+        default=0.05,
+        description="Уровень значимости (0, 1); 0.05 → интервал 95%",
+        gt=0,
+        lt=1,
+    )
+    holdout: int | None = Field(
+        default=None,
+        description="Число последних точек для валидации на отложенном периоде",
+        ge=1,
+    )
+    filter: str | None = Field(default=None, description="SQL WHERE")
+
+
 class ToolDefinition(BaseModel):
     """Внутреннее описание инструмента с моделью для валидации параметров."""
 
@@ -546,6 +610,17 @@ TOOLS_REGISTRY = [
         ),
         parameters_model=LaggedCorrelationParams,
     ),
+    ToolDefinition(
+        name="forecast",
+        description=(
+            "Строит прогноз числового показателя на горизонт с интервалами "
+            "неопределённости. Методы: ets (Holt-Winters), arima (ARIMA/SARIMAX), "
+            "naive (сезонный naive). Если передан holdout — считает MAE/RMSE/MAPE "
+            "на отложенном периоде. Прогноз — статистическая экстраполяция, "
+            "не гарантия."
+        ),
+        parameters_model=ForecastParams,
+    ),
 ]
 
 
@@ -575,6 +650,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
     "compute_metric": compute_metric,
     "correlation": correlation,
     "lagged_correlation": lagged_correlation,
+    "forecast": forecast,
 }
 
 

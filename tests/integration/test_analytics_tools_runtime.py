@@ -68,6 +68,15 @@ CASES = {
     },
     "compute_metric": {"metric_id": "runtime_amount"},
     "correlation": {"table": "events", "columns": ["g", "amount"]},
+    "forecast": {
+        "table": "events",
+        "time_col": "ts",
+        "measure": "amount",
+        "freq": "day",
+        "horizon": 3,
+        "method": "naive",
+        "period": 1,
+    },
     "lagged_correlation": {
         "table": "events",
         "time_col": "ts",
@@ -86,6 +95,7 @@ SQL_FILTER_TOOLS = {
     "segment_profile",
     "compare_segments",
     "correlation",
+    "forecast",
     "lagged_correlation",
 }
 TABLE_TOOLS = {name for name, args in CASES.items() if "table" in args}
@@ -432,6 +442,17 @@ def assert_success(tool, result, *, filtered=False):
         assert numerical["measure"] == "amount"
         assert numerical["mean_a"] == pytest.approx(mean(e[3] for e in source if e[2] == 1))
         assert numerical["mean_b"] == pytest.approx(mean(e[3] for e in source if e[2] == 2))
+    elif tool == "forecast":
+        # The fixed fixture ends at 2026-03-25 with amount=12. A one-step
+        # seasonal naive repeats that value at every requested future date.
+        last_date, last_value = source[-1][1], source[-1][3]
+        assert len(rows) == 3
+        for index, row in enumerate(rows, 1):
+            assert row[0][:10] == (last_date + timedelta(days=index)).isoformat()
+            assert row[1] == last_value
+            assert row[2] <= row[1] <= row[3]
+        assert fact(result, "forecast_summary")["horizon"] == 3
+        assert any(item["kind"] == "caveat" for item in result["facts"])
     elif tool in {"correlation", "lagged_correlation"}:
         groups = [event[2] for event in source]
         amounts = [event[3] for event in source]
