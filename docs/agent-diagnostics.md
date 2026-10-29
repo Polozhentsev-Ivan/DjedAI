@@ -32,6 +32,11 @@ uv run --locked python -m djedai.diagnostics --run run_ID
 - `run_started`: идентификаторы хода и вопроса, время UTC.
 - `stage_started` / `stage_finished`: узел графа и длительность в мс. Событие
   начала записывается до входа в узел, включая узел, который впоследствии упал.
+  У быстрого маршрута это `fast_route`, `execute` и `fast_compose`; вызовов
+  модели на нём нет. `run_finished.duration_ms` — общее время хода, поэтому
+  быстрый и обычный маршруты сравниваются по нему и по сумме стадий.
+- `fast_path_selected`: выбран быстрый маршрут; содержит только `kind`
+  (`row_count` или `structure`) и `table_id`, без текста вопроса.
 - `model_call_started` / `model_call_finished`: `call_id`, модель, имя схемы,
   стадия (`stage`), фактически отправленный `reasoning_effort`, исходная
   настройка `reasoning_setting`, исход валидации, общее время вызова с

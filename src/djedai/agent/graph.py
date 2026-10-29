@@ -23,6 +23,14 @@ from djedai.agent.data_policy import (
     policy_for_client,
     sensitive_column_names,
 )
+from djedai.agent.fast_path import (
+    FastPathError,
+    classify_fast_query,
+    count_from_result,
+    count_markdown,
+    count_sql,
+    structure_markdown,
+)
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
@@ -35,6 +43,7 @@ from djedai.contracts.agent import (
     ComposeResponse,
     DashboardPlanResponse,
     Entities,
+    PlannedCall,
     PlanResponse,
     Understanding,
     VerifyResponse,
@@ -164,6 +173,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "results": [],
         "charts": [],
         "answer_blocks": [],
+        "fast_path": None,
         "retries": 0,
         "compose_retries": 0,
         "is_verified": False,
@@ -171,6 +181,95 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "dashboard_widgets": [],
         "dashboard_snapshot": None,
         "dashboard_retries": 0,
+    }
+
+
+def fast_route(state: AgentState, config: RunnableConfig) -> dict:
+    """Распознаёт узкий вопрос до вызова модели и строит безопасный план COUNT."""
+    configurable = config.get("configurable", {})
+    catalog_loader = configurable.get("catalog_loader")
+    catalog = catalog_loader(state["dataset_id"]) if catalog_loader is not None else None
+    if catalog is not None and catalog.dataset_id != state["dataset_id"]:
+        # Чужой/устаревший каталог не может выбрать таблицу этого датасета.
+        catalog = None
+
+    messages = state.get("messages", [])
+    text = messages[-1].content if messages else ""
+    path = classify_fast_query(text, catalog) if catalog is not None and text else None
+    if path is None:
+        return {"fast_path": None}
+
+    diagnostics = configurable.get("diagnostics")
+    if diagnostics is not None:
+        # Содержимое вопроса не пишется: только выбранный тип и имя таблицы.
+        diagnostics.emit("fast_path_selected", kind=path.kind, table_id=path.table_id)
+    if path.kind == "row_count":
+        return {
+            "fast_path": path,
+            "plan": [
+                PlannedCall(tool="run_sql", args={"sql": count_sql(path.table_id)}),
+            ],
+        }
+    return {"fast_path": path, "plan": []}
+
+
+def _fast_error_blocks(
+    policy: DataTransferPolicy, message: str, suggestion: str | None = None
+) -> list[Block]:
+    text = policy.sanitize_text(message) or "Не удалось сформировать ответ."
+    if suggestion:
+        text += "\n\n" + policy.sanitize_text(suggestion)
+    return [Block(type="error", markdown=text)]
+
+
+def fast_compose(state: AgentState, config: RunnableConfig) -> dict:
+    """Собирает подтверждённый ответ из каталога или результата COUNT."""
+    path = state.get("fast_path")
+    if path is None:
+        return {}
+    policy = _policy(config)
+
+    if path.kind == "structure":
+        configurable = config.get("configurable", {})
+        catalog_loader = configurable.get("catalog_loader")
+        catalog = catalog_loader(state["dataset_id"]) if catalog_loader is not None else None
+        if catalog is None or catalog.dataset_id != state["dataset_id"]:
+            return {
+                "answer_blocks": _fast_error_blocks(
+                    policy, "Структура недоступна: каталог датасета не загружен."
+                ),
+                "is_verified": True,
+            }
+        try:
+            markdown = structure_markdown(catalog, path.table_id)
+        except FastPathError as exc:
+            return {
+                "answer_blocks": _fast_error_blocks(policy, exc.message, exc.suggestion),
+                "is_verified": True,
+            }
+        return {
+            "answer_blocks": [Block(type="text", markdown=markdown)],
+            "is_verified": True,
+        }
+
+    results = state.get("results", [])
+    if not results:
+        return {
+            "answer_blocks": _fast_error_blocks(policy, "Быстрый расчёт не выполнен."),
+            "is_verified": True,
+        }
+    result = results[-1]
+    try:
+        count = count_from_result(result)
+    except FastPathError as exc:
+        return {
+            "answer_blocks": _fast_error_blocks(policy, exc.message, exc.suggestion),
+            "is_verified": True,
+        }
+    return {
+        "answer_blocks": [Block(type="text", markdown=count_markdown(path.table_id, count))],
+        "focus_result_ids": [result.result_id],
+        "is_verified": True,
     }
 
 
@@ -1380,6 +1479,20 @@ def _quality_lines(state: AgentState) -> list[str]:
     return list(dict.fromkeys(lines))
 
 
+def route_after_fast_route(state: AgentState) -> str:
+    """Быстрый COUNT идёт в execute, структура — сразу в детерминированный ответ."""
+    path = state.get("fast_path")
+    if path is None:
+        return "understand"
+    return "execute" if path.kind == "row_count" else "fast_compose"
+
+
+def route_after_fast_compose(state: AgentState) -> str:
+    """Провенанс COUNT добавляется из результата; структуре чужие факты не нужны."""
+    path = state.get("fast_path")
+    return "cite_metrics" if path is not None and path.kind == "row_count" else "end"
+
+
 def route_after_understand(state: AgentState) -> str:
     """Conditional edge: уточнения — в clarify, дашборд — в свою ветку, иначе plan."""
     intent = state["understanding"].intent
@@ -1412,6 +1525,10 @@ def route_after_execute_dashboard(state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
+    path = state.get("fast_path")
+    if path is not None and path.kind == "row_count":
+        # Ошибку быстрого COUNT обрабатывает fast_compose, без перепланирования моделью.
+        return "fast_compose"
     recent_results = _recent_results(state)
     has_errors = any(r.status == "error" for r in recent_results)
     metric_errors = [
@@ -1450,6 +1567,8 @@ def build_agent_graph() -> StateGraph:
         return node
 
     workflow.add_node("load_ctx", observed("load_ctx", load_ctx))
+    workflow.add_node("fast_route", observed("fast_route", fast_route))
+    workflow.add_node("fast_compose", observed("fast_compose", fast_compose))
     workflow.add_node("understand", observed("understand", understand))
     workflow.add_node("plan", observed("plan", plan))
     workflow.add_node("execute", observed("execute", execute))
@@ -1464,7 +1583,17 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("cite_metrics", cite_metrics)
 
     workflow.add_edge(START, "load_ctx")
-    workflow.add_edge("load_ctx", "understand")
+    workflow.add_edge("load_ctx", "fast_route")
+
+    workflow.add_conditional_edges(
+        "fast_route",
+        route_after_fast_route,
+        {
+            "understand": "understand",
+            "execute": "execute",
+            "fast_compose": "fast_compose",
+        },
+    )
 
     workflow.add_conditional_edges(
         "understand",
@@ -1478,7 +1607,18 @@ def build_agent_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "execute",
         route_after_execute,
-        {"plan": "plan", "visualize": "visualize", "clarify": "clarify"},
+        {
+            "plan": "plan",
+            "visualize": "visualize",
+            "clarify": "clarify",
+            "fast_compose": "fast_compose",
+        },
+    )
+
+    workflow.add_conditional_edges(
+        "fast_compose",
+        route_after_fast_compose,
+        {"cite_metrics": "cite_metrics", "end": END},
     )
 
     # Отдельная ветка дашборда: план виджетов → вычисления → сохранение.

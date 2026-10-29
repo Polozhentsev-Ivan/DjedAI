@@ -783,6 +783,7 @@ def stream_chat_turn(
                 if node in (
                     "visualize",
                     "compose",
+                    "fast_compose",
                     "verify",
                     "clarify",
                     "cite_metrics",
@@ -790,9 +791,13 @@ def stream_chat_turn(
                     "save_dashboard",
                 ):
                     node_update = data if isinstance(data, dict) else {}
-                    if node in ("visualize", "compose", "clarify", "save_dashboard") and (
-                        "focus_result_ids" in node_update
-                    ):
+                    if node in (
+                        "visualize",
+                        "compose",
+                        "fast_compose",
+                        "clarify",
+                        "save_dashboard",
+                    ) and ("focus_result_ids" in node_update):
                         stream_focus = list(node_update["focus_result_ids"] or [])
                     if "answer_blocks" in node_update:
                         answer_blocks = node_update["answer_blocks"] or []

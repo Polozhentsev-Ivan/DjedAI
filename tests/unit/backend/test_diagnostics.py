@@ -301,7 +301,11 @@ def test_real_graph_preserves_failed_stage_and_trace_after_restart(
         if failed_stage == "cancelled":
             assert finished["error_type"] == "CANCELLED"
             assert len(calls) == 1
-            assert [s["node"] for s in finished["trace"]] == ["load_ctx", "understand"]
+            assert [s["node"] for s in finished["trace"]] == [
+                "load_ctx",
+                "fast_route",
+                "understand",
+            ]
         elif failed_stage:
             assert finished["error_type"] == "TIMEOUT"
             assert finished["error_node"] == failed_stage

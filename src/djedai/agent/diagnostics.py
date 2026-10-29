@@ -16,7 +16,18 @@ from djedai.agent.transport import CancellableHttpClient
 from djedai.execution import TurnCancelled, TurnTimeout
 
 NODES = frozenset(
-    {"load_ctx", "understand", "plan", "execute", "visualize", "compose", "verify", "clarify"}
+    {
+        "load_ctx",
+        "fast_route",
+        "fast_compose",
+        "understand",
+        "plan",
+        "execute",
+        "visualize",
+        "compose",
+        "verify",
+        "clarify",
+    }
 )
 _call: ContextVar[ModelCall | None] = ContextVar("diagnostic_model_call", default=None)
 _run: ContextVar[RunDiagnostics | None] = ContextVar("diagnostic_run", default=None)
