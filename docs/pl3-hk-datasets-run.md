@@ -183,7 +183,7 @@
 | 5 | GitVerse рвёт соединение при долгой загрузке, и скачивание падало | Скачивание 1,5 ГБ | Исправлено в загрузчике скрипта: повтор фрагмента |
 | 6 | Связи внутри таблицы (возврат → исходная продажа, обращение → предыдущее) не находятся | 01, 02 | [#204](https://github.com/Polozhentsev-Ivan/DjedAI/issues/204), [текст](#issue-1-связи-внутри-одной-таблицы) |
 | 7 | Тип `category` и роль `dimension` не назначаются (спецификация §B1-2 п. 4). Текстовые коды остаются `text`, а не `id` | 61 из 88 текстовых колонок с ≤ 50 значениями | [#205](https://github.com/Polozhentsev-Ivan/DjedAI/issues/205), [текст](#issue-2-тип-category-и-роль-dimension) |
-| 8 | При нехватке места во временном каталоге загрузка отвечает `400` без причины, временные файлы держатся до перезапуска процесса | `POST /api/datasets/upload` при `/tmp` 1,6 ГБ на tmpfs | [#206](https://github.com/Polozhentsev-Ivan/DjedAI/issues/206), [текст](#issue-3-загрузка-при-нехватке-временного-места) |
+| 8 | При нехватке места во временном каталоге загрузка отвечает `400` без причины, временные файлы держатся до перезапуска процесса | `POST /api/datasets/upload` при `/tmp` 1,6 ГБ на tmpfs | Исправлено в [#206](https://github.com/Polozhentsev-Ivan/DjedAI/issues/206) (`fix(backend): close every multipart temp file and report lack of space`). Причина: при ENOSPC Starlette закрывал временные файлы одним циклом, и ошибка flush первого файла оставляла остальные открытыми. Теперь каждый файл закрывается отдельно, ответ — `507 insufficient_storage` «Недостаточно места для загрузки…»; то же при нехватке места в `raw/`. Проверено тестами с подменой временных файлов на ENOSPC, повторный прогон на tmpfs не выполнялся. Требование к месту и `TMPDIR` — в [infra/README.md](../infra/README.md#место-на-диске-для-загрузки-csv) |
 
 Мелкие наблюдения без отдельной задачи:
 - «Скидка, %» хранит целые проценты (28 значит 28 %, как в README) и типизируется как `integer`, а не `percent`;
@@ -357,7 +357,7 @@ uv run --locked python <dir>/scripts/check_hk_datasets.py --cache artifacts/hk-d
 
 Загрузка через API:
 1. `uv run --locked alembic upgrade head`;
-2. `uv run --locked uvicorn --app-dir src djedai.backend.app:app`, переменная `TMPDIR` должна указывать на раздел, где свободно не меньше 1,5 ГБ;
+2. `uv run --locked uvicorn --app-dir src djedai.backend.app:app`, переменная `TMPDIR` должна указывать на раздел, где свободно не меньше 1,5 ГБ, а всего на диске нужно около 3,1 ГБ ([infra/README.md](../infra/README.md#место-на-диске-для-загрузки-csv));
 3. регистрация и вход через `/api/auth/register` и `/api/auth/login`;
 4. `POST /api/datasets/upload` с девятью полями `files`;
 5. опрос `GET /api/datasets/{id}` до статуса `ready`.
