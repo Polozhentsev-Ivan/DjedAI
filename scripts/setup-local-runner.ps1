@@ -51,24 +51,24 @@ if ($Distribution -notin ($distributions | ForEach-Object { $_.Trim() })) {
 $bootstrap = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'setup-local-runner.sh') -Raw
 # PowerShell appends CRLF to pipeline input; keep that final CR inside a Bash comment.
 $bootstrap = $bootstrap.Replace("`r", '').TrimEnd("`n") + "`n# end of bootstrap"
-Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--exec', 'bash', '-s', '--', $package.download_url, $package.sha256_checksum) $bootstrap
+Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--cd', '/', '--exec', 'bash', '-s', '--', $package.download_url, $package.sha256_checksum) $bootstrap
 Invoke-Native wsl.exe @('--terminate', $Distribution)
 
 # Registration tokens are short lived and go through stdin, never into a file or command line.
 $registration = & gh api --method POST "repos/$Repository/actions/runners/registration-token" | ConvertFrom-Json
 Assert-Exit 'Runner registration token request'
 try {
-    Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--exec', '/usr/local/sbin/djedai-ci-register', "https://github.com/$Repository", $RunnerName) $registration.token
+    Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--cd', '/', '--exec', '/usr/local/sbin/djedai-ci-register', "https://github.com/$Repository", $RunnerName) $registration.token
 } finally {
     $registration = $null
 }
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wsl.exe" -Argument "-d $Distribution -u root --exec /usr/local/sbin/djedai-ci-keepalive"
+$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wsl.exe" -Argument "-d $Distribution -u root --cd / --exec /usr/local/sbin/djedai-ci-keepalive"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'DjedAI CI Runner' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Keep the isolated DjedAI GitHub Actions runner running in WSL.' -Force | Out-Null
 Start-ScheduledTask -TaskName 'DjedAI CI Runner'
-Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--exec', 'systemctl', '--no-pager', 'status', 'docker', 'djedai-ci')
+Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--cd', '/', '--exec', 'systemctl', '--no-pager', 'status', 'docker', 'djedai-ci')
 Write-Host "Runner $RunnerName installed. GitHub: https://github.com/$Repository/settings/actions/runners"
