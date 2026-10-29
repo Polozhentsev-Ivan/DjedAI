@@ -243,13 +243,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             413: "payload_too_large",
             429: "rate_limit",
             503: "unavailable",
+            507: "insufficient_storage",
         }
         payload = ErrorResponse(
             error=ToolError(
                 code=getattr(error, "code", None)
                 or codes.get(error.status_code, f"http_{error.status_code}"),
                 message=str(error.detail)
-                if error.status_code < 500
+                if error.status_code < 500 or error.status_code == 507
                 else "Сервис временно недоступен",
             )
         )

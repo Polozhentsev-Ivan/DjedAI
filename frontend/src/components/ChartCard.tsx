@@ -11,10 +11,12 @@ interface ChartCardProps {
   onPrimary?: (() => void) | undefined;
   secondaryLabel?: string | undefined;
   onSecondary?: (() => void) | undefined;
+  /** Header actions richer than a single button, e.g. the dashboard picker. */
+  actions?: ReactNode;
 }
 
 /** Chart block of an answer: title, actions «+ В дашборд» / «Экспорт» and the chart itself. */
-export function ChartCard({ title, subtitle, children, primaryLabel, onPrimary, secondaryLabel, onSecondary }: ChartCardProps) {
+export function ChartCard({ title, subtitle, children, primaryLabel, onPrimary, secondaryLabel, onSecondary, actions }: ChartCardProps) {
   return (
     <section className="rounded-lg border border-border bg-card px-4 pb-2 pt-4 text-sm leading-normal tracking-sm text-card-foreground">
       <div className="flex flex-wrap items-start gap-2.5 px-1">
@@ -28,6 +30,7 @@ export function ChartCard({ title, subtitle, children, primaryLabel, onPrimary, 
             {primaryLabel}
           </Button>
         )}
+        {actions}
         {secondaryLabel && (
           <Button variant="outline" className="gap-1 px-3 py-1" onClick={onSecondary}>
             <Icon icon={Download} size="sm" />
