@@ -17,7 +17,7 @@ concurrency:
 jobs:
   repository:
     name: repository
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, djedai-ci]
     timeout-minutes: 5
     outputs:
       python-enabled: ${{ steps.check.outputs.python-enabled }}
@@ -45,7 +45,7 @@ jobs:
     name: python
     needs: repository
     if: needs.repository.outputs.python-enabled == 'true' && needs.repository.outputs.run-tests == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, djedai-ci]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,7 +93,7 @@ jobs:
     name: frontend
     needs: repository
     if: needs.repository.outputs.frontend-enabled == 'true' && needs.repository.outputs.run-tests == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, djedai-ci]
     timeout-minutes: 15
     defaults:
       run:
@@ -132,7 +132,7 @@ jobs:
     name: browser
     needs: repository
     if: needs.repository.outputs.frontend-enabled == 'true' && needs.repository.outputs.python-enabled == 'true' && needs.repository.outputs.run-tests == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, djedai-ci]
     # Include cold Playwright system dependencies and both production image builds.
     timeout-minutes: 25
     steps:
@@ -182,7 +182,8 @@ jobs:
           model_pid=$!
           cleanup() {
             docker compose -f compose.yaml -f infra/compose.test.yaml logs --no-color
-            docker compose -f compose.yaml -f infra/compose.test.yaml down
+            # A persistent runner must not reuse auth/data volumes from earlier runs.
+            docker compose -f compose.yaml -f infra/compose.test.yaml down --volumes --remove-orphans
             kill "$model_pid" || true
           }
           trap cleanup EXIT
@@ -210,7 +211,7 @@ jobs:
     name: required
     needs: [repository, python, frontend, browser]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, djedai-ci]
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
