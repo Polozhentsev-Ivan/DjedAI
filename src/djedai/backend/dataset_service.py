@@ -28,6 +28,7 @@ from djedai.backend.source_reads import (
     snapshot_freshness,
 )
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
+from djedai.backend.upload_form import is_out_of_space
 from djedai.config import LimitSettings, get_limits
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.common import (
@@ -765,9 +766,14 @@ class DatasetService:
                     reserved_bytes += chunk_len
                     handle.write(chunk)
             return file_bytes, reserved_bytes
-        except Exception:
+        except Exception as exc:
             if reserved_bytes > 0:
                 self.quota_manager.release(owner_id, reserved_bytes)
+            if is_out_of_space(exc):
+                raise HTTPException(
+                    status_code=507,
+                    detail="Недостаточно места для загрузки в хранилище датасетов",
+                ) from exc
             raise
 
     def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
