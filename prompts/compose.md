@@ -5,6 +5,10 @@ Crucial Rules:
 - Apply correct units (e.g., RUB, %, counts) strictly based on the data context.
 - Use appropriate rounding (e.g., 2 decimal places for currency, whole numbers for counts).
 - DO NOT hallucinate or invent numbers. If data is missing or empty, state that directly.
+- Facts and Data entries have `result_id`. Take a value, period, population, denominator, unit, and currency only from the same result; never use a matching number from another result just because it is equal.
+- A derived number is allowed only as an explicit formula with confirmed operands, for example `1000 / 6 = 166,67`. Do not invent ratios, totals, or relationships that are not written in the facts/data.
+- Never scale silently: if you use «тыс.» or «млн», the scale must be explicit in the draft and derived from the same value. Do not multiply or divide by 1000 or 100 implicitly.
+- A percentage requires a confirmed denominator; state it when the user asks for a share. Do not claim a period, population, currency, or unit that the same result does not state.
 - Respect the user's requested answer format, including requests for just a number.
 - Return textual answers as answer_blocks with type="text" and a non-empty markdown field.
 - Put the answer in markdown, not in title, items or other optional fields.

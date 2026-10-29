@@ -312,9 +312,9 @@ Cross-table функции принимают `table` как имя таблиц
             ┌─────▼──────┐
             │ compose    │ текст для бизнес-пользователя только из facts/data
             └─────┬──────┘
-            ┌─────▼──────┐   числа в тексте ∉ facts/data → перегенерация (1 раз) или удаление
-            │ verify     │
-            └─────┬──────┘
+            ┌─────▼──────┐   детерминированно: число ∉ facts/data своего result_id,
+            │ verify     │   чужая единица/период/популяция/знаменатель или
+            └─────┬──────┘   неявная формула → перегенерация (2 раза) или ошибка
                  END → AssistantMessage
 ```
 
@@ -393,6 +393,13 @@ class AgentState(TypedDict):
     { "type": "suggestions", "items": ["Сравнить с прошлым годом", "Разбить по регионам"] }
   ],
   "result_ids": ["r_17"],                 // provenance: «как посчитано»
+  "verification": {                       // детерминированная проверка чисел (#167)
+    "status": "verified",                 // verified | corrected | failed | not_applicable
+    "assertions": [ /* NumericAssertion: value, unit, period, denominator, evidence */ ],
+    "rejected_assertions": [],
+    "issues": [],
+    "result_ids": ["r_17"]
+  },
   "trace": [ { "node": "plan", "ms": 1200 }, { "node": "execute", "tool": "seasonality", "ms": 412 } ]
 }
 ```
@@ -495,7 +502,7 @@ Python остаётся в backend/data/agent и общем пакете `contra
 |---|---|
 | `datasets` | dataset_id, name, source_kind, connection (зашифр.), catalog (JSONB), status, created_at |
 | `chats` | chat_id, dataset_id, title, summary, created_at |
-| `messages` | message_id, chat_id, role, content/blocks (JSONB), result_ids, created_at |
+| `messages` | message_id, chat_id, role, content/blocks (JSONB), result_ids, verification (JSONB), created_at |
 | `results` | result_id, chat_id, tool, params, sql, status, facts, chart_hint, data_ref, created_at |
 | `dashboards` | dashboard_id, dataset_id, title, description, widgets (JSONB), source_chat_id, created_at, refreshed_at |
 

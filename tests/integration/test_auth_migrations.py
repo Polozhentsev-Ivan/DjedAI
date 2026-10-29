@@ -372,7 +372,7 @@ def test_merge_upgrade_preserves_both_deployed_branches(
             }, table.name
         with engine.connect() as connection:
             versions = Table("alembic_version", MetaData(), autoload_with=connection)
-            assert connection.scalars(select(versions.c.version_num)).all() == ["f211merge0001"]
+            assert connection.scalars(select(versions.c.version_num)).all() == ["f167verify01"]
         with Session(engine) as db:
             dashboard = db.get(DashboardModel, "existing-dashboard")
             result = db.get(ToolResultModel, "existing-result")

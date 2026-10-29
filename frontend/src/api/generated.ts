@@ -555,6 +555,11 @@ export interface components {
              */
             result_ids?: string[];
             /**
+             * @description Детерминированная проверка чисел: утверждения, происхождение и причины отказа
+             * @default null
+             */
+            verification?: components["schemas"]["VerificationReport"] | null;
+            /**
              * Trace
              * @description Шаги графа агента при формировании ответа
              */
@@ -1379,6 +1384,11 @@ export interface components {
              */
             result_ids?: string[];
             /**
+             * @description Проверка чисел опубликованного ответа и её причины
+             * @default null
+             */
+            verification?: components["schemas"]["VerificationReport"] | null;
+            /**
              * @description Состояние хода этого вопроса; у прежних сообщений отсутствует
              * @default null
              */
@@ -1951,6 +1961,364 @@ export interface components {
             x: string;
             /** Text */
             text: string;
+        };
+        /**
+         * VerificationPeriod
+         * @description Период, к которому относится значение.
+         *
+         *     ``start`` включительно, ``end`` не включительно, даты — ISO. ``None`` означает,
+         *     что граница неизвестна; ``unknown`` у evidence перечисляет такие поля.
+         */
+        VerificationPeriod: {
+            /**
+             * Start
+             * @description Начало периода включительно (ISO)
+             * @default null
+             */
+            start?: string | null;
+            /**
+             * End
+             * @description Конец периода не включительно (ISO)
+             * @default null
+             */
+            end?: string | null;
+            /**
+             * Label
+             * @description Период так, как он назван в источнике
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Grain
+             * @description Гранулярность периода
+             * @default unknown
+             * @enum {string}
+             */
+            grain?: "day" | "week" | "month" | "quarter" | "year" | "range" | "unknown";
+        };
+        /**
+         * VerificationDenominator
+         * @description Знаменатель доли или процента и его происхождение.
+         */
+        VerificationDenominator: {
+            /**
+             * Label
+             * @description Что именно является знаменателем
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Value
+             * @description Значение знаменателя
+             * @default null
+             */
+            value?: string | null;
+            /**
+             * Result Id
+             * @description Результат, из которого взят знаменатель
+             * @default null
+             */
+            result_id?: string | null;
+            /**
+             * Fact Id
+             * @description Факт, из которого взят знаменатель
+             * @default null
+             */
+            fact_id?: string | null;
+            /**
+             * Cell Address
+             * @description Ячейка знаменателя, если известна
+             * @default null
+             */
+            cell_address?: string | null;
+        };
+        /**
+         * VerificationEvidence
+         * @description Одно допустимое происхождение числа.
+         *
+         *     ``value`` — значение в единицах источника, ``scale`` — явный множитель
+         *     (например, 1000 для «тыс.»). Каноническое значение — ``value * scale``.
+         *     Неявного умножения на 1000 проверка не делает.
+         */
+        VerificationEvidence: {
+            /**
+             * Result Id
+             * @description ID результата инструмента
+             */
+            result_id: string;
+            /**
+             * Fact Id
+             * @description ID факта вида result:fact:index
+             * @default null
+             */
+            fact_id?: string | null;
+            /**
+             * Cell Address
+             * @description Адрес ячейки вида data.rows[0].revenue или data.row_count
+             * @default null
+             */
+            cell_address?: string | null;
+            /**
+             * Value
+             * @description Значение в единицах источника
+             * @default null
+             */
+            value?: string | null;
+            /**
+             * Scale
+             * @description Явный множитель из текста источника
+             * @default 1
+             */
+            scale?: string;
+            /**
+             * Unit
+             * @description Единица измерения значения
+             * @default unknown
+             * @enum {string}
+             */
+            unit?: "money" | "count" | "number" | "percent" | "ratio" | "date" | "unknown";
+            /**
+             * Currency
+             * @description Код валюты, если он известен
+             * @default null
+             */
+            currency?: string | null;
+            /**
+             * @description Период значения
+             * @default null
+             */
+            period?: components["schemas"]["VerificationPeriod"] | null;
+            /**
+             * Population
+             * @description Популяция или фильтры значения
+             * @default null
+             */
+            population?: string | null;
+            /**
+             * @description Знаменатель для доли или процента
+             * @default null
+             */
+            denominator?: components["schemas"]["VerificationDenominator"] | null;
+            /**
+             * Label
+             * @description Подпись значения из факта или колонки
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Source
+             * @description Откуда взято происхождение
+             * @enum {string}
+             */
+            source: "fact" | "data_cell" | "row_count" | "metric" | "period";
+            /**
+             * Unknown
+             * @description Явно неизвестные части происхождения: period, population, denominator и т. п.
+             */
+            unknown?: string[];
+        };
+        /**
+         * VerificationOperand
+         * @description Операнд явной формулы с собственной ссылкой на происхождение.
+         */
+        VerificationOperand: {
+            /**
+             * Role
+             * @description Роль операнда в формуле
+             * @enum {string}
+             */
+            role: "addend" | "minuend" | "subtrahend" | "factor" | "numerator" | "denominator" | "operand";
+            /**
+             * Raw Text
+             * @description Как операнд записан в ответе
+             */
+            raw_text: string;
+            /**
+             * Value
+             * @description Каноническое значение операнда
+             */
+            value: string;
+            /**
+             * Unit
+             * @description Единица измерения операнда
+             * @default unknown
+             * @enum {string}
+             */
+            unit?: "money" | "count" | "number" | "percent" | "ratio" | "date" | "unknown";
+            /**
+             * Currency
+             * @description Валюта операнда
+             * @default null
+             */
+            currency?: string | null;
+            /**
+             * Evidence
+             * @description Происхождение операнда; пусто только у константы формулы
+             */
+            evidence?: components["schemas"]["VerificationEvidence"][];
+        };
+        /**
+         * NumericAssertion
+         * @description Одно числовое утверждение и результат его детерминированной проверки.
+         */
+        NumericAssertion: {
+            /**
+             * Assertion Id
+             * @description Стабильный ID утверждения внутри ответа
+             */
+            assertion_id: string;
+            /**
+             * Kind
+             * @description Вид утверждения
+             * @enum {string}
+             */
+            kind: "quantity" | "formula" | "date" | "period" | "list_number" | "constant";
+            /**
+             * Status
+             * @description Принято, отклонено или не аналитическое
+             * @enum {string}
+             */
+            status: "verified" | "rejected" | "ignored";
+            /**
+             * Text
+             * @description Фрагмент ответа, в котором встретилось утверждение
+             */
+            text: string;
+            /**
+             * Raw Text
+             * @description Число или формула так, как записаны в ответе
+             */
+            raw_text: string;
+            /**
+             * Value
+             * @description Каноническое значение
+             * @default null
+             */
+            value?: string | null;
+            /**
+             * Scale
+             * @description Явный множитель утверждения
+             * @default 1
+             */
+            scale?: string;
+            /**
+             * Unit
+             * @description Единица измерения
+             * @default unknown
+             * @enum {string}
+             */
+            unit?: "money" | "count" | "number" | "percent" | "ratio" | "date" | "unknown";
+            /**
+             * Currency
+             * @description Валюта утверждения
+             * @default null
+             */
+            currency?: string | null;
+            /**
+             * @description Период утверждения
+             * @default null
+             */
+            period?: components["schemas"]["VerificationPeriod"] | null;
+            /**
+             * Population
+             * @description Популяция утверждения
+             * @default null
+             */
+            population?: string | null;
+            /**
+             * @description Знаменатель утверждения
+             * @default null
+             */
+            denominator?: components["schemas"]["VerificationDenominator"] | null;
+            /**
+             * Label
+             * @description Подпись утверждения из текста
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Evidence
+             * @description Принятое происхождение утверждения
+             */
+            evidence?: components["schemas"]["VerificationEvidence"][];
+            /**
+             * Formula
+             * @description Явная формула производного значения
+             * @default null
+             */
+            formula?: string | null;
+            /**
+             * Operands
+             * @description Операнды формулы с ссылками на происхождение
+             */
+            operands?: components["schemas"]["VerificationOperand"][];
+            /**
+             * Reason Code
+             * @description Безопасный код причины отказа
+             * @default null
+             */
+            reason_code?: ("number_not_found" | "ambiguous_number" | "unrelated_result" | "unit_mismatch" | "currency_mismatch" | "period_mismatch" | "population_mismatch" | "denominator_mismatch" | "zero_denominator" | "missing_operand" | "invalid_formula" | "rounding_mismatch" | "unsupported_assertion" | "non_analytical" | "llm_reported" | "invalid_correction" | "llm_unavailable") | null;
+            /**
+             * Reason
+             * @description Безопасное пояснение причины отказа
+             * @default null
+             */
+            reason?: string | null;
+        };
+        /**
+         * VerificationIssue
+         * @description Безопасная причина, по которой утверждение не было принято.
+         */
+        VerificationIssue: {
+            /**
+             * Code
+             * @description Код причины
+             * @enum {string}
+             */
+            code: "number_not_found" | "ambiguous_number" | "unrelated_result" | "unit_mismatch" | "currency_mismatch" | "period_mismatch" | "population_mismatch" | "denominator_mismatch" | "zero_denominator" | "missing_operand" | "invalid_formula" | "rounding_mismatch" | "unsupported_assertion" | "non_analytical" | "llm_reported" | "invalid_correction" | "llm_unavailable";
+            /**
+             * Message
+             * @description Пояснение, пригодное для пользователя
+             */
+            message: string;
+            /**
+             * Assertion Id
+             * @description Связанное утверждение
+             * @default null
+             */
+            assertion_id?: string | null;
+        };
+        /**
+         * VerificationReport
+         * @description Итог проверки чисел в опубликованном ответе.
+         */
+        VerificationReport: {
+            /**
+             * Status
+             * @description Итоговый статус проверки
+             * @enum {string}
+             */
+            status: "verified" | "corrected" | "failed" | "not_applicable";
+            /**
+             * Assertions
+             * @description Утверждения финального текста
+             */
+            assertions?: components["schemas"]["NumericAssertion"][];
+            /**
+             * Rejected Assertions
+             * @description Отклонённые утверждения предыдущих черновиков
+             */
+            rejected_assertions?: components["schemas"]["NumericAssertion"][];
+            /**
+             * Issues
+             * @description Причины отказа и исправления
+             */
+            issues?: components["schemas"]["VerificationIssue"][];
+            /**
+             * Result Ids
+             * @description Результаты, в границах которых проверялся ответ
+             */
+            result_ids?: string[];
         };
         /**
          * SSEStatusData

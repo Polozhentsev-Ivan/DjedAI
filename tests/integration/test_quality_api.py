@@ -185,12 +185,16 @@ def test_legacy_catalog_ambiguities_survive_restart(configured):
 def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> None:
     client_model = MagicMock()
     client_model.generate_typed_response.side_effect = [
-        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 664."),
+        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 376,0."),
         ok(Understanding(intent="modify_previous")),
         ok(PlanResponse(plan=[])),
         ok(VisualizeResponse(charts=[])),
-        ok(ComposeResponse(answer_blocks=[Block(type="text", markdown="Кратко: сумма — 5 664.")])),
-        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: сумма — 5 664.")),
+        ok(
+            ComposeResponse(
+                answer_blocks=[Block(type="text", markdown="Кратко: результат без изменений.")]
+            )
+        ),
+        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: результат без изменений.")),
     ]
     with _client(configured) as client:
         upload = client.post("/api/datasets/upload", files=_files())
@@ -216,7 +220,7 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
         assert "event: tool_call" not in followup.text
         assert "4 из 100" in followup.text
         answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
-        assert "Кратко: сумма — 5 664." in _markdown(answer)
+        assert "Кратко: результат без изменений." in _markdown(answer)
         assert "**Ограничения данных.**" in _markdown(answer)
         assert "4 из 100" in _markdown(answer)
 
@@ -224,7 +228,7 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
 def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
     client_model = MagicMock()
     client_model.generate_typed_response.side_effect = [
-        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 664."),
+        *_turn("SELECT SUM(amount) FROM orders", "Сумма — 5 376,0."),
         *_turn("SELECT d_ambiguous, COUNT(*) FROM edges GROUP BY 1", None),
         *_turn(
             "SELECT strptime(d_ambiguous, '%d/%m/%Y') AS d, COUNT(*) FROM edges GROUP BY 1",
@@ -293,7 +297,7 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f211merge0001"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["f167verify01"]
     command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)
