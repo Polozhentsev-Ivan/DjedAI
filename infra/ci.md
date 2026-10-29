@@ -94,7 +94,64 @@ Docker/сети и отдельных рабочих каталогов либо
    длительность, пик RAM и свободное место. Затем подобрать ресурсы по замерам.
 
 Инструкция регистрации: [Adding self-hosted runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners).
-Текущий workflow остаётся на GitHub-hosted до подготовки и проверки машины.
+Workflow использует `[self-hosted, linux, x64, djedai-ci]` во всех пяти заданиях.
+
+### Локальный runner на Windows через WSL 2
+
+[setup-local-runner.ps1](../scripts/setup-local-runner.ps1) создаёт отдельный дистрибутив
+`DjedAI-CI` на базе официального образа Ubuntu 24.04. Для первичной установки нужны
+работающие WSL 2, Docker Desktop в режиме Linux containers и авторизованный `gh`
+с административным доступом к репозиторию. Запустить из PowerShell:
+
+```powershell
+./scripts/setup-local-runner.ps1
+```
+
+Дистрибутив хранится в `%LOCALAPPDATA%/DjedAI-CI/linux`. Скрипт
+[setup-local-runner.sh](../scripts/setup-local-runner.sh) устанавливает собственный
+Docker Engine и Compose, проверяет SHA256 архива runner по данным API GitHub,
+создаёт пользователя `djedai` и службу `djedai-ci`. Метки runner:
+`self-hosted`, `Linux`, `X64`, `djedai-ci`. Один runner выполняет задания по очереди.
+Node, npm, Python, uv и Chromium устанавливаются командами workflow.
+
+В `DjedAI-CI` отключены автоматическое подключение Windows-дисков и запуск Windows
+программ. Docker Desktop используется только для создания начального образа:
+CI работает со своим Docker Engine, поэтому его Compose-проекты, тома и порты
+не затрагивают Docker Desktop. Это отдельное окружение WSL, не граница безопасности
+для выполнения произвольного недоверенного кода. Runner предназначен для этого
+закрытого репозитория; не подключайте к нему публичные проекты с внешними PR.
+Регистрационный токен передаётся через stdin и не сохраняется в файлах проекта.
+
+Задание планировщика Windows `DjedAI CI Runner` запускается при входе текущего
+пользователя. Оно удерживает WSL работающим: одних служб systemd для этого
+недостаточно. Перезагрузка Windows требует повторного входа пользователя;
+во время сна и выключения компьютера новые задания будут ждать в GitHub.
+Служба runner закреплена за восемью логическими процессорами; глобальные настройки
+WSL и параметры питания Windows установщик не меняет. На диске нужно место для
+Python/Node, Chromium, образов БД и Docker build cache.
+
+Проверка состояния и управление:
+
+```powershell
+gh api repos/Polozhentsev-Ivan/DjedAI/actions/runners
+wsl -d DjedAI-CI -u root -- systemctl status djedai-ci docker
+wsl -d DjedAI-CI -u root -- journalctl -u djedai-ci -n 100 --no-pager
+Start-ScheduledTask -TaskName 'DjedAI CI Runner'
+```
+
+Для остановки без удаления runner сначала остановите службу и задачу, затем
+отключите автозапуск, если он больше не нужен:
+
+```powershell
+wsl -d DjedAI-CI -u root -- systemctl stop djedai-ci
+Stop-ScheduledTask -TaskName 'DjedAI CI Runner'
+Disable-ScheduledTask -TaskName 'DjedAI CI Runner'
+```
+
+Для возврата на GitHub-hosted замените `runs-on` всех пяти заданий на
+`ubuntu-24.04`. Обязательная проверка `required` и состав тестов сохраняются.
+Browser smoke удаляет только свои тестовые Compose-тома после завершения;
+это предотвращает накопление пользователей и данных между запусками.
 
 ### Если нужен сервер самого приложения
 
