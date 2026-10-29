@@ -387,6 +387,12 @@ export function callParams(params: Record<string, unknown>): CalculationParam[] 
   return Object.entries(params).filter(([name]) => name !== 'source_result_id').map(([name, value]) => ({ name, value: literal(value) }));
 }
 
+/** Calls a dashboard widget repeats on refresh: one call, or the recipe steps up to its output step. */
+export function widgetRecipe(widget: Pick<Schemas['Widget'], 'tool_call' | 'recipe'>): string[] {
+  if (widget.tool_call) return [toolCall(widget.tool_call.tool, widget.tool_call.params ?? {})];
+  return (widget.recipe?.steps ?? []).map((step) => toolCall(step.call.tool, step.call.params ?? {}));
+}
+
 /**
  * «Как посчитано» for a saved result. `current` is the dataset's catalog revision now:
  * a newer one means the catalog was re-profiled after this result was computed (B1-11).

@@ -8,22 +8,27 @@ import { Button } from '@/components/Button';
 import { ChatMessage } from '@/components/ChatMessage';
 import { ChatBlocks } from '@/components/ChatBlocks';
 import { Icon } from '@/components/Icon';
+import type { SaveTarget } from '@/components/SaveToDashboard';
 import { SavedResult } from '@/components/SavedResult';
 import { EmptyState, ErrorState, LoadingState } from '@/components/StateBlock';
+import { Toast } from '@/components/Toast';
 import { cn } from '@/lib/cn';
+
+const SAVED_NOTICE_MS = 6000;
 
 interface AnswerProps {
   blocks?: readonly Schemas['Block'][] | undefined;
   resultIds?: readonly string[] | undefined;
   onAsk: (text: string) => void;
   disabled: boolean;
+  save?: SaveTarget | undefined;
 }
 
-function Answer({ blocks = [], resultIds = [], onAsk, disabled }: AnswerProps) {
+function Answer({ blocks = [], resultIds = [], onAsk, disabled, save }: AnswerProps) {
   // Each saved result keeps one provenance panel, including the ones a table block draws.
   const tables = blocks.flatMap((block) => block.type === 'table' ? [block.result_id] : []);
   return <ChatMessage role="assistant">
-    <ChatBlocks blocks={blocks} onAsk={onAsk} disabled={disabled} />
+    <ChatBlocks blocks={blocks} onAsk={onAsk} disabled={disabled} save={save} />
     {[...new Set([...resultIds, ...tables])].map((id) => <SavedResult key={id} id={id} />)}
   </ChatMessage>;
 }
@@ -63,7 +68,16 @@ export function ChatPage() {
   const gutter = 'px-8';
   const latest = messages.at(-1)?.message_id;
   // Only the newest answer accepts a click: an older clarification no longer matches the conversation.
-  const answerProps = (id: string) => ({ onAsk: (text: string) => { void conversation.send(text); }, disabled: streaming || !ready || id !== latest });
+  const [saved, setSaved] = useState<Schemas['Dashboard'] | null>(null);
+  useEffect(() => {
+    if (!saved) return undefined;
+    const timer = setTimeout(() => { setSaved(null); }, SAVED_NOTICE_MS);
+    return () => { clearTimeout(timer); };
+  }, [saved]);
+  // Any answer's chart can be saved, not only the latest: its result stays in storage.
+  const saveDataset = chatDataset ?? activeDataset;
+  const save = saveDataset ? { datasetId: saveDataset, onSaved: setSaved } : undefined;
+  const answerProps = (id: string) => ({ onAsk: (text: string) => { void conversation.send(text); }, disabled: streaming || !ready || id !== latest, save });
 
   return (
     <div className="absolute inset-0 flex min-h-0 flex-col text-sm leading-normal tracking-sm text-foreground">
@@ -105,6 +119,8 @@ export function ChatPage() {
           })}
         </div>
       </div>
+      {saved && <Toast message={`График добавлен в «${saved.title}»`} actionLabel="Открыть →"
+        onAction={() => { void navigate(`/dashboards/${encodeURIComponent(saved.dashboard_id)}`); }} />}
       <QuestionForm key={`${chatId ?? 'new'}:${activeDataset ?? ''}`} ready={ready} streaming={streaming} onSend={(question) => { void conversation.send(question); }} onStop={conversation.stop} />
     </div>
   );

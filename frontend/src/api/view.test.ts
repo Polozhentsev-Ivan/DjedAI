@@ -2,7 +2,7 @@ import { createDb, ordersCatalog } from '@/mocks/db';
 import {
   calculation, callParams, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
   journal, kpiView, limitations, missingCell, needsRefresh, readSource, relationGraph, relationViews, revisionSummary, sourceLabel,
-  tableMeta, toolCall, typeLabel,
+  tableMeta, toolCall, typeLabel, widgetRecipe,
 } from './view';
 
 // Intl separates digit groups with no-break spaces; \s matches them.
@@ -222,6 +222,16 @@ describe('result views', () => {
     expect(how.origin).toBe('r_rev');
     expect(how.params).toEqual([{ name: 'n', value: '3' }, { name: 'by', value: '["revenue"]' }]);
     expect(callParams({})).toEqual([]);
+  });
+
+  it('lists the calls a widget repeats on refresh', () => {
+    expect(widgetRecipe({ tool_call: { tool: 'top_n', params: { n: 5 } } })).toEqual(['top_n(n=5)']);
+    const recipe = { output_step_id: 'step_2', steps: [
+      { step_id: 'step_1', call: { tool: 'run_sql', params: { sql: 'SELECT 1' } } },
+      { step_id: 'step_2', call: { tool: 'top_n' }, source_step_id: 'step_1' },
+    ] };
+    expect(widgetRecipe({ recipe })).toEqual(["run_sql(sql='SELECT 1')", 'top_n()']);
+    expect(widgetRecipe({})).toEqual([]);
   });
 
   it('lists data limitations of a result', () => {

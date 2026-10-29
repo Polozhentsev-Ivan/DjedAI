@@ -23,6 +23,8 @@ export interface Calculation {
   sql: string;
   /** Result this one was computed from (`source_result_id`): the previous step of a chain. */
   origin?: string | undefined;
+  /** Saved widget recipe: the calls a refresh repeats in order, the last one gives the chart. */
+  recipe?: readonly string[] | undefined;
   stats?: string | undefined;
   /** Where and when the data was read and against which catalog revision (B1-11). */
   source?: string | undefined;
@@ -36,7 +38,7 @@ interface HowCalculatedProps extends Calculation {
   defaultOpen?: boolean | undefined;
 }
 
-function Body({ tool, params, columns, sql, origin, stats, source, limitations, panel }: Calculation & { panel: boolean }) {
+function Body({ tool, params, columns, sql, origin, recipe, stats, source, limitations, panel }: Calculation & { panel: boolean }) {
   const label = 'min-w-(--label-col) text-xs text-muted-foreground';
   return (
     <div className={cn('flex flex-col gap-3', panel ? 'px-2 pb-2 pt-1' : 'border-t border-border bg-secondary p-3.5')}>
@@ -68,6 +70,14 @@ function Body({ tool, params, columns, sql, origin, stats, source, limitations, 
         <div className="flex flex-wrap items-baseline gap-2">
           <span className={label}>Обработано</span>
           <span className="tabular">{stats}</span>
+        </div>
+      )}
+      {recipe && recipe.length > 0 && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Рецепт</span>
+          <ol aria-label="Рецепт" className="m-0 flex flex-1 flex-col gap-1 pl-4">
+            {recipe.map((step, index) => <li key={index}><code className="font-mono text-xs">{step}</code></li>)}
+          </ol>
         </div>
       )}
       {origin && (

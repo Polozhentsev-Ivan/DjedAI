@@ -6,6 +6,7 @@ import { ResultChart } from '@/charts/ResultChart';
 import { LinkButton } from './Button';
 import { ChartCard } from './ChartCard';
 import { HowCalculated } from './HowCalculated';
+import { SaveToDashboard, type SaveTarget } from './SaveToDashboard';
 import { ErrorState, LoadingState } from './StateBlock';
 
 /** «Как посчитано» of one saved result: read when the panel opens, never rebuilt from the chart. */
@@ -17,11 +18,11 @@ function ResultCalculation({ id }: { id: string }) {
   return <HowCalculated variant="panel" {...calculation(meta.data, dataset.data?.revision)} />;
 }
 
-/** Chart block of an answer with its «Как посчитано» under the chart. */
-export function ChartAnswer({ chart }: { chart: Schemas['ChartSpec'] }) {
+/** Chart block of an answer with «+ В дашборд» (when the dataset is known) and «Как посчитано» under the chart. */
+export function ChartAnswer({ chart, save }: { chart: Schemas['ChartSpec']; save?: SaveTarget | undefined }) {
   const [open, setOpen] = useState(false);
   return (
-    <ChartCard title={chart.title} subtitle={chart.subtitle ?? undefined}>
+    <ChartCard title={chart.title} subtitle={chart.subtitle ?? undefined} actions={save && <SaveToDashboard chart={chart} {...save} />}>
       <ResultChart spec={chart} />
       <div className="flex flex-col gap-2 border-t border-border px-1 pb-1 pt-2">
         <LinkButton className="self-start" aria-expanded={open} onClick={() => { setOpen((value) => !value); }}>

@@ -590,3 +590,87 @@ describe('chat answer blocks', () => {
     expect(moscow).toHaveTextContent('200');
   });
 });
+
+describe('saving an answer chart to a dashboard', () => {
+  const chartBlock = (resultId: string, title: string): Schemas['Block'] => ({ type: 'chart', chart: {
+    chart_id: `chart_${resultId}`, result_id: resultId, type: 'line', title, subtitle: 'Сумма с НДС по месяцам',
+    x: { field: 'month', label: 'Месяц', kind: 'time' }, y: [{ field: 'revenue', label: 'Сумма с НДС, руб', format: 'money' }],
+  } });
+  const chatWith = (block: Schemas['Block']) => {
+    const saved = createDb().chats[0]!;
+    saved.messages = [{ message_id: 'm_chart', role: 'assistant', created_at: saved.created_at, blocks: [block] }];
+    server.use(http.get(api('/chats/c_q1'), () => HttpResponse.json(saved)));
+  };
+  const saves = () => {
+    const bodies: Schemas['DashboardCreate'][] = [];
+    // Records the body and falls through to the mock backend, which saves the widget.
+    server.use(http.post(api('/dashboards'), async ({ request }) => { bodies.push(await request.clone().json() as Schemas['DashboardCreate']); }));
+    return bodies;
+  };
+
+  it('saves a chart to a new dashboard that reopens with the widget and its recipe', async () => {
+    const bodies = saves();
+    const block = chartBlock('r_rev', 'Выручка по месяцам');
+    chatWith(block);
+    const view = await renderRoute('/chat/c_q1');
+    await userEvent.click(await screen.findByRole('button', { name: 'В дашборд' }));
+    expect(await screen.findByRole('menuitem', { name: /Маркетинг Q3/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('menuitem', { name: /Новый дашборд/ }));
+    expect(await screen.findByText('График добавлен в «Выручка по месяцам»')).toBeInTheDocument();
+    expect(bodies).toEqual([{ dataset_id: 'ds_orders', result_id: 'r_rev', chart: block.type === 'chart' && block.chart }]);
+    await userEvent.click(screen.getByRole('button', { name: 'Открыть →' }));
+    await waitFor(() => { expect(view.router.state.location.pathname).toBe('/dashboards/d_4'); });
+    view.unmount();
+    // A fresh client reads the saved dashboard back from the server rather than from the save response.
+    await renderRoute('/dashboards/d_4');
+    expect(await screen.findByRole('heading', { name: 'Дашборд: Выручка по месяцам' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Выручка по месяцам' })).toBeInTheDocument();
+    expect(screen.getByText('Сумма с НДС по месяцам')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Как посчитано' }));
+    expect(screen.getByRole('list', { name: 'Рецепт' })).toHaveTextContent("time_aggregate(table='orders', freq='month')");
+  });
+
+  it('adds a chained result to an existing dashboard as a two-step recipe', async () => {
+    const bodies = saves();
+    chatWith(chartBlock('r_top', 'Лучшие месяцы'));
+    const view = await renderRoute('/chat/c_q1');
+    await userEvent.click(await screen.findByRole('button', { name: 'В дашборд' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Маркетинг Q3/ }));
+    expect(await screen.findByText('График добавлен в «Маркетинг Q3»')).toBeInTheDocument();
+    expect(bodies[0]).toMatchObject({ dataset_id: 'ds_orders', dashboard_id: 'd_m', result_id: 'r_top' });
+    view.unmount();
+    await renderRoute('/dashboards/d_m');
+    expect(await screen.findByText('Лучшие месяцы')).toBeInTheDocument();
+    const buttons = await screen.findAllByRole('button', { name: 'Как посчитано' });
+    expect(buttons).toHaveLength(5);
+    await userEvent.click(buttons[4]!);
+    const recipe = await screen.findByRole('list', { name: 'Рецепт' });
+    expect(within(recipe).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
+      "time_aggregate(table='orders', freq='month')", "top_n(by='revenue', n=3)",
+    ]);
+    expect(await screen.findByRole('link', { name: 'r_rev' })).toHaveAttribute('href', api('/results/r_rev'));
+  });
+
+  it('reports a failed save and saves on the next attempt', async () => {
+    server.use(http.post(api('/dashboards'), () => HttpResponse.json({ error: { code: 'not_found', message: 'Результат не найден' } }, { status: 404 }), { once: true }));
+    chatWith(chartBlock('r_rev', 'Выручка по месяцам'));
+    await renderRoute('/chat/c_q1');
+    const trigger = await screen.findByRole('button', { name: 'В дашборд' });
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Квартальная статистика продаж/ }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось сохранить: Результат не найден');
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Квартальная статистика продаж/ }));
+    expect(await screen.findByText('График добавлен в «Квартальная статистика продаж»')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('says so when the dashboard list cannot be read and still offers a new dashboard', async () => {
+    server.use(http.get(api('/dashboards'), () => HttpResponse.json({ error: { code: 'failed', message: 'Недоступно' } }, { status: 503 })));
+    chatWith(chartBlock('r_rev', 'Выручка по месяцам'));
+    await renderRoute('/chat/c_q1');
+    await userEvent.click(await screen.findByRole('button', { name: 'В дашборд' }));
+    expect(await screen.findByRole('menuitem', { name: 'Не удалось загрузить дашборды' })).toHaveAttribute('data-disabled');
+    expect(screen.getByRole('menuitem', { name: /Новый дашборд/ })).not.toHaveAttribute('data-disabled');
+  });
+});

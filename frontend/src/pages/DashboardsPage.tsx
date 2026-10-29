@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useDashboard, useDashboards, useRefreshDashboard, useRemoveWidget, useResult, useResultData } from '@/api/queries';
-import { calculation, callParams, dashboardMeta, kpiView } from '@/api/view';
+import { calculation, callParams, dashboardMeta, kpiView, widgetRecipe } from '@/api/view';
 import { PageContainer, PageTitle } from '@/app/PageContainer';
 import { useWorkspace } from '@/app/workspaceContext';
 import { SpecChart } from '@/charts/SpecChart';
@@ -28,7 +28,7 @@ function DashboardWidget({ widget, refreshing, onRefresh, onRemove }: WidgetProp
   const state: WidgetState = refreshing || (!failed && (result.isPending || data.isPending)) ? 'loading' : failed ? 'error' : 'default';
   const error = widget.error ?? (result.isError ? result.error : data.isError ? data.error : null);
   const call = widget.tool_call ?? widget.recipe?.steps.find((step) => step.step_id === widget.recipe?.output_step_id)?.call;
-  const how = result.data ? calculation(result.data) : { tool: call?.tool ?? 'Вычисление виджета', params: callParams(call?.params ?? {}), columns: [], sql: '—' };
+  const how = { ...result.data ? calculation(result.data) : { tool: call?.tool ?? 'Вычисление виджета', params: callParams(call?.params ?? {}), columns: [], sql: '—' }, recipe: widgetRecipe(widget) };
   const kpi = widget.chart.type === 'kpi' && data.data ? kpiView(widget.chart, data.data, result.data) : null;
   return (
     <WidgetCard
