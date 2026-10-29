@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,6 +25,10 @@ from djedai.backend.local_user import bootstrap_local_user
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests"))
+
+from fake_full_disk import install_full_disk  # noqa: E402
+
 PASSWORD = "test-csv-password"
 
 
@@ -262,3 +267,23 @@ def test_migration_preserves_existing_dataset_and_downgrades(tmp_path: Path) -> 
     with engine.connect() as connection:
         assert connection.exec_driver_sql("SELECT name FROM datasets").scalar() == "Prior data"
     engine.dispose()
+
+
+def test_upload_without_temp_space_returns_507_and_closes_files(configured, monkeypatch) -> None:
+    settings, _ = configured
+    full_disk = install_full_disk(monkeypatch, capacity=3000)
+    content = b"a,b\n" + b"1,2\n" * 400
+    with _client(settings) as client:
+        response = client.post(
+            "/api/datasets/upload",
+            files=[("files", (f"part{index}.csv", content, "text/csv")) for index in range(3)],
+        )
+        assert response.status_code == 507, response.text
+        error = response.json()["error"]
+        assert error["code"] == "insufficient_storage"
+        assert "Недостаточно места для загрузки" in error["message"]
+        assert full_disk.created
+        assert all(file.closed for file in full_disk.created)
+        assert client.get("/api/datasets").json() == []
+    data_dir = Path(settings.datasets_data_dir)
+    assert not data_dir.exists() or not any(data_dir.iterdir())
