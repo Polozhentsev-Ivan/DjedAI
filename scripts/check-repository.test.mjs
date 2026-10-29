@@ -409,3 +409,32 @@ test('CLI final gate passes when every expected job passed', t => {
   });
   assert.equal(run.status, 0, run.stdout);
 });
+
+test('workflow final gate preserves required results without downloading actions', { skip: process.platform !== 'linux' }, () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const required = workflow.split('\n  required:\n')[1];
+  assert.ok(required);
+  assert.doesNotMatch(required, /uses:/);
+  const body = required.split('        run: |\n')[1].replace(/^          /gm, '');
+  for (const repository of ['success', 'failure', 'cancelled']) {
+    for (const pythonExpected of ['true', 'false']) {
+      for (const frontendExpected of ['true', 'false']) {
+        for (const python of ['success', 'failure', 'skipped', 'cancelled']) {
+          for (const frontend of ['success', 'failure', 'skipped', 'cancelled']) {
+            for (const browser of ['success', 'failure', 'skipped', 'cancelled']) {
+              const expected = requiredResult(repository, pythonExpected, python, frontendExpected, frontend)
+                && browser === (pythonExpected === 'true' && frontendExpected === 'true' ? 'success' : 'skipped');
+              const run = spawnSync('bash', ['-e', '-c', body], {
+                env: { ...process.env, REPOSITORY_RESULT: repository,
+                  PYTHON_EXPECTED: pythonExpected, PYTHON_RESULT: python,
+                  FRONTEND_EXPECTED: frontendExpected, FRONTEND_RESULT: frontend, BROWSER_RESULT: browser },
+                encoding: 'utf8', timeout: 5000,
+              });
+              assert.equal(run.status === 0, expected, JSON.stringify({ repository, pythonExpected, frontendExpected, python, frontend, browser }));
+            }
+          }
+        }
+      }
+    }
+  }
+});

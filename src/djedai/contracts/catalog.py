@@ -260,7 +260,7 @@ def _key_name(table: Table, key: str) -> str:
 
 
 def _key_marks(table: Table, column: Column, foreign: dict[tuple[str, str], ColumnRef]) -> str:
-    """``PK`` для ключа таблицы и ``FK → таблица.колонка`` для ссылки на другую таблицу."""
+    """``PK`` для ключа таблицы и ``FK → таблица.колонка`` для ссылки на ключ (и своей таблицы)."""
     marks = []
     if column.name in table.primary_key_candidates:
         marks.append("PK")

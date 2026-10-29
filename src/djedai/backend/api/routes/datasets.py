@@ -13,6 +13,7 @@ from djedai.backend.auth.access import SessionAccess, get_session_access, guard_
 from djedai.backend.auth.dependencies import current_owner_id
 from djedai.backend.dataset_service import DatasetService
 from djedai.backend.sse import encode_sse_event
+from djedai.backend.upload_form import UploadRoute
 from djedai.contracts.catalog import DatasetCatalog
 from djedai.contracts.common import (
     ConnectRequest,
@@ -36,7 +37,6 @@ DatasetServiceDep = Annotated[DatasetService, Depends(get_dataset_service)]
 OwnerDep = Annotated[str, Depends(current_owner_id)]
 
 
-@router.post("/upload", response_model=DatasetUploadAccepted, status_code=202)
 async def upload_dataset(
     files: Annotated[list[UploadFile], File()], owner_id: OwnerDep, service: DatasetServiceDep
 ) -> DatasetUploadAccepted:
@@ -49,6 +49,16 @@ async def upload_dataset(
                 await file.close()
             except Exception:
                 pass
+
+
+router.add_api_route(
+    "/upload",
+    upload_dataset,
+    methods=["POST"],
+    response_model=DatasetUploadAccepted,
+    status_code=202,
+    route_class_override=UploadRoute,
+)
 
 
 @router.get("", response_model=list[DatasetSummary])
