@@ -510,6 +510,38 @@ describe('chat answer blocks', () => {
     expect(screen.getByRole('button', { name: 'Дальше' })).toBeInTheDocument();
   });
 
+  it('opens «Как посчитано» of a chart with the saved SQL, tool, parameters and source', async () => {
+    const chart = chatFixture.blocks.find((block) => block.type === 'chart')!;
+    const meta = { ...fixtureResultMeta, sql: 'SELECT month, SUM(amount) FROM orders GROUP BY month', source_result_id: 'r_parent' };
+    let reads = 0;
+    resultApi();
+    server.use(http.get(api('/results/r_fixture'), () => { reads += 1; return HttpResponse.json(meta); }));
+    savedChat([chart]);
+    await renderRoute('/chat/c_q1');
+    expect(await screen.findByRole('img', { name: /Выручка по месяцам/ })).toBeInTheDocument();
+    expect(reads).toBe(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Как посчитано' }));
+    expect(await screen.findByText(meta.sql)).toBeInTheDocument();
+    expect(screen.getByText('time_aggregate')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Параметры' })).toHaveTextContent("table = 'orders'freq = 'month'");
+    expect(screen.getByRole('link', { name: 'r_parent' })).toHaveAttribute('href', api('/results/r_parent'));
+    await userEvent.click(screen.getByRole('button', { name: 'Скрыть расчёт' }));
+    expect(screen.queryByText(meta.sql)).not.toBeInTheDocument();
+  });
+
+  it('reports a failed «Как посчитано» read and retries it', async () => {
+    resultApi();
+    server.use(http.get(api('/results/r_fixture'), () => HttpResponse.json({ error: { code: 'failed', message: 'Хранилище недоступно' } }, { status: 503 }), { once: true }));
+    savedChat([chatFixture.blocks.find((block) => block.type === 'chart')!]);
+    await renderRoute('/chat/c_q1');
+    await userEvent.click(await screen.findByRole('button', { name: 'Как посчитано' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Хранилище недоступно');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Повторить' }));
+    expect(await screen.findByText('time_aggregate')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('draws a table block by result_id with its columns and row limit', async () => {
     resultApi();
     savedChat([{ type: 'table', result_id: 'r_fixture', columns: ['revenue'], limit: 2 }]);
