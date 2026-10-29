@@ -153,6 +153,30 @@ Disable-ScheduledTask -TaskName 'DjedAI CI Runner'
 Browser smoke удаляет только свои тестовые Compose-тома после завершения;
 это предотвращает накопление пользователей и данных между запусками.
 
+Перед каждым заданием и после него runner удаляет контейнеры с метками
+`org.djedai.postgres-acceptance`, `org.djedai.clickhouse-acceptance` и тестовый
+Compose-проект `djedai`, включая его том `app-data`. Это убирает остатки после
+принудительной отмены, когда обычный `finally` не успел выполниться. Очистка
+ограничена 90 секундами и работает только со своим Docker Engine в `DjedAI-CI`.
+Другие Docker-контейнеры и образы не удаляются.
+
+Таймер `djedai-ci-watchdog` раз в минуту проверяет возраст `Runner.Worker`.
+Если процесс пережил максимальный таймаут задания и запас на отмену/отправку
+результатов (всего 35 минут), служба runner перезапускается. Обычные задания
+и вручную остановленная служба не перезапускаются. Задание `required` проверяет
+все результаты средствами Bash: ему не нужны повторные checkout и загрузка Node.
+
+При использовании VPN в режиме TUN он должен предоставлять доступ из WSL к
+`github.com`, `api.github.com` и доменам `*.actions.githubusercontent.com`.
+Служба systemd может быть активна даже при статусе runner `offline` в GitHub:
+это разные проверки. При смене VPN могут также зависнуть загрузка зависимостей
+и отправка логов. Проверяйте оба состояния и журнал:
+
+```powershell
+wsl -d DjedAI-CI -u root --cd / -- systemctl status djedai-ci-watchdog.timer
+wsl -d DjedAI-CI -u root --cd / -- journalctl -u djedai-ci -u djedai-ci-watchdog --since '30 minutes ago' --no-pager
+```
+
 ### Если нужен сервер самого приложения
 
 CI и работающее приложение имеют разные нагрузки. Для пилота с внешней моделью,
