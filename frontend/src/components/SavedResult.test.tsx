@@ -21,7 +21,9 @@ describe('SavedResult', () => {
     const table = await screen.findByRole('table', { name: 'Данные результата r_saved' });
     expect(within(table).getAllByRole('row')).toHaveLength(21);
     expect(screen.getByText('SELECT id FROM orders')).toBeInTheDocument();
-    expect(screen.getByText('r_source')).toHaveAttribute('href', api('/results/r_source'));
+    expect(screen.getByText('run_sql')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Параметры' })).toHaveTextContent("sql = 'SELECT id FROM orders'");
+    expect(screen.getByRole('link', { name: 'r_source' })).toHaveAttribute('href', api('/results/r_source'));
     expect(screen.getByText(/Показаны первые 20 строк/)).toBeInTheDocument();
   });
 
