@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import sys
 import threading
 from collections.abc import Iterator
@@ -284,6 +285,42 @@ def test_upload_without_temp_space_returns_507_and_closes_files(configured, monk
         assert "Недостаточно места для загрузки" in error["message"]
         assert full_disk.created
         assert all(file.closed for file in full_disk.created)
+        assert client.get("/api/datasets").json() == []
+    data_dir = Path(settings.datasets_data_dir)
+    assert not data_dir.exists() or not any(data_dir.iterdir())
+
+
+def test_upload_without_raw_space_returns_507_and_rolls_back(configured, monkeypatch) -> None:
+    settings, _ = configured
+    original_open = Path.open
+
+    class FullRawFile:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> FullRawFile:
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            self.handle.close()
+
+        def write(self, data: bytes) -> int:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    def open_raw(self: Path, mode: str = "r", *args, **kwargs):
+        handle = original_open(self, mode, *args, **kwargs)
+        return FullRawFile(handle) if self.parent.name == "raw" and "w" in mode else handle
+
+    monkeypatch.setattr(Path, "open", open_raw)
+    with _client(settings) as client:
+        response = client.post(
+            "/api/datasets/upload", files={"files": ("sales.csv", b"a,b\n1,2\n", "text/csv")}
+        )
+        assert response.status_code == 507, response.text
+        error = response.json()["error"]
+        assert error["code"] == "insufficient_storage"
+        assert "Недостаточно места для загрузки" in error["message"]
+        assert client.app.state.dataset_service.quota_manager.snapshot().get("local", 0) == 0
         assert client.get("/api/datasets").json() == []
     data_dir = Path(settings.datasets_data_dir)
     assert not data_dir.exists() or not any(data_dir.iterdir())
