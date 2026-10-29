@@ -39,3 +39,26 @@ def test_catalog_preserves_profile_currency_original_names_and_journal(tmp_path:
     assert any(entry.action == "parse_money" for entry in catalog.transformations)
     assert "summa: money" in catalog.to_prompt()
     assert DatasetCatalog.model_validate_json(catalog.model_dump_json()) == catalog
+
+
+def test_low_cardinality_text_is_a_dimension_and_text_code_an_id(tmp_path: Path):
+    source = tmp_path / "sales.csv"
+    source.write_text(
+        "Код заказа;Канал продажи;Комментарий\n"
+        "ПР-ЗК-0000001;Розница;первый\n"
+        "ПР-ЗК-0000001;Интернет;второй\n"
+        "ПР-ЗК-0000002;Розница;третий\n"
+        "ПР-ЗК-0000003;Розница;четвёртый\n",
+        encoding="utf-8",
+    )
+    with duckdb.connect() as connection:
+        raw = load_raw_csv(connection, source, header=True)
+        view = create_typed_view(connection, raw)
+        profile = profile_table(connection, view)
+        table = build_csv_catalog(connection, raw, view, profile, dataset_id="ds_sales").tables[0]
+    roles = {c.name: (c.semantic_type, c.role) for c in table.columns}
+    assert roles == {
+        "kod_zakaza": ("id", "id"),
+        "kanal_prodazhi": ("category", "dimension"),
+        "kommentariy": ("text", "text"),
+    }
