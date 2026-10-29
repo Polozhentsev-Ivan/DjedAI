@@ -4,6 +4,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 runner_url=${1:?runner download URL required}
 runner_sha256=${2:?runner SHA256 required}
+maintenance_script=${3:?base64 maintenance script required}
 [[ $runner_url == https://github.com/actions/runner/releases/download/* ]]
 [[ $runner_sha256 =~ ^[a-f0-9]{64}$ ]]
 source /etc/os-release
@@ -104,5 +105,8 @@ systemctl start docker djedai-ci
 exec /usr/bin/sleep infinity
 EOF
 chmod 0755 /usr/local/sbin/djedai-ci-keepalive
+printf '%s' "$maintenance_script" | base64 --decode > /usr/local/sbin/djedai-ci-maintenance
+chmod 0755 /usr/local/sbin/djedai-ci-maintenance
+/usr/local/sbin/djedai-ci-maintenance install
 systemctl enable docker djedai-ci
 echo 'Linux installation complete. Restart this distribution before registration.'

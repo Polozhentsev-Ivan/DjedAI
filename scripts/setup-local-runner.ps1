@@ -49,9 +49,12 @@ if ($Distribution -notin ($distributions | ForEach-Object { $_.Trim() })) {
 }
 
 $bootstrap = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'setup-local-runner.sh') -Raw
+$maintenance = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(
+    (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'local-runner-maintenance.sh') -Raw).Replace("`r", '')
+))
 # PowerShell appends CRLF to pipeline input; keep that final CR inside a Bash comment.
 $bootstrap = $bootstrap.Replace("`r", '').TrimEnd("`n") + "`n# end of bootstrap"
-Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--cd', '/', '--exec', 'bash', '-s', '--', $package.download_url, $package.sha256_checksum) $bootstrap
+Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--cd', '/', '--exec', 'bash', '-s', '--', $package.download_url, $package.sha256_checksum, $maintenance) $bootstrap
 Invoke-Native wsl.exe @('--terminate', $Distribution)
 
 # Registration tokens are short lived and go through stdin, never into a file or command line.

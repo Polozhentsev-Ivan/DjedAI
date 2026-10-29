@@ -46,7 +46,8 @@ jobs:
     needs: repository
     if: needs.repository.outputs.python-enabled == 'true' && needs.repository.outputs.run-tests == 'true'
     runs-on: [self-hosted, linux, x64, djedai-ci]
-    timeout-minutes: 15
+    # Coverage and live database checks take about 14 minutes on this local host.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +71,8 @@ jobs:
         run: uv run --locked ruff format --check .
       - name: Check frontend shared contracts
         run: uv run --locked python scripts/export_frontend_contracts.py --check
+      - name: Test local runner recovery and cleanup
+        run: uv run --locked python scripts/local-runner-maintenance.test.py
       - name: Test Python application
         run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Test auth migrations and persistence
@@ -214,12 +217,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, djedai-ci]
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
+      # Final status must not depend on another checkout/toolchain download.
       - name: Require all applicable checks
         env:
           REPOSITORY_RESULT: ${{ needs.repository.result }}
@@ -229,7 +227,15 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           BROWSER_RESULT: ${{ needs.browser.result }}
         run: |
-          node scripts/check-repository.mjs --required
+          test "$REPOSITORY_RESULT" = "success"
+          case "$PYTHON_EXPECTED:$PYTHON_RESULT" in
+            true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac
+          case "$FRONTEND_EXPECTED:$FRONTEND_RESULT" in
+            true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac
           if [ "$PYTHON_EXPECTED" = "true" ] && [ "$FRONTEND_EXPECTED" = "true" ]; then
             test "$BROWSER_RESULT" = "success"
           else

@@ -1,6 +1,7 @@
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
+import { apiUrl } from '@/api/client';
 import { cn } from '@/lib/cn';
 import { Icon } from './Icon';
 
@@ -9,10 +10,21 @@ export interface CalculationColumn {
   name: string;
 }
 
+export interface CalculationParam {
+  name: string;
+  value: string;
+}
+
 export interface Calculation {
   tool: string;
+  /** Arguments of the tool call, one per row, as they were passed. */
+  params?: readonly CalculationParam[] | undefined;
   columns: readonly CalculationColumn[];
   sql: string;
+  /** Result this one was computed from (`source_result_id`): the previous step of a chain. */
+  origin?: string | undefined;
+  /** Saved widget recipe: the calls a refresh repeats in order, the last one gives the chart. */
+  recipe?: readonly string[] | undefined;
   stats?: string | undefined;
   /** Where and when the data was read and against which catalog revision (B1-11). */
   source?: string | undefined;
@@ -26,7 +38,7 @@ interface HowCalculatedProps extends Calculation {
   defaultOpen?: boolean | undefined;
 }
 
-function Body({ tool, columns, sql, stats, source, limitations, panel }: Calculation & { panel: boolean }) {
+function Body({ tool, params, columns, sql, origin, recipe, stats, source, limitations, panel }: Calculation & { panel: boolean }) {
   const label = 'min-w-(--label-col) text-xs text-muted-foreground';
   return (
     <div className={cn('flex flex-col gap-3', panel ? 'px-2 pb-2 pt-1' : 'border-t border-border bg-secondary p-3.5')}>
@@ -34,6 +46,16 @@ function Body({ tool, columns, sql, stats, source, limitations, panel }: Calcula
         <span className={label}>Инструмент</span>
         <code className="rounded-xs bg-muted px-2 py-0.5 font-mono text-xs">{tool}</code>
       </div>
+      {params && params.length > 0 && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Параметры</span>
+          <ul aria-label="Параметры" className="m-0 flex flex-1 list-none flex-col gap-1 p-0">
+            {params.map((param) => (
+              <li key={param.name}><span className="font-mono text-xs text-muted-foreground">{param.name}</span> = <code className="font-mono text-xs">{param.value}</code></li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="flex flex-wrap items-baseline gap-2">
         <span className={label}>Колонки</span>
         <span className="flex flex-wrap gap-x-3 gap-y-1">
@@ -48,6 +70,20 @@ function Body({ tool, columns, sql, stats, source, limitations, panel }: Calcula
         <div className="flex flex-wrap items-baseline gap-2">
           <span className={label}>Обработано</span>
           <span className="tabular">{stats}</span>
+        </div>
+      )}
+      {recipe && recipe.length > 0 && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Рецепт</span>
+          <ol aria-label="Рецепт" className="m-0 flex flex-1 flex-col gap-1 pl-4">
+            {recipe.map((step, index) => <li key={index}><code className="font-mono text-xs">{step}</code></li>)}
+          </ol>
+        </div>
+      )}
+      {origin && (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className={label}>Источник результата</span>
+          <a href={apiUrl(`/results/${encodeURIComponent(origin)}`)} target="_blank" rel="noreferrer" className="font-mono text-xs">{origin}</a>
         </div>
       )}
       {source && (
@@ -69,7 +105,7 @@ function Body({ tool, columns, sql, stats, source, limitations, panel }: Calcula
   );
 }
 
-/** «Как посчитано»: tool, columns and SQL behind an answer or a widget. */
+/** «Как посчитано»: tool, parameters, columns, SQL and source result behind an answer or a widget. */
 export function HowCalculated({ variant = 'collapsible', summary, defaultOpen = false, ...calculation }: HowCalculatedProps) {
   const [open, setOpen] = useState(defaultOpen);
   const base = 'overflow-hidden rounded-md text-sm leading-normal tracking-sm text-foreground';
