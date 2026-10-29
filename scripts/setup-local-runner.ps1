@@ -49,6 +49,8 @@ if ($Distribution -notin ($distributions | ForEach-Object { $_.Trim() })) {
 }
 
 $bootstrap = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'setup-local-runner.sh') -Raw
+# PowerShell appends CRLF to pipeline input; keep that final CR inside a Bash comment.
+$bootstrap = $bootstrap.Replace("`r", '').TrimEnd("`n") + "`n# end of bootstrap"
 Invoke-Native wsl.exe @('-d', $Distribution, '-u', 'root', '--exec', 'bash', '-s', '--', $package.download_url, $package.sha256_checksum) $bootstrap
 Invoke-Native wsl.exe @('--terminate', $Distribution)
 
