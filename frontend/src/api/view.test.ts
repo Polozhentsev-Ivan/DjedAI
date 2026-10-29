@@ -1,6 +1,6 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
 import {
-  calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
+  calculation, callParams, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
   journal, kpiView, limitations, missingCell, needsRefresh, readSource, relationGraph, relationViews, revisionSummary, sourceLabel,
   tableMeta, toolCall, typeLabel,
 } from './view';
@@ -209,9 +209,19 @@ describe('result views', () => {
   it('writes the tool call and calculation', () => {
     expect(toolCall('top_n', { table: 'orders', n: 5 })).toBe("top_n(table='orders', n=5)");
     const how = calculation(db.results.r_rev!);
-    expect(how.tool).toBe("time_aggregate(table='orders', freq='month')");
+    expect(how.tool).toBe('time_aggregate');
+    expect(how.params).toEqual([{ name: 'table', value: "'orders'" }, { name: 'freq', value: "'month'" }]);
+    expect(how.origin).toBeUndefined();
     expect(how.columns).toEqual([{ label: 'Дата оплаты', name: 'month' }, { label: 'Сумма с НДС, руб', name: 'revenue' }]);
     expect(calculation({ ...db.results.r_rev!, sql: null, data: null }).sql).toBe('—');
+  });
+
+  it('shows the parent result as the source, not as a parameter', () => {
+    const derived = { ...db.results.r_rev!, tool: 'top_n', params: { source_result_id: 'r_rev', n: 3, by: ['revenue'] }, source_result_id: 'r_rev' };
+    const how = calculation(derived);
+    expect(how.origin).toBe('r_rev');
+    expect(how.params).toEqual([{ name: 'n', value: '3' }, { name: 'by', value: '["revenue"]' }]);
+    expect(callParams({})).toEqual([]);
   });
 
   it('lists data limitations of a result', () => {

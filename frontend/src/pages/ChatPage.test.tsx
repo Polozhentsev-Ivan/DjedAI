@@ -86,7 +86,8 @@ describe('CP1 chat integration', () => {
     expect(within(table).getByText('1 800 000')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Метаданные JSON' })).toHaveAttribute('href', api('/results/r_rev'));
     expect(screen.getByRole('link', { name: 'Данные JSON' })).toHaveAttribute('href', api('/results/r_rev/data'));
-    expect(screen.getByText("time_aggregate(table='orders', freq='month')")).toBeInTheDocument();
+    expect(screen.getByText('time_aggregate')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Параметры' })).toHaveTextContent("table = 'orders'freq = 'month'");
     view.unmount();
     await renderRoute('/chat/c_q1');
     expect(await screen.findByText('Сохранённый ответ: 10 строк')).toBeInTheDocument();
