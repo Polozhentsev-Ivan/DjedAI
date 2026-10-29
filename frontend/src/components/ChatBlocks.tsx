@@ -2,13 +2,14 @@ import { ChevronRight, LayoutDashboard } from 'lucide-react';
 import { Link } from 'react-router';
 import type { Schemas } from '@/api/client';
 import { useResultData } from '@/api/queries';
-import { ResultChart } from '@/charts/ResultChart';
 import { ResultTable } from '@/charts/ResultTable';
 import { plural } from '@/lib/format';
+import { ChartAnswer } from './ChartAnswer';
 import { ChartCard } from './ChartCard';
 import { ClarifyBlock } from './ClarifyBlock';
 import { Icon } from './Icon';
 import { Markdown } from './Markdown';
+import type { SaveTarget } from './SaveToDashboard';
 import { ErrorState, LoadingState, StateBlock } from './StateBlock';
 import { SuggestionChips } from './SuggestionChips';
 
@@ -70,9 +71,11 @@ interface ChatBlocksProps {
   onAsk: (text: string) => void;
   /** Buttons stay visible but inactive while a stream runs or when the answer is not the latest. */
   disabled: boolean;
+  /** Charts offer «+ В дашборд» only when the chat's dataset is known. */
+  save?: SaveTarget | undefined;
 }
 
-export function ChatBlocks({ blocks, onAsk, disabled }: ChatBlocksProps) {
+export function ChatBlocks({ blocks, onAsk, disabled, save }: ChatBlocksProps) {
   return blocks.map((block, index) => {
     const key = `${index}:${typeName(block)}`;
     switch (block.type) {
@@ -80,7 +83,7 @@ export function ChatBlocks({ blocks, onAsk, disabled }: ChatBlocksProps) {
         return typeof block.markdown === 'string' ? <Markdown key={key} text={block.markdown} /> : <Unsupported key={key} type="text" />;
       case 'chart':
         if (typeof block.chart !== 'object' || typeof block.chart.result_id !== 'string') return <Unsupported key={key} type="chart" />;
-        return <ChartCard key={key} title={block.chart.title} subtitle={block.chart.subtitle ?? undefined}><ResultChart spec={block.chart} /></ChartCard>;
+        return <ChartAnswer key={key} chart={block.chart} save={save} />;
       case 'table':
         if (typeof block.result_id !== 'string') return <Unsupported key={key} type="table" />;
         return <TableBlock key={key} block={block} />;

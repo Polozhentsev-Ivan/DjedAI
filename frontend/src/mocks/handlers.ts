@@ -53,6 +53,29 @@ function notFound(what: string) {
   return errorJson(404, { code: 'not_found', message: `${what} не найден` });
 }
 
+const MAX_RECIPE_STEPS = 5;
+
+/** Like the server: one call, or the source_result_id chain from its root as recipe steps (no temporary ids). */
+function widgetSource(db: MockDb, result: Schemas['ToolResultMeta']): Pick<Schemas['Widget'], 'tool_call' | 'recipe'> | { error: string } {
+  const chain = [result];
+  for (let step = result; step.source_result_id;) {
+    if (chain.length >= MAX_RECIPE_STEPS) return { error: `Глубина зависимостей превышает лимит (максимум ${MAX_RECIPE_STEPS} шагов)` };
+    const parent = db.results[step.source_result_id];
+    if (!parent) return { error: 'Невозможно сохранить виджет: исходный шаг вычисления не найден или недоступен' };
+    if (chain.includes(parent)) return { error: 'Обнаружен цикл в зависимостях результатов' };
+    chain.push(parent);
+    step = parent;
+  }
+  const calls = chain.reverse().map((step) => {
+    const { source_result_id: _parent, ...params } = step.params ?? {};
+    return { tool: step.tool ?? 'run_sql', params };
+  });
+  const [single, ...rest] = calls;
+  if (single && rest.length === 0) return { tool_call: single };
+  const steps = calls.map((call, i) => ({ step_id: `step_${i + 1}`, call, source_step_id: i > 0 ? `step_${i}` : null }));
+  return { recipe: { schema_version: 1, steps, output_step_id: `step_${steps.length}` } };
+}
+
 function summary({ catalog: _catalog, error: _error, ...rest }: Schemas['DatasetDetail']): Schemas['DatasetSummary'] {
   return rest;
 }
@@ -358,15 +381,20 @@ export function createHandlers({ db = createDb(), scenario = () => 'normal', tic
     http.post(api('/dashboards'), async ({ request }) => {
       const body = (await request.json()) as Schemas['DashboardCreate'];
       const result = db.results[body.result_id];
+      if (!result) return notFound('Результат');
+      const source = widgetSource(db, result);
+      if ('error' in source) return errorJson(422, { code: 'invalid_recipe', message: source.error });
       let dashboard = db.dashboards.find((d) => d.dashboard_id === body.dashboard_id);
+      if (body.dashboard_id && dashboard?.dataset_id !== body.dataset_id) return notFound('Дашборд');
       if (!dashboard) {
-        dashboard = { dashboard_id: `d_${db.dashboards.length + 1}`, dataset_id: body.dataset_id, title: body.title ?? 'Новый дашборд', widgets: [], created_at: new Date().toISOString(), refreshed_at: null };
+        dashboard = { dashboard_id: `d_${db.dashboards.length + 1}`, dataset_id: body.dataset_id, title: body.title ?? body.chart.title, widgets: [], created_at: new Date().toISOString(), refreshed_at: null };
         db.dashboards.push(dashboard);
       }
+      const y = Math.max(0, ...dashboard.widgets.map((w) => w.layout.y + w.layout.h));
       dashboard.widgets.push({
-        widget_id: `w_${Date.now()}`, tool_call: { tool: result?.tool ?? 'unknown', params: result?.params ?? {} },
-        layout: { x: 0, y: 0, w: 6, h: 4 },
-        chart: body.chart, caption: null, result_id: body.result_id, status: 'ok', error: null,
+        widget_id: `w_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`, ...source,
+        layout: { x: 0, y, w: 6, h: 4 },
+        chart: body.chart, caption: body.chart.subtitle ?? null, result_id: body.result_id, status: 'ok', error: null,
       });
       return HttpResponse.json(dashboard);
     }),
