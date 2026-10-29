@@ -24,6 +24,10 @@ class LimitSettings(BaseSettings):
     )
 
     type_parse_threshold: float = Field(default=0.95, gt=0, le=1, alias="TYPE_PARSE_THRESHOLD")
+    # Текст с малым числом значений — category (B1-2 п. 4): не больше N различных и
+    # не больше доли r от непустых, чтобы справочник из уникальных имён остался text
+    category_max_distinct: int = Field(default=50, ge=1, alias="CATEGORY_MAX_DISTINCT")
+    category_max_ratio: float = Field(default=0.5, gt=0, le=1, alias="CATEGORY_MAX_RATIO")
     relation_min_overlap: float = Field(default=0.5, gt=0, le=1, alias="RELATION_MIN_OVERLAP")
     relation_unnamed_min_overlap: float = Field(
         default=0.95, gt=0, le=1, alias="RELATION_UNNAMED_MIN_OVERLAP"

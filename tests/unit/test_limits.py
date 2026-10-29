@@ -21,6 +21,9 @@ def clear_limits_cache():
     [
         ("TYPE_PARSE_THRESHOLD", 0),
         ("TYPE_PARSE_THRESHOLD", 1.1),
+        ("CATEGORY_MAX_DISTINCT", 0),
+        ("CATEGORY_MAX_RATIO", 0),
+        ("CATEGORY_MAX_RATIO", 1.5),
         ("RELATION_MIN_OVERLAP", -1),
         ("SQL_MAX_ROWS", 0),
         ("TOOL_TIMEOUT_SECONDS", 0),
@@ -46,6 +49,15 @@ def clear_limits_cache():
 def test_invalid_limits_fail_before_execution(field: str, value: float):
     with pytest.raises(ValueError):
         LimitSettings(_env_file=None, **{field: value})
+
+
+def test_category_thresholds_default_and_env(monkeypatch):
+    limits = LimitSettings(_env_file=None)
+    assert (limits.category_max_distinct, limits.category_max_ratio) == (50, 0.5)
+    monkeypatch.setenv("CATEGORY_MAX_DISTINCT", "10")
+    monkeypatch.setenv("CATEGORY_MAX_RATIO", "0.2")
+    limits = LimitSettings(_env_file=None)
+    assert (limits.category_max_distinct, limits.category_max_ratio) == (10, 0.2)
 
 
 def test_dashboard_output_limit_is_separate_from_chat_limit():
