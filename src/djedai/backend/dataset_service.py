@@ -732,7 +732,6 @@ class DatasetService:
         stream: Any,
         target: Path,
         owner_id: str,
-        name: str,
         current_request_bytes: int,
     ) -> tuple[int, int]:
         file_bytes = 0
@@ -746,14 +745,6 @@ class DatasetService:
                         break
                     chunk_len = len(chunk)
                     file_bytes += chunk_len
-                    if file_bytes > self.limits.max_upload_file_bytes:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=(
-                                f"Размер файла '{name}' превышает допустимый "
-                                f"лимит ({self.limits.max_upload_file_bytes} байт)"
-                            ),
-                        )
                     if current_request_bytes + file_bytes > self.limits.max_upload_request_bytes:
                         raise HTTPException(
                             status_code=413,
@@ -778,9 +769,8 @@ class DatasetService:
 
     def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
         def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
-            name = files[index].filename or "upload.csv"
             return self._stream_copy_file(
-                files[index].file, target, owner_id, name, current_request_bytes
+                files[index].file, target, owner_id, current_request_bytes
             )
 
         return self._persist_sources(
@@ -789,9 +779,8 @@ class DatasetService:
 
     def _persist_csv_sources(self, owner_id: str, sources: Sequence[CsvSource]) -> str:
         def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
-            name = sources[index].original_name
             with Path(sources[index].path).open("rb") as stream:
-                return self._stream_copy_file(stream, target, owner_id, name, current_request_bytes)
+                return self._stream_copy_file(stream, target, owner_id, current_request_bytes)
 
         return self._persist_sources(
             owner_id, [source.original_name for source in sources], copy_source
