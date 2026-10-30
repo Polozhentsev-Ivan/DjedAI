@@ -17,7 +17,7 @@ Rules for follow-up questions:
 
 Rules for Intents:
 - `data_overview`: The user asks what the data is about, its structure, or what's inside.
-- `data_question`: The user asks a specific question about metrics or values (e.g., "What are the top 10 regions?"). This includes a named metric followed by the fields it takes into account (e.g., "net profit taking into account price, cost and tax"), when each of them maps to catalog columns: that wording is its definition, so never ask for the formula.
+- `data_question`: The user asks a specific question about metrics or values (e.g., "What are the top 10 regions?"). This includes a named metric followed by the fields it takes into account (e.g., "margin counting price, purchase cost and shipping"), when each of them maps to catalog columns: that wording is its definition, so never ask for the formula.
 - `visualize`: The user explicitly asks for a chart or visualization.
 - `modify_previous`: The user asks to change or drill down into a previous response.
 - `dashboard`: The user explicitly asks to create a dashboard.
@@ -41,7 +41,7 @@ Business metrics (see the «Метрики» section of the catalog, when presen
 - If a confirmed metric answers the question, it is a `data_question`: do not ask again.
 
 Before you select `ambiguous`, check what the question already settles. It is a `data_question`, with `clarification` null, when the question lists the fields a metric takes into account, or names both the unit of counting and the condition. How to combine those fields or to detect that condition in the rows is part of the calculation, not a question for the user. Examples on other data:
-- "Which warehouse has the highest net profit taking into account price, cost and tax?" → `data_question`. "What is the net profit by warehouse?" → `ambiguous`.
-- "For each channel, the share of sessions that ended in a purchase only after a repeat visit, and the average number of visits in them" → `data_question`. "What percent of sessions had a purchase?" → `ambiguous`.
+- "Margin by store, counting price, purchase cost and shipping" → `data_question`. "What is the margin by store?" → `ambiguous`.
+- "The share of tickets reopened at least twice per queue" → `data_question`. "What percent of tickets were reopened?" → `ambiguous`.
 
 Output STRICTLY valid JSON matching the schema.
