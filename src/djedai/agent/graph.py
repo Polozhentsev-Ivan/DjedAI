@@ -114,6 +114,7 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
             data = policy.result_data(
                 result.data,
                 context=_result_context(state, result),
+                max_rows=policy.prompt_row_limit(result, sensitive_columns=sensitive_columns),
                 sensitive_columns=policy.sensitive_result_columns(
                     result, sensitive_columns=sensitive_columns
                 ),
@@ -123,6 +124,20 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
                 usable = True
         entries.append(entry)
     return entries, usable
+
+
+def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
+    """Результаты шагов для повторного планирования: ошибка вместе с подсказкой."""
+    lines = []
+    for result in state.get("results", []):
+        status = "Success"
+        if result.error:
+            safe = policy.sanitize_error(result.error)
+            status = safe.message
+            if safe.suggestion:
+                status = f"{status} Подсказка: {safe.suggestion}"
+        lines.append(f"Tool {result.tool}: {result.status} - {status}")
+    return "\n".join(lines)
 
 
 def _policy_note(entries: list[dict]) -> str:
@@ -252,11 +267,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
 
     # Format the retry context. Tool errors can contain SQL fragments or values,
     # so they are sanitized before they enter the prompt.
-    results_str = "\n".join(
-        f"Tool {r.tool}: {r.status} - "
-        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
-        for r in state.get("results", [])
-    )
+    results_str = _results_for_plan(state, policy)
 
     sys_prompt = load_prompt("plan").format(
         catalog=state.get("catalog_prompt"),
@@ -302,11 +313,7 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
         f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
         for t in registry
     )
-    results_str = "\n".join(
-        f"Tool {r.tool}: {r.status} - "
-        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
-        for r in state.get("results", [])
-    )
+    results_str = _results_for_plan(state, policy)
     sys_prompt = load_prompt("dashboard").format(
         catalog=state.get("catalog_prompt"),
         results=results_str,
