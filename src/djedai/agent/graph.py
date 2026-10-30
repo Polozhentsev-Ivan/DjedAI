@@ -14,6 +14,7 @@ from djedai.agent.dashboard import (
     build_widget_snapshot,
     dashboard_output_result_ids,
     dashboard_preview_blocks,
+    dashboard_refresh_blocks,
     normalize_dashboard_plan,
 )
 from djedai.agent.data_policy import (
@@ -544,6 +545,55 @@ def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
     return {
         "dashboard_snapshot": snapshot,
         "answer_blocks": dashboard_preview_blocks(snapshot),
+        "charts": [
+            widget.chart for widget in snapshot.widgets if isinstance(widget.chart, ChartSpec)
+        ],
+        "focus_result_ids": dashboard_output_result_ids(snapshot),
+    }
+
+
+def refresh_dashboard(state: AgentState, config: RunnableConfig) -> dict:
+    """Пересчитывает существующий дашборд, выбранный в контексте диалога.
+
+    Права владельца, dataset и актуальность рецептов проверяет backend-сервис, а не
+    модель. Ошибка возвращается явным блоком: старый снимок не выдаётся за свежий.
+    """
+    understanding = state.get("understanding")
+    dashboard_id = understanding.dashboard_id if understanding is not None else None
+    if not dashboard_id:
+        return {
+            "answer_blocks": [Block(type="error", markdown="Не указан дашборд для обновления.")]
+        }
+
+    refresher = config.get("configurable", {}).get("dashboard_refresher")
+    if refresher is None:
+        return {
+            "answer_blocks": [
+                Block(type="error", markdown="Обновление сохранённых дашбордов сейчас недоступно.")
+            ]
+        }
+
+    try:
+        snapshot = refresher(dashboard_id)
+        if isinstance(snapshot, dict):
+            snapshot = DashboardSnapshot.model_validate(snapshot)
+    except (TurnTimeout, TurnCancelled):
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed refresh is the finding
+        policy = _policy(config)
+        return {
+            "answer_blocks": [
+                Block(
+                    type="error",
+                    markdown="Не удалось обновить дашборд. "
+                    + (policy.sanitize_text(str(exc)) or "Повторите запрос позднее."),
+                )
+            ]
+        }
+
+    return {
+        "dashboard_snapshot": snapshot,
+        "answer_blocks": dashboard_refresh_blocks(snapshot),
         "charts": [
             widget.chart for widget in snapshot.widgets if isinstance(widget.chart, ChartSpec)
         ],
@@ -1441,10 +1491,13 @@ def _quality_lines(state: AgentState) -> list[str]:
 
 
 def route_after_understand(state: AgentState) -> str:
-    """Conditional edge: уточнения — в clarify, дашборд — в свою ветку, иначе plan."""
-    intent = state["understanding"].intent
+    """Уточнения — в clarify, существующий дашборд — в refresh, новый — в plan_dashboard."""
+    understanding = state["understanding"]
+    intent = understanding.intent
     if intent in CLARIFY_INTENTS:
         return "clarify"
+    if understanding.dashboard_id:
+        return "refresh_dashboard"
     if intent == "dashboard":
         return "plan_dashboard"
     return "plan"
@@ -1516,6 +1569,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("plan_dashboard", observed("plan_dashboard", plan_dashboard))
     workflow.add_node("execute_dashboard", observed("execute_dashboard", execute_dashboard))
     workflow.add_node("save_dashboard", observed("save_dashboard", save_dashboard))
+    workflow.add_node("refresh_dashboard", observed("refresh_dashboard", refresh_dashboard))
     workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
@@ -1529,7 +1583,12 @@ def build_agent_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "understand",
         route_after_understand,
-        {"plan": "plan", "plan_dashboard": "plan_dashboard", "clarify": "clarify"},
+        {
+            "plan": "plan",
+            "plan_dashboard": "plan_dashboard",
+            "refresh_dashboard": "refresh_dashboard",
+            "clarify": "clarify",
+        },
     )
 
     workflow.add_edge("plan", "execute")
@@ -1553,6 +1612,7 @@ def build_agent_graph() -> StateGraph:
         {"plan_dashboard": "plan_dashboard", "save_dashboard": "save_dashboard"},
     )
     workflow.add_edge("save_dashboard", END)
+    workflow.add_edge("refresh_dashboard", END)
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")

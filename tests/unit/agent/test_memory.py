@@ -208,7 +208,7 @@ def test_conversation_context_contains_summary_messages_focus_and_blocks() -> No
     assert "facts=['Выручка 1200']" in context
     assert "2. table: result_id=r_second" in context
     assert "3. chart: type=bar, title=Выручка по регионам, result_id=r_second" in context
-    assert "4. dashboard: Обзор" in context
+    assert "4. dashboard: title=Обзор, dashboard_id=d_1" in context
     assert "5. clarification: Уточните" in context
     assert "6. suggestions: 1" in context
 

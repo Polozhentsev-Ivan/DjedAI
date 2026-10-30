@@ -384,3 +384,39 @@ def test_agent_dashboard_is_saved_and_refreshes_without_old_results(
         persisted = restarted.get(f"/api/dashboards/{dashboard_id}").json()
         assert persisted["refreshed_at"] == refreshed["refreshed_at"]
         assert _widget(persisted, "Всего")["result_id"] == refreshed_total["result_id"]
+
+        # Продолжение диалога: "открой созданную панель и обнови её" должно
+        # переиспользовать сохранённый dashboard_id, а не создавать новый дашборд.
+        class ChatRefreshPlanner:
+            def __init__(self) -> None:
+                self.stages: list[str] = []
+
+            def generate_typed_response(
+                self, _system_prompt, _user_prompt, response_model, **kwargs
+            ):
+                stage = kwargs["stage"]
+                self.stages.append(stage)
+                if stage == "understand":
+                    return ModelResponse(
+                        status="success",
+                        data=Understanding(intent="dashboard", dashboard_id=dashboard_id),
+                    )
+                raise AssertionError(f"Unexpected model stage: {stage}")
+
+        chat_planner = ChatRefreshPlanner()
+        monkeypatch.setattr(chat_service, "get_agent_client", lambda: chat_planner)
+        chat_refresh = restarted.post(
+            f"/api/chats/{chat_id}/messages",
+            json={"text": "Открой созданную панель и обнови все её виджеты"},
+        )
+        assert chat_refresh.status_code == 200, chat_refresh.text
+        events = parse_sse(chat_refresh.text)
+        assert not [data for name, data in events if name == "error"], chat_refresh.text
+        blocks = [data for name, data in events if name == "block"]
+        assert chat_planner.stages == ["understand"]
+        assert blocks[-1]["type"] == "dashboard_link"
+        assert blocks[-1]["dashboard_id"] == dashboard_id
+        after_chat_refresh = restarted.get(f"/api/dashboards/{dashboard_id}").json()
+        chat_refresh_result_ids = {widget["result_id"] for widget in after_chat_refresh["widgets"]}
+        assert chat_refresh_result_ids.isdisjoint(new_result_ids)
+        assert all(result_id is not None for result_id in chat_refresh_result_ids)
