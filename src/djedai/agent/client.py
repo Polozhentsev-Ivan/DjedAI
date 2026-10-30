@@ -72,15 +72,18 @@ def _schema_prompt(system_prompt: str, schema_json: dict[str, Any]) -> str:
 def _is_json_schema_rejection(exc: APIError) -> bool:
     if getattr(exc, "status_code", None) not in {400, 422}:
         return False
-    msg = (str(exc) or "").lower()
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
         err = body.get("error", {})
         if isinstance(err, dict):
             if err.get("param") in {"response_format", "response_format.type", "json_schema"}:
                 return True
-            msg += " " + (str(err.get("message") or "")).lower()
-    return any(marker in msg for marker in ("json_schema", "response_format", "schema", "strict"))
+            if err.get("code") in {"unsupported_response_format", "invalid_response_format"}:
+                return True
+    msg = (str(exc) or "").lower()
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        msg += " " + (str(body["error"].get("message") or "")).lower()
+    return "response_format" in msg or "json_schema" in msg or ("json" in msg and "schema" in msg)
 
 
 class ModelResponse[T: BaseModel](BaseModel):
@@ -319,25 +322,29 @@ class BIModelClient:
             # OpenAI-compatible Chat Completions API.
             request["extra_body"] = {"reasoning_effort": reasoning_effort}
 
+        budget = current_budget() or ExecutionBudget(
+            self.timeout * (self.max_retries + 1) + self.retry_delay * (2**self.max_retries)
+        )
         metadata: dict[str, Any] = {}
         try:
-            try:
-                response = self._request(read_error_body=use_schema, **request)
-            except APIError as exc:
-                if use_schema and _is_json_schema_rejection(exc):
-                    self._supports_json_schema = False
-                    fallback_req = dict(request)
-                    fallback_req["response_format"] = {"type": "json_object"}
-                    fallback_req["messages"] = [
-                        {
-                            "role": "system",
-                            "content": _schema_prompt(system_prompt, schema_json),
-                        },
-                        {"role": "user", "content": user_prompt},
-                    ]
-                    response = self._request(**fallback_req)
-                else:
-                    raise
+            with budget.activate():
+                try:
+                    response = self._request(read_error_body=use_schema, **request)
+                except APIError as exc:
+                    if use_schema and _is_json_schema_rejection(exc):
+                        self._supports_json_schema = False
+                        fallback_req = dict(request)
+                        fallback_req["response_format"] = {"type": "json_object"}
+                        fallback_req["messages"] = [
+                            {
+                                "role": "system",
+                                "content": _schema_prompt(system_prompt, schema_json),
+                            },
+                            {"role": "user", "content": user_prompt},
+                        ]
+                        response = self._request(**fallback_req)
+                    else:
+                        raise
 
             capture_usage(response.usage)
             metadata = {

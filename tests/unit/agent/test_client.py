@@ -342,6 +342,50 @@ def test_http_client_fallback_from_json_schema_to_json_object(model_endpoint):
         assert endpoint.calls[2].get("response_format", {}).get("type") == "json_object"
 
 
+def test_http_client_fallback_shares_execution_budget(model_endpoint):
+    import time
+
+    from djedai.execution import ExecutionBudget, TurnTimeout
+
+    def reply(n, payload):
+        time.sleep(0.05)
+        return {
+            "status": 400,
+            "error_body": {
+                "error": {"message": "Invalid response_format: json_schema unsupported"}
+            },
+        }
+
+    with model_endpoint(reply) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        with pytest.raises(TurnTimeout), ExecutionBudget(0.03).activate():
+            client.generate_typed_response("sys", "user", Understanding)
+
+        # Budget was exhausted during first call/attempt, so fallback was not executed
+        assert len(endpoint.calls) == 1
+
+
+def test_http_client_unrelated_400_with_strict_does_not_trigger_fallback(model_endpoint):
+    def reply(n, payload):
+        return {
+            "status": 400,
+            "error_body": {
+                "error": {
+                    "message": "Parameter strict_filtering cannot be enabled for this dataset",
+                    "param": "strict_filtering",
+                }
+            },
+        }
+
+    with model_endpoint(reply) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "error"
+        assert res.error_type == "SERVER_ERROR"
+        assert len(endpoint.calls) == 1
+        assert client._supports_json_schema is True
+
+
 def test_http_client_schema_mismatch_not_published(model_endpoint):
     # Returns valid JSON that does not match Understanding schema
     invalid_payload = {"wrong_field": 12345}
