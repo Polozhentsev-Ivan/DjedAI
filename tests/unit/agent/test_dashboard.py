@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
+from djedai.agent.client import ModelResponse
 from djedai.agent.dashboard import (
     WidgetExecution,
     build_widget_snapshot,
@@ -16,6 +19,8 @@ from djedai.agent.dashboard import (
     widget_layout,
     widget_tool_call_or_recipe,
 )
+from djedai.agent.diagnostics import RunDiagnostics
+from djedai.agent.graph import plan_dashboard, route_after_plan_dashboard
 from djedai.contracts.agent import (
     DashboardPlanResponse,
     DashboardStepPlan,
@@ -256,6 +261,65 @@ def test_normalize_dashboard_plan_rejects_broken_dependencies(widget_plan, messa
 
     with pytest.raises(ValueError, match=message):
         normalize_dashboard_plan(plan, max_tool_calls=20)
+
+
+def plan_with_first_step(first: DashboardStepPlan) -> DashboardPlanResponse:
+    return DashboardPlanResponse(
+        title="Дашборд",
+        widgets=[
+            widget("Первый", [first]),
+            widget("Второй", [step("a", "SELECT 2")]),
+            widget("Третий", [step("a", "SELECT 3")]),
+        ],
+    )
+
+
+def test_normalize_dashboard_plan_checks_step_args_against_tool_schema():
+    empty = DashboardStepPlan(step_id="a", tool="run_sql", args={})
+
+    with pytest.raises(ValueError, match="Шаг 1 виджета 1 .* run_sql: sql"):
+        normalize_dashboard_plan(plan_with_first_step(empty), max_tool_calls=20)
+
+    valid = normalize_dashboard_plan(plan_with_first_step(step("a", "SELECT 1")), max_tool_calls=20)
+    assert valid.widgets[0].steps[0].args == {"sql": "SELECT 1"}
+
+
+def test_rejected_step_args_reveal_only_names():
+    secret = "SELECT secret_value FROM private_table"
+    bad = DashboardStepPlan(
+        step_id="a", tool="run_sql", args={"sql": ["x"], "query": secret, secret: 1}
+    )
+    events: list[dict] = []
+    diagnostics = RunDiagnostics(
+        events.append, owner_id="o", chat_id="c", dataset_id="d", user_message_id="m"
+    )
+
+    with diagnostics.stage("plan_dashboard"), pytest.raises(ValueError) as error:
+        normalize_dashboard_plan(plan_with_first_step(bad), max_tool_calls=20)
+
+    assert "secret_value" not in str(error.value)
+    assert error.value.__cause__ is None
+    event = next(item for item in events if item["event"] == "invalid_plan_step")
+    assert event["tool"] == "run_sql"
+    assert event["step_keys"] == ["args", "step_id", "tool"]
+    assert event["arg_keys"] == ["<other>", "query", "sql"]
+    assert "secret_value" not in json.dumps(events)
+
+
+def test_plan_dashboard_ends_with_error_block_without_replanning():
+    bad = DashboardStepPlan(step_id="a", tool="run_sql", args={})
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success", data=plan_with_first_step(bad)
+    )
+
+    update = plan_dashboard({"messages": []}, {"configurable": {"client": client}})
+
+    client.generate_typed_response.assert_called_once()
+    assert update["dashboard_plan"] is None
+    assert [block.type for block in update["answer_blocks"]] == ["error"]
+    assert "run_sql: sql" in update["answer_blocks"][0].markdown
+    assert route_after_plan_dashboard(update) == "end"
 
 
 def test_widget_definition_is_a_call_or_a_recipe_without_temporary_ids():
