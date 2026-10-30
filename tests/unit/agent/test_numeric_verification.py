@@ -339,6 +339,56 @@ def test_formula_operands_follow_the_single_named_period() -> None:
     assert _report("2024-10: 1000 / 1000 = 1", evidence, results).status == "verified"
 
 
+def test_fact_numbers_keep_their_own_caption() -> None:
+    result = ToolResult(
+        result_id="r_profile",
+        status="ok",
+        tool="describe_column",
+        data=ToolResultData(columns=["column"], rows=[["amount"]], row_count=1),
+        facts=[
+            Fact(
+                text="Мин: 10, Макс: 100, Среднее: 55, Медиана: 55, Std: 31.62",
+                kind="numeric_profile",
+                values={"min": 10, "max": 100, "mean": 55, "median": 55, "std": 31.62},
+            )
+        ],
+    )
+    results = [result]
+    evidence = _evidence(results)
+    assert _report("Мин 10", evidence, results).status == "verified"
+    assert _report("Макс 100", evidence, results).status == "verified"
+    assert _report("Среднее 55", evidence, results).status == "verified"
+    hundreds = [item for item in evidence if item.source == "fact" and item.value == Decimal(100)]
+    assert hundreds
+    assert all("Среднее" not in (item.label or "") for item in hundreds)
+    assert any("Макс" in (item.label or "") for item in hundreds)
+    wrong = _report("Среднее 100", evidence, results)
+    assert wrong.status == "failed"
+    assert wrong.assertions[0].reason_code in {"unrelated_result", "number_not_found"}
+
+
+def test_count_semantics_do_not_depend_on_sql_alias() -> None:
+    sql = "SELECT COUNT(*) AS n, SUM(amount) AS total FROM orders"
+    result = ToolResult(
+        result_id="r_count",
+        status="ok",
+        tool="run_sql",
+        sql=sql,
+        params={"sql": sql},
+        data=ToolResultData(columns=["n", "total"], rows=[[3, 50]], row_count=1),
+    )
+    results = [result]
+    evidence = _evidence(results)
+    cells = {item.cell_address: item for item in evidence if item.source == "data_cell"}
+    assert "count" in (cells["data.rows[0].n"].label or "")
+    assert "sum" in (cells["data.rows[0].total"].label or "")
+    assert _report("Rows: 3; total: 50.", evidence, results).status == "verified"
+    assert _report("Количество: 3; сумма: 50.", evidence, results).status == "verified"
+    wrong = _report("Rows: 50; total: 3.", evidence, results)
+    assert wrong.status == "failed"
+    assert all(item.reason_code for item in wrong.assertions)
+
+
 def test_calendar_labels_are_not_measurements() -> None:
     quarter = ToolResult(
         result_id="r_quarter",

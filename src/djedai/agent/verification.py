@@ -21,6 +21,9 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 from djedai.contracts.tool_result import ToolResult
 from djedai.contracts.verification import (
     NumericAssertion,
@@ -74,6 +77,9 @@ _URL_RE = re.compile(r"https?://\S+")
 _TIME_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)")
 _ORDINAL_RE = re.compile(r"(?<!\d)\d{1,2}-(?:й|я|е|го|му|м|х)(?![а-яё])", re.IGNORECASE)
 _CLAUSE_PUNCT_RE = re.compile(r"[!?;\n]|\.(?=\s|$)")
+# Границы подписей внутри факта: «Мин: 10, Макс: 100». Запятая внутри
+# десятичной дроби («31,62») и разрядов («1,000») не разделяет подписи.
+_FACT_SEPARATOR_RE = re.compile(r"[;|\n]|,(?=\s*[A-Za-zА-Яа-яЁё])")
 
 _ISO_DATETIME_RE = re.compile(
     r"(?<!\d)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?(?!\d)"
@@ -236,7 +242,7 @@ _SCALE_WORDS = {
 }
 
 _LABEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("__total__", ("итог", "сумм", "total", "sum")),
+    ("__total__", ("итог", "сумм", "total", "sum", "всего")),
     (
         "__count__",
         (
@@ -258,6 +264,12 @@ _LABEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("__percent__", ("процент", "pct", "percent", "share", "ratio", "доля", "дол")),
     ("__average__", ("средн", "average", "avg", "mean")),
+    ("__min__", ("мин", "min", "минимум")),
+    ("__max__", ("макс", "max", "максимум")),
+    ("__median__", ("медиан", "median")),
+    ("__std__", ("std", "stdev", "стандарт", "отклон", "deviation")),
+    ("__distinct__", ("уникаль", "distinct", "unique")),
+    ("__missing__", ("пропуск", "null", "пуст", "missing")),
     ("__revenue__", ("выручк", "revenue", "sales", "продаж")),
     ("__amount__", ("amount", "сумм", "стоим", "цена")),
     ("__orders__", ("заказ", "order")),
@@ -310,6 +322,15 @@ class _DateClaim:
     end: int
     raw: str
     period: VerificationPeriod
+
+
+@dataclass(frozen=True)
+class _FactSegment:
+    """Фрагмент факта с одной подписью: «Мин: 10» или «Среднее: 55»."""
+
+    start: int
+    end: int
+    text: str
 
 
 @dataclass
@@ -783,7 +804,7 @@ def _period_covered(claim: VerificationPeriod, evidence: Iterable[VerificationPe
 def _label_keys(text: str | None) -> set[str]:
     if not text:
         return set()
-    normalized = text.lower().replace("ё", "е")
+    normalized = text.lower().replace("ё", "е").replace("_", " ")
     keys: set[str] = set()
     for token in re.findall(r"[a-zа-я0-9_]+", normalized):
         if token in _STOPWORDS or token.isdigit() or len(token) < 2:
@@ -1131,6 +1152,71 @@ def _ratio_denominator_for_value(
     )
 
 
+def _fact_segments(text: str) -> list[_FactSegment]:
+    """Делит факт на фрагменты с одной подписью, не разрывая десятичные запятые."""
+    if not text:
+        return []
+    segments: list[_FactSegment] = []
+    start = 0
+    for match in _FACT_SEPARATOR_RE.finditer(text):
+        if match.start() > start:
+            raw = text[start : match.start()]
+            stripped = raw.strip()
+            if stripped:
+                offset = start + len(raw) - len(raw.lstrip())
+                segments.append(_FactSegment(offset, offset + len(stripped), stripped))
+        start = match.end()
+    if start < len(text):
+        raw = text[start:]
+        stripped = raw.strip()
+        if stripped:
+            offset = start + len(raw) - len(raw.lstrip())
+            segments.append(_FactSegment(offset, offset + len(stripped), stripped))
+    return segments or [_FactSegment(0, len(text), text.strip())]
+
+
+def _segment_at(segments: Sequence[_FactSegment], start: int, end: int) -> str | None:
+    for segment in segments:
+        if segment.start <= start and end <= segment.end:
+            return segment.text
+    return None
+
+
+def _segment_has_value(text: str, value: Decimal) -> bool:
+    return any(token.value * token.scale == value for token in _tokens(text))
+
+
+def _fact_key_keys(key: str) -> set[str]:
+    keys = _label_keys(key.replace("_", " "))
+    if key.lower().startswith(("non_", "not_")):
+        # non_null — это счётчик заполненных значений, а не пропусков.
+        keys.discard("__missing__")
+        keys.add("__count__")
+    return keys
+
+
+def _segment_for_value(
+    segments: Sequence[_FactSegment], key: str, value: Decimal
+) -> _FactSegment | None:
+    """Находит фрагмент факта, который относится именно к ключу значения."""
+    key_keys = _fact_key_keys(key)
+    if key_keys:
+        matching = [segment for segment in segments if key_keys & _label_keys(segment.text)]
+        if len(matching) == 1:
+            return matching[0]
+        if matching:
+            by_value = [segment for segment in matching if _segment_has_value(segment.text, value)]
+            if len(by_value) == 1:
+                return by_value[0]
+            return None
+    by_value = [segment for segment in segments if _segment_has_value(segment.text, value)]
+    if len(by_value) == 1:
+        return by_value[0]
+    if len(segments) == 1:
+        return segments[0]
+    return None
+
+
 def _fact_evidence(
     entry: Mapping[str, Any],
     *,
@@ -1148,6 +1234,7 @@ def _fact_evidence(
             continue
         text = str(fact.get("text") or "")
         fact_id = f"{result_id}:fact:{index}"
+        segments = _fact_segments(text)
         claims = _date_claims(text)
         claim_spans = [(claim.start, claim.end) for claim in claims]
         # Период внутри одного факта относится к его числам: «Выручка за 2023
@@ -1160,7 +1247,7 @@ def _fact_evidence(
                     source="period",
                     value=None,
                     period=claim.period,
-                    label=text or None,
+                    label=_segment_at(segments, claim.start, claim.end) or text or None,
                     fact_id=fact_id,
                 )
             )
@@ -1194,7 +1281,7 @@ def _fact_evidence(
                     period=fact_period,
                     population=fact_population,
                     denominator=denominator,
-                    label=text or None,
+                    label=_segment_at(segments, token.start, token.end),
                     fact_id=fact_id,
                 )
             )
@@ -1223,6 +1310,8 @@ def _fact_evidence(
             denominator = None
             if unit == "ratio" and ratio_denominator is not None:
                 denominator = ratio_denominator
+            segment = _segment_for_value(segments, key, value)
+            label = f"{path} {segment.text}".strip() if segment is not None else path
             evidence.append(
                 _evidence(
                     result_id=result_id,
@@ -1233,11 +1322,75 @@ def _fact_evidence(
                     period=fact_period,
                     population=fact_population,
                     denominator=denominator,
-                    label=f"{path} {text}".strip() or None,
+                    label=label or None,
                     fact_id=fact_id,
                 )
             )
     return evidence
+
+
+_SQL_AGGREGATE_LABELS: tuple[tuple[type[exp.Expression], str], ...] = (
+    (exp.Count, "count rows количество строк"),
+    (exp.Sum, "sum total сумма итог"),
+    (exp.Avg, "average mean среднее"),
+    (exp.Min, "min minimum минимум"),
+    (exp.Max, "max maximum максимум"),
+    (exp.Median, "median медиана"),
+    (exp.Stddev, "std standard deviation стандартное отклонение"),
+    (exp.StddevPop, "std standard deviation стандартное отклонение"),
+    (exp.StddevSamp, "std standard deviation стандартное отклонение"),
+    (exp.Variance, "variance дисперсия"),
+    (exp.VariancePop, "variance дисперсия"),
+)
+
+
+def _sql_projection_label(projection: exp.Expression) -> str:
+    """Смысл выходной колонки SQL не зависит от её произвольного алиаса."""
+    inner = projection.this if isinstance(projection, exp.Alias) else projection
+    parts: list[str] = []
+    for node_type, label in _SQL_AGGREGATE_LABELS:
+        if isinstance(inner, node_type):
+            if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Distinct):
+                # COUNT(DISTINCT ...) — число уникальных значений, а не строк.
+                parts.append("count distinct уникальные")
+            else:
+                parts.append(label)
+            break
+    else:
+        if not isinstance(inner, (exp.Column, exp.Cast, exp.TryCast, exp.Paren)):
+            return ""
+    column = inner if isinstance(inner, exp.Column) else inner.find(exp.Column)
+    if column is not None:
+        parts.append(column.name)
+    return " ".join(dict.fromkeys(part for part in parts if part))
+
+
+def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
+    """Сопоставляет выходные колонки run_sql с их агрегатной семантикой."""
+    if result is None or result.tool != "run_sql":
+        return {}
+    sql = result.sql or ""
+    if not sql:
+        params = result.params if isinstance(result.params, Mapping) else {}
+        sql = str(params.get("sql") or "")
+    if not sql.strip():
+        return {}
+    try:
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        return {}
+    select = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+    if select is None:
+        return {}
+    semantics: dict[str, str] = {}
+    for projection in select.expressions:
+        alias = projection.alias_or_name
+        if not alias:
+            continue
+        label = _sql_projection_label(projection)
+        if label:
+            semantics[alias.lower()] = label
+    return semantics
 
 
 def _data_evidence(
@@ -1260,6 +1413,7 @@ def _data_evidence(
     positions = _ratio_columns(columns)
     metric_unit = getattr(metric, "unit", None) if metric is not None else None
     metric_title = getattr(metric, "title", None) if metric is not None else None
+    sql_labels = _sql_column_semantics(result) if metric is None else {}
     bucket_grain = _result_period_grain(result)
     for row_index, row in enumerate(rows):
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
@@ -1346,7 +1500,18 @@ def _data_evidence(
                     period=period,
                     population=metric_population,
                     denominator=denominator,
-                    label=f"{metric_title or label or name} {row_label}".strip() or None,
+                    label=(
+                        " ".join(
+                            part
+                            for part in (
+                                metric_title or label or name,
+                                sql_labels.get(name.lower(), ""),
+                                row_label,
+                            )
+                            if part
+                        )
+                        or None
+                    ),
                     cell_address=f"data.rows[{row_index}].{name or column_index}",
                 )
             )
