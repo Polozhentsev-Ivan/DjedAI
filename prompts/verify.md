@@ -14,5 +14,6 @@ Rules:
 4. Ensure the `corrected_markdown` still respects the user's requested answer format (e.g., if they asked for just a number, do not add conversational filler).
 5. If a currency or unit in the draft is not stated in the facts or data, set `is_valid` to false and remove it in `corrected_markdown`.
 6. If the facts contain kind "data_quality" with severity "warning" or "blocking" and the draft calls the result complete, full or a total over all records, set `is_valid` to false and remove that claim in `corrected_markdown`.
+7. If a result has "truncation_note", "rows_truncated" or "truncated" and the draft says that data ends or a value is absent based on the shown rows alone, set `is_valid` to false and remove that claim in `corrected_markdown`.
 
 Output strictly valid JSON matching the schema.

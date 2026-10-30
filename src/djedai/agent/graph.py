@@ -23,6 +23,7 @@ from djedai.agent.data_policy import (
     policy_for_client,
     sensitive_column_names,
 )
+from djedai.agent.guards import guard_question, lacks_money_fields, reversed_period_update
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
@@ -113,6 +114,7 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
             data = policy.result_data(
                 result.data,
                 context=_result_context(state, result),
+                max_rows=policy.prompt_row_limit(result, sensitive_columns=sensitive_columns),
                 sensitive_columns=policy.sensitive_result_columns(
                     result, sensitive_columns=sensitive_columns
                 ),
@@ -122,6 +124,20 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
                 usable = True
         entries.append(entry)
     return entries, usable
+
+
+def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
+    """Результаты шагов для повторного планирования: ошибка вместе с подсказкой."""
+    lines = []
+    for result in state.get("results", []):
+        status = "Success"
+        if result.error:
+            safe = policy.sanitize_error(result.error)
+            status = safe.message
+            if safe.suggestion:
+                status = f"{status} Подсказка: {safe.suggestion}"
+        lines.append(f"Tool {result.tool}: {result.status} - {status}")
+    return "\n".join(lines)
 
 
 def _policy_note(entries: list[dict]) -> str:
@@ -140,8 +156,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         else f"Catalog mapped for {state.get('dataset_id')}"
     )
     metrics_loader = config.get("configurable", {}).get("metrics_loader")
+    metrics = metrics_loader(state["dataset_id"]) if metrics_loader is not None else {}
     if metrics_loader is not None:
-        catalog_prompt += "\n\n" + metrics_prompt(metrics_loader(state["dataset_id"]))
+        catalog_prompt += "\n\n" + metrics_prompt(metrics)
     catalog_prompt = policy.sanitize_text(catalog_prompt)
     # Results already in the state belong to earlier turns: keep them as history
     # before the per-turn results are cleared.
@@ -157,6 +174,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         # the normalized name, so this is what preserves `dbPasswordText` after
         # normalization to `dbpasswordtext`.
         "sensitive_columns": sensitive_column_names(catalog) if catalog is not None else (),
+        "money_fields_absent": lacks_money_fields(catalog, metrics),
         "history_results": history_results,
         # Memory belongs to this chat only; the backend loads it by chat_id and owner.
         "focus_result_ids": list(state.get("focus_result_ids", [])),
@@ -188,6 +206,9 @@ def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
     )
 
 
+CLARIFY_INTENTS = {"ambiguous", "invalid", "off_topic"}
+
+
 def understand(state: AgentState, config: RunnableConfig) -> dict:
     """Invokes the model to understand intent."""
     client = config.get("configurable", {}).get("client")
@@ -200,6 +221,11 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
     if messages and not last_msg:
         return {"understanding": Understanding(intent="off_topic", entities=Entities())}
 
+    # Явные случаи решает код до модели: результат не зависит от её силы.
+    guarded = guard_question(last_msg, money_fields_absent=state.get("money_fields_absent", False))
+    if guarded is not None:
+        return guarded
+
     if client:
         policy = _policy(config)
         sys_prompt = load_prompt("understand").format(
@@ -210,6 +236,10 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, last_msg, Understanding, stage="understand"
         )
         if response.status == "success" and response.data:
+            # Период мог прийти из контекста диалога: «за тот же период».
+            if response.data.intent not in CLARIFY_INTENTS:
+                if (period := reversed_period_update(response.data.resolved_question)) is not None:
+                    return period
             return {"understanding": response.data}
         if response.error_type == "POLICY_RESTRICTED":
             return {
@@ -237,11 +267,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
 
     # Format the retry context. Tool errors can contain SQL fragments or values,
     # so they are sanitized before they enter the prompt.
-    results_str = "\n".join(
-        f"Tool {r.tool}: {r.status} - "
-        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
-        for r in state.get("results", [])
-    )
+    results_str = _results_for_plan(state, policy)
 
     sys_prompt = load_prompt("plan").format(
         catalog=state.get("catalog_prompt"),
@@ -287,11 +313,7 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
         f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
         for t in registry
     )
-    results_str = "\n".join(
-        f"Tool {r.tool}: {r.status} - "
-        f"{policy.sanitize_text(r.error.message) if r.error else 'Success'}"
-        for r in state.get("results", [])
-    )
+    results_str = _results_for_plan(state, policy)
     sys_prompt = load_prompt("dashboard").format(
         catalog=state.get("catalog_prompt"),
         results=results_str,
@@ -1105,8 +1127,8 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
     focus = list(state.get("focus_result_ids", []))
     existing = state.get("answer_blocks", [])
-    # Do not suppress API errors if they are already present in the response blocks
-    if any(b.type == "error" for b in existing):
+    # Keep what understand already decided: API errors and explained rejections
+    if existing:
         return {"answer_blocks": existing, "focus_result_ids": focus}
 
     policy = _policy(config)
@@ -1143,15 +1165,17 @@ def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
                     "Запрашиваемые поля или метрики не найдены в данных. "
                     "Пожалуйста, уточните ваш запрос или проверьте названия."
                 )
-                blocks.append(Block(type="error", markdown=msg))
+                # Ответ агента, а не сбой хода: блок error чат показывает как ошибку.
+                blocks.append(Block(type="text", markdown=msg))
 
     elif intent == "off_topic":
         msg = (
             "Я — аналитический ИИ-агент. Я могу исследовать датасеты, "
             "писать SQL-запросы, строить графики и дашборды по вашим данным. "
-            "Ваш запрос выходит за рамки моих возможностей."
+            "Ваш запрос выходит за рамки моих возможностей, поэтому анализ не выполнялся. "
+            "Задайте, пожалуйста, вопрос по выбранным данным."
         )
-        blocks.append(Block(type="error", markdown=msg))
+        blocks.append(Block(type="text", markdown=msg))
 
     elif (error := _metric_decision(state)) is not None:
         # Расчёт метрики упёрся в решение пользователя: определение, валюту, период, JOIN.
@@ -1383,7 +1407,7 @@ def _quality_lines(state: AgentState) -> list[str]:
 def route_after_understand(state: AgentState) -> str:
     """Conditional edge: уточнения — в clarify, дашборд — в свою ветку, иначе plan."""
     intent = state["understanding"].intent
-    if intent in ["ambiguous", "invalid", "off_topic"]:
+    if intent in CLARIFY_INTENTS:
         return "clarify"
     if intent == "dashboard":
         return "plan_dashboard"

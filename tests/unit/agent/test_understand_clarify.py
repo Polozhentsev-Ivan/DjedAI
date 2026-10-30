@@ -57,7 +57,7 @@ def test_clarify_invalid_field():
     assert len(result["answer_blocks"]) == 1
 
     block = result["answer_blocks"][0]
-    assert block.type == "error"
+    assert block.type == "text"
     assert "не найдены в данных" in block.markdown
 
 
@@ -84,7 +84,7 @@ def test_clarify_off_topic_capabilities():
     assert len(result["answer_blocks"]) == 1
 
     block = result["answer_blocks"][0]
-    assert block.type == "error"
+    assert block.type == "text"
     assert "Я — аналитический ИИ-агент" in block.markdown
 
 

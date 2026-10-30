@@ -111,6 +111,8 @@ class AgentState(TypedDict, total=False):
     # Normalized column names whose original header is sensitive; keeps
     # `dbPasswordText` sensitive after normalization to `dbpasswordtext`.
     sensitive_columns: tuple[str, ...]
+    # В каталоге нет ни одного признака денежных полей: выручку не из чего считать.
+    money_fields_absent: bool
     history_summary: str | None
     user_context: str | None
     understanding: Understanding | None
