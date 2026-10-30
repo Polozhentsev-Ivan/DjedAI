@@ -1037,3 +1037,85 @@ def test_data_sharing_allowed_reads_environment_then_dotenv(
 
     monkeypatch.setenv("ALLOW_DATA_SHARING", "false")
     assert data_sharing_allowed() is False
+
+
+def _sql_result(sql: str, rows: int = 30, **kwargs):
+    return ToolResult(
+        result_id="r_sql",
+        status="ok",
+        tool="run_sql",
+        sql=sql,
+        params={"sql": sql},
+        data=ToolResultData(columns=["key", "value"], rows=[[i, i] for i in range(rows)]),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT city, COUNT(*) FROM t GROUP BY city",
+        "SELECT SUM(a) FILTER (WHERE b > 1) AS s FROM t",
+        "WITH m AS (SELECT city, AVG(a) AS v FROM t GROUP BY 1) SELECT * FROM m",
+        "SELECT city, COUNT(*) FROM a GROUP BY 1 UNION ALL SELECT city, COUNT(*) FROM b GROUP BY 1",
+    ],
+)
+def test_aggregate_sql_gets_larger_prompt_limit(sql):
+    assert DataTransferPolicy.restricted().prompt_row_limit(_sql_result(sql)) == 100
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM t",
+        "SELECT city FROM t GROUP BY city",
+        "SELECT DISTINCT city FROM t",
+        "SELECT id, SUM(a) OVER () FROM t",
+        "SELECT city, LIST(email) FROM t GROUP BY city",
+        "SELECT city, FIRST(email) FROM t GROUP BY city",
+        "SELECT city, ANY_VALUE(email) FROM t GROUP BY city",
+        "SELECT COUNT(*), (SELECT email FROM t LIMIT 1) FROM t",
+        "SELECT city, COUNT(*) FROM t GROUP BY 1 UNION ALL SELECT email, 1 FROM t",
+        "WITH m AS (SELECT COUNT(*) AS c FROM t) SELECT * FROM m JOIN t ON true",
+        "WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r) SELECT * FROM r",
+        "SELECT broken FROM",
+    ],
+)
+def test_row_level_or_unknown_sql_keeps_default_limit(sql):
+    assert DataTransferPolicy.restricted().prompt_row_limit(_sql_result(sql)) == 20
+
+
+def test_aggregate_of_sensitive_source_keeps_default_limit():
+    policy = DataTransferPolicy.sharing()
+    result = _sql_result("SELECT dbPasswordText, COUNT(*) AS value FROM t GROUP BY 1")
+
+    assert policy.prompt_row_limit(result, sensitive_columns=["dbpasswordtext"]) == 20
+
+
+@pytest.mark.parametrize(
+    ("tool", "limit"),
+    [("time_aggregate", 100), ("segment_profile", 100), ("find_duplicates", 20), (None, 20)],
+)
+def test_prompt_limit_by_tool(tool, limit):
+    result = ToolResult(result_id="r_1", status="ok", tool=tool, params={"table": "t"})
+
+    assert DataTransferPolicy.restricted().prompt_row_limit(result) == limit
+
+
+def test_truncated_rows_carry_explicit_note():
+    policy = DataTransferPolicy.restricted()
+    data = ToolResultData(columns=["a"], rows=[[i] for i in range(5)], row_count=5)
+
+    payload = policy.result_data(data, context=DataContext.CURRENT_RESULT, max_rows=2)
+    assert payload["rows_truncated"] is True
+    assert payload["rows_shown"] == 2
+    assert payload["row_count"] == 5
+    assert "конце данных" in payload["truncation_note"]
+
+    complete = policy.result_data(data, context=DataContext.CURRENT_RESULT, max_rows=5)
+    assert "truncation_note" not in complete
+    assert "rows_truncated" not in complete
+
+    # Предел самого инструмента тоже должен быть виден, даже если строки все показаны.
+    cut = data.model_copy(update={"truncated": True})
+    assert "truncation_note" in policy.result_data(cut, context=DataContext.CURRENT_RESULT)
