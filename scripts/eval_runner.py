@@ -1006,7 +1006,7 @@ def _unit_claim_issues(case: dict, text: str) -> list[str]:
             numbers = list(_text_numbers(match[0]))
             if numbers and numbers[0] == value and ROWS_NOUN_RE.match(plain[match.end() :]):
                 issues.append(
-                    f"Answer calls {format(value, 'f')} rows, but fact '{fact['key']}' counts: {unit}"
+                    f"Answer calls {format(value, 'f')} rows; fact '{fact['key']}' counts: {unit}"
                 )
                 break
     return issues
