@@ -66,7 +66,7 @@ EXPLORATION_TOOLS = frozenset({"describe_column", "value_counts"})
 # В сообщении пользователя правило работает надёжнее, чем в длинном системном промпте.
 ENTITY_NOTE = (
     "If the question asks about an entity with an identifier column, group by that identifier "
-    "and add its descriptive column with ANY_VALUE."
+    "and always also select its descriptive column, if the catalog has one, with ANY_VALUE."
 )
 STATE_ON_DATE_NOTE = (
     "The question asks about a state on a date: every event in the conditions, including the one "
