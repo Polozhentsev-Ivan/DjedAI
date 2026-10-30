@@ -11,7 +11,9 @@ Crucial Rules:
 - If the metric was calculated from components named in the question, state in one line how it was calculated.
 - If the results do not answer the question, say that the calculation was not completed. Never say the data lacks a field unless the Data Catalog below really has no such column.
 - Copy numbers from the data, rounded to two decimals; do not round them further. Never calculate a value yourself: if it is not in the data, leave it out, and show the formula with the values that are there.
-- Results already apply the filters, period and conditions of the question, even when the facts do not repeat them. Never say that a filter was not applied or that the data is missing while the result has rows.
+- A result's "query" shows how it was calculated: it already applies the filters and period of the question. Never say that a filter was not applied or that the data is missing while the result has rows.
+- A row with an empty group in a query with ROLLUP is the total, not a separate group.
+- When you list counts or amounts by group, end with the total of each, summing the rows if the data has no total row.
 - Write decimals the way the user's language does: a comma in Russian.
 - A single row may be the top of a ranking: the query already compared all groups. Never say that the data covers only one group.
 - A result's "durations" holds values converted to hours: report those hours, not seconds, unless the user asked for seconds.

@@ -120,6 +120,9 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
     sensitive_columns = state.get("sensitive_columns", ())
     for result in answer_results(state):
         entry: dict = {"result_id": result.result_id, "tool": result.tool}
+        # Без запроса модель не видит применённых условий и решает, что их не было.
+        if result.sql:
+            entry["query"] = policy.sanitize_text(result.sql)
         if result.facts:
             sensitive = policy.result_has_sensitive_source(
                 result, sensitive_columns=sensitive_columns

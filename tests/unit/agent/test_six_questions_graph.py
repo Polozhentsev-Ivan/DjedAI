@@ -197,6 +197,20 @@ def test_seconds_reach_compose_as_hours():
     assert '"hours": 72.49' in compose_prompt
 
 
+def test_compose_and_verify_see_the_query():
+    client = _client(
+        _ok(Understanding(intent="data_question")),
+        _plan("run_sql"),
+        _text("Итого 7"),
+        _verified(),
+    )
+    result = _result("r_a", ["n"], [[7]]).model_copy(update={"sql": "SELECT 7 AS n WHERE 1 = 1"})
+    _run(client, MagicMock(return_value=result))
+
+    prompts = [call.args[0] for call in client.generate_typed_response.call_args_list[2:4]]
+    assert all("WHERE 1 = 1" in prompt for prompt in prompts)
+
+
 def test_how_much_without_unit_reaches_planner():
     client = _client(
         _ok(Understanding(intent="data_question")),
