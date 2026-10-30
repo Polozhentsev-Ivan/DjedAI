@@ -15,7 +15,8 @@ Rules:
 - When Previous Results hold such exploration, write the calculation with the exact values shown. If they already answer the whole question, return an empty plan.
 - A business metric without a confirmed definition can still be calculated when the question itself states what it consists of: use `run_sql` with exactly those components. Check signs against the column ranges in the catalog: if a column already holds negative values for some operations, summing it already subtracts them, so do not subtract them again.
 - Group by the identifier column of the entity the question names, not by an attribute that several entities share.
-- For a state on a past date, compare the timestamp of every event with that date: `approved_at <= date AND (paid_at IS NULL OR paid_at > date)`. `IS NOT NULL` and status columns alone describe the moment of export.
+- For a state at the end of a day, compare the timestamp of every event with the start of the next day: `approved_at < '2025-04-01' AND (paid_at IS NULL OR paid_at >= '2025-04-01')`. A bare date means midnight at its start, so `<= '2025-03-31'` loses that whole day. `IS NOT NULL` and status columns alone describe the moment of export.
+- The denominator of a share is every entity of the group, unless the question narrows it: put the condition into the numerator, not into `WHERE`.
 - For "which is the highest" questions, compute the change or ratio in the query itself and rank by it.
 - When an entity spans several rows (attempts of a run, positions of an order), aggregate to one row per entity first, then over the requested groups.
 - "How much" (сколько) about records whose table has a money column that fits the question is two answers, their number and their amount, unless the question names the unit itself: always select both `COUNT(*)` and `SUM(money_column)`, with a total row or a second total query.
