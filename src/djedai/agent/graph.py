@@ -66,7 +66,7 @@ EXPLORATION_TOOLS = frozenset({"describe_column", "value_counts"})
 # В сообщении пользователя правило работает надёжнее, чем в длинном системном промпте.
 ENTITY_NOTE = (
     "If the question asks about an entity with an identifier column, group by that identifier "
-    "and always also select its descriptive column, if the catalog has one, with ANY_VALUE."
+    "and add its descriptive column with ANY_VALUE."
 )
 STATE_ON_DATE_NOTE = (
     "The question asks about a state on a date: every event in the conditions, including the one "
@@ -215,6 +215,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
             known_ids.add(result.result_id)
     return {
         "catalog_prompt": catalog_prompt,
+        "catalog_fields": (
+            policy.sanitize_text(_catalog_fields(catalog)) if catalog is not None else ""
+        ),
         # Normalized column names whose original header is sensitive. Results keep
         # the normalized name, so this is what preserves `dbPasswordText` after
         # normalization to `dbpasswordtext`.
@@ -235,6 +238,16 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "dashboard_snapshot": None,
         "dashboard_retries": 0,
     }
+
+
+def _catalog_fields(catalog: object) -> str:
+    """Имена колонок для compose/verify: без статистики, чтобы она не попадала в ответ как факт."""
+    lines = []
+    for table in catalog.tables:
+        for column in table.columns:
+            currency = f", {column.currency}" if column.currency else ""
+            lines.append(f"- {table.table_id}.{column.name} «{column.original_name}»{currency}")
+    return "\n".join(lines)
 
 
 def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
@@ -1103,7 +1116,7 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         }
 
     sys_prompt = load_prompt("compose").format(
-        catalog=state.get("catalog_prompt"),
+        catalog=state.get("catalog_fields", ""),
         facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
         + _policy_note(facts_and_data),
     )
@@ -1199,7 +1212,7 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     if client:
         sys_prompt = load_prompt("verify").format(
-            catalog=state.get("catalog_prompt"),
+            catalog=state.get("catalog_fields", ""),
             facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
             + _policy_note(facts_and_data),
             draft=draft,

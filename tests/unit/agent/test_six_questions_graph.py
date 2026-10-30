@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.graph import build_agent_graph
 from djedai.contracts.agent import (
     Block,
@@ -14,6 +15,13 @@ from djedai.contracts.agent import (
     VerifyResponse,
 )
 from djedai.contracts.tool_result import ToolResult, ToolResultData
+
+
+class _Policy(DataTransferPolicy):
+    """Каталог-заглушка не сериализуется: очистку каталога здесь не проверяем."""
+
+    def sanitize_catalog(self, catalog):
+        return catalog
 
 
 def _ok(response):
@@ -235,3 +243,34 @@ def test_how_much_without_unit_reaches_planner():
     _run(client, MagicMock(return_value=_result("r_a", ["n"], [[7]])), "Сколько было согласовано?")
 
     assert "COUNT(*) and SUM" in client.generate_typed_response.call_args_list[1].args[1]
+
+
+def test_compose_gets_field_names_without_catalog_statistics():
+    catalog = MagicMock()
+    column = MagicMock(currency=None, original_name="Статус", description=None)
+    column.name = "status"
+    catalog.tables = [
+        MagicMock(table_id="jobs", original_name="jobs", description=None, columns=[column])
+    ]
+    catalog.to_prompt.return_value = "строк 500000"
+    client = _client(
+        _ok(Understanding(intent="data_question")),
+        _plan("run_sql"),
+        _text("Итого 7"),
+        _verified(),
+    )
+    build_agent_graph().invoke(
+        {"dataset_id": "d", "chat_id": "c", "messages": [Message(role="user", content="Вопрос")]},
+        {
+            "configurable": {
+                "thread_id": "fields",
+                "client": client,
+                "tool_dispatcher": MagicMock(return_value=_result("r_a", ["n"], [[7]])),
+                "catalog_loader": lambda _: catalog,
+                "data_policy": _Policy(),
+            }
+        },
+    )
+    calls = client.generate_typed_response.call_args_list
+    assert "jobs.status «Статус»" in calls[2].args[0]
+    assert "500000" not in calls[2].args[0] and "500000" not in calls[3].args[0]

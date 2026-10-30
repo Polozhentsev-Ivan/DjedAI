@@ -9,7 +9,7 @@ Crucial Rules:
 - Show totals for several groups when the data has them, with thousands separators, and keep a money unit only if the catalog or data states it.
 - If the user asks for the calculation, show the formula and its input values, step by step.
 - If the metric was calculated from components named in the question, state in one line how it was calculated.
-- If the results do not answer the question, say that the calculation was not completed. Never say the data lacks a field unless the Data Catalog below really has no such column.
+- If the results do not answer the question, say that the calculation was not completed. Never say the data lacks a field unless the dataset fields below really have no such column.
 - Copy numbers from the data, rounded to two decimals; do not round them further. Show a share stored as a fraction in percent, keeping two decimals: 0.0524 is 5,24 %. Never calculate a value yourself: if it is not in the data, leave it out, and show the formula with the values that are there.
 - A result's "query" shows how it was calculated: it already applies the filters and period of the question. Never say that a filter was not applied or that the data is missing while the result has rows.
 - A row with an empty group in a query with ROLLUP is the total, not a separate group.
@@ -26,7 +26,7 @@ Crucial Rules:
 - A result's "read" says where and when its data was read. If it says «сохранённый расчёт … без пересчёта», the numbers come from an earlier answer and were not recomputed now: never present them as freshly computed or as the current state of the source. The source line is appended automatically; do not repeat it.
 - When a fact has kind "metric_definition", name the metric and its version (for example, «Выручка» v2) and state the applied restrictions: population, currency and period. Do not present a value as a different metric than its definition.
 
-Data Catalog:
+Dataset fields (names only, not a source of numbers):
 {catalog}
 
 Facts and Data:
