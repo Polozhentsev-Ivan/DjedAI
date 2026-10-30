@@ -1,6 +1,6 @@
 // API shapes → what the screens show. Components keep taking display strings; formatting lives here.
 import type { CellTone } from '@/components/DataTable';
-import type { Calculation } from '@/components/HowCalculated';
+import type { Calculation, CalculationParam } from '@/components/HowCalculated';
 import type { LogLevel } from '@/components/TransformLogItem';
 import type { Kpi, KpiStat } from '@/components/WidgetCard';
 import { formatCount, formatDateTime, formatDelta, formatMoney, formatMoneyShort, formatPercent, plural } from '@/lib/format';
@@ -382,6 +382,17 @@ export function toolCall(tool: string, params: Record<string, unknown>): string 
   return `${tool}(${Object.entries(params).map(([k, v]) => `${k}=${literal(v)}`).join(', ')})`;
 }
 
+/** Tool arguments one per row; the parent result id is shown as the source, not as a parameter. */
+export function callParams(params: Record<string, unknown>): CalculationParam[] {
+  return Object.entries(params).filter(([name]) => name !== 'source_result_id').map(([name, value]) => ({ name, value: literal(value) }));
+}
+
+/** Calls a dashboard widget repeats on refresh: one call, or the recipe steps up to its output step. */
+export function widgetRecipe(widget: Pick<Schemas['Widget'], 'tool_call' | 'recipe'>): string[] {
+  if (widget.tool_call) return [toolCall(widget.tool_call.tool, widget.tool_call.params ?? {})];
+  return (widget.recipe?.steps ?? []).map((step) => toolCall(step.call.tool, step.call.params ?? {}));
+}
+
 /**
  * «Как посчитано» for a saved result. `current` is the dataset's catalog revision now:
  * a newer one means the catalog was re-profiled after this result was computed (B1-11).
@@ -390,9 +401,11 @@ export function calculation(result: Schemas['ToolResultMeta'], current?: Schemas
   const read = result.read ?? null;
   const notes = [...limitations(result.quality) ?? [], ...readNotes(read, current)];
   return {
-    tool: toolCall(result.tool ?? 'unknown_tool', result.params ?? {}),
+    tool: result.tool ?? 'unknown_tool',
+    params: callParams(result.params ?? {}),
     columns: (result.data?.columns ?? []).map((c) => typeof c === 'string' ? { label: c, name: c } : { label: c.label ?? c.name, name: c.name }),
     sql: result.sql ?? '—',
+    origin: result.source_result_id ?? undefined,
     stats: result.data?.row_count == null ? undefined : `${rowsLabel(result.data.row_count)} в результате`,
     source: readSource(read),
     limitations: notes.length > 0 ? notes : undefined,

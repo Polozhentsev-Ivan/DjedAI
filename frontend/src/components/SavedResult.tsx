@@ -22,7 +22,6 @@ export function SavedResult({ id }: { id: string }) {
         {meta.isError && <ErrorState size="inline" title="Не удалось прочитать результат" text={meta.error.message} onAction={() => { void meta.refetch(); }} />}
         {meta.data && <>
           <HowCalculated variant="panel" {...calculation(meta.data, dataset.data?.revision)} />
-          {meta.data.source_result_id && <div>Исходный результат: <a href={apiUrl(`/results/${encodeURIComponent(meta.data.source_result_id)}`)}>{meta.data.source_result_id}</a></div>}
           {meta.data.error && <ErrorState size="inline" title={meta.data.error.message} text={meta.data.error.suggestion ?? undefined} actionLabel="" />}
         </>}
         {data.isPending && <LoadingState size="compact" title="Загружаем данные результата…" />}
