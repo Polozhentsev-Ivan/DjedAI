@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.data_policy import DataTransferPolicy
-from djedai.agent.graph import _with_column_totals, build_agent_graph
+from djedai.agent.graph import _with_derived_facts, build_agent_graph
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -291,4 +291,4 @@ def test_column_totals_are_a_fact_of_the_result_unless_it_is_truncated():
     truncated = truncated.model_copy(
         update={"data": truncated.data.model_copy(update={"truncated": True})}
     )
-    assert _with_column_totals(truncated).facts == []
+    assert _with_derived_facts(truncated).facts == []

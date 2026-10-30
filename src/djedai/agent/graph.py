@@ -150,8 +150,6 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
             entry["data"] = data
             if data.get("rows"):
                 usable = True
-                if durations := duration_hints(data.get("columns", []), data["rows"]):
-                    entry["durations"] = durations
         entries.append(entry)
     return entries, usable
 
@@ -637,20 +635,30 @@ def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
-def _with_column_totals(result: ToolResult) -> ToolResult:
-    """Итоги колонок как факт результата: так они сохраняются и проверяются вместе с ним."""
-    if result.status != "ok" or result.data is None or result.data.truncated:
+def _with_derived_facts(result: ToolResult) -> ToolResult:
+    """Итоги колонок и часы как факты результата: так они сохраняются и проверяются вместе с ним."""
+    if result.status != "ok" or result.data is None:
         return result
     names = [_column_info(column)[0] for column in result.data.columns]
-    totals = column_totals(names, result.data.rows)
-    if not totals:
-        return result
-    fact = Fact(
-        text="Суммы числовых колонок по всем строкам результата",
-        kind="summary",
-        values={"column_totals": totals},
-    )
-    return result.model_copy(update={"facts": [*result.facts, fact]})
+    facts = list(result.facts)
+    if durations := duration_hints(names, result.data.rows):
+        facts.append(
+            Fact(
+                text="Длительности из секунд в часах",
+                kind="summary",
+                values={"durations": durations},
+            )
+        )
+    totals = {} if result.data.truncated else column_totals(names, result.data.rows)
+    if totals:
+        facts.append(
+            Fact(
+                text="Суммы числовых колонок по всем строкам результата",
+                kind="summary",
+                values={"column_totals": totals},
+            )
+        )
+    return result.model_copy(update={"facts": facts})
 
 
 def execute(state: AgentState, config: RunnableConfig) -> dict:
@@ -686,7 +694,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                     ),
                 )
 
-            res = _with_column_totals(res)
+            res = _with_derived_facts(res)
             # Ensure metadata is stamped on the result (ToolResult is frozen).
             # Errors and facts are stored sanitized because they can reach both
             # the planner and the final answer.

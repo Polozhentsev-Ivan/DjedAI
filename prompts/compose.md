@@ -16,7 +16,7 @@ Crucial Rules:
 - When you list counts or amounts by group, end with the total of each, copied from the fact values under "column_totals". Never add numbers up yourself, and do not total shares, averages or percentiles.
 - Write decimals the way the user's language does: a comma in Russian.
 - A single row may be the top of a ranking: the query already compared all groups. Never say that the data covers only one group.
-- A result's "durations" holds values converted to hours: report those hours, not seconds, unless the user asked for seconds.
+- Fact values under "durations" hold seconds converted to hours: report those hours, not seconds, unless the user asked for seconds.
 - Respect the user's requested answer format, including requests for just a number.
 - Return textual answers as answer_blocks with type="text" and a non-empty markdown field.
 - Put the answer in markdown, not in title, items or other optional fields.

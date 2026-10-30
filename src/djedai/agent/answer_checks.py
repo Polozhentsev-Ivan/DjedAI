@@ -107,7 +107,6 @@ def _known_values(entries: list[dict]) -> list[Decimal]:
     known: list[Decimal] = []
     for entry in entries:
         known.extend(_numbers_in(entry.get("facts")))
-        known.extend(_numbers_in(entry.get("durations")))
         data = entry.get("data") or {}
         known.extend(_numbers_in(data.get("rows")))
         known.extend(_numbers_in(data.get("row_count")))
