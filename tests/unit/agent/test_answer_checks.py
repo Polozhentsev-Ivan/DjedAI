@@ -42,7 +42,7 @@ def test_column_totals_sum_numbers_and_decimal_strings_exactly():
         ["dep", "n", "amount"],
         [["a", 4158, "851088269.49"], ["b", 999, "1156191743.33"]],
     )
-    assert totals == {"n": "5157", "amount": "2007280012.82"}
+    assert totals == {"n": 5157, "amount": 2007280012.82}
 
 
 def test_single_row_has_no_totals():

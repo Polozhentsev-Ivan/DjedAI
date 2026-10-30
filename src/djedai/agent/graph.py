@@ -53,7 +53,7 @@ from djedai.contracts.chart import ChartSpec, ColorField, XAxis, YMeasure
 from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
-from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.contracts.tool_result import Fact, ToolError, ToolResult
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 MODEL_ERROR_MARKDOWN = "Не удалось получить ответ модели. Попробуйте повторить запрос."
@@ -150,8 +150,6 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
                 usable = True
                 if durations := duration_hints(data.get("columns", []), data["rows"]):
                     entry["durations"] = durations
-                if totals := column_totals(data.get("columns", []), data["rows"]):
-                    entry["column_totals"] = totals
         entries.append(entry)
     return entries, usable
 
@@ -637,6 +635,22 @@ def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def _with_column_totals(result: ToolResult) -> ToolResult:
+    """Итоги колонок как факт результата: так они сохраняются и проверяются вместе с ним."""
+    if result.status != "ok" or result.data is None or result.data.truncated:
+        return result
+    names = [_column_info(column)[0] for column in result.data.columns]
+    totals = column_totals(names, result.data.rows)
+    if not totals:
+        return result
+    fact = Fact(
+        text="Суммы числовых колонок по всем строкам результата",
+        kind="summary",
+        values={"column_totals": totals},
+    )
+    return result.model_copy(update={"facts": [*result.facts, fact]})
+
+
 def execute(state: AgentState, config: RunnableConfig) -> dict:
     plan_steps = state.get("plan", [])
     existing_results = state.get("results", [])
@@ -670,6 +684,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                     ),
                 )
 
+            res = _with_column_totals(res)
             # Ensure metadata is stamped on the result (ToolResult is frozen).
             # Errors and facts are stored sanitized because they can reach both
             # the planner and the final answer.

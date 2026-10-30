@@ -67,16 +67,17 @@ def _parse(text: str) -> Decimal | None:
         return None
 
 
-def column_totals(columns: list[str], rows: list[list[object]]) -> dict[str, str]:
+def column_totals(columns: list[str], rows: list[list[object]]) -> dict[str, int | float]:
     """Суммы числовых колонок: складывать столбец в уме модель может с ошибкой на порядок."""
     if len(rows) < 2:
         return {}
-    totals: dict[str, str] = {}
+    totals: dict[str, int | float] = {}
     for index, name in enumerate(columns):
         values = [row[index] for row in rows if index < len(row) and row[index] is not None]
         numbers = [_number(value) for value in values]
         if numbers and all(number is not None for number in numbers):
-            totals[name] = format(sum(numbers), "f")
+            total = sum(numbers)
+            totals[name] = int(total) if total == total.to_integral_value() else float(total)
     return totals
 
 

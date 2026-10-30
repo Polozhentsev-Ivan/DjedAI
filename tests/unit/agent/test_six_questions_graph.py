@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.data_policy import DataTransferPolicy
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.graph import _with_column_totals, build_agent_graph
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -274,3 +274,21 @@ def test_compose_gets_field_names_without_catalog_statistics():
     calls = client.generate_typed_response.call_args_list
     assert "jobs.status «Статус»" in calls[2].args[0]
     assert "500000" not in calls[2].args[0] and "500000" not in calls[3].args[0]
+
+
+def test_column_totals_are_a_fact_of_the_result_unless_it_is_truncated():
+    client = _client(
+        _ok(Understanding(intent="data_question")),
+        _plan("run_sql"),
+        _text("Всего 7"),
+        _verified(),
+    )
+    state = _run(client, MagicMock(return_value=_result("r_a", ["g", "n"], [["a", 3], ["b", 4]])))
+    (fact,) = state["results"][0].facts
+    assert fact.kind == "summary" and fact.values == {"column_totals": {"n": 7}}
+
+    truncated = _result("r_b", ["g", "n"], [["a", 3], ["b", 4]])
+    truncated = truncated.model_copy(
+        update={"data": truncated.data.model_copy(update={"truncated": True})}
+    )
+    assert _with_column_totals(truncated).facts == []
