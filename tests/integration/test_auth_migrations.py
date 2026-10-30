@@ -47,6 +47,43 @@ def test_migration_chain_has_a_single_head(tmp_path: Path) -> None:
     assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
 
 
+def test_user_model_keys_migrate_and_survive_restart(tmp_path: Path) -> None:
+    from cryptography.fernet import Fernet
+    from sqlalchemy.orm import sessionmaker
+
+    from djedai.backend.db.models import UserModelKeyModel
+    from djedai.backend.source_secrets import SourceSecrets
+    from djedai.backend.user_model_keys import UserModelKeys
+
+    url = f"sqlite:///{(tmp_path / 'user-keys.db').as_posix()}"
+    cfg = migration_config(url)
+    command.upgrade(cfg, "f211merge0001")
+    engine = create_db_engine(url)
+    with Session(engine) as db:
+        user_id = create_user(db, "migration-user", "migration-password").id
+    command.upgrade(cfg, "head")
+    secrets = SourceSecrets(Fernet.generate_key().decode())
+    keys = UserModelKeys(sessionmaker(engine), secrets)
+    keys.assign(user_id, "migration-key-marker")
+    engine.dispose()
+    engine = create_db_engine(url)
+    try:
+        keys = UserModelKeys(sessionmaker(engine), secrets)
+        assert (
+            secrets.decrypt_user_model_key(user_id, keys.ciphertext(user_id))
+            == "migration-key-marker"
+        )
+        with Session(engine) as db:
+            db.execute(delete(UserModel).where(UserModel.id == user_id))
+            db.commit()
+            assert db.get(UserModelKeyModel, user_id) is None
+        command.downgrade(cfg, "f211merge0001")
+        assert "user_model_keys" not in inspect(engine).get_table_names()
+        assert "users" in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
 def migration_config(db_url: str) -> Config:
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "src/djedai/backend/migrations"))
@@ -372,7 +409,10 @@ def test_merge_upgrade_preserves_both_deployed_branches(
             }, table.name
         with engine.connect() as connection:
             versions = Table("alembic_version", MetaData(), autoload_with=connection)
-            assert connection.scalars(select(versions.c.version_num)).all() == ["f211merge0001"]
+            assert (
+                connection.scalars(select(versions.c.version_num)).all()
+                == ScriptDirectory.from_config(cfg).get_heads()
+            )
         with Session(engine) as db:
             dashboard = db.get(DashboardModel, "existing-dashboard")
             result = db.get(ToolResultModel, "existing-result")

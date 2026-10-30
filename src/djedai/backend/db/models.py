@@ -350,3 +350,13 @@ class ModelSettingsModel(Base):
     api_key_ciphertext = Column(Text, nullable=True)
     updated_by = Column(String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
+
+
+class UserModelKeyModel(Base):
+    """Operator-assigned model key; never exposed through the public settings API."""
+
+    __tablename__ = "user_model_keys"
+
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    api_key_ciphertext = Column(Text, nullable=False)
+    updated_at = Column(UTCDateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
