@@ -124,3 +124,30 @@ class SourceSecrets:
             return payload["key"]
         except (InvalidToken, ValueError, TypeError, UnicodeError):
             raise SourceSecretError("Не удалось открыть сохранённый ключ модели") from None
+
+    def encrypt_user_model_key(self, owner_id: str, api_key: str) -> str:
+        self.require_key()
+        payload = json.dumps(
+            {"version": 1, "kind": "user_model_api_key", "owner_id": owner_id, "key": api_key},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert self._cipher is not None
+        return self._cipher.encrypt(payload).decode("ascii")
+
+    def decrypt_user_model_key(self, owner_id: str, ciphertext: str) -> str:
+        self.require_key()
+        assert self._cipher is not None
+        try:
+            payload = json.loads(self._cipher.decrypt(ciphertext.encode("ascii")))
+            if (
+                not isinstance(payload, dict)
+                or payload.get("version") != 1
+                or payload.get("kind") != "user_model_api_key"
+                or payload.get("owner_id") != owner_id
+                or not isinstance(payload.get("key"), str)
+                or not payload["key"]
+            ):
+                raise ValueError
+            return payload["key"]
+        except (InvalidToken, ValueError, TypeError, UnicodeError):
+            raise SourceSecretError("Не удалось открыть назначенный ключ модели") from None

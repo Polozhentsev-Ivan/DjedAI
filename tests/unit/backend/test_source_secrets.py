@@ -128,3 +128,16 @@ def test_model_key_requires_server_key_and_fails_closed() -> None:
     with pytest.raises(SourceSecretError) as error:
         SourceSecrets(Fernet.generate_key().decode()).decrypt_model_key(ciphertext)
     assert MODEL_KEY not in str(error.value)
+
+
+def test_user_model_keys_are_bound_to_owner_and_not_interchangeable_with_global_keys():
+    secrets = SourceSecrets(Fernet.generate_key().decode())
+    ciphertext = secrets.encrypt_user_model_key("alice", "user-key-marker")
+    assert secrets.decrypt_user_model_key("alice", ciphertext) == "user-key-marker"
+    assert "user-key-marker" not in ciphertext
+    with pytest.raises(SourceSecretError):
+        secrets.decrypt_user_model_key("bob", ciphertext)
+    with pytest.raises(SourceSecretError):
+        secrets.decrypt_model_key(ciphertext)
+    with pytest.raises(SourceSecretError):
+        secrets.decrypt_user_model_key("alice", secrets.encrypt_model_key("global-key"))
