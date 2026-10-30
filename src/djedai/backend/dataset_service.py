@@ -360,7 +360,7 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
-        description_context: Callable[[], tuple[ModelClient, bool]] | None = None,
+        description_context: Callable[[str], tuple[ModelClient, bool]] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
         catalog_max_age_hours: float = 24,
         limits: LimitSettings | None = None,
@@ -992,7 +992,7 @@ class DatasetService:
                 0.0,
                 "Описание данных",
             )
-            catalog = self._describe(dataset_id, working, catalog)
+            catalog = self._describe(owner_id, dataset_id, working, catalog)
         working.replace(target)
         return catalog, relative
 
@@ -1088,11 +1088,13 @@ class DatasetService:
                     ).model_dump(mode="json")
                     db.commit()
 
-    def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
+    def _describe(
+        self, owner_id: str, dataset_id: str, database: Path, catalog: DatasetCatalog
+    ) -> DatasetCatalog:
         """Descriptions are optional: any failure publishes the statistical catalog."""
         try:
             if self._description_context is not None:
-                client, share = self._description_context()
+                client, share = self._description_context(owner_id)
             else:
                 client, share = self._description_client(), True
             return describe_dataset(database, catalog, client, share_values=share)

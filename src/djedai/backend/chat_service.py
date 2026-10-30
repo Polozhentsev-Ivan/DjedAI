@@ -10,11 +10,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import pandas as pd
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from langgraph.config import get_stream_writer
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
@@ -27,6 +27,7 @@ from djedai.agent.reasoning import ReasoningConfigurationError
 from djedai.analytics.metrics import MetricContext
 from djedai.analytics.quality import assess
 from djedai.analytics.registry import execute_tool
+from djedai.backend.auth.dependencies import current_owner_id
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dashboard_service import DashboardService
 from djedai.backend.dataset_service import DatasetContext
@@ -143,14 +144,16 @@ def build_agent_runtime(override: ModelValues | None = None) -> AgentRuntime:
     )
 
 
-def get_agent_runtime(request: Request) -> AgentRuntime:
+def get_agent_runtime(
+    request: Request, owner_id: Annotated[str | None, Depends(current_owner_id)] = None
+) -> AgentRuntime:
     """Привязывает каждый HTTP-ход к постоянному хранилищу приложения.
 
     Настройки модели читаются на каждый ход: изменение в интерфейсе действует со
     следующего хода без перезапуска.
     """
     settings = request.app.state.settings
-    model_settings = model_settings_for(request.app)
+    model_settings = model_settings_for(request.app, owner_id)
     tariff: Tariff | None = None
     try:
         override = model_settings.override()
