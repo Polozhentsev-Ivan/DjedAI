@@ -72,6 +72,8 @@ STATE_ON_DATE_NOTE = (
     "The question asks about a state on a date: every event in the conditions, including the one "
     "that must have happened, is compared with that date by its timestamp, never by IS NOT NULL."
 )
+# Повтор compose и новая проверка не успеют: лучше сразу назвать числа в verify.
+COMPOSE_RETRY_MIN_SECONDS = 45
 HOW_MUCH_NOTE = (
     "The question says how much without naming a unit: if the table has a fitting money column, "
     "select both COUNT(*) and SUM of it, per group and in total."
@@ -1222,7 +1224,9 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     # Числа без опоры в данных возвращаются на compose до вызова модели. На второй попытке
     # решает verify: он может убрать такие числа из текста.
     unsupported = unsupported_numbers(draft, facts_and_data)
-    if unsupported and state.get("compose_retries", 0) < 2:
+    budget = current_budget()
+    enough_time = budget is None or budget.remaining > COMPOSE_RETRY_MIN_SECONDS
+    if unsupported and state.get("compose_retries", 0) < 2 and enough_time:
         return {"is_verified": False}
 
     if client:
