@@ -13,7 +13,7 @@ Crucial Rules:
 - Copy numbers from the data, rounded to two decimals; do not round them further. Never calculate a value yourself: if it is not in the data, leave it out, and show the formula with the values that are there.
 - A result's "query" shows how it was calculated: it already applies the filters and period of the question. Never say that a filter was not applied or that the data is missing while the result has rows.
 - A row with an empty group in a query with ROLLUP is the total, not a separate group.
-- When you list counts or amounts by group, end with the total of each, summing the rows if the data has no total row.
+- When you list counts or amounts by group, end with the total of each, copied from the result's "column_totals". Never add numbers up yourself, and do not total shares, averages or percentiles.
 - Write decimals the way the user's language does: a comma in Russian.
 - A single row may be the top of a ranking: the query already compared all groups. Never say that the data covers only one group.
 - A result's "durations" holds values converted to hours: report those hours, not seconds, unless the user asked for seconds.

@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from djedai.agent.answer_checks import duration_hints, unsupported_numbers
+from djedai.agent.answer_checks import column_totals, duration_hints, unsupported_numbers
 from djedai.agent.client import ModelResponse
 from djedai.agent.dashboard import (
     WidgetExecution,
@@ -145,6 +145,8 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
                 usable = True
                 if durations := duration_hints(data.get("columns", []), data["rows"]):
                     entry["durations"] = durations
+                if totals := column_totals(data.get("columns", []), data["rows"]):
+                    entry["column_totals"] = totals
         entries.append(entry)
     return entries, usable
 
@@ -1184,7 +1186,8 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     # Числа без опоры в данных возвращаются на compose до вызова модели. На второй попытке
     # решает verify: он может убрать такие числа из текста.
-    if state.get("compose_retries", 0) < 2 and unsupported_numbers(draft, facts_and_data):
+    unsupported = unsupported_numbers(draft, facts_and_data)
+    if unsupported and state.get("compose_retries", 0) < 2:
         return {"is_verified": False}
 
     if client:
@@ -1196,7 +1199,8 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         )
         response = client.generate_typed_response(
             sys_prompt,
-            "Verify the numbers and formats.",
+            "Verify the numbers and formats."
+            + (f" Not found in the data: {', '.join(unsupported)}." if unsupported else ""),
             VerifyResponse,
             stage="verify",
         )

@@ -67,6 +67,19 @@ def _parse(text: str) -> Decimal | None:
         return None
 
 
+def column_totals(columns: list[str], rows: list[list[object]]) -> dict[str, str]:
+    """Суммы числовых колонок: складывать столбец в уме модель может с ошибкой на порядок."""
+    if len(rows) < 2:
+        return {}
+    totals: dict[str, str] = {}
+    for index, name in enumerate(columns):
+        values = [row[index] for row in rows if index < len(row) and row[index] is not None]
+        numbers = [_number(value) for value in values]
+        if numbers and all(number is not None for number in numbers):
+            totals[name] = format(sum(numbers), "f")
+    return totals
+
+
 def _numbers_in(value: object) -> Iterable[Decimal]:
     """Все числа значения любой вложенности, включая написанные в тексте факта."""
     if isinstance(value, dict):

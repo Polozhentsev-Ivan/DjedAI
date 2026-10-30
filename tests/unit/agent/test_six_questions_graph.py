@@ -184,6 +184,20 @@ def test_number_missing_from_data_goes_back_to_compose_without_model_verify():
     assert state["answer_blocks"][0].markdown == "Рост 30,32 %"
 
 
+def test_numbers_unsupported_after_retry_are_named_to_verify():
+    client = _client(
+        _ok(Understanding(intent="data_question")),
+        _plan("run_sql"),
+        _text("Рост 23,34 %"),
+        _text("Рост 23,34 %"),
+        _ok(VerifyResponse(is_valid=False, corrected_markdown="Рост посчитать не удалось")),
+    )
+    state = _run(client, MagicMock(return_value=_result("r_a", ["growth"], [[30.3211]])))
+
+    assert "23,34" in client.generate_typed_response.call_args_list[4].args[1]
+    assert state["answer_blocks"][0].markdown == "Рост посчитать не удалось"
+
+
 def test_seconds_reach_compose_as_hours():
     client = _client(
         _ok(Understanding(intent="data_question")),

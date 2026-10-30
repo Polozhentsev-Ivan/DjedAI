@@ -1,6 +1,6 @@
 """Проверки ответа кодом: длительности и числа без опоры в данных (#243)."""
 
-from djedai.agent.answer_checks import duration_hints, unsupported_numbers
+from djedai.agent.answer_checks import column_totals, duration_hints, unsupported_numbers
 
 ENTRIES = [
     {
@@ -35,6 +35,18 @@ def test_decimal_values_serialized_as_strings_are_data():
 def test_numbers_in_fact_text_and_nested_values_are_data():
     entries = [{"facts": [{"text": "Выручка 1200", "values": {"a": {"b": [5290.5]}}}]}]
     assert unsupported_numbers("Выручка 1200, сумма 5 290,5.", entries) == []
+
+
+def test_column_totals_sum_numbers_and_decimal_strings_exactly():
+    totals = column_totals(
+        ["dep", "n", "amount"],
+        [["a", 4158, "851088269.49"], ["b", 999, "1156191743.33"]],
+    )
+    assert totals == {"n": "5157", "amount": "2007280012.82"}
+
+
+def test_single_row_has_no_totals():
+    assert column_totals(["n"], [[1]]) == {}
 
 
 def test_column_total_is_supported():
