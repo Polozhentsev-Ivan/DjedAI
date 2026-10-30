@@ -96,12 +96,14 @@ class LimitSettings(BaseSettings):
         default=2, ge=0, alias="MAX_QUEUED_DATASET_JOBS_PER_OWNER"
     )
 
-    # Лимиты загрузки файлов и дисковой квоты (CP2 / #172)
-    max_upload_file_bytes: int = Field(default=50_000_000, ge=1, alias="MAX_UPLOAD_FILE_BYTES")
+    # Лимиты загрузки и дисковой квоты (CP2 / #172). Значения вмещают полный набор данных
+    # организаторов (1,48 ГБ одним запросом, около 1,7 ГБ на диске); лимита на файл нет (#229).
     max_upload_request_bytes: int = Field(
-        default=100_000_000, ge=1, alias="MAX_UPLOAD_REQUEST_BYTES"
+        default=2_000_000_000, ge=1, alias="MAX_UPLOAD_REQUEST_BYTES"
     )
-    max_owner_storage_bytes: int = Field(default=500_000_000, ge=1, alias="MAX_OWNER_STORAGE_BYTES")
+    max_owner_storage_bytes: int = Field(
+        default=5_000_000_000, ge=1, alias="MAX_OWNER_STORAGE_BYTES"
+    )
 
     @field_validator("*", mode="before")
     @classmethod
@@ -118,8 +120,6 @@ class LimitSettings(BaseSettings):
             raise ValueError("План дашборда не должен занимать весь контекст модели")
         if self.relation_unnamed_min_overlap < self.relation_min_overlap:
             raise ValueError("Порог без совпадения имён не может быть слабее общего overlap")
-        if self.max_upload_file_bytes > self.max_upload_request_bytes:
-            raise ValueError("Лимит отдельного файла не может превышать лимит запроса")
         if self.max_upload_request_bytes > self.max_owner_storage_bytes:
             raise ValueError("Лимит запроса загрузки не может превышать квоту хранилища владельца")
         if self.max_concurrent_chats_per_owner > self.max_concurrent_chats:

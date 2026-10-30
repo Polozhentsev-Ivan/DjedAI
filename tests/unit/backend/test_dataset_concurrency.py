@@ -253,43 +253,32 @@ async def test_dataset_job_queue_limits_and_fairness() -> None:
 
 
 @pytest.mark.anyio
-async def test_dataset_upload_file_and_request_limits(tmp_path: Path, db_factory) -> None:
+async def test_dataset_upload_request_limit_without_file_limit(tmp_path: Path, db_factory) -> None:
     limits = LimitSettings(
         _env_file=None,
-        max_upload_file_bytes=50,
-        max_upload_request_bytes=80,
+        max_upload_request_bytes=100,
         max_owner_storage_bytes=1000,
     )
     service = DatasetService(db_factory, tmp_path / "datasets", limits=limits)
 
-    # 1. Файл размером ~120 байт превышает max_upload_file_bytes=50 -> HTTP 413
-    oversized_file = tmp_path / "oversized.csv"
-    oversized_file.write_text("a,b\n" + "1,2\n" * 30, encoding="utf-8")
+    # 1. Один файл 84 байта занимает почти весь лимит запроса: отдельного лимита на файл нет (#229)
+    single = tmp_path / "single.csv"
+    single.write_bytes(b"a,b\n" + b"1,2\n" * 20)
+    accepted = await service.ingest_csv("user1", [CsvSource(single, "single.csv")])
+    assert accepted.status == "processing"
+
+    # 2. Два файла по 44 и 64 байта (каждый меньше лимита), сумма 108 > 100 байт -> HTTP 413
+    f1 = tmp_path / "f1.csv"
+    f1.write_bytes(b"a,b\n" + b"1,2\n" * 10)
+    f2 = tmp_path / "f2.csv"
+    f2.write_bytes(b"a,b\n" + b"1,2\n" * 15)
+    service_req = DatasetService(db_factory, tmp_path / "datasets_req", limits=limits)
 
     with pytest.raises(HTTPException) as exc:
-        await service.ingest_csv("user1", [CsvSource(oversized_file, "oversized.csv")])
-    assert exc.value.status_code == 413
-    assert "Размер файла" in exc.value.detail
-    # Каталог датасета должен быть очищен
-    assert not any(p.is_dir() for p in (tmp_path / "datasets").glob("*"))
-
-    # 2. Два файла по 24 и 36 байт (< 50 байт), сумма 60 > 55 байт -> HTTP 413
-    limits_req = LimitSettings(
-        _env_file=None,
-        max_upload_file_bytes=50,
-        max_upload_request_bytes=55,
-        max_owner_storage_bytes=1000,
-    )
-    service_req = DatasetService(db_factory, tmp_path / "datasets_req", limits=limits_req)
-    f1 = tmp_path / "f1.csv"
-    f1.write_bytes(b"a,b\n" + b"1,2\n" * 5)  # 24 байта
-    f2 = tmp_path / "f2.csv"
-    f2.write_bytes(b"a,b\n" + b"1,2\n" * 8)  # 36 байт
-
-    with pytest.raises(HTTPException) as exc2:
         await service_req.ingest_csv("user1", [CsvSource(f1, "f1.csv"), CsvSource(f2, "f2.csv")])
-    assert exc2.value.status_code == 413
-    assert "Суммарный размер файлов запроса" in exc2.value.detail
+    assert exc.value.status_code == 413
+    assert "Суммарный размер файлов запроса" in exc.value.detail
+    # Каталог датасета должен быть очищен
     assert not any(p.is_dir() for p in (tmp_path / "datasets_req").glob("*"))
 
     await service_req.close()
@@ -337,11 +326,10 @@ async def test_dataset_recovery_respects_queue_limits(tmp_path: Path, db_factory
 
 @pytest.mark.anyio
 async def test_partial_copy_failure_releases_reserved_quota(tmp_path: Path, db_factory) -> None:
-    # Лимит файла 65536 байт, лимит хранилища 200 КБ
+    # Лимит запроса 65536 байт, лимит хранилища 200 КБ
     limits = LimitSettings(
         _env_file=None,
-        max_upload_file_bytes=65536,
-        max_upload_request_bytes=100000,
+        max_upload_request_bytes=65536,
         max_owner_storage_bytes=200000,
     )
     service = DatasetService(db_factory, tmp_path / "datasets_partial", limits=limits)
@@ -379,7 +367,6 @@ async def test_dataset_queue_overflow_rolls_back_storage_and_records(
         max_concurrent_dataset_jobs_per_owner=1,
         max_queued_dataset_jobs=1,
         max_queued_dataset_jobs_per_owner=1,
-        max_upload_file_bytes=10000,
         max_upload_request_bytes=20000,
         max_owner_storage_bytes=100000,
     )

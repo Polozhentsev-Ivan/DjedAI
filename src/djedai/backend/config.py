@@ -192,7 +192,6 @@ class Settings(LimitSettings):
         "max_concurrent_dataset_jobs_per_owner",
         "max_queued_dataset_jobs",
         "max_queued_dataset_jobs_per_owner",
-        "max_upload_file_bytes",
         "max_upload_request_bytes",
         "max_owner_storage_bytes",
         mode="before",
