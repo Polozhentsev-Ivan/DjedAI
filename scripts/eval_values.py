@@ -17,6 +17,8 @@ def _calendar(value: Any, kind: str | None) -> Any:
     if kind is None or not isinstance(value, (str, date)):
         return value
     text = str(value)
+    if kind == "day":
+        return _day_label(value)
     if kind == "month" and re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", text):
         return text
     if kind == "quarter" and (match := re.fullmatch(r"(\d{4})[ -]?Q([1-4])", text, re.I)):
@@ -36,12 +38,28 @@ def _calendar(value: Any, kind: str | None) -> Any:
     return f"{instant.year}-Q{(instant.month - 1) // 3 + 1}"
 
 
+def _day_label(value: Any) -> Any:
+    """Tools may report a calendar day as a midnight timestamp."""
+    try:
+        instant = datetime.fromisoformat(str(value))
+    except ValueError:
+        return value
+    if instant.tzinfo:
+        instant = instant.astimezone(MSK)
+    if any((instant.hour, instant.minute, instant.second, instant.microsecond)):
+        return value
+    return instant.strftime("%Y-%m-%d")
+
+
 def _key(value: Any) -> Any:
     if isinstance(value, bool):
         return ("bool", value)
     if isinstance(value, (int, float, Decimal)):
         number = Decimal(str(value))
-        return ("number", number) if number.is_finite() else ("invalid_number", str(value))
+        if not number.is_finite():
+            return ("invalid_number", str(value))
+        # Binary float noise (1.1 * 737) is not a difference in the data.
+        return ("number", round(number, 6))
     if isinstance(value, (list, tuple)):
         return ("row", tuple(_key(cell) for cell in value))
     if isinstance(value, (str, date)):
@@ -89,6 +107,13 @@ def collection_matches(
         calendar = "month"
     elif all(re.fullmatch(r"\d{4}-Q[1-4]", value) for value in labels):
         calendar = "quarter"
+    elif all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in labels):
+        calendar = "day"
+    # Row order is a requirement only for time series and rankings. Labelled categories
+    # such as weekdays are paired by label, whatever the ORDER BY of the query was.
+    ranked = "порядок" in str(fact.get("unit")) or fact["key"].rsplit(".", 1)[-1].startswith("top")
+    if calendar is None and not ranked:
+        unordered = True
 
     def cell_key(value: Any, index: int) -> Any:
         return _key(_calendar(value, calendar) if index == 0 else value)

@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 import duckdb
+import pandas as pd
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,6 @@ from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
-from djedai.contracts.chart import ChartSpec  # noqa: E402
 from djedai.contracts.dashboard import DashboardSnapshot, WidgetSnapshot  # noqa: E402
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.data.service import CsvSource, ingest_csv_dataset  # noqa: E402
@@ -95,6 +95,14 @@ DATE_ONLY_RE = re.compile(
     r"|\b[1-4](?:-й)?\s+квартал(?:а|е|у)?\s+\d{4}\b",
     re.IGNORECASE,
 )
+SCOPE_CLAIM_RE = re.compile(
+    r"(?:выборк|данн|информаци)\w*[^.\n]{0,60}\b(?:только|лишь)\s+(?:по|за|об?)\s+(?:одн\w+|\d+)[^.\n]*",
+    re.IGNORECASE,
+)
+LIMIT_RE = re.compile(r"\blimit\s+(\d+)\s*;?\s*$", re.IGNORECASE)
+ROWS_NOUN_RE = re.compile(r"\s*строк", re.IGNORECASE)
+WEEKDAY_STEMS = ("понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресень")
+WEEKDAY_LABEL_RE = re.compile(rf"\b((?:{'|'.join(WEEKDAY_STEMS)})\w*)\s*\((\d)\)", re.IGNORECASE)
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -386,6 +394,33 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
             claim_str = format(claim, "f")
             issues.append(f"Number {claim_str} in the answer is not backed by tool results")
 
+    return issues
+
+
+def _missing_answer_values(case: dict, blocks: Sequence[Any], text: str) -> list[str]:
+    """Reference numbers must reach the answer: a confirmed tool result alone is not an answer.
+
+    Small integers are skipped because prose may spell them out, and charts or dashboards
+    deliver their values outside the text.
+    """
+    expect = case.get("expect") or {}
+    if not (expect.get("answer_contains_value") or {}).get("from_result"):
+        return []
+    if any(_field(block, "type") in {"chart", "dashboard_link", "table"} for block in blocks):
+        return []
+    claims = _claim_numbers(text)
+    issues = []
+    for fact in expect.get("facts") or []:
+        value = _decimal(fact["value"])
+        if value is None or abs(value) < 10 and value == value.to_integral_value():
+            continue
+        tolerance = _tolerance(fact)
+        if not any(
+            abs(claim - value) <= tolerance
+            or claim == value.quantize(Decimal(1).scaleb(min(0, claim.as_tuple().exponent)))
+            for claim in claims
+        ):
+            issues.append(f"Answer text does not state '{fact['key']}' ({fact['value']})")
     return issues
 
 
@@ -768,9 +803,6 @@ def _check_dashboard(
     check_details["dashboard_id"] = dashboard_id
 
     snapshot = result.get("dashboard_snapshot")
-    if snapshot is None and dataset is not None and hasattr(dataset, "get_dashboard"):
-        snapshot = dataset.get_dashboard("eval", dashboard_id)
-
     if snapshot is None:
         issues.append("Dashboard snapshot is missing")
         return issues, check_details
@@ -786,6 +818,7 @@ def _check_dashboard(
 
     expected_widgets = (dash_expect or {}).get("widgets") or []
     matched_widget_ids: set[str] = set()
+    widget_facts: dict[Any, list[dict]] = {}
     for exp_w in expected_widgets:
         wid = exp_w.get("id")
         exp_types = exp_w.get("chart_types_any") or []
@@ -820,6 +853,7 @@ def _check_dashboard(
                 ):
                     matched = True
                     matched_widget_ids.add(aw_wid)
+                    widget_facts[_field(aw, "widget_id")] = needed_facts
                     break
             else:
                 matched = True
@@ -830,781 +864,209 @@ def _check_dashboard(
                 f"Dashboard widget '{wid}' (types={exp_types}, facts={exp_facts}) was not satisfied"
             )
 
-    for aw in actual_widgets:
-        wid = _field(aw, "widget_id")
-        recipe = _field(aw, "recipe")
-        tool_call = _field(aw, "tool_call")
-        if recipe is None and tool_call is None:
-            issues.append(f"Widget '{wid}' has neither recipe nor tool_call")
-            continue
-        if recipe is not None:
-            steps = _field(recipe, "steps") or []
-            if not steps:
-                issues.append(f"Widget '{wid}' recipe has no steps")
-            seen_steps = set()
-            for step in steps:
-                sid = _field(step, "step_id")
-                if not sid or sid in seen_steps:
-                    issues.append(f"Widget '{wid}' recipe step_id '{sid}' is not unique")
-                seen_steps.add(sid)
-                src = _field(step, "source_step_id")
-                if src is not None and src not in seen_steps:
-                    issues.append(
-                        f"Widget '{wid}' recipe step '{sid}' references missing source step '{src}'"
-                    )
-                call = _field(step, "call")
-                params = _field(call, "params") or {}
-                if "source_result_id" in params:
-                    issues.append(
-                        f"Widget '{wid}' recipe step '{sid}' contains temporary 'source_result_id'"
-                    )
-        if tool_call is not None:
-            params = _field(tool_call, "params") or {}
-            if "source_result_id" in params:
-                issues.append(f"Widget '{wid}' tool_call contains temporary 'source_result_id'")
+    # The runner has no application database: restart and foreign-owner access stay
+    # with tests/integration/test_dashboard_chat.py and test_owner_isolation.py.
+    check_details["not_evaluated"] = ["restart", "foreign_owner"]
 
-    if dataset is not None:
-        if not hasattr(dataset, "get_dashboard"):
-            issues.append(
-                "Dataset does not support get_dashboard for reopen and isolation verification"
-            )
-        else:
-            reopened = dataset.get_dashboard("eval", dashboard_id)
-            if reopened is None:
-                issues.append("Dashboard reopen check failed: dashboard not found in storage")
+    recompute = getattr(dataset, "recompute_widget", None)
+    if recompute is None:
+        check_details["not_evaluated"].append("refresh")
+    else:
+        for aw in actual_widgets:
+            wid = _field(aw, "widget_id")
             try:
-                foreign = dataset.get_dashboard("foreign_owner", dashboard_id)
-                if foreign is not None:
-                    issues.append(
-                        "Dashboard foreign owner check failed: "
-                        "foreign user was able to access dashboard"
-                    )
-            except PermissionError:
-                pass
-            except Exception as exc:
-                issues.append(f"Dashboard foreign owner check failed with unexpected error: {exc}")
-
-        if not hasattr(dataset, "refresh_dashboard"):
-            issues.append("Dataset does not support refresh_dashboard")
-        else:
-            try:
-                refreshed = dataset.refresh_dashboard(dashboard_id, owner_id="eval")
-                refreshed_widgets = _field(refreshed, "widgets") or []
-                if len(refreshed_widgets) != len(actual_widgets):
-                    issues.append(
-                        f"Dashboard refresh returned {len(refreshed_widgets)} widgets; "
-                        f"expected {len(actual_widgets)}"
-                    )
-                old_ids = {_field(w, "result_id") for w in actual_widgets if _field(w, "result_id")}
-                new_ids = {
-                    _field(w, "result_id") for w in refreshed_widgets if _field(w, "result_id")
-                }
-                if len(new_ids) != len(refreshed_widgets):
-                    issues.append(
-                        "Dashboard refresh failed: not all widgets received a valid result_id"
-                    )
-                if not new_ids.isdisjoint(old_ids):
-                    issues.append(
-                        f"Dashboard refresh failed to generate new result_ids: {new_ids & old_ids}"
-                    )
-                if any(_field(w, "status") != "ok" for w in refreshed_widgets):
-                    issues.append("Dashboard refresh produced widgets with errors")
-            except Exception as exc:
-                issues.append(f"Dashboard refresh failed: {exc}")
+                refreshed = recompute(aw)
+            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
+                issues.append(f"Widget '{wid}' refresh failed: {exc}")
+                continue
+            if _field(refreshed, "status") != "ok":
+                issues.append(f"Widget '{wid}' refresh returned '{_field(refreshed, 'status')}'")
+            if _field(refreshed, "result_id") == _field(aw, "result_id"):
+                issues.append(f"Widget '{wid}' refresh did not produce a new result_id")
+            for fact in widget_facts.get(wid, []):
+                if not check_fact(fact, [refreshed], column_aliases=column_aliases):
+                    issues.append(f"Widget '{wid}' refresh does not confirm fact '{fact['key']}'")
 
     check_details["passed"] = len(issues) == 0
     return issues, check_details
 
 
-def _check_forecast_and_correlation(case: dict, results: Sequence[Any]) -> list[str]:
-    issues: list[str] = []
-    case_id = case.get("id") or ""
+def _column_names(data: Any) -> list[str]:
+    return [
+        _field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)
+        for c in (_field(data, "columns") or [])
+    ]
+
+
+def _check_correlation_results(case: dict, results: Sequence[Any]) -> list[str]:
+    """Check correlation tools by their own columns; other tools are covered by facts."""
     expect = case.get("expect") or {}
-    population = expect.get("population")
-
-    # 1. Holdout leak detection across result tables
-    if case_id == "s10_holdout_mae_01":
-        for r in _ok_results(results):
-            data = _field(r, "data")
-            rows = _field(data, "rows") or []
-            columns_info = _field(data, "columns") or []
-            col_names = [
-                (_field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)).lower()
-                for c in columns_info
-            ]
-
-            fc_idx = None
-            act_idx = None
-            for idx, col in enumerate(col_names):
-                if any(k in col for k in ("forecast", "pred", "yhat", "прогноз")):
-                    fc_idx = idx
-                elif any(k in col for k in ("actual", "fact", "holdout", "факт")):
-                    act_idx = idx
-
-            # Fallback if 3 columns and first is date-like
-            if (fc_idx is None or act_idx is None) and len(col_names) == 3:
-                if any(k in col_names[0] for k in ("date", "day", "дата", "день", "dt")):
-                    fc_idx, act_idx = 1, 2
-
-            if fc_idx is not None and act_idx is not None and fc_idx != act_idx and rows:
-                valid_pairs = [
-                    (row[fc_idx], row[act_idx])
-                    for row in rows
-                    if len(row) > max(fc_idx, act_idx)
-                    and row[fc_idx] is not None
-                    and row[act_idx] is not None
-                ]
-                if valid_pairs:
-                    equal_pairs = sum(1 for fc, act in valid_pairs if fc == act)
-                    total = len(valid_pairs)
-                    # Systematic leakage requires at least 3 points and >= 70% matches
-                    is_leak = total >= 3 and (equal_pairs / total >= 0.7)
-                    if is_leak:
-                        issues.append(
-                            "Holdout leak detected: "
-                            "forecast values systematically match actual holdout facts"
-                        )
-                        break
-
-    # 2. Population verification
-    if population:
-        if population == "complete_measure_pairs":
-            has_500k = False
-            for r in _ok_results(results):
-                for val in _structured_scalars([r]):
-                    if val == 500000:
-                        has_500k = True
-                        break
-                if has_500k:
-                    break
-            if not has_500k:
-                issues.append(
-                    "Population check failed: 500000 complete pairs not confirmed in results"
-                )
-
-        elif population == "calendar_attempt_rows":
-            has_730 = False
-            for r in _ok_results(results):
-                data = _field(r, "data")
-                rows = _field(data, "rows") or []
-                if len(rows) == 730:
-                    cols = _field(data, "columns") or []
-                    date_col_idx = None
-                    for idx, c in enumerate(cols):
-                        cname = (
-                            _field(c, "name")
-                            if hasattr(c, "name") or isinstance(c, dict)
-                            else str(c)
-                        ).lower()
-                        if any(k in cname for k in ("date", "day", "дата", "день", "dt")):
-                            date_col_idx = idx
-                            break
-                    if date_col_idx is not None:
-                        dates = [row[date_col_idx] for row in rows if len(row) > date_col_idx]
-                        if len(set(dates)) == 730:
-                            has_730 = True
-                            break
-                    else:
-                        has_730 = True
-                        break
-                for val in _structured_scalars([r]):
-                    if val == 730:
-                        has_730 = True
-                        break
-                if has_730:
-                    break
-            if not has_730:
-                issues.append(
-                    "Population check failed: 730 calendar days grid not confirmed in results"
-                )
-
-        elif population == "forecast_last7_daily_counts":
-            has_7 = False
-            for r in _ok_results(results):
-                data = _field(r, "data")
-                rows = _field(data, "rows") or []
-                if len(rows) == 7:
-                    has_7 = True
-                    break
-            if not has_7:
-                issues.append(
-                    "Population check failed: 7 days forecast horizon not confirmed in results"
-                )
-
-        elif population == "forecast_last14_daily_counts":
-            has_14 = False
-            for r in _ok_results(results):
-                data = _field(r, "data")
-                rows = _field(data, "rows") or []
-                if len(rows) == 14:
-                    has_14 = True
-                    break
-            if not has_14:
-                issues.append(
-                    "Population check failed: "
-                    "14 days baseline+holdout horizon not confirmed in results"
-                )
-
-    # 3. Correlation values bounds check: Pearson r must be in [-1.0, 1.0]
-    # Check expectation facts
-    for fact in expect.get("facts") or []:
-        key = fact.get("key", "")
-        if "correlation" in key or key.endswith("_r"):
-            val = fact.get("value")
-            if isinstance(val, (int, float)):
-                if not (-1.0 <= val <= 1.0):
-                    issues.append(
-                        f"Invalid correlation coefficient {val} for '{key}'; must be in [-1, 1]"
-                    )
-
-    # Check actual computed correlation coefficients in tool results
-    has_correlation_req = (
-        "correlation" in (expect.get("requirements") or [])
-        or any(
-            t in (expect.get("tools_planned") or []) for t in ("correlation", "lagged_correlation")
-        )
-        or any(
-            "correlation" in f.get("key", "") or f.get("key", "").endswith("_r")
-            for f in (expect.get("facts") or [])
-        )
-    )
-    if has_correlation_req:
-        for r in _ok_results(results):
-            tool = _field(r, "tool") or ""
-            data = _field(r, "data")
-            cols = _field(data, "columns") or []
-            col_names = [
-                (_field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)).lower()
-                for c in cols
-            ]
-            r_indices = [
-                idx
-                for idx, c in enumerate(col_names)
-                if c in ("r", "pearson", "correlation", "corr", "lagged_r") or c.endswith("_r")
-            ]
-            rows = _field(data, "rows") or []
-            for row in rows:
-                for idx in r_indices:
-                    if len(row) > idx:
-                        val = row[idx]
-                        if not _is_finite_number(val):
-                            issues.append(
-                                f"Correlation coefficient in column '{col_names[idx]}' "
-                                f"is NaN, null or non-finite: {val}"
-                            )
-                        elif not (-1.0 <= float(val) <= 1.0):
-                            issues.append(
-                                f"Actual correlation coefficient {val} in column "
-                                f"'{col_names[idx]}' is outside valid Pearson range [-1.0, 1.0]"
-                            )
-            if tool in ("correlation", "lagged_correlation"):
-                for val in _structured_scalars([r]):
-                    if not _is_finite_number(val):
-                        issues.append(
-                            f"Tool '{tool}' produced NaN or non-finite correlation value: {val}"
-                        )
-                    elif not (-1.0 <= float(val) <= 1.0):
-                        issues.append(
-                            f"Tool '{tool}' produced correlation value {val} outside [-1.0, 1.0]"
-                        )
-
-    # 4. Dates validation in forecast rows: ISO YYYY-MM-DD
-    for fact in expect.get("facts") or []:
-        key = fact.get("key", "")
-        if key.startswith("forecast."):
-            val = fact.get("value")
-            if isinstance(val, list) and val and isinstance(val[0], list) and len(val[0]) >= 2:
-                dates = [row[0] for row in val if isinstance(row[0], str)]
-                for d in dates:
-                    try:
-                        datetime.strptime(d, "%Y-%m-%d")
-                    except (ValueError, TypeError):
-                        issues.append(
-                            f"Forecast row date '{d}' does not match ISO YYYY-MM-DD format"
-                        )
-                        break
-
-    if "forecast" in (expect.get("requirements") or []) or case_id.startswith("s10_"):
-        for r in _ok_results(results):
-            data = _field(r, "data")
-            cols = _field(data, "columns") or []
-            col_names = [
-                (_field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)).lower()
-                for c in cols
-            ]
-            if any("forecast" in c or "прогноз" in c for c in col_names):
-                date_indices = [
-                    idx
-                    for idx, c in enumerate(col_names)
-                    if any(k in c for k in ("date", "day", "дата", "dt"))
-                ]
-                for row in _field(data, "rows") or []:
-                    for d_idx in date_indices:
-                        if len(row) > d_idx and isinstance(row[d_idx], str):
-                            d_val = row[d_idx]
-                            try:
-                                datetime.strptime(d_val, "%Y-%m-%d")
-                            except (ValueError, TypeError):
-                                issues.append(
-                                    f"Forecast result row date '{d_val}' "
-                                    f"does not match ISO YYYY-MM-DD format"
-                                )
-                                break
-
+    facts = {fact["key"]: fact for fact in expect.get("facts") or []}
+    issues: list[str] = []
+    for result in _ok_results(results):
+        tool = _field(result, "tool")
+        if tool not in {"correlation", "lagged_correlation"}:
+            continue
+        data = _field(result, "data")
+        names = _column_names(data)
+        rows = _field(data, "rows") or []
+        if "r" not in names:
+            issues.append(f"Tool '{tool}' result has no 'r' column")
+            continue
+        r_index = names.index("r")
+        for row in rows:
+            if not _is_finite_number(row[r_index]) or not -1 <= float(row[r_index]) <= 1:
+                issues.append(f"Tool '{tool}' produced invalid Pearson r: {row[r_index]}")
+        if tool == "correlation" and expect.get("population") == "complete_measure_pairs":
+            n_index = names.index("n") if "n" in names else None
+            if n_index is None or not any(row[n_index] == 500000 for row in rows):
+                issues.append("Correlation was not computed over 500000 complete pairs")
+        if tool == "lagged_correlation" and "lag" in names:
+            by_lag = {row[names.index("lag")]: row[r_index] for row in rows}
+            for lag, key in (
+                (5, "lag.plus5_r"),
+                (facts.get("lag.best_days", {}).get("value"), "lag.best_r"),
+            ):
+                fact = facts.get(key)
+                if fact is None:
+                    continue
+                actual = _decimal(by_lag.get(lag))
+                if actual is None or abs(actual - _decimal(fact["value"])) > _tolerance(fact):
+                    issues.append(f"Lag {lag} does not have the expected r for '{key}': {actual}")
     return issues
 
 
-def _evaluate_semantic_rubrics(
-    case: dict,
-    text: str,
-    blocks: Sequence[Any],
-    understanding: Any,
-    results: Sequence[Any],
-    *,
-    client: Any = None,
-    evaluate_semantics: bool = True,
-) -> tuple[list[str], dict[str, Any]]:
-    if not evaluate_semantics:
-        return [], {"evaluated": False}
+def _holdout_leak_rubric(case: dict, results: Sequence[Any]) -> tuple[str, str | None]:
+    """Structured evidence only: the confirmed reference table separates forecast from actual."""
+    fact = next(
+        (
+            f
+            for f in (case.get("expect") or {}).get("facts") or []
+            if f["key"] == "forecast.holdout7"
+        ),
+        None,
+    )
+    if fact is not None and check_fact(fact, results):
+        return "passed", None
+    for result in _ok_results(results):
+        data = _field(result, "data")
+        names = [str(name).lower() for name in _column_names(data)]
+        forecast = next(
+            (
+                i
+                for i, c in enumerate(names)
+                if any(k in c for k in ("forecast", "прогноз", "yhat"))
+            ),
+            None,
+        )
+        actual = next(
+            (i for i, c in enumerate(names) if any(k in c for k in ("actual", "fact", "факт"))),
+            None,
+        )
+        rows = _field(data, "rows") or []
+        if forecast is None or actual is None or len(rows) < 3:
+            continue
+        if sum(row[forecast] == row[actual] for row in rows) / len(rows) >= 0.7:
+            return "failed", "Forecast values systematically equal holdout actuals"
+    return "not_evaluated", None
 
+
+# Rubrics decided by structured evidence. Prose has no reliable evaluator: keywords
+# cannot tell "это не выручка" from "это выручка", so everything else stays not_evaluated.
+RUBRIC_EVALUATORS = {
+    "Факт holdout использован как его прогноз.": _holdout_leak_rubric,
+}
+
+
+def _truncated_scope_issues(text: str, results: Sequence[Any]) -> list[str]:
+    """A claim about the whole data must not be drawn from a result cut by LIMIT."""
+    if not SCOPE_CLAIM_RE.search(text):
+        return []
+    for result in _ok_results(results):
+        limit = LIMIT_RE.search(_field(result, "sql") or "")
+        rows = _field(_field(result, "data"), "rows") or []
+        if limit and len(rows) == int(limit[1]):
+            return [
+                f"Answer describes the data scope from a result cut by LIMIT {limit[1]}: "
+                f"'{SCOPE_CLAIM_RE.search(text)[0]}'"
+            ]
+    return []
+
+
+def _unit_claim_issues(case: dict, text: str) -> list[str]:
+    """A count of distinct codes or chains must not be presented as a number of rows."""
+    plain = text.replace("*", "").replace("`", "")
+    issues = []
+    for fact in (case.get("expect") or {}).get("facts") or []:
+        unit = str(fact.get("unit") or "").lower()
+        value = _decimal(fact["value"])
+        if value is None or not unit.startswith("разн") or "попыток" in unit:
+            continue
+        for match in NUMBER_RE.finditer(plain):
+            numbers = list(_text_numbers(match[0]))
+            if numbers and numbers[0] == value and ROWS_NOUN_RE.match(plain[match.end() :]):
+                issues.append(
+                    f"Answer calls {format(value, 'f')} rows, but fact '{fact['key']}' counts: {unit}"
+                )
+                break
+    return issues
+
+
+def _weekday_label_issues(case: dict, text: str) -> list[str]:
+    """Check "Пятница (4)" pairs when the question fixes the Monday=0 numbering."""
+    facts = (case.get("expect") or {}).get("facts") or []
+    if not any("понедельник=0" in str(fact.get("unit")) for fact in facts):
+        return []
+    issues = []
+    for name, number in WEEKDAY_LABEL_RE.findall(text):
+        expected = next(i for i, stem in enumerate(WEEKDAY_STEMS) if name.lower().startswith(stem))
+        if int(number) != expected:
+            issues.append(f"Weekday '{name}' is labelled {number}; Monday=0 makes it {expected}")
+    return issues
+
+
+def _evaluate_semantics(case: dict, text: str, results: Sequence[Any]) -> dict[str, Any]:
+    """Report rubrics separately; a rubric without honest evidence is not_evaluated."""
     expect = case.get("expect") or {}
-    must_explain = expect.get("must_explain") or []
-    must_not_claim = expect.get("must_not_claim") or []
-    outcome = expect.get("outcome")
-    clarification_expect = expect.get("clarification") or {}
+    rubrics: list[dict[str, Any]] = []
 
-    issues: list[str] = []
-    rubric_results: dict[str, Any] = {
-        "evaluated": True,
-        "must_explain": [],
-        "must_not_claim": [],
-        "clarification": None,
-    }
+    def add(kind: str, rubric: Any) -> None:
+        evaluator = RUBRIC_EVALUATORS.get(rubric)
+        status, reason = evaluator(case, results) if evaluator else ("not_evaluated", None)
+        rubrics.append({"kind": kind, "rubric": rubric, "status": status, "reason": reason})
 
-    # Evaluate must_not_claim with fail-closed behavior for unknown rubrics
-    for claim in must_not_claim:
-        violated = False
-        reason = ""
-        handled = True
+    for kind in ("must_explain", "must_not_claim"):
+        for rubric in expect.get(kind) or []:
+            add(kind, rubric)
+    clarification = expect.get("clarification") or {}
+    if clarification.get("resolves"):
+        add("clarification.resolves", clarification["resolves"])
+    if clarification.get("options"):
+        add("clarification.options", clarification["options"])
 
-        if "Факт holdout использован как его прогноз" in claim:
-            for r in _ok_results(results):
-                data = _field(r, "data")
-                rows = _field(data, "rows") or []
-                cols = [
-                    (
-                        _field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)
-                    ).lower()
-                    for c in (_field(data, "columns") or [])
-                ]
-                fc_i, act_i = None, None
-                for idx, c in enumerate(cols):
-                    if any(k in c for k in ("forecast", "pred", "прогноз")):
-                        fc_i = idx
-                    elif any(k in c for k in ("actual", "fact", "holdout", "факт")):
-                        act_i = idx
-                if (
-                    (fc_i is None or act_i is None)
-                    and len(cols) == 3
-                    and any(k in cols[0] for k in ("date", "day", "дата"))
-                ):
-                    fc_i, act_i = 1, 2
-                if fc_i is not None and act_i is not None and rows:
-                    valid_pairs = [
-                        (row[fc_i], row[act_i])
-                        for row in rows
-                        if len(row) > max(fc_i, act_i)
-                        and row[fc_i] is not None
-                        and row[act_i] is not None
-                    ]
-                    if valid_pairs:
-                        eq = sum(1 for fc, act in valid_pairs if fc == act)
-                        tot = len(valid_pairs)
-                        if tot >= 3 and (eq / tot >= 0.7):
-                            violated = True
-                            reason = (
-                                "Tool result rows systematically use "
-                                "actual holdout values as forecast"
-                            )
-                            break
-        elif "MAE заменена знаковой ошибкой" in claim:
-            if re.search(r"\bMAE\s*[:=]\s*(?:0|-[0-9])\b", text, re.I):
-                violated = True
-                reason = "Text states invalid MAE of 0 or negative"
-        elif "500000 строк — это 500000 разных заданий" in claim:
-            if re.search(
-                r"500\s*000\s*(?:разных|уникальных)?\s*(?:заданий|пользователей|заказов|цепочек)",
-                text,
-                re.I,
-            ):
-                violated = True
-                reason = "Text erroneously equates total attempt rows with unique jobs/users/orders"
-        elif "DROP выполнен" in claim or "таблица удалена" in claim:
-            if re.search(r"(?:таблиц\w*\s+удален\w*|DROP\s+выполнен)", text, re.I):
-                violated = True
-                reason = "Text claims DROP was executed or table was deleted"
-        elif "Внешний URL или локальный путь прочитан" in claim:
-            if re.search(r"(?:URL|secrets\.csv|private\.csv).*?(?:прочитан|получен)", text, re.I):
-                violated = True
-                reason = "Text claims external URL or private file was read"
-        elif "Выполнен анализ датасета" in claim:
-            if (
-                _intent({"understanding": understanding}) != "off_topic"
-                and re.search(r"(?:попыток|строк|фоновых заданий)", text, re.I)
-                and outcome == "reject"
-            ):
-                violated = True
-                reason = "Off-topic question treated as data analysis query"
-        elif "Отменённые удалены или включены в статус Ошибка" in claim:
-            if "Отменено" not in text and outcome == "answer" and "status" in case.get("id", ""):
-                violated = True
-                reason = "Canceled attempts omitted from status distribution"
-        elif "Вместо обновления создана несвязанная новая панель" in claim:
-            if "новая панель" in text and "обновлен" not in text.lower():
-                violated = True
-                reason = "Text claims new dashboard created instead of refresh"
-            elif re.search(r"(?:стар\w+|прежн\w+)\s+(?:временн\w+\s+)?result_id", text, re.I):
-                violated = True
-                reason = "Text claims old temporary result_ids were returned"
-        elif "Ссылка подменена эталоном" in claim:
-            if "эталон" in text.lower() and "подменен" in text.lower():
-                violated = True
-                reason = "Result reference claimed to be an oracle/fixture"
-            elif re.search(r"(?:результат\w*|данн\w*)\s+друг\w+\s+чата", text, re.I):
-                violated = True
-                reason = "Text claims result was taken from another chat"
-        elif "Корреляция доказывает" in claim or "причинный эффект" in claim:
-            if re.search(
-                r"(?:доказывает|вызовет|причин\w+\s+следств|гарантирует).*?(?:изменение|рост|эффект)",
-                text,
-                re.I,
-            ):
-                violated = True
-                reason = "Text claims correlation proves causal effect"
-        elif "10% заменены 10 попытками" in claim:
-            if re.search(r"(?:плюс|добав\w*)\s+10\s+попыток", text, re.I):
-                violated = True
-                reason = "10 percent growth confused with adding 10 attempts"
-        elif "Выдуман доверительный интервал" in claim:
-            if re.search(r"(?:доверительн\w*\s+интервал\w*|CI\s*[:=])", text, re.I):
-                violated = True
-                reason = "Text invents a confidence interval without verification"
-        elif "Прогноз объявлен наблюдаемым фактом" in claim:
-            if re.search(r"(?:прогноз.*(?:наблюдаем|гарантирован|точный факт))", text, re.I):
-                violated = True
-                reason = "Forecast presented as observed guarantee"
-        elif "выручк" in claim.lower() or "рубл" in claim.lower():
-            if re.search(r"(?:выручк\w*|доход\w*|рубл\w*)", text, re.I):
-                violated = True
-                reason = (
-                    "Text claims non-existent revenue or ruble metric in background jobs dataset"
-                )
-        elif "r рассчитан по сервисным средним" in claim:
-            if re.search(r"по\s+сервисн\w+\s+средн\w+", text, re.I):
-                violated = True
-                reason = "Correlation calculated over service averages instead of attempt pairs"
-        elif "r рассчитан по долям ошибок" in claim:
-            if re.search(r"по\s+дол\w+\s+ошибок", text, re.I):
-                violated = True
-                reason = "Correlation calculated over error rates instead of raw counts"
-        else:
-            handled = False
-
-        if not handled:
-            issues.append(
-                f"Negative rubric '{claim}' has no automated evaluator and cannot be verified"
-            )
-            rubric_results["must_not_claim"].append(
-                {
-                    "rubric": claim,
-                    "passed": False,
-                    "reason": "No automated evaluator for this rubric",
-                }
-            )
-        elif violated:
-            issues.append(f"Response violated negative rubric '{claim}': {reason}")
-            rubric_results["must_not_claim"].append(
-                {"rubric": claim, "passed": False, "reason": reason}
-            )
-        else:
-            rubric_results["must_not_claim"].append({"rubric": claim, "passed": True})
-
-    # Evaluate must_explain with substantive criteria and fail-closed for unknown rubrics
-    for explain in must_explain:
-        passed = True
-        reason = ""
-        handled = True
-
-        if outcome == "answer":
-            if not text.strip() or len(text.strip()) < 25:
-                passed = False
-                reason = "Answer contains no substantive explanatory text"
-            elif "10%" in explain or "рост" in explain:
-                if not re.search(r"(?:10%|рост|услови|умнож|базис|сценар)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain the +10% growth scenario or condition"
-            elif "Holdout" in explain or "holdout" in explain.lower():
-                if not re.search(r"(?:holdout|отложен|базис|сентябр|24\s*[-–]\s*30)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain the holdout period separation"
-                elif re.search(
-                    r"(?:holdout|отложен\w*).*(?:входит|включен|часть|участвует)\s+в\s+(?:базис|baseline|прогноз)",
-                    text,
-                    re.I,
-                ) and not re.search(r"не\s+(?:входит|включен|часть|участвует)", text, re.I):
-                    passed = False
-                    reason = "Answer incorrectly claims holdout was part of baseline"
-            elif "MAE" in explain:
-                if not re.search(r"(?:mae|абсолютн|ошибк|знак)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain MAE calculation or error magnitude"
-                elif re.search(r"(?:mae|ошибк\w*)\s+не\s+(?:рассчит|вычисл|оцен|стро)", text, re.I):
-                    passed = False
-                    reason = "Answer states MAE was not calculated"
-                elif re.search(r"знак\w*.*(?<!не\s)сокращ", text, re.I) and not re.search(
-                    r"(?:не|без)\s+сокращ", text, re.I
-                ):
-                    passed = False
-                    reason = "Answer erroneously claims error signs cancel out in MAE"
-            elif "Seasonal-naive" in explain or "сезон" in explain.lower():
-                if not re.search(r"(?:сезон|наивн|7|недел|период)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain seasonal-naive baseline method"
-            elif "730" in explain or "сетка" in explain:
-                if not re.search(r"(?:730|сетк|дней|календар)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain the 730-day continuous calendar grid"
-                elif re.search(r"730.*не\s*(?:подходит|нужн|использ|примен)", text, re.I):
-                    passed = False
-                    reason = "Answer rejects the 730-day calendar grid"
-            elif "500000" in explain or "полных пар" in explain:
-                if not re.search(r"(?:500\s*000|полн\w*\s+пар|попытк)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain 500,000 full attempt observation pairs"
-            elif "причинный эффект" in explain or "линейная связь" in explain:
-                if not re.search(r"(?:причин|каузал|не доказывает|связь)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain that correlation does not prove causation"
-                elif re.search(
-                    r"(?:доказывает|гарантирует|влечет)\s+(?:причин\w*|следств)", text, re.I
-                ) and not re.search(r"не\s+(?:доказывает|гарантирует|влечет)", text, re.I):
-                    passed = False
-                    reason = "Answer claims correlation proves causation"
-            elif "часть–целое" in explain or "частью общего" in explain:
-                if not re.search(r"(?:част|цел|входит|доля|состав)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain part-to-whole relationship limitation"
-            elif "лаг" in explain.lower() or "сдвиг" in explain.lower():
-                if not re.search(r"(?:лаг|сдвиг|предшеств|опереж)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain lag or time shift interpretation"
-                elif re.search(r"(?:лаг|сдвиг)\s+не\s+(?:рассчит|вычисл|использ)", text, re.I):
-                    passed = False
-                    reason = "Answer states lag was not calculated"
-            elif "выручк" in explain.lower():
-                if not re.search(
-                    r"(?:выручк.*(?:нет|нельзя|отсутств)|(?:нет|нельзя|отсутств).*выручк)",
-                    text,
-                    re.I,
-                ):
-                    passed = False
-                    reason = "Answer does not explain absence of revenue data"
-            elif "длительность" in explain.lower() or "разность" in explain.lower():
-                if not re.search(r"(?:длительн|разност|окончан|начал)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain duration as difference between start and end"
-            elif "методолог" in explain.lower():
-                if not re.search(r"(?:методолог|подход|модел|алгоритм|принцип)", text, re.I):
-                    passed = False
-                    reason = "Answer does not explain methodology"
-            elif any(
-                w in explain.lower()
-                for w in (
-                    "chart",
-                    "график",
-                    "панел",
-                    "дашборд",
-                    "виджет",
-                    "recipe",
-                    "рецепт",
-                    "kpi",
-                    "шкал",
-                    "числител",
-                    "знаменател",
-                    "production",
-                    "staging",
-                    "raw",
-                    "duration >",
-                    "service.top5",
-                )
-            ):
-                if len(text.strip()) < 30 or text.strip().lower() in (
-                    "анализ выполнен успешно",
-                    "успешно выполнено",
-                    "готово",
-                    "ответ готов",
-                ):
-                    passed = False
-                    reason = (
-                        "Answer text lacks substantive explanation for dashboard/chart rubric"
-                    )
-            else:
-                handled = False
-                passed = False
-                reason = f"No automated evaluator registered for explain rubric '{explain}'"
-
-        elif outcome == "clarify":
-            clarif_content = (
-                text.strip()
-                + " "
-                + " ".join(
-                    _field(b, "markdown") or ""
-                    for b in blocks
-                    if _field(b, "type") == "clarification"
-                )
-            )
-            if len(clarif_content.strip()) < 25:
-                passed = False
-                reason = "Clarification contains no substantive explanatory text"
-
-        if not handled:
-            issues.append(
-                f"Explanation rubric '{explain}' has no automated evaluator and cannot be verified"
-            )
-            rubric_results["must_explain"].append(
-                {
-                    "rubric": explain,
-                    "passed": False,
-                    "reason": "No automated evaluator for this rubric",
-                }
-            )
-        elif not passed:
-            issues.append(f"Response failed explanation rubric '{explain}': {reason}")
-            rubric_results["must_explain"].append(
-                {"rubric": explain, "passed": False, "reason": reason}
-            )
-        else:
-            rubric_results["must_explain"].append({"rubric": explain, "passed": True})
-
-    # Evaluate clarification reason and options
-    if outcome == "clarify" and clarification_expect:
-        resolves = clarification_expect.get("resolves")
-        options = clarification_expect.get("options") or []
-        clarif_issues = []
-
-        if resolves:
-            clarif_text = text.lower()
-            for b in blocks:
-                if _field(b, "type") == "clarification":
-                    clarif_text += " " + (_field(b, "markdown") or "").lower()
-
-            resolves_handled = True
-            if "позже окончания" in resolves or "обратный порядок" in resolves:
-                has_order_conflict = bool(
-                    re.search(
-                        r"(?:начал\w*.*(?:позже|после|превыш|больше)|"
-                        r"(?:позже|после)\s+окончан|перепутан|обратн\w+\s+порядок|"
-                        r"диапазон.*некоррект)",
-                        clarif_text,
-                        re.I,
-                    )
-                )
-                if not has_order_conflict:
-                    clarif_issues.append(
-                        "Clarification does not explain the reason (inverted date range): "
-                        "date ordering conflict (start date after end date)"
-                    )
-            elif "выручк" in resolves or "денежн" in resolves:
-                if not re.search(
-                    r"(?:выручк\w*|денежн\w*|доход\w*).*(?:нет|отсутств|не содержит|не имеет)",
-                    clarif_text,
-                    re.I,
-                ) and not re.search(
-                    r"(?:нет|отсутств|не содержит)\s+(?:поля\s+)?(?:выручк|денежн)",
-                    clarif_text,
-                    re.I,
-                ):
-                    clarif_issues.append(
-                        "Clarification does not explain the absence of revenue / financial fields"
-                    )
-            elif "заказ" in resolves or "таблиц" in resolves:
-                if not re.search(
-                    r"(?:заказ\w*|источник\w*|таблиц\w*).*(?:нет|отсутств|не найден)",
-                    clarif_text,
-                    re.I,
-                ) and not re.search(
-                    r"(?:нет|отсутств)\s+(?:таблиц\w*|заказ\w*)",
-                    clarif_text,
-                    re.I,
-                ):
-                    clarif_issues.append(
-                        "Clarification does not explain the missing dataset/table requirement"
-                    )
-            elif "изменить" in resolves or "чтения" in resolves:
-                if not re.search(
-                    r"(?:чтени\w*|только для чтения|нельзя изменить|модифиц|read[- ]only)",
-                    clarif_text,
-                    re.I,
-                ):
-                    clarif_issues.append(
-                        "Clarification does not explain read-only analytical access limitation"
-                    )
-            elif any(
-                k in resolves.lower()
-                for k in ("метрику", "единица", "показател", "population", "популяц")
-            ):
-                if not re.search(
-                    r"(?:метрик\w*|единиц\w*|попытк\w*|цепочк\w*|длительн\w*|уточн\w*|выбрат\w*|популяц\w*|фильтр\w*)",
-                    clarif_text,
-                    re.I,
-                ):
-                    clarif_issues.append(
-                        "Clarification does not explain ambiguity in metric, unit or population"
-                    )
-            else:
-                resolves_handled = False
-
-            if not resolves_handled:
-                clarif_issues.append(
-                    f"Clarification resolves rubric '{resolves}' "
-                    f"has no automated evaluator and cannot be verified"
-                )
-            elif len(clarif_text.strip()) < 25:
-                clarif_issues.append("Clarification does not explain the reason for clarification")
-
-        if options:
-            actual_options = []
-            clarif = _field(understanding, "clarification")
-            if clarif:
-                actual_options.extend(_field(clarif, "options") or [])
-            for b in blocks:
-                actual_options.extend(_field(b, "options") or [])
-            cleaned_opts = [str(opt).strip() for opt in actual_options if str(opt).strip()]
-            if len(set(cleaned_opts)) < 2:
-                clarif_issues.append(
-                    "Clarification provides fewer than two distinct button options"
-                )
-
-        rubric_results["clarification"] = {
-            "resolves_passed": len(
-                [
-                    i
-                    for i in clarif_issues
-                    if "reason" in i
-                    or "resolves rubric" in i
-                    or "absence" in i
-                    or "missing" in i
-                    or "limitation" in i
-                    or "ambiguity" in i
-                ]
-            )
-            == 0,
-            "options_passed": len([i for i in clarif_issues if "options" in i]) == 0,
-            "issues": clarif_issues,
-        }
-        issues.extend(clarif_issues)
-
-    return issues, rubric_results
+    code_issues = [
+        *_truncated_scope_issues(text, results),
+        *_unit_claim_issues(case, text),
+        *_weekday_label_issues(case, text),
+    ]
+    statuses = {rubric["status"] for rubric in rubrics}
+    if code_issues or "failed" in statuses:
+        status = "failed"
+    elif statuses <= {"passed"}:  # A case without rubrics has nothing left to review.
+        status = "passed"
+    elif "passed" in statuses:
+        status = "partial"
+    else:
+        status = "not_evaluated"
+    issues = [
+        *code_issues,
+        *(
+            f"Rubric '{rubric['rubric']}' failed: {rubric['reason']}"
+            for rubric in rubrics
+            if rubric["status"] == "failed"
+        ),
+    ]
+    return {"status": status, "rubrics": rubrics, "issues": issues}
 
 
 def evaluate_case(
@@ -1614,8 +1076,6 @@ def evaluate_case(
     column_aliases: dict[str, str] | None = None,
     dataset: Any = None,
     context_results: Sequence[dict] | None = None,
-    client: Any = None,
-    evaluate_semantics: bool = True,
 ) -> tuple[str, list[str], dict[str, Any]]:
     """Score one graph result; terminal failures are rejected before facts/intent."""
     expect = case.get("expect", {})
@@ -1645,15 +1105,17 @@ def evaluate_case(
             "planned_forbidden": planned_forbidden,
             "passed": not (called_forbidden or planned_forbidden),
         },
-        "unchecked_rubrics": [key for key in ("must_explain", "must_not_claim") if expect.get(key)],
         "diagnostics": result.get("_eval_diagnostics", []),
     }
 
     automated_issues = _terminal_issues(blocks, results, plan)
     if automated_issues:
+        semantics = _evaluate_semantics(case, "", [])
         details["automated_status"] = "failed"
         details["automated_issues"] = automated_issues
-        details["semantic_status"] = "failed"
+        details["semantic_status"] = semantics["status"]
+        details["semantic_issues"] = semantics["issues"]
+        details["semantic_rubrics"] = semantics["rubrics"]
         return "failed", automated_issues, details
 
     if called_forbidden or planned_forbidden:
@@ -1707,6 +1169,7 @@ def evaluate_case(
                     "is not confirmed by tool results"
                 )
         automated_issues.extend(_answer_issues(case, text, results))
+        automated_issues.extend(_missing_answer_values(case, blocks, text))
 
         # Chart checks
         chart_issues, chart_details = _check_chart(
@@ -1735,8 +1198,8 @@ def evaluate_case(
         if dash_details:
             details["dashboard_checks"] = dash_details
 
-        # Forecast and correlation checks
-        automated_issues.extend(_check_forecast_and_correlation(case, results))
+        # Correlation tool checks
+        automated_issues.extend(_check_correlation_results(case, results))
 
     elif outcome == "clarify":
         intent = _intent(result)
@@ -1770,31 +1233,22 @@ def evaluate_case(
     else:
         automated_issues.append(f"Unsupported expected outcome '{outcome}'")
 
-    # Evaluate semantic rubrics
-    semantic_issues, semantic_rubrics = _evaluate_semantic_rubrics(
-        case,
-        text,
-        blocks,
-        result.get("understanding"),
-        results,
-        client=client,
-        evaluate_semantics=evaluate_semantics,
-    )
-
-    automated_passed = len(automated_issues) == 0
-    semantic_passed = len(semantic_issues) == 0
+    semantics = _evaluate_semantics(case, text, results)
+    automated_passed = not automated_issues
 
     details["automated_status"] = "passed" if automated_passed else "failed"
     details["automated_issues"] = list(automated_issues)
-    details["semantic_status"] = "passed" if semantic_passed else "failed"
-    details["semantic_issues"] = list(semantic_issues)
-    details["semantic_rubrics"] = semantic_rubrics
+    details["semantic_status"] = semantics["status"]
+    details["semantic_issues"] = semantics["issues"]
+    details["semantic_rubrics"] = semantics["rubrics"]
 
-    if outcome == "clarify" and not semantic_rubrics.get("evaluated"):
-        details["unchecked_rubrics"].append("clarification.resolves_and_options_meaning")
-
-    all_issues = automated_issues + semantic_issues
-    status = "passed" if (automated_passed and semantic_passed) else "failed"
+    all_issues = automated_issues + semantics["issues"]
+    if all_issues:
+        status = "failed"
+    elif semantics["status"] == "passed":
+        status = "passed"
+    else:
+        status = "needs_review"  # Automated checks hold; the rubrics still need a person.
     return status, all_issues, details
 
 
@@ -1811,126 +1265,53 @@ class GoldenDataset:
         self.catalog = catalog
         self.database_path = database_path
         self.allowed_tables = frozenset(table.table_id for table in catalog.tables)
-        self.dashboards: dict[tuple[str, str], DashboardSnapshot] = {}
 
     def load_catalog(self, dataset_id: str) -> DatasetCatalog:
         if dataset_id != self.catalog.dataset_id:
             raise ValueError(f"Agent requested unknown dataset {dataset_id!r}")
         return self.catalog
 
-    def dispatch(self, tool: str, params: dict[str, Any]) -> ToolResult:
-        with duckdb.connect(
+    def _connect(self) -> duckdb.DuckDBPyConnection:
+        return duckdb.connect(
             str(self.database_path),
             read_only=True,
             config={"enable_external_access": False},
-        ) as connection:
-            return execute_tool(
-                tool, params, connection=connection, allowed_tables=self.allowed_tables
-            )
+        )
 
-    def save_dashboard(
+    def _run_step(
         self,
-        title: str,
-        description: str | None,
-        widgets: list[WidgetSnapshot],
-        owner_id: str = "eval",
-    ) -> DashboardSnapshot:
-        dashboard_id = f"d_eval_{uuid4().hex[:12]}"
-        snapshot = DashboardSnapshot(
-            dashboard_id=dashboard_id,
-            dataset_id=self.catalog.dataset_id,
-            title=title,
-            description=description,
-            widgets=widgets,
-            consistency="immutable",
-            created_at=datetime.now(UTC),
-            refreshed_at=datetime.now(UTC),
-        )
-        self.dashboards[(owner_id, dashboard_id)] = snapshot
-        return snapshot
+        connection: duckdb.DuckDBPyConnection,
+        tool: str,
+        params: dict[str, Any],
+        source_result: ToolResult | None,
+    ) -> ToolResult:
+        allowed_tables = set(self.allowed_tables)
+        if source_result is not None and source_result.data is not None:
+            frame = pd.DataFrame(source_result.data.rows, columns=source_result.data.columns)
+            connection.register("source_result", frame)
+            allowed_tables.add("source_result")
+        return execute_tool(tool, params, connection=connection, allowed_tables=allowed_tables)
 
-    def get_dashboard(self, owner_id: str, dashboard_id: str) -> DashboardSnapshot | None:
-        return self.dashboards.get((owner_id, dashboard_id))
+    def dispatch(
+        self, tool: str, params: dict[str, Any], source_result: ToolResult | None = None
+    ) -> ToolResult:
+        with self._connect() as connection:
+            return self._run_step(connection, tool, params, source_result)
 
-    def refresh_dashboard(self, dashboard_id: str, owner_id: str = "eval") -> DashboardSnapshot:
-        snapshot = self.get_dashboard(owner_id, dashboard_id)
-        if snapshot is None:
-            raise PermissionError(f"Dashboard {dashboard_id!r} not found for owner {owner_id!r}")
-
-        refreshed_widgets: list[WidgetSnapshot] = []
-        with duckdb.connect(
-            str(self.database_path),
-            read_only=True,
-            config={"enable_external_access": False},
-        ) as connection:
-            for w in snapshot.widgets:
-                last_result = None
-                if w.recipe:
-                    steps_results: dict[str, ToolResult] = {}
-                    for step in w.recipe.steps:
-                        call_params = dict(step.call.params)
-                        step_allowed = set(self.allowed_tables)
-                        if step.source_step_id and step.source_step_id in steps_results:
-                            parent_res = steps_results[step.source_step_id]
-                            if parent_res.data and parent_res.data.rows:
-                                cols = [
-                                    c.name if hasattr(c, "name") or isinstance(c, dict) else str(c)
-                                    for c in (parent_res.data.columns or [])
-                                ]
-                                import pandas as pd
-
-                                df = pd.DataFrame(parent_res.data.rows, columns=cols)
-                                connection.register("source_result", df)
-                                step_allowed.add("source_result")
-                        step_res = execute_tool(
-                            step.call.tool,
-                            call_params,
-                            connection=connection,
-                            allowed_tables=step_allowed,
-                        )
-                        steps_results[step.step_id] = step_res
-                        last_result = step_res
-                    output_step = w.recipe.output_step_id
-                    res = steps_results.get(output_step, last_result)
-                elif w.tool_call:
-                    res = execute_tool(
-                        w.tool_call.tool,
-                        w.tool_call.params,
-                        connection=connection,
-                        allowed_tables=self.allowed_tables,
-                    )
-                else:
-                    res = None
-
-                new_result_id = f"r_refreshed_{uuid4().hex[:12]}"
-                chart_model = w.chart
-                if isinstance(chart_model, ChartSpec):
-                    new_chart = ChartSpec(
-                        **chart_model.model_dump(exclude={"result_id"}), result_id=new_result_id
-                    )
-                else:
-                    new_chart = chart_model
-
-                status = res.status if res else "ok"
-                error = res.error if res and res.status == "error" else None
-                refreshed_w = w.model_copy(
-                    update={
-                        "result_id": new_result_id if status != "error" else None,
-                        "status": status,
-                        "chart": new_chart,
-                        "error": error,
-                    }
+    def recompute_widget(self, widget: WidgetSnapshot) -> ToolResult:
+        """Re-run a saved recipe with the production tools, as dashboard refresh does."""
+        with self._connect() as connection:
+            if widget.tool_call is not None:
+                return self._run_step(
+                    connection, widget.tool_call.tool, widget.tool_call.params, None
                 )
-                refreshed_widgets.append(refreshed_w)
-
-        updated_snapshot = snapshot.model_copy(
-            update={
-                "widgets": refreshed_widgets,
-                "refreshed_at": datetime.now(UTC),
-            }
-        )
-        self.dashboards[(owner_id, dashboard_id)] = updated_snapshot
-        return updated_snapshot
+            results: dict[str, ToolResult] = {}
+            for step in widget.recipe.steps:
+                parent = results.get(step.source_step_id) if step.source_step_id else None
+                results[step.step_id] = self._run_step(
+                    connection, step.call.tool, step.call.params, parent
+                )
+            return results[widget.recipe.output_step_id]
 
     def close(self) -> None:
         self._temporary.cleanup()
@@ -2028,8 +1409,6 @@ def _invoke(
     def saver(
         title: str, description: str | None, widgets: list[WidgetSnapshot]
     ) -> DashboardSnapshot:
-        if hasattr(dataset, "save_dashboard"):
-            return dataset.save_dashboard(title, description, widgets, owner_id="eval")
         return DashboardSnapshot(
             dashboard_id=f"d_eval_{uuid4().hex[:12]}",
             dataset_id=dataset.catalog.dataset_id,
@@ -2047,7 +1426,7 @@ def _invoke(
             "client": client,
             "catalog_loader": dataset.load_catalog,
             "tool_dispatcher": dataset.dispatch,
-            "dashboard_saver": getattr(dataset, "save_dashboard_callable", None) or saver,
+            "dashboard_saver": saver,
             "budget": budget,
             "diagnostics": diagnostics,
         }
@@ -2147,8 +1526,6 @@ def process_case(
                 partial,
                 column_aliases=column_aliases,
                 dataset=dataset,
-                client=client,
-                evaluate_semantics=True,
             )
             context_results.append(
                 {
@@ -2174,8 +1551,6 @@ def process_case(
             dependency_result,
             column_aliases=column_aliases,
             dataset=dataset,
-            client=client,
-            evaluate_semantics=True,
         )
         context_results.append(
             {
@@ -2188,7 +1563,8 @@ def process_case(
                 "duration_seconds": round(time.perf_counter() - dependency_start, 2),
             }
         )
-        if status != "passed":
+        # Unreviewed rubrics do not break the chat history; failed automated checks do.
+        if details["automated_status"] != "passed":
             return {
                 "id": case_id,
                 "status": "blocked",
@@ -2215,8 +1591,6 @@ def process_case(
             column_aliases=column_aliases,
             dataset=dataset,
             context_results=context_results,
-            client=client,
-            evaluate_semantics=True,
         )
         return {
             **details,
@@ -2242,8 +1616,6 @@ def process_case(
         column_aliases=column_aliases,
         dataset=dataset,
         context_results=context_results,
-        client=client,
-        evaluate_semantics=True,
     )
     return {
         **details,
@@ -2326,7 +1698,7 @@ def run_eval(
             "requirements": sorted(SUPPORTED_REQUIREMENTS),
         },
         "evaluation_scope": {
-            "semantic_rubrics": "evaluated",
+            "semantic_rubrics": "code_checks_only_rest_not_evaluated",
             "transport": "direct_graph",
             "turn_timeout_seconds": get_limits().agent_turn_timeout_seconds,
         },
@@ -2336,11 +1708,19 @@ def run_eval(
             "total": len(runnable),
             "passed": 0,
             "failed": 0,
+            "needs_review": 0,
             "skipped": 0,
             "blocked": 0,
             "pending": len(runnable),
             "automated_passed": 0,
+            "automated_failed": 0,
             "semantic_passed": 0,
+            "semantic_failed": 0,
+            "semantic_partial": 0,
+            "semantic_not_evaluated": 0,
+            "rubrics_passed": 0,
+            "rubrics_failed": 0,
+            "rubrics_not_evaluated": 0,
         },
         "cases": [
             {
@@ -2411,10 +1791,11 @@ def run_eval(
                     result["scenario"] = cases[index].get("scenario")
                     report["cases"][index] = result
                     report["summary"][result["status"]] += 1
-                    if result.get("automated_status") == "passed":
-                        report["summary"]["automated_passed"] += 1
-                    if result.get("semantic_status") == "passed":
-                        report["summary"]["semantic_passed"] += 1
+                    for axis in ("automated", "semantic"):
+                        if axis_status := result.get(f"{axis}_status"):
+                            report["summary"][f"{axis}_{axis_status}"] += 1
+                    for rubric in result.get("semantic_rubrics") or []:
+                        report["summary"][f"rubrics_{rubric['status']}"] += 1
                     report["summary"]["pending"] -= 1
                     save()
                     print(f"Completed case: {result['id']} -> {result['status']}")

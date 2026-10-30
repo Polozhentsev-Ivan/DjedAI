@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import duckdb
 import pytest
 import yaml
 
@@ -14,6 +15,8 @@ from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.dashboard import (
     DashboardSnapshot,
     WidgetLayout,
+    WidgetRecipe,
+    WidgetRecipeStep,
     WidgetSnapshot,
     WidgetToolCall,
 )
@@ -23,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from djedai.execution import TurnTimeout, current_budget  # noqa: E402
 from scripts.eval_runner import (  # noqa: E402
+    GoldenDataset,
     _case_skip_reason,
     check_fact,
     evaluate_case,
@@ -162,7 +166,8 @@ def test_percentage_derivation_rejects_missing_reference_and_zero_denominator():
 
 
 @pytest.mark.parametrize(
-    ("answer", "status"), [("Ошибок: 6.35%", "passed"), ("Ошибок: 2%", "failed")]
+    ("answer", "status"),
+    [("Всего 407661, ошибок 25873: 6.35%", "passed"), ("Всего 407661, ошибок 25873: 2%", "failed")],
 )
 def test_production_percentage_has_explicit_verified_numerator_and_denominator(answer, status):
     facts = [
@@ -363,7 +368,7 @@ def test_report_preserves_plan_results_and_blocks_for_rechecking():
     assert details["tool_results"][0]["params"] == r.params
     assert details["plan"] == s["plan"]
     assert details["answer_blocks"][0]["markdown"] == "123"
-    assert "must_explain" in details["unchecked_rubrics"]
+    assert details["semantic_rubrics"][0]["kind"] == "must_explain"
 
 
 def test_context_report_preserves_prerequisite_details():
@@ -428,10 +433,10 @@ def test_other_explicit_quarter_notations_are_not_measurements(text):
 
 
 def test_projection_preserves_duplicate_rows_and_order():
-    fact = {"key": "group.counts", "comparison": "exact", "value": [["A", 2], ["B", 3]]}
-    assert check_fact(fact, [result([[99, "A", 2], [98, "B", 3]])])
-    assert not check_fact(fact, [result([[98, "B", 3], [99, "A", 2]])])
-    assert not check_fact(fact, [result([[99, "A", 2], [99, "A", 2]])])
+    fact = {"key": "m.counts", "comparison": "exact", "value": [["2025-01", 2], ["2025-02", 3]]}
+    assert check_fact(fact, [result([[99, "2025-01", 2], [98, "2025-02", 3]])])
+    assert not check_fact(fact, [result([[98, "2025-02", 3], [99, "2025-01", 2]])])
+    assert not check_fact(fact, [result([[99, "2025-01", 2], [99, "2025-01", 2]])])
 
 
 def test_an_incidental_ratio_cannot_justify_a_wrong_count():
@@ -445,7 +450,7 @@ def test_an_incidental_ratio_cannot_justify_a_wrong_count():
 
 @pytest.mark.parametrize(
     "options, expected",
-    [([], "failed"), (["A"], "failed"), (["A", "A"], "failed"), (["A", "B"], "passed")],
+    [([], "failed"), (["A"], "failed"), (["A", "A"], "failed"), (["A", "B"], "needs_review")],
 )
 def test_clarification_requires_the_requested_options(options, expected):
     c = case(
@@ -813,367 +818,7 @@ def test_dashboard_widget_count_bounds_fails():
     assert any("Dashboard has 9 widgets; expected between 3 and 8" in i for i in issues9)
 
 
-def test_dashboard_recipe_temporary_source_result_id_fails():
-    bad_recipe_widget = {
-        "widget_id": "w1",
-        "status": "ok",
-        "result_id": "r1",
-        "chart": {"type": "line", "result_id": "r1"},
-        "recipe": {
-            "steps": [{"step_id": "s1", "call": {"params": {"source_result_id": "tmp_r0"}}}]
-        },
-    }
-    snap = {"widgets": [bad_recipe_widget, bad_recipe_widget, bad_recipe_widget]}
-    s = {
-        "results": [result([[1]], columns=["val"], result_id="r1")],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд: 1"),
-            Block(type="dashboard_link", dashboard_id="d1"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={})
-    status, issues, _ = evaluate_case(c, s)
-    assert status == "failed"
-    assert any("contains temporary 'source_result_id'" in i for i in issues)
-
-
-def test_dashboard_foreign_owner_access_fails():
-    snap = DashboardSnapshot(
-        dashboard_id="d_sec",
-        dataset_id="ds_validation",
-        title="Dashboard",
-        created_at=datetime.now(UTC),
-        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
-    )
-    res = result([[1]], columns=["val"], result_id="r_0")
-    s = {
-        "results": [res],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд: 1"),
-            Block(type="dashboard_link", dashboard_id="d_sec"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={})
-
-    class LeakyDataset:
-        def get_dashboard(self, user_id, dash_id):
-            return snap  # foreign_owner receives the dashboard
-
-    status, issues, _ = evaluate_case(c, s, dataset=LeakyDataset())
-    assert status == "failed"
-    assert any("foreign user was able to access dashboard" in i for i in issues)
-
-
-def test_dashboard_refresh_same_result_id_fails():
-    snap = DashboardSnapshot(
-        dashboard_id="d_refresh",
-        dataset_id="ds_validation",
-        title="Dashboard",
-        created_at=datetime.now(UTC),
-        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
-    )
-    res = result([[1]], columns=["val"], result_id="r_0")
-    s = {
-        "results": [res],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд: 1"),
-            Block(type="dashboard_link", dashboard_id="d_refresh"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={})
-
-    class RefreshCollisionDataset:
-        def get_dashboard(self, user_id, dash_id):
-            if user_id == "foreign_owner":
-                return None
-            return snap
-
-        def refresh_dashboard(self, dash_id, owner_id):
-            return snap  # returns same widgets with same result_id!
-
-    status, issues, _ = evaluate_case(c, s, dataset=RefreshCollisionDataset())
-    assert status == "failed"
-    assert any("Dashboard refresh failed to generate new result_ids" in i for i in issues)
-
-
-def test_dashboard_positive_passes():
-    snap = DashboardSnapshot(
-        dashboard_id="dash_good",
-        dataset_id="ds_validation",
-        title="Valid Dashboard",
-        created_at=datetime.now(UTC),
-        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
-    )
-    res0 = result([[1]], columns=["cnt"], result_id="r_0")
-    res1 = result([[2]], columns=["cnt"], result_id="r_1")
-    res2 = result([[3]], columns=["cnt"], result_id="r_2")
-    s = {
-        "results": [res0, res1, res2],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд готов: 1 2 3"),
-            Block(type="dashboard_link", dashboard_id="dash_good"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={"widgets": [{"id": "w_0", "chart_types_any": ["line"]}]})
-
-    class ValidDataset:
-        def get_dashboard(self, user_id, dash_id):
-            if user_id == "foreign_owner":
-                return None
-            return snap
-
-        def refresh_dashboard(self, dash_id, owner_id):
-            return DashboardSnapshot(
-                dashboard_id=dash_id,
-                dataset_id="ds_validation",
-                title="Refreshed",
-                created_at=datetime.now(UTC),
-                widgets=[
-                    _make_dashboard_widget(f"w_{i}", result_id=f"r_fresh_{i}") for i in range(3)
-                ],
-            )
-
-    status, issues, details = evaluate_case(c, s, dataset=ValidDataset())
-    assert status == "passed", issues
-    assert details["automated_status"] == "passed"
-    assert details["semantic_status"] == "passed"
-    assert details["dashboard_checks"]["passed"] is True
-
-
-def test_forecast_holdout_leak_detected_fails():
-    c = case()
-    c["id"] = "s10_holdout_mae_01"
-    res_leaked = result(
-        [
-            ["2026-08-01", 100, 100],
-            ["2026-08-02", 150, 150],
-            ["2026-08-03", 200, 200],
-            ["2026-08-04", 180, 180],
-            ["2026-08-05", 220, 220],
-            ["2026-08-06", 170, 170],
-            ["2026-08-07", 190, 190],
-        ],
-        columns=["date", "forecast", "actual"],
-        result_id="r_forecast",
-    )
-    s_leaked = state(res_leaked, "Прогноз MAE: 0.0")
-    status, issues, _ = evaluate_case(c, s_leaked)
-    assert status == "failed"
-    assert any("Holdout leak detected" in i for i in issues)
-
-
-def test_forecast_valid_mae_passes():
-    c = case()
-    c["id"] = "s10_holdout_mae_01"
-    res_valid = result(
-        [["2026-08-01", 105, 100], ["2026-08-02", 145, 150]],
-        columns=["date", "forecast", "actual"],
-        result_id="r_forecast",
-    )
-    res_mae = result([[5.0]], columns=["mae"], result_id="r_mae")
-    s_valid = {
-        "results": [res_valid, res_mae],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [Block(type="text", markdown="Прогноз MAE: 5.0")],
-    }
-    status, issues, details = evaluate_case(c, s_valid)
-    assert status == "passed", issues
-    assert details["automated_status"] == "passed"
-    assert details["semantic_status"] == "passed"
-
-
-@pytest.mark.parametrize(
-    ("claim", "bad_text", "good_text"),
-    [
-        (
-            "MAE заменена знаковой ошибкой",
-            "Результат прогноза MAE: 0",
-            "Результат прогноза MAE: 12.5",
-        ),
-        (
-            "500000 строк — это 500000 разных заданий",
-            "В датасете 500 000 уникальных заданий",
-            "В датасете 500 000 строк попыток запуска",
-        ),
-        (
-            "DROP выполнен",
-            "Таблица удалена успешно",
-            "Команда DROP отклонена",
-        ),
-    ],
-)
-def test_semantic_must_not_claim_violations_fail(claim, bad_text, good_text):
-    c = case(must_not_claim=[claim])
-    res = result([[12.5], [500000]], columns=["val"])
-    # Negative control: triggers violation
-    s_bad = state(res, bad_text)
-    status_bad, issues_bad, details_bad = evaluate_case(c, s_bad)
-    assert status_bad == "failed"
-    assert details_bad["semantic_status"] == "failed"
-    assert any("violated negative rubric" in i for i in issues_bad)
-
-    # Positive control: valid claim passes
-    s_good = state(res, good_text)
-    status_good, issues_good, details_good = evaluate_case(c, s_good)
-    assert status_good == "passed", issues_good
-    assert details_good["semantic_status"] == "passed"
-
-
-def test_semantic_must_explain_empty_fails():
-    c = case(must_explain=["Объяснение методологии"])
-    s = state(result([[1]], columns=["val"]), "   ")
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("Response failed explanation rubric" in i for i in issues)
-
-
-def test_clarification_semantic_rubrics():
-    c = case(
-        outcome="clarify",
-        intent="ambiguous",
-        tools_any=[],
-        clarification={
-            "resolves": "дата начала позже окончания",
-            "options": ["Поменять даты", "Отменить"],
-        },
-    )
-    # Reason not explained
-    s_no_reason = {
-        "understanding": SimpleNamespace(
-            intent="ambiguous", clarification=SimpleNamespace(options=["Поменять даты", "Отменить"])
-        ),
-        "results": [],
-        "plan": [],
-        "answer_blocks": [Block(type="clarification", markdown="Уточните ваш запрос")],
-    }
-    status1, issues1, details1 = evaluate_case(c, s_no_reason)
-    assert status1 == "failed"
-    assert details1["automated_status"] == "passed"
-    assert details1["semantic_status"] == "failed"
-    assert any("inverted date range" in i for i in issues1)
-
-    # Valid clarification explaining inverted dates and having distinct options
-    s_valid = {
-        "understanding": SimpleNamespace(
-            intent="ambiguous", clarification=SimpleNamespace(options=["Поменять даты", "Отменить"])
-        ),
-        "results": [],
-        "plan": [],
-        "answer_blocks": [
-            Block(
-                type="clarification",
-                markdown="Дата начала позже даты окончания периода. Поменять местами?",
-            )
-        ],
-    }
-    status2, issues2, details2 = evaluate_case(c, s_valid)
-    assert status2 == "passed", issues2
-    assert details2["automated_status"] == "passed"
-    assert details2["semantic_status"] == "passed"
-
-
-def test_report_separates_automated_and_semantic_status():
-    c = case(must_not_claim=["DROP выполнен"])
-    res = result([[100]], columns=["cnt"])
-    # Automated check passes (valid number 100, valid tool, etc.), but semantic rubric fails
-    s = state(res, "Найдено 100 строк. DROP выполнен успешно.")
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["automated_status"] == "passed"
-    assert details["semantic_status"] == "failed"
-    assert "DROP выполнен" in str(details["semantic_issues"])
-
-
 # --- Additional Tests for Thorough Review Findings ---
-
-
-def test_semantic_unknown_must_not_claim_fails_closed():
-    # P0: Unknown negative rubric must fail closed, not silently pass
-    c = case(must_not_claim=["Неизвестная рубрика из будущей версии YAML"])
-    s = state(result([[1]], columns=["cnt"]), "Текст ответа")
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("has no automated evaluator" in i for i in issues)
-    rubric_entry = details["semantic_rubrics"]["must_not_claim"][0]
-    assert rubric_entry["passed"] is False
-
-
-@pytest.mark.parametrize(
-    "bad_text",
-    [
-        "   ",
-        "Анализ выполнен успешно",
-        "Результат получен: 42",
-        "Готово",
-    ],
-)
-def test_semantic_must_explain_superficial_text_fails(bad_text):
-    # P0: Superficial text cannot satisfy must_explain
-    c = case(
-        must_explain=["+10% — условие пользователя, не причинный эффект и не найденный тренд."]
-    )
-    res = result([[42]], columns=["val"])
-    s = state(res, bad_text)
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("Response failed explanation rubric" in i for i in issues)
-
-
-def test_semantic_must_explain_substantive_passes():
-    c = case(
-        must_explain=["+10% — условие пользователя, не причинный эффект и не найденный тренд."]
-    )
-    res = result([[42], [10]], columns=["val"])
-    s = state(
-        res,
-        "Расчёт проведён для прогнозного сценария +10%: "
-        "это условие пользователя, базис взят из предыдущего периода.",
-    )
-    status, issues, details = evaluate_case(c, s)
-    assert status == "passed", issues
-    assert details["semantic_status"] == "passed"
-
-
-def test_clarification_superficial_dates_fails():
-    # P1: "Уточните даты" without explaining the ordering conflict fails
-    c = case(
-        outcome="clarify",
-        intent="ambiguous",
-        tools_any=[],
-        clarification={
-            "resolves": "дата начала позже окончания",
-            "options": ["Поменять даты", "Отменить"],
-        },
-    )
-    s_superficial = {
-        "understanding": SimpleNamespace(
-            intent="ambiguous",
-            clarification=SimpleNamespace(options=["Поменять даты", "Отменить"]),
-        ),
-        "results": [],
-        "plan": [],
-        "answer_blocks": [
-            Block(
-                type="clarification",
-                markdown="Пожалуйста, уточните даты для отчёта.",
-            )
-        ],
-    }
-    status, issues, details = evaluate_case(c, s_superficial)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("date ordering conflict" in i for i in issues)
 
 
 def test_chart_multiple_charts_validates_every_chart():
@@ -1203,379 +848,6 @@ def test_chart_missing_column_metadata_fails():
     status, issues, _ = evaluate_case(c, s)
     assert status == "failed"
     assert any("has no column metadata to verify axes" in i for i in issues)
-
-
-def test_dashboard_refresh_validates_widget_count_and_ids():
-    # P1: Refresh returning fewer widgets or missing result_id fails
-    snap = DashboardSnapshot(
-        dashboard_id="dash_cnt",
-        dataset_id="ds_validation",
-        title="Dashboard",
-        created_at=datetime.now(UTC),
-        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
-    )
-    s = {
-        "results": [result([[1]], columns=["val"], result_id="r_0")],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд: 1"),
-            Block(type="dashboard_link", dashboard_id="dash_cnt"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={})
-
-    # Fewer widgets on refresh
-    class DroppedWidgetDataset:
-        def get_dashboard(self, user_id, dash_id):
-            return snap if user_id != "foreign_owner" else None
-
-        def refresh_dashboard(self, dash_id, owner_id):
-            return DashboardSnapshot(
-                dashboard_id=dash_id,
-                dataset_id="ds_validation",
-                title="Refreshed",
-                created_at=datetime.now(UTC),
-                widgets=[_make_dashboard_widget("w_0", result_id="r_fresh_0")],
-            )
-
-    status, issues, _ = evaluate_case(c, s, dataset=DroppedWidgetDataset())
-    assert status == "failed"
-    assert any("returned 1 widgets; expected 3" in i for i in issues)
-
-
-def test_dashboard_foreign_owner_unexpected_error_fails():
-    # P1: Unexpected database crash during foreign owner check fails
-    snap = DashboardSnapshot(
-        dashboard_id="dash_err",
-        dataset_id="ds_validation",
-        title="Dashboard",
-        created_at=datetime.now(UTC),
-        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
-    )
-    s = {
-        "results": [result([[1]], columns=["val"], result_id="r_0")],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [
-            Block(type="text", markdown="Дашборд: 1"),
-            Block(type="dashboard_link", dashboard_id="dash_err"),
-        ],
-        "dashboard_snapshot": snap,
-    }
-    c = case(dashboard={})
-
-    class CrashingDataset:
-        def get_dashboard(self, user_id, dash_id):
-            if user_id == "foreign_owner":
-                raise RuntimeError("Postgres connection dropped")
-            return snap
-
-        def refresh_dashboard(self, dash_id, owner_id):
-            return snap
-
-    status, issues, _ = evaluate_case(c, s, dataset=CrashingDataset())
-    assert status == "failed"
-    assert any("unexpected error: Postgres connection dropped" in i for i in issues)
-
-
-def test_forecast_partial_and_multitable_holdout_leak_fails():
-    c = case()
-    c["id"] = "s10_holdout_mae_01"
-
-    # Single accidental match in a multi-day forecast must NOT be flagged as a leak
-    res_accidental_match = result(
-        [
-            ["2026-08-01", 100, 100],  # row 0 matches accidentally
-            ["2026-08-02", 140, 150],
-            ["2026-08-03", 210, 205],
-            ["2026-08-04", 180, 190],
-            ["2026-08-05", 220, 230],
-            ["2026-08-06", 170, 160],
-            ["2026-08-07", 195, 200],
-        ],
-        columns=["date", "forecast", "actual"],
-        result_id="r_accidental",
-    )
-    s_acc = state(res_accidental_match, "Прогноз")
-    _, issues_acc, _ = evaluate_case(c, s_acc)
-    assert not any("Holdout leak detected" in i for i in issues_acc)
-
-    # Systematic leak: copying actual holdout values across the horizon must be caught
-    res_systematic_leak = result(
-        [
-            ["2026-08-01", 100, 100],
-            ["2026-08-02", 150, 150],
-            ["2026-08-03", 205, 205],
-            ["2026-08-04", 190, 190],
-        ],
-        columns=["date", "forecast", "actual"],
-        result_id="r_systematic",
-    )
-    s_sys = state(res_systematic_leak, "Прогноз")
-    status_s, issues_s, _ = evaluate_case(c, s_sys)
-    assert status_s == "failed"
-    assert any("Holdout leak detected" in i for i in issues_s)
-
-    # Multi-table leak: leak in second tool result table must be caught
-    res_clean = result(
-        [["2026-08-01", 105, 100]],
-        columns=["date", "forecast", "actual"],
-        result_id="r_clean",
-    )
-    s_multi = {
-        "results": [res_clean, res_systematic_leak],
-        "plan": [SimpleNamespace(tool="run_sql")],
-        "answer_blocks": [Block(type="text", markdown="Прогноз")],
-    }
-    status_m, issues_m, _ = evaluate_case(c, s_multi)
-    assert status_m == "failed"
-    assert any("Holdout leak detected" in i for i in issues_m)
-
-
-def test_forecast_and_correlation_population_and_bounds_validation():
-    # P0: Population checks and correlation bounds [-1, 1]
-    c_pairs = case(
-        population="complete_measure_pairs",
-        facts=[{"key": "correlation.planned_processed", "comparison": "exact", "value": 0.98}],
-    )
-    # Missing 500k confirmation
-    res_small = result([[10]], columns=["cnt"])
-    s_small = state(res_small, "r = 0.98")
-    status, issues, _ = evaluate_case(c_pairs, s_small)
-    assert status == "failed"
-    assert any("500000 complete pairs not confirmed" in i for i in issues)
-
-    # Invalid correlation r outside [-1, 1]
-    c_invalid_r = case(facts=[{"key": "correlation.invalid", "comparison": "exact", "value": 1.5}])
-    status_r, issues_r, _ = evaluate_case(c_invalid_r, s_small)
-    assert status_r == "failed"
-    assert any("Invalid correlation coefficient 1.5" in i for i in issues_r)
-
-    # Invalid forecast dates
-    c_invalid_date = case(
-        facts=[{"key": "forecast.base7", "comparison": "exact", "value": [["2026-99-99", 100]]}]
-    )
-    status_d, issues_d, _ = evaluate_case(c_invalid_date, s_small)
-    assert status_d == "failed"
-    assert any("does not match ISO YYYY-MM-DD format" in i for i in issues_d)
-
-
-@pytest.mark.parametrize(
-    ("pop", "row_count", "scalar_val", "should_pass"),
-    [
-        ("complete_measure_pairs", 1, 500000, True),
-        ("calendar_attempt_rows", 730, None, True),
-        ("calendar_attempt_rows", 100, None, False),
-        ("forecast_last7_daily_counts", 7, None, True),
-        ("forecast_last7_daily_counts", 5, None, False),
-        ("forecast_last14_daily_counts", 14, None, True),
-        ("forecast_last14_daily_counts", 7, None, False),
-        ("forecast_last14_daily_counts", 3, None, False),
-    ],
-)
-def test_population_verification_branches(pop, row_count, scalar_val, should_pass):
-    rows = [[f"2026-08-{i:02d}", i] for i in range(1, row_count + 1)]
-    if scalar_val is not None:
-        rows = [[scalar_val]]
-    res = result(rows, columns=["date", "val"])
-    c = case(population=pop)
-    s = state(res, "Текст ответа")
-    status, issues, _ = evaluate_case(c, s)
-    if should_pass:
-        assert not any("Population check failed" in i for i in issues)
-    else:
-        assert any("Population check failed" in i for i in issues)
-
-
-@pytest.mark.parametrize(
-    ("claim", "bad_text"),
-    [
-        (
-            "Корреляция доказывает, что изменение плана вызовет заданное изменение факта.",
-            "Корреляция доказывает, что рост вызовет изменение факта",
-        ),
-        (
-            "10% заменены 10 попытками или процентными пунктами доли.",
-            "К значению добавлено 10 попыток",
-        ),
-        (
-            "Выдуман доверительный интервал без модели и проверки.",
-            "Рассчитан доверительный интервал [10, 20]",
-        ),
-        (
-            "Прогноз объявлен наблюдаемым фактом или гарантией.",
-            "Этот прогноз является наблюдаемым точным фактом",
-        ),
-        (
-            "В файле есть поля выручки, покупателей или заказов.",
-            "Найдена выручка по заказам",
-        ),
-        (
-            "r рассчитан по сервисным средним вместо попыток.",
-            "r вычислен по сервисным средним значениям",
-        ),
-        (
-            "r рассчитан по долям ошибок вместо числа ошибок.",
-            "r вычислен по долям ошибок сервисов",
-        ),
-        (
-            "Вместо обновления создана несвязанная новая панель "
-            "или возвращены старые временные result_id.",
-            "Создана новая панель в системе",
-        ),
-        (
-            "Ссылка подменена эталоном или результатом другого чата.",
-            "Этот эталон подменен в системе",
-        ),
-    ],
-)
-def test_must_not_claim_all_branch_evaluations(claim, bad_text):
-    c = case(must_not_claim=[claim])
-    res = result([[10]], columns=["val"])
-    s = state(res, bad_text)
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("violated negative rubric" in i for i in issues)
-
-
-@pytest.mark.parametrize(
-    ("explain", "good_text", "bad_text"),
-    [
-        (
-            "Holdout — 24–30 сентября 2026, baseline — 17–23 сентября; "
-            "holdout не участвует в прогнозах.",
-            "Период holdout 24–30 сентября отделен от baseline.",
-            "Прогноз успешно построен.",
-        ),
-        (
-            "MAE = сумма абсолютных ошибок / 7; знаки ошибок не сокращаются.",
-            "MAE вычислен как сумма абсолютных ошибок деленная на 7.",
-            "Ошибка оценена.",
-        ),
-        (
-            "Seasonal-naive с периодом 7 повторяет семь отдельных counts, не среднее недели.",
-            "Модель seasonal-naive повторяет 7 дней прошлой недели.",
-            "Прогноз завершен.",
-        ),
-        (
-            "Использована непрерывная сетка из 730 дней; каждая пара — дневные counts.",
-            "Построена непрерывная сетка из 730 дней наблюдений.",
-            "Данные собраны.",
-        ),
-        (
-            "Одна пара — одна попытка; использованы все 500000 полных пар без группировки.",
-            "В выборку вошли все 500 000 полных пар без группировки.",
-            "Пары рассчитаны.",
-        ),
-        (
-            "Сильная линейная связь не доказывает причинный эффект или независимость наблюдений.",
-            "Линейная связь не доказывает причинный эффект между метриками.",
-            "Связь сильная.",
-        ),
-        (
-            "Ошибки являются частью общего count; "
-            "положительная связь не доказывает влияние нагрузки.",
-            "Ошибки являются частью общего объема count попыток.",
-            "Ошибок много.",
-        ),
-        (
-            "k лаг, где attempts[t] и errors[t+k]; сдвиг во времени.",
-            "Рассчитан временной сдвиг лаг между рядами.",
-            "Ряды сопоставлены.",
-        ),
-        (
-            "Выручку нельзя получить из имеющихся счётчиков записей.",
-            "Выручка отсутствует в имеющихся данных.",
-            "Данные получены.",
-        ),
-        (
-            "Длительность — разность окончания и начала одной попытки.",
-            "Длительность вычислена как разность окончания и начала.",
-            "Время вычислено.",
-        ),
-    ],
-)
-def test_must_explain_all_branch_evaluations(explain, good_text, bad_text):
-    c = case(must_explain=[explain])
-    res = result([[7], [24], [30], [500000], [730]], columns=["val"])
-    # Good text passes
-    s_good = state(res, good_text)
-    status_g, issues_g, details_g = evaluate_case(c, s_good)
-    assert status_g == "passed", issues_g
-    assert details_g["semantic_status"] == "passed"
-
-    # Bad text fails
-    s_bad = state(res, bad_text)
-    status_b, issues_b, details_b = evaluate_case(c, s_bad)
-    assert status_b == "failed"
-    assert details_b["semantic_status"] == "failed"
-    assert any("Response failed explanation rubric" in i for i in issues_b)
-
-
-def test_semantic_unknown_must_explain_fails_closed():
-    # P0: Unknown must_explain rubric must fail closed
-    c = case(must_explain=["Неизвестная рубрика о погоде на Луне"])
-    s = state(
-        result([[1]], columns=["val"]), "Достаточно длинный текст ответа более чем сорок символов."
-    )
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("has no automated evaluator" in i for i in issues)
-
-
-@pytest.mark.parametrize(
-    ("explain", "contradictory_text"),
-    [
-        (
-            "MAE = сумма абсолютных ошибок / 7; знаки ошибок не сокращаются.",
-            "Знаки ошибок сокращаются при вычислении MAE и ошибки сглаживаются.",
-        ),
-        (
-            "MAE = сумма абсолютных ошибок / 7; знаки ошибок не сокращаются.",
-            "Ошибка оценена, но MAE не рассчитывалась в анализе.",
-        ),
-        (
-            "Сильная линейная связь не доказывает причинный эффект или независимость наблюдений.",
-            "Корреляция доказывает причинный эффект между нагрузкой и ошибками.",
-        ),
-        (
-            (
-                "Holdout — 24–30 сентября 2026, baseline — 17–23 сентября; "
-                "holdout не участвует в прогнозах."
-            ),
-            "Период holdout 24–30 сентября входит в baseline для обучения модели.",
-        ),
-        (
-            "k лаг, где attempts[t] и errors[t+k]; сдвиг во времени.",
-            "Временной лаг не рассчитывался для исследуемых рядов данных.",
-        ),
-    ],
-)
-def test_semantic_must_explain_contradictions_fail(explain, contradictory_text):
-    # P0: Contradictory explanations with matched keywords must fail
-    c = case(must_explain=[explain])
-    res = result([[7], [24], [30], [500000], [730]], columns=["val"])
-    s = state(res, contradictory_text)
-    status, issues, details = evaluate_case(c, s)
-    assert status == "failed"
-    assert details["semantic_status"] == "failed"
-    assert any("Response failed explanation rubric" in i for i in issues)
-
-
-def test_correlation_actual_tool_result_bounds_fails():
-    # P0: Actual correlation result from tool outside [-1, 1] must fail
-    c = case(
-        requirements=["correlation"],
-        facts=[{"key": "correlation.planned_processed", "comparison": "exact", "value": 0.95}],
-    )
-    # Model tool produced r = 2.45 (impossible Pearson)
-    res_invalid_r = result([[2.45]], columns=["r"], result_id="r_corr")
-    s = state(res_invalid_r, "r = 2.45")
-    status, issues, _ = evaluate_case(c, s)
-    assert status == "failed"
-    assert any("outside valid Pearson range" in i for i in issues)
 
 
 def test_dashboard_duplicate_widget_matching_fails():
@@ -1720,116 +992,6 @@ def test_chart_null_points_fail():
     assert any("fewer than required 5 points" in i for i in issues)
 
 
-def test_clarification_unknown_resolves_fails_closed():
-    # P1: Unknown resolves rubric must fail closed
-    c = case(
-        outcome="clarify",
-        intent="ambiguous",
-        tools_any=[],
-        clarification={"resolves": "неизвестная_причина_уточнения", "options": ["Да", "Нет"]},
-    )
-    s = {
-        "understanding": SimpleNamespace(
-            intent="ambiguous", clarification=SimpleNamespace(options=["Да", "Нет"])
-        ),
-        "results": [],
-        "plan": [],
-        "answer_blocks": [Block(type="clarification", markdown="Уточните, пожалуйста, параметры.")],
-    }
-    status, issues, _ = evaluate_case(c, s)
-    assert status == "failed"
-    assert any("has no automated evaluator" in i for i in issues)
-
-
-def test_must_not_claim_extended_rubrics():
-    # P0: Test compound rubrics coverage
-    c = case(
-        must_not_claim=[
-            (
-                "Вместо обновления создана несвязанная новая панель или "
-                "возвращены старые временные result_id."
-            ),
-            "Ссылка подменена эталоном или результатом другого чата.",
-        ]
-    )
-    res = result([[10]], columns=["val"])
-
-    # Old temporary result_id text
-    s1 = state(res, "Были возвращены старые временные result_id для панели.")
-    status1, issues1, _ = evaluate_case(c, s1)
-    assert status1 == "failed"
-    assert any("old temporary result_ids" in i for i in issues1)
-
-    # Result from another chat text
-    s2 = state(res, "Использован результат другого чата для построения графика.")
-    status2, issues2, _ = evaluate_case(c, s2)
-    assert status2 == "failed"
-    assert any("taken from another chat" in i for i in issues2)
-
-
-@pytest.mark.parametrize(
-    ("rows", "columns", "should_leak"),
-    [
-        # 1 valid pair with match: not a leak
-        ([["2026-08-01", 100, 100]], ["date", "forecast", "actual"], False),
-        # 2 valid pairs with matches: not a leak
-        (
-            [["2026-08-01", 100, 100], ["2026-08-02", 150, 150]],
-            ["date", "forecast", "actual"],
-            False,
-        ),
-        # 7 days, 1 match: not a leak
-        (
-            [
-                ["2026-08-01", 100, 100],
-                ["2026-08-02", 140, 150],
-                ["2026-08-03", 210, 205],
-                ["2026-08-04", 180, 190],
-                ["2026-08-05", 220, 230],
-                ["2026-08-06", 170, 160],
-                ["2026-08-07", 195, 200],
-            ],
-            ["date", "forecast", "actual"],
-            False,
-        ),
-        # 7 days, 5 matches (>= 70%): leak
-        (
-            [
-                ["2026-08-01", 100, 100],
-                ["2026-08-02", 150, 150],
-                ["2026-08-03", 205, 205],
-                ["2026-08-04", 190, 190],
-                ["2026-08-05", 230, 230],
-                ["2026-08-06", 170, 160],
-                ["2026-08-07", 195, 200],
-            ],
-            ["date", "forecast", "actual"],
-            True,
-        ),
-        # 7 days, 7 matches: leak
-        (
-            [[f"2026-08-0{i}", 100 + i, 100 + i] for i in range(1, 8)],
-            ["date", "forecast", "actual"],
-            True,
-        ),
-        # Unrelated table with matching columns 1 and 2: not a leak
-        (
-            [["job_1", 50, 50], ["job_2", 80, 80], ["job_3", 90, 90]],
-            ["job_id", "limit_val", "threshold_val"],
-            False,
-        ),
-    ],
-)
-def test_forecast_holdout_leak_scenarios(rows, columns, should_leak):
-    c = case()
-    c["id"] = "s10_holdout_mae_01"
-    res = result(rows, columns=columns, result_id="r_eval")
-    s = state(res, "Прогноз")
-    _, issues, _ = evaluate_case(c, s)
-    has_leak = any("Holdout leak detected" in i for i in issues)
-    assert has_leak is should_leak
-
-
 def test_chart_nan_inf_points_fail():
     # P1: Rows with NaN or Inf in Y column do not count toward min_points
     c = case(
@@ -1903,19 +1065,6 @@ def test_dashboard_widget_matching_id_with_wrong_facts_fails():
     assert any("was not satisfied" in i for i in issues)
 
 
-def test_correlation_tool_result_nan_fails():
-    # P0: Tool returning NaN correlation value must fail
-    c = case(
-        requirements=["correlation"],
-        facts=[{"key": "correlation.metric", "comparison": "exact", "value": 0.5}],
-    )
-    res_nan = result([[float("nan")]], columns=["r"], result_id="r_nan_corr")
-    s = state(res_nan, "Корреляция не определена")
-    status, issues, _ = evaluate_case(c, s)
-    assert status == "failed"
-    assert any("NaN" in i or "non-finite" in i for i in issues)
-
-
 def test_chart_numpy_types_accepted_for_min_points():
     # P1: Numpy integers and floats must be accepted as valid finite points
     import numpy as np
@@ -1954,3 +1103,280 @@ def test_chart_numpy_types_accepted_for_min_points():
     assert details["chart_checks"]["passed"] is True
 
 
+def test_rubric_without_evaluator_neither_fails_nor_passes():
+    rubrics = {"must_explain": ["Смысл"], "must_not_claim": ["Ложь"]}
+    status, issues, details = evaluate_case(
+        case(**rubrics), state(result([[1]], columns=["n"]), "Ответ 1")
+    )
+    assert status == "needs_review"
+    assert not issues
+    assert details["automated_status"] == "passed"
+    assert details["semantic_status"] == "not_evaluated"
+    assert [item["status"] for item in details["semantic_rubrics"]] == ["not_evaluated"] * 2
+
+
+def test_automated_failure_does_not_mark_unreviewed_rubrics_as_failed():
+    fact = {"key": "x", "comparison": "exact", "value": 7}
+    status, _, details = evaluate_case(
+        case([fact], must_explain=["Смысл"]), state(result([[1]], columns=["n"]), "Ответ 1")
+    )
+    assert status == "failed"
+    assert details["automated_status"] == "failed"
+    assert details["semantic_status"] == "not_evaluated"
+
+
+def test_blocked_prerequisite_uses_automated_status_only():
+    prerequisite = {**case(must_explain=["Смысл"]), "id": "first"}
+    target = {**case(), "id": "second", "context": {"previous_cases": ["first"]}}
+    graph = SimpleNamespace(
+        invoke=lambda *_args, **_kwargs: state(result([[1]], columns=["n"]), "Ответ 1")
+    )
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation", tables=[]),
+        load_catalog=None,
+        dispatch=None,
+    )
+    report = process_case(target, {"first": prerequisite, "second": target}, None, graph, dataset)
+    assert report["status"] == "passed"
+    assert report["context_results"][0]["status"] == "needs_review"
+
+
+def test_conclusion_about_all_data_from_limited_result_fails():
+    limited = result([[7, 689.55]], columns=["month", "avg"]).model_copy(
+        update={"sql": "SELECT month, avg FROM t ORDER BY avg DESC LIMIT 1"}
+    )
+    claim = "Пик 7, среднее 689.55. В выборке представлена информация только по одному месяцу."
+    status, issues, details = evaluate_case(case(), state(limited, claim))
+    assert status == "failed"
+    assert details["automated_status"] == "passed"
+    assert details["semantic_status"] == "failed"
+    assert "LIMIT 1" in issues[0]
+    assert evaluate_case(case(), state(limited, "Пик 7, среднее 689.55."))[0] == "passed"
+
+
+def test_distinct_code_count_cannot_be_called_rows():
+    fact = {
+        "key": "chains.repeated",
+        "comparison": "exact",
+        "value": 23685,
+        "unit": "разные непустые коды цепочек с более чем одной строкой",
+    }
+    tool = result([[23685]], columns=["n"])
+    assert evaluate_case(case([fact]), state(tool, "Найдено **23 685** строк."))[0] == "failed"
+    assert evaluate_case(case([fact]), state(tool, "Кодов цепочек: 23 685."))[0] == "passed"
+
+
+def test_weekday_name_must_match_monday_zero_number():
+    fact = {"key": "d", "comparison": "exact", "value": 4, "unit": "день: понедельник=0"}
+    tool = result([[4, 5]], columns=["day", "n"])
+    assert evaluate_case(case([fact]), state(tool, "Пик: Четверг (4), 5."))[0] == "failed"
+    assert evaluate_case(case([fact]), state(tool, "Пик: Пятница (4), 5."))[0] == "passed"
+
+
+def test_confirmed_fact_must_reach_the_answer_text():
+    fact = {"key": "total", "comparison": "exact", "value": 4723}
+    tool = result([[4723]], columns=["n"])
+    assert evaluate_case(case([fact]), state(tool, "Расчёт выполнен."))[0] == "failed"
+    assert evaluate_case(case([fact]), state(tool, "Итого 4 723."))[0] == "passed"
+
+
+def test_labelled_categories_ignore_row_order_but_series_and_rankings_do_not():
+    rows = [[4, 20, 104], [0, 10, 104]]
+    weekday = {"key": "weekday.counts", "comparison": "exact", "value": [[0, 10], [4, 20]]}
+    assert check_fact(weekday, [result(rows, columns=["d", "n", "a"])])
+    months = {
+        "key": "monthly.counts",
+        "comparison": "exact",
+        "value": [["2025-01", 10], ["2025-02", 20]],
+    }
+    assert not check_fact(months, [result([["2025-02", 20], ["2025-01", 10]], columns=["m", "n"])])
+    ranked = {
+        "key": "rank",
+        "comparison": "exact",
+        "unit": "порядок count DESC",
+        "value": [["a", 20], ["b", 10]],
+    }
+    assert not check_fact(ranked, [result([["b", 10], ["a", 20]], columns=["s", "n"])])
+
+
+def test_forecast_days_accept_midnight_timestamps_and_float_noise():
+    fact = {
+        "key": "forecast.growth7",
+        "comparison": "exact",
+        "value": [["2026-10-01", 737.0]],
+    }
+    rows = [["2026-10-01T00:00:00+03:00", 737.0000000001]]
+    assert check_fact(fact, [result(rows, columns=["time_bucket", "yhat"])])
+
+
+HOLDOUT = "Факт holdout использован как его прогноз."
+
+
+def _holdout_case():
+    fact = {
+        "key": "forecast.holdout7",
+        "comparison": "exact",
+        "value": [["2026-09-24", 600, 610], ["2026-09-25", 620, 630], ["2026-09-26", 640, 650]],
+    }
+    return case([fact], must_not_claim=[HOLDOUT])
+
+
+def test_holdout_rubric_is_decided_by_structured_evidence():
+    columns = ["date", "forecast", "actual"]
+    good = [["2026-09-24", 600, 610], ["2026-09-25", 620, 630], ["2026-09-26", 640, 650]]
+    leaked = [["2026-09-24", 610, 610], ["2026-09-25", 630, 630], ["2026-09-26", 650, 650]]
+    text = "Сравнение выполнено."
+    answer = {"answer_contains_value": {"from_result": False}}
+    good_status, _, good_details = evaluate_case(
+        {**_holdout_case(), "expect": {**_holdout_case()["expect"], **answer}},
+        state(result(good, columns=columns), text),
+    )
+    assert good_status == "passed"
+    assert good_details["semantic_rubrics"][0]["status"] == "passed"
+    leak_status, leak_issues, _ = evaluate_case(
+        {**_holdout_case(), "expect": {**_holdout_case()["expect"], **answer}},
+        state(result(leaked, columns=columns), text),
+    )
+    assert leak_status == "failed"
+    assert any("holdout" in issue for issue in leak_issues)
+
+
+def _correlation_case():
+    fact = {"key": "corr", "comparison": "approx", "value": 0.98, "abs_tolerance": 0.005}
+    return case(
+        [fact],
+        tools_any=["correlation"],
+        population="complete_measure_pairs",
+        answer_contains_value={"from_result": False},
+    )
+
+
+def test_correlation_sample_size_is_not_checked_as_pearson_r():
+    tool = result(
+        [["a", "b", 0.98, 0.0, 500000]],
+        columns=["from", "to", "r", "p_value", "n"],
+        tool="correlation",
+    )
+    assert evaluate_case(_correlation_case(), state(tool, "r = 0.98"))[0] == "passed"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [["a", "b", 0.98, 0.0, 400000], ["a", "b", 1.5, 0.0, 500000], ["a", "b", None, 0, 500000]],
+)
+def test_wrong_correlation_population_or_invalid_r_fails(row):
+    tool = result([row], columns=["from", "to", "r", "p_value", "n"], tool="correlation")
+    assert evaluate_case(_correlation_case(), state(tool, "r = 0.98"))[0] == "failed"
+
+
+def test_lag_value_must_belong_to_its_own_lag():
+    facts = [
+        {"key": "lag.plus5_r", "comparison": "approx", "value": -0.007, "abs_tolerance": 0.0005},
+        {"key": "lag.best_days", "comparison": "exact", "value": 0},
+        {"key": "lag.best_r", "comparison": "approx", "value": 0.539, "abs_tolerance": 0.0005},
+    ]
+    columns = ["lag", "r", "p_value", "n"]
+    c = case(facts, tools_any=["lagged_correlation"], answer_contains_value={"from_result": False})
+    good = [[0, 0.539, 0, 730], [5, -0.007, 0.8, 725]]
+    swapped = [[0, -0.007, 0, 730], [5, 0.539, 0.8, 725]]
+    assert (
+        evaluate_case(c, state(result(good, columns=columns, tool="lagged_correlation"), "ok"))[0]
+        == "passed"
+    )
+    assert (
+        evaluate_case(c, state(result(swapped, columns=columns, tool="lagged_correlation"), "ok"))[
+            0
+        ]
+        == "failed"
+    )
+
+
+def _dashboard_state():
+    snap = DashboardSnapshot(
+        dashboard_id="dash_good",
+        dataset_id="ds_validation",
+        title="Valid Dashboard",
+        created_at=datetime.now(UTC),
+        widgets=[_make_dashboard_widget(f"w_{i}", result_id=f"r_{i}") for i in range(3)],
+    )
+    return {
+        "results": [result([[7]], columns=["cnt"], result_id=f"r_{i}") for i in range(3)],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [
+            Block(type="text", markdown="Дашборд готов"),
+            Block(type="dashboard_link", dashboard_id="dash_good"),
+        ],
+        "dashboard_snapshot": snap,
+    }
+
+
+def _dashboard_case():
+    fact = {"key": "total", "comparison": "exact", "value": 7}
+    widget = {"id": "w_0", "chart_types_any": ["line"], "facts": ["total"]}
+    return case([fact], dashboard={"widgets": [widget]})
+
+
+def test_dashboard_refresh_must_recompute_the_same_values():
+    fresh = SimpleNamespace(
+        recompute_widget=lambda w: result([[7]], columns=["cnt"], result_id=f"new_{w.widget_id}")
+    )
+    status, issues, details = evaluate_case(_dashboard_case(), _dashboard_state(), dataset=fresh)
+    assert status == "passed", issues
+    assert details["dashboard_checks"]["not_evaluated"] == ["restart", "foreign_owner"]
+
+    wrong = SimpleNamespace(
+        recompute_widget=lambda w: result([[8]], columns=["cnt"], result_id=f"new_{w.widget_id}")
+    )
+    assert any(
+        "does not confirm" in issue
+        for issue in evaluate_case(_dashboard_case(), _dashboard_state(), dataset=wrong)[1]
+    )
+    stale = SimpleNamespace(
+        recompute_widget=lambda w: result([[7]], columns=["cnt"], result_id=w.result_id)
+    )
+    assert any(
+        "new result_id" in issue
+        for issue in evaluate_case(_dashboard_case(), _dashboard_state(), dataset=stale)[1]
+    )
+
+
+def test_dashboard_without_recompute_reports_refresh_as_not_evaluated():
+    status, _, details = evaluate_case(_dashboard_case(), _dashboard_state())
+    assert status == "passed"
+    assert "refresh" in details["dashboard_checks"]["not_evaluated"]
+
+
+def test_recipe_recompute_uses_production_tools_and_source_result(tmp_path):
+    database = tmp_path / "golden.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("CREATE TABLE t AS SELECT 1 AS n UNION ALL SELECT 2")
+    golden = GoldenDataset(
+        SimpleNamespace(dataset_id="ds", tables=[SimpleNamespace(table_id="t")]),
+        database,
+        SimpleNamespace(cleanup=lambda: None),
+    )
+    parent = WidgetToolCall(tool="run_sql", params={"sql": "SELECT n FROM t"})
+    child = WidgetToolCall(tool="run_sql", params={"sql": "SELECT SUM(n) AS s FROM source_result"})
+    recipe = WidgetRecipe(
+        steps=[
+            WidgetRecipeStep(step_id="a", call=parent),
+            WidgetRecipeStep(step_id="b", call=child, source_step_id="a"),
+        ],
+        output_step_id="b",
+    )
+    widget = _make_dashboard_widget("w").model_copy(update={"tool_call": None, "recipe": recipe})
+    refreshed = golden.recompute_widget(widget)
+    assert refreshed.status == "ok", refreshed.error
+    assert refreshed.data.rows == [[3]]
+    assert refreshed.result_id != widget.result_id
+    assert golden.dispatch("run_sql", {"sql": "SELECT COUNT(*) FROM t"}).data.rows == [[2]]
+
+
+def test_no_golden_case_is_skipped_except_input_validation():
+    cases = yaml.safe_load((Path(__file__).parents[2] / "eval/questions.yaml").read_text("utf-8"))
+    total = 0
+    for item in cases:
+        expect = item["expect"]
+        total += len(expect["must_explain"]) + len(expect["must_not_claim"])
+        assert not _case_skip_reason(item) or expect["outcome"] == "input_error"
+    assert total == 203
