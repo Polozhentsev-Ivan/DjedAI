@@ -86,6 +86,74 @@ def _is_json_schema_rejection(exc: APIError) -> bool:
     return "response_format" in msg or "json_schema" in msg or ("json" in msg and "schema" in msg)
 
 
+def _parse_model_json(raw_content: str) -> Any:
+    # 1. Parse directly if the model returned valid JSON without wrappers.
+    # Preserves valid JSON containing markdown fences, literal <think> tags in fields, etc.
+    try:
+        return json.loads(raw_content)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Strip only outer markdown code block wrapper if present (matching main behavior).
+    clean = raw_content.strip()
+    if clean.startswith("```json"):
+        clean = clean.removeprefix("```json").removesuffix("```").strip()
+    elif clean.startswith("```"):
+        clean = clean.removeprefix("```").removesuffix("```").strip()
+
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Strip leading <think>...</think> blocks emitted by reasoning models (Qwen3, DeepSeek).
+    clean_without_think = re.sub(
+        r"^(?:\s*<think>.*?</think>\s*)+", "", raw_content, flags=re.DOTALL
+    ).strip()
+    if clean_without_think != raw_content:
+        try:
+            return json.loads(clean_without_think)
+        except json.JSONDecodeError:
+            pass
+
+        clean_think_unwrapped = clean_without_think
+        if clean_think_unwrapped.startswith("```json"):
+            clean_think_unwrapped = (
+                clean_think_unwrapped.removeprefix("```json").removesuffix("```").strip()
+            )
+        elif clean_think_unwrapped.startswith("```"):
+            clean_think_unwrapped = (
+                clean_think_unwrapped.removeprefix("```").removesuffix("```").strip()
+            )
+
+        try:
+            return json.loads(clean_think_unwrapped)
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Fallback for conversational prose: find outermost JSON object {...} or array [...].
+    source = clean_without_think if clean_without_think != raw_content else raw_content
+    start_brace = source.find("{")
+    start_bracket = source.find("[")
+    if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+        end_brace = source.rfind("}")
+        if end_brace > start_brace:
+            try:
+                return json.loads(source[start_brace : end_brace + 1])
+            except json.JSONDecodeError:
+                pass
+    elif start_bracket != -1:
+        end_bracket = source.rfind("]")
+        if end_bracket > start_bracket:
+            try:
+                return json.loads(source[start_bracket : end_bracket + 1])
+            except json.JSONDecodeError:
+                pass
+
+    # If all parsing attempts fail, trigger standard JSONDecodeError on raw_content
+    return json.loads(raw_content)
+
+
 class ModelResponse[T: BaseModel](BaseModel):
     status: Literal["success", "error"]
     data: T | None = None
@@ -374,42 +442,7 @@ class BIModelClient:
                     **metadata,
                 )
 
-            # Strip <think>...</think> blocks from reasoning models
-            clean_content = re.sub(r"(?is)<think>.*?</think>", "", raw_content).strip()
-
-            # Clean markdown code blocks
-            if "```" in clean_content:
-                match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_content, re.IGNORECASE)
-                if match:
-                    clean_content = match.group(1).strip()
-                else:
-                    clean_content = (
-                        clean_content.removeprefix("```json")
-                        .removeprefix("```")
-                        .removesuffix("```")
-                        .strip()
-                    )
-
-            try:
-                parsed_json = json.loads(clean_content)
-            except json.JSONDecodeError:
-                start_brace = clean_content.find("{")
-                start_bracket = clean_content.find("[")
-                if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
-                    end_brace = clean_content.rfind("}")
-                    if end_brace > start_brace:
-                        parsed_json = json.loads(clean_content[start_brace : end_brace + 1])
-                    else:
-                        raise
-                elif start_bracket != -1:
-                    end_bracket = clean_content.rfind("]")
-                    if end_bracket > start_bracket:
-                        parsed_json = json.loads(clean_content[start_bracket : end_bracket + 1])
-                    else:
-                        raise
-                else:
-                    raise
-
+            parsed_json = _parse_model_json(raw_content)
             validated_data = response_model.model_validate(parsed_json)
 
             return ModelResponse(

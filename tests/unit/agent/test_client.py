@@ -8,7 +8,7 @@ from openai.types.chat.chat_completion import Choice
 from pydantic import RootModel
 
 from djedai.agent.client import SERVER_ERROR_MESSAGE, BIModelClient
-from djedai.contracts.agent import PlannedCall, Understanding
+from djedai.contracts.agent import ComposeResponse, PlannedCall, Understanding
 
 
 @pytest.fixture
@@ -247,6 +247,93 @@ def test_client_handles_markdown_and_surrounding_prose(client):
     assert response.data.intent == "data_question"
 
 
+def test_client_preserves_markdown_in_compose_response(client):
+    content = json.dumps(
+        {
+            "answer_blocks": [
+                {
+                    "type": "text",
+                    "markdown": "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```",
+                }
+            ]
+        }
+    )
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", ComposeResponse)
+
+    assert response.status == "success"
+    assert (
+        response.data.answer_blocks[0].markdown
+        == "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```"
+    )
+
+
+def test_client_preserves_markdown_in_compose_response_wrapped_in_markdown(client):
+    inner_json = json.dumps(
+        {
+            "answer_blocks": [
+                {
+                    "type": "text",
+                    "markdown": "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```",
+                }
+            ]
+        }
+    )
+    content = f"```json\n{inner_json}\n```"
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", ComposeResponse)
+
+    assert response.status == "success"
+    assert (
+        response.data.answer_blocks[0].markdown
+        == "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```"
+    )
+
+
+def test_client_preserves_literal_think_tags_inside_json(client):
+    content = json.dumps(
+        {
+            "answer_blocks": [
+                {
+                    "type": "text",
+                    "markdown": "Explanation of <think>some reasoning</think> tag in docs",
+                }
+            ]
+        }
+    )
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", ComposeResponse)
+
+    assert response.status == "success"
+    assert "<think>some reasoning</think>" in response.data.answer_blocks[0].markdown
+
+
+def test_client_strips_leading_think_and_preserves_inner_markdown(client):
+    inner_json = json.dumps(
+        {
+            "answer_blocks": [
+                {
+                    "type": "text",
+                    "markdown": "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```",
+                }
+            ]
+        }
+    )
+    content = f"<think>Formulate SQL for user</think>\n{inner_json}"
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", ComposeResponse)
+
+    assert response.status == "success"
+    assert (
+        response.data.answer_blocks[0].markdown
+        == "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```"
+    )
+
+
 def test_client_fallback_from_json_schema_to_json_object(client):
     # Simulate first call with json_schema failing with 400 BadRequestError
     from openai import BadRequestError
@@ -398,6 +485,27 @@ def test_http_client_schema_mismatch_not_published(model_endpoint):
         assert res.status == "error"
         assert res.error_type == "SCHEMA_MISMATCH"
         assert res.data is None
+
+
+def test_http_client_preserves_markdown_code_block_in_compose_response(model_endpoint):
+    inner_json = json.dumps(
+        {
+            "answer_blocks": [
+                {
+                    "type": "text",
+                    "markdown": "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```",
+                }
+            ]
+        }
+    )
+    with model_endpoint(lambda _n, _p: {"status": 200, "body": inner_json}) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", ComposeResponse)
+        assert res.status == "success"
+        assert (
+            res.data.answer_blocks[0].markdown
+            == "SQL для подсчёта: ```sql\nSELECT COUNT(*) FROM orders\n```"
+        )
 
 
 def test_client_server_error(client):
