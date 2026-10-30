@@ -25,6 +25,7 @@ from decimal import Decimal, localcontext
 
 import duckdb
 
+from djedai.config import get_limits
 from djedai.data.typed_views import _ID_NAME, TypedColumn, TypedView, _ident, read_typed_views
 
 TABLE_PROFILES = "_djedai_table_profiles"
@@ -310,7 +311,7 @@ def _profile_column(
     return ColumnProfile(
         name=name,
         physical_type=column.physical_type,
-        semantic_type=semantic,
+        semantic_type=_refine_text(name, semantic, row["distinct"], present_count),
         null_count=null_count,
         null_ratio=null_count / row_count if row_count else 0.0,
         unparsed_count=non_empty - parsed,
@@ -320,6 +321,24 @@ def _profile_column(
         sample_values=tuple(_json_value(r[0]) for r in samples),
         stats=_stats(semantic, row),
     )
+
+
+def _refine_text(name: str, semantic: str, distinct: int, present: int) -> str:
+    """Уточняет текстовую колонку (B1-2 п. 4): код по имени — ``id``, мало значений — ``category``.
+
+    Имя важнее кардинальности, как у целых кодов в ``typed_views``: «Код магазина»
+    остаётся ключом, даже если магазинов немного.
+    """
+    if semantic != "text":
+        return semantic
+    if _ID_NAME.search(name):
+        return "id"
+    limits = get_limits()
+    if 0 < distinct <= limits.category_max_distinct and (
+        distinct / present <= limits.category_max_ratio
+    ):
+        return "category"
+    return "text"
 
 
 def _wide_type(physical_type: str, semantic: str) -> str | None:

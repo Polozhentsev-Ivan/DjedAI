@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import threading
 from collections.abc import Iterator
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -20,6 +21,43 @@ _attempt: ContextVar[tuple[ExecutionBudget, float, bool] | None] = ContextVar(
 )
 _loop: asyncio.AbstractEventLoop | None = None
 _lock = threading.Lock()
+
+
+def _gzip_json_request(request: Any) -> Any:
+    """Compress large JSON only for DeepInfra's documented Chat Completions endpoint.
+
+    Rebuild using the SDK's request type: OpenAI uses httpx2, while other clients
+    may use httpx. Keep the original request intact for retries and caller hooks.
+    """
+    url = request.url
+    if (
+        request.method != "POST"
+        or url.scheme != "https"
+        or url.host != "api.deepinfra.com"
+        or url.port not in {None, 443}
+        or url.path != "/v1/openai/chat/completions"
+        or "content-encoding" in request.headers
+        or request.headers.get("content-type", "").partition(";")[0].strip().lower()
+        != "application/json"
+    ):
+        return request
+    body = request.read()
+    if len(body) < 4096:
+        return request
+    compressed = gzip.compress(body, mtime=0)
+    if len(compressed) >= len(body):
+        return request
+    headers = request.headers.copy()
+    headers["Content-Encoding"] = "gzip"
+    headers["Content-Length"] = str(len(compressed))
+    headers.pop("transfer-encoding", None)
+    return type(request)(
+        request.method,
+        url,
+        headers=headers,
+        content=compressed,
+        extensions=request.extensions.copy(),
+    )
 
 
 def _network_loop() -> asyncio.AbstractEventLoop:
@@ -62,7 +100,7 @@ class CancellableHttpClient(DefaultHttpxClient):
     def send(self, request: Any, **kwargs: Any) -> Any:
         lease = _attempt.get()
         if lease is None:
-            return super().send(request, **kwargs)
+            return super().send(_gzip_json_request(request), **kwargs)
         if kwargs.get("stream"):
             raise ValueError("The typed model transport requires a buffered response")
         budget, deadline, read_error_body = lease
@@ -104,6 +142,8 @@ class CancellableHttpClient(DefaultHttpxClient):
             finally:
                 closed.set()
 
+        check_attempt()
+        request = _gzip_json_request(request)
         check_attempt()
         future = asyncio.run_coroutine_threadsafe(perform(), _network_loop())
         try:

@@ -18,6 +18,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from djedai.config import get_limits
 from djedai.data.csv_ingest import CsvReadError, load_raw_csv
 from djedai.data.profiler import (
     COLUMN_PROFILES,
@@ -384,6 +385,52 @@ def test_id_like_key_candidates_go_first(con, tmp_path):
         },
     )
     assert table.primary_key_candidates == ("order_id", "code", "name")
+
+
+@pytest.mark.parametrize(
+    "values,semantic",
+    [
+        (["Розница", "Интернет", "Опт"] * 3 + ["Розница"], "category"),  # 3 из 10
+        ([f"Город {i}" for i in range(50)] * 2, "category"),  # ровно N, доля 0,5
+        ([f"Город {i}" for i in range(51)] * 2, "text"),  # больше N
+        (["Москва", "Казань", "Пермь"], "text"),  # все разные: справочник, не категория
+        (["Москва", "Казань", "Москва"], "text"),  # доля 2/3 больше 0,5
+    ],
+)
+def test_low_cardinality_text_is_category(con, tmp_path, values, semantic):
+    table = profile(con, tmp_path, {"kanal": values})
+    assert column(table, "kanal").semantic_type == semantic
+
+
+def test_category_ignores_missing_values(con, tmp_path):
+    table = profile(con, tmp_path, {"status": ["Новый", None, "", "Новый", "Закрыт", "Новый"]})
+    assert column(table, "status").semantic_type == "category"  # 2 из 4 непустых
+
+
+def test_text_code_with_id_like_name_is_id(con, tmp_path):
+    codes = ["ПР-ЗК-0000001", "ПР-ЗК-0000002", "ПР-ЗК-0000001", "ПР-ЗК-0000003"]
+    table = profile(con, tmp_path, {"Код заказа": codes, "Код магазина": ["ПР-ТТ-01"] * 4})
+    assert column(table, "kod_zakaza").semantic_type == "id"
+    assert column(table, "kod_magazina").semantic_type == "id"  # имя важнее кардинальности
+
+
+def test_category_thresholds_from_environment(con, tmp_path, monkeypatch):
+    monkeypatch.setenv("CATEGORY_MAX_DISTINCT", "2")
+    monkeypatch.setenv("CATEGORY_MAX_RATIO", "0.25")
+    get_limits.cache_clear()
+    try:
+        table = profile(
+            con,
+            tmp_path,
+            {
+                "two": ["a", "b"] * 6,  # 2 из 12
+                "three": ["a", "b", "c"] * 4,  # больше N
+                "dense": ["a", "b"] + [None] * 10,  # 2 из 2 непустых: доля больше r
+            },
+        )
+    finally:
+        get_limits.cache_clear()
+    assert [c.semantic_type for c in table.columns] == ["category", "text", "text"]
 
 
 def test_header_only_table():
