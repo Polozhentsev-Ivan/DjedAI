@@ -1415,3 +1415,21 @@ def test_semantics_report_clarification_options_as_not_evaluated():
 
     options = [r for r in semantics["rubrics"] if r["kind"] == "clarification.options"]
     assert options[0]["status"] == "not_evaluated"
+
+
+def test_chart_without_limit_shows_the_whole_series():
+    """Ряд не режется пределом, который никто не задавал (#245)."""
+    rows = [[f"2026-01-{day:02d}", day] for day in range(1, 25)]
+    c = case(chart={"types_any": ["line"], "min_points": 24})
+    spec = ChartSpec(
+        chart_id="c1",
+        type="line",
+        title="Chart",
+        result_id="r_chart",
+        x=XAxis(field="date", kind="time"),
+        y=[YMeasure(field="val", format="number")],
+    )
+    assert spec.limit is None
+    s = state(result(rows, columns=["date", "val"], result_id="r_chart"), "24")
+    s["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
+    assert not [issue for issue in evaluate_case(c, s)[1] if "truncates" in issue]

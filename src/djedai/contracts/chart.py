@@ -77,7 +77,11 @@ class ChartTemplate(BaseModel):
     orientation: OrientationKind = Field(default="vertical", description="Ориентация столбцов")
     stacked: bool = Field(default=False, description="Наложение рядов")
     sort: SortSpec | None = Field(default=None, description="Сортировка")
-    limit: int = Field(default=20, ge=1, description="Лимит отображаемых категорий/точек")
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Лимит точек, только если пользователь просил ограничить; иначе весь ряд",
+    )
     annotations: list[Annotation] = Field(
         default_factory=list, description="Текстовые метки на точках"
     )

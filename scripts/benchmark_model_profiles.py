@@ -663,7 +663,7 @@ def charts_ok(
             return False
         # These cases require all source categories. Sorting cannot recover
         # categories cut off by the renderer's display limit.
-        if len(source.data.rows) > chart.limit:
+        if chart.limit is not None and len(source.data.rows) > chart.limit:
             return False
         columns = source.data.columns
         fields = [chart.x.field, chart.y[0].field]
