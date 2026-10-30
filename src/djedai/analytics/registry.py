@@ -656,6 +656,49 @@ TOOL_FUNCTIONS: dict[str, Callable[..., ToolResult]] = {
 
 _SEMANTIC_TOOLS = {"compute_metric", "run_sql"}
 
+_DEFAULT_SQL_SUGGESTION = "Проверьте поля и запрос по каталогу датасета."
+_QUOTE_TABLE_SUGGESTION = (
+    'Имя таблицы, которое начинается с цифры, заключите в двойные кавычки: FROM "имя_таблицы".'
+)
+_SYNTAX_SUGGESTION = "Синтаксическая ошибка. Проверьте запрос: один SELECT в синтаксисе DuckDB."
+# The driver text is only classified, never forwarded: it may hold paths or credentials.
+_DRIVER_ERROR_SUGGESTIONS = (
+    (
+        ("referenced column", "column with name"),
+        "В запросе есть колонка, которой нет в таблице. Сверьте имена колонок с каталогом.",
+    ),
+    (
+        ("must appear in the group by",),
+        "Каждая колонка вне агрегатной функции должна входить в GROUP BY.",
+    ),
+    (
+        ("does not exist", "not found in from clause"),
+        "В запросе есть таблица, которой нет в датасете. Сверьте имена таблиц с каталогом.",
+    ),
+    (
+        ("conversion error", "could not convert", "explicit type casts"),
+        "Типы значений не подходят для операции. Сверьте типы по каталогу и используйте CAST.",
+    ),
+    (("parser error", "syntax error"), _SYNTAX_SUGGESTION),
+    (
+        ("timeout", "interrupt"),
+        "Запрос выполнялся слишком долго. Упростите его или добавьте фильтры (WHERE).",
+    ),
+)
+
+
+def _sql_error_suggestion(error: ToolError) -> str:
+    """Выбирает заранее заданную подсказку; первая строка не содержит фрагмента SQL."""
+    summary = error.message.partition("\n")[0].casefold()
+    if error.code == "sql_parse_error":
+        # SQLGlot reports `FROM 08_jobs` as a number in place of the table name.
+        digit_table = "expected table name" in summary and "tokentype.number" in summary
+        return _QUOTE_TABLE_SUGGESTION if digit_table else _SYNTAX_SUGGESTION
+    for markers, suggestion in _DRIVER_ERROR_SUGGESTIONS:
+        if any(marker in summary for marker in markers):
+            return suggestion
+    return _DEFAULT_SQL_SUGGESTION
+
 
 def execute_tool(
     tool_name: str,
@@ -702,7 +745,7 @@ def execute_tool(
                 "error": ToolError(
                     code=result.error.code,
                     message="Не удалось выполнить запрос к выбранному датасету.",
-                    suggestion="Проверьте поля и запрос по каталогу датасета.",
+                    suggestion=_sql_error_suggestion(result.error),
                 )
             }
         )

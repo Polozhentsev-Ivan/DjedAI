@@ -30,7 +30,46 @@ RESTRICTED_CONTEXT_MESSAGE = (
     "Уточните запрос или проверьте политику передачи данных."
 )
 MAX_PROMPT_ROWS = 20
+# Агрегат полезен только целиком: 24 месяца из 20 строк выглядят как конец данных.
+MAX_AGGREGATE_PROMPT_ROWS = 100
 MAX_CHART_ROWS = 5
+TRUNCATION_NOTE = (
+    "Показаны только первые строки результата. Остальные строки существуют, но не "
+    "переданы: не делай выводов о конце данных, отсутствии значений, итогах или "
+    "экстремумах по показанной части."
+)
+
+# Инструменты, строки которых по построению являются агрегатами. В find_duplicates и
+# detect_anomalies попадают значения отдельных строк, поэтому их здесь нет.
+_AGGREGATE_TOOLS = {
+    "compare_segments",
+    "compute_metric",
+    "correlation",
+    "forecast",
+    "lagged_correlation",
+    "seasonality",
+    "segment_profile",
+    "time_aggregate",
+    "value_counts",
+}
+# Только агрегаты, не возвращающие значения строк: LIST, FIRST и ANY_VALUE раскрывают
+# исходные ячейки и оставляют запрос под обычным лимитом.
+_NUMERIC_AGGREGATES = (
+    exp.ApproxDistinct,
+    exp.Avg,
+    exp.Count,
+    exp.Max,
+    exp.Median,
+    exp.Min,
+    exp.PercentileCont,
+    exp.Quantile,
+    exp.Stddev,
+    exp.StddevPop,
+    exp.StddevSamp,
+    exp.Sum,
+    exp.Variance,
+    exp.VariancePop,
+)
 
 # DSN/URL с учётными данными, ключи провайдеров, bearer-токены, PEM и присваивания
 # секретных параметров. После редактирования значения заменяются на ``[REDACTED]``,
@@ -391,6 +430,22 @@ class DataTransferPolicy:
             return error.model_copy(update={"message": message, "suggestion": safe_suggestion})
         return raw | {"message": message, "suggestion": safe_suggestion}
 
+    def prompt_row_limit(self, result: Any, *, sensitive_columns: Collection[str] = ()) -> int:
+        """Сколько строк результата передать в compose/verify.
+
+        Больший лимит получают только агрегаты без чувствительного источника. Он
+        не расширяет сами права: контекст по-прежнему проверяет ``result_data``.
+        """
+        if self.result_has_sensitive_source(result, sensitive_columns=sensitive_columns):
+            return MAX_PROMPT_ROWS
+        tool = getattr(result, "tool", None)
+        if tool in _AGGREGATE_TOOLS:
+            return MAX_AGGREGATE_PROMPT_ROWS
+        sql = _result_sql(result)
+        if tool == "run_sql" and sql is not None and _is_aggregate_sql(sql):
+            return MAX_AGGREGATE_PROMPT_ROWS
+        return MAX_PROMPT_ROWS
+
     def result_data(
         self,
         data: Any,
@@ -417,6 +472,9 @@ class DataTransferPolicy:
             ]
             if len(rows) > max_rows:
                 payload["rows_truncated"] = True
+                payload["rows_shown"] = max_rows
+            if len(rows) > max_rows or raw.get("truncated"):
+                payload["truncation_note"] = TRUNCATION_NOTE
         elif rows:
             payload["rows_omitted"] = "data_policy"
         return payload
@@ -949,6 +1007,45 @@ def _sensitive_sql_outputs(sql: str, sensitive: Collection[str]) -> tuple[set[st
         else:
             unresolved = True
     return names, unresolved
+
+
+def _select_scope_is_aggregate(scope: Scope, seen: frozenset[int]) -> bool:
+    select = scope.expression
+    has_aggregate = False
+    for projection in select.expressions:
+        if projection.find(exp.Window, exp.Subquery, exp.Select):
+            return False
+        aggregates = list(projection.find_all(exp.AggFunc))
+        if not all(isinstance(item, _NUMERIC_AGGREGATES) for item in aggregates):
+            return False
+        has_aggregate = has_aggregate or bool(aggregates)
+    if has_aggregate:
+        return True
+    # Внешний SELECT без агрегатов только читает уже агрегированные источники.
+    sources = [source for _, source in scope.selected_sources.values()]
+    return bool(sources) and all(
+        isinstance(source, Scope) and _scope_is_aggregate(source, seen) for source in sources
+    )
+
+
+def _scope_is_aggregate(scope: Scope, seen: frozenset[int] = frozenset()) -> bool:
+    if id(scope) in seen:
+        return False  # Рекурсивный CTE нельзя признать агрегатом по его определению.
+    seen = seen | {id(scope)}
+    branches = _root_select_scopes(scope)
+    return bool(branches) and all(_select_scope_is_aggregate(item, seen) for item in branches)
+
+
+def _is_aggregate_sql(sql: str) -> bool:
+    """Строит ли запрос каждую выходную строку из агрегата; при сомнении — нет."""
+    try:
+        statements = sqlglot.parse(sql, read="duckdb")
+        if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.Union)):
+            return False
+        scopes = list(traverse_scope(statements[0]))
+    except Exception:
+        return False
+    return bool(scopes) and _scope_is_aggregate(scopes[-1])
 
 
 def _is_sensitive_column(column: Any) -> bool:
