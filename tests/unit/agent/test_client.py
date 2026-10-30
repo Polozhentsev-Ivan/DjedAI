@@ -208,6 +208,154 @@ def test_client_timeout_error(client):
     assert response.error_type == "TIMEOUT"
 
 
+def test_client_strips_think_tags(client):
+    content = (
+        "<think>I should classify this as data_overview</think>"
+        '{"intent": "data_overview", "entities": {"tables": [], "columns": []}}'
+    )
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", Understanding)
+
+    assert response.status == "success"
+    assert response.data.intent == "data_overview"
+
+
+def test_client_handles_empty_or_none_content(client):
+    client.client.chat.completions.create.return_value = create_mock_response("")
+    response = client.generate_typed_response("sys", "user", Understanding)
+    assert response.status == "error"
+    assert response.error_type == "INVALID_JSON"
+
+    client.client.chat.completions.create.return_value = create_mock_response(None)
+    response_none = client.generate_typed_response("sys", "user", Understanding)
+    assert response_none.status == "error"
+    assert response_none.error_type == "INVALID_JSON"
+
+
+def test_client_handles_markdown_and_surrounding_prose(client):
+    content = (
+        "Here is the JSON:\n```json\n"
+        '{"intent": "data_question", "entities": {"tables": [], "columns": []}}\n'
+        "```\nHope that helps!"
+    )
+    client.client.chat.completions.create.return_value = create_mock_response(content)
+
+    response = client.generate_typed_response("sys", "user", Understanding)
+
+    assert response.status == "success"
+    assert response.data.intent == "data_question"
+
+
+def test_client_fallback_from_json_schema_to_json_object(client):
+    # Simulate first call with json_schema failing with 400 BadRequestError
+    from openai import BadRequestError
+
+    error_400 = BadRequestError(
+        message="invalid JSON schema for response_format",
+        response=MagicMock(status_code=400, headers={}),
+        body={"error": {"message": "invalid JSON schema for response_format"}},
+    )
+    valid_json = json.dumps({"intent": "data_question", "entities": {"tables": [], "columns": []}})
+    mock_success = create_mock_response(valid_json)
+
+    client.client.chat.completions.create.side_effect = [error_400, mock_success]
+
+    response = client.generate_typed_response("sys", "user", Understanding)
+
+    assert response.status == "success"
+    assert response.data.intent == "data_question"
+    assert client.client.chat.completions.create.call_count == 2
+    # Verify fallback used json_object
+    fallback_call_kwargs = client.client.chat.completions.create.call_args_list[1].kwargs
+    assert fallback_call_kwargs["response_format"] == {"type": "json_object"}
+
+    # Subsequent call on the same client should directly use json_object without failing first
+    client.client.chat.completions.create.side_effect = [mock_success]
+    res2 = client.generate_typed_response("sys", "user2", Understanding)
+    assert res2.status == "success"
+    assert client.client.chat.completions.create.call_count == 3
+    third_call_kwargs = client.client.chat.completions.create.call_args_list[2].kwargs
+    assert third_call_kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_http_client_strips_think_tags(model_endpoint):
+    content = (
+        "<think>Reasoning steps here...</think>"
+        '{"intent": "data_overview", "entities": {"tables": [], "columns": []}}'
+    )
+
+    with model_endpoint(lambda _n, _p: {"status": 200, "body": content}) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "success"
+        assert res.data.intent == "data_overview"
+
+
+def test_http_client_handles_empty_or_whitespace_content(model_endpoint):
+    with model_endpoint(lambda _n, _p: {"status": 200, "body": ""}) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "error"
+        assert res.error_type == "INVALID_JSON"
+
+    with model_endpoint(lambda _n, _p: {"status": 200, "body": "   \n\t  "}) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "error"
+        assert res.error_type == "INVALID_JSON"
+
+
+def test_http_client_fallback_from_json_schema_to_json_object(model_endpoint):
+    def reply(n, payload):
+        if n == 1:
+            assert payload.get("response_format", {}).get("type") == "json_schema"
+            return {
+                "status": 400,
+                "error_body": {
+                    "error": {"message": "Invalid response_format: json_schema unsupported"}
+                },
+            }
+        assert payload.get("response_format", {}).get("type") == "json_object"
+        assert (
+            "Respond with a valid JSON object matching this schema"
+            in payload["messages"][0]["content"]
+        )
+        return {
+            "status": 200,
+            "body": json.dumps(
+                {"intent": "data_question", "entities": {"tables": [], "columns": []}}
+            ),
+        }
+
+    with model_endpoint(reply) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "success"
+        assert res.data.intent == "data_question"
+        assert len(endpoint.calls) == 2
+
+        # Subsequent call on the same client should NOT make a failing json_schema request
+        res2 = client.generate_typed_response("sys", "user2", Understanding)
+        assert res2.status == "success"
+        assert len(endpoint.calls) == 3
+        assert endpoint.calls[2].get("response_format", {}).get("type") == "json_object"
+
+
+def test_http_client_schema_mismatch_not_published(model_endpoint):
+    # Returns valid JSON that does not match Understanding schema
+    invalid_payload = {"wrong_field": 12345}
+
+    with model_endpoint(
+        lambda _n, _p: {"status": 200, "body": json.dumps(invalid_payload)}
+    ) as endpoint:
+        client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
+        res = client.generate_typed_response("sys", "user", Understanding)
+        assert res.status == "error"
+        assert res.error_type == "SCHEMA_MISMATCH"
+        assert res.data is None
+
+
 def test_client_server_error(client):
     client.client.chat.completions.create.side_effect = APIError(
         message="Server down", request=MagicMock(), body=None

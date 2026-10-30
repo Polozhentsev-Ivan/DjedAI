@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -59,6 +60,27 @@ OUTPUT_LIMIT_MESSAGE = "Модель достигла лимита вывода.
 TIMEOUT_MESSAGE = "Модель не ответила за отведённое время."
 SERVER_ERROR_MESSAGE = "Модель недоступна или вернула ошибку сервера."
 UNKNOWN_ERROR_MESSAGE = "Не удалось получить ответ модели."
+
+
+def _schema_prompt(system_prompt: str, schema_json: dict[str, Any]) -> str:
+    schema_str = json.dumps(schema_json, ensure_ascii=False)
+    return (
+        f"{system_prompt}\n\nRespond with a valid JSON object matching this schema:\n{schema_str}"
+    )
+
+
+def _is_json_schema_rejection(exc: APIError) -> bool:
+    if getattr(exc, "status_code", None) not in {400, 422}:
+        return False
+    msg = (str(exc) or "").lower()
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error", {})
+        if isinstance(err, dict):
+            if err.get("param") in {"response_format", "response_format.type", "json_schema"}:
+                return True
+            msg += " " + (str(err.get("message") or "")).lower()
+    return any(marker in msg for marker in ("json_schema", "response_format", "schema", "strict"))
 
 
 class ModelResponse[T: BaseModel](BaseModel):
@@ -126,6 +148,9 @@ class BIModelClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # When an OpenAI-compatible server rejects json_schema (400/422), fallback
+        # to json_object with the schema in the system prompt for this and subsequent calls.
+        self._supports_json_schema: bool = True
         # One policy per client. Callers that build structured prompts use the same
         # instance, so retries and repairs cannot bypass the category rules.
         self.data_policy = data_policy or DataTransferPolicy.from_env()
@@ -141,7 +166,7 @@ class BIModelClient:
             )
         return self.reasoning[stage]
 
-    def _request(self, **kwargs: Any) -> Any:
+    def _request(self, *, read_error_body: bool = False, **kwargs: Any) -> Any:
         budget = current_budget() or ExecutionBudget(
             self.timeout * (self.max_retries + 1) + self.retry_delay * (2**self.max_retries)
         )
@@ -152,7 +177,7 @@ class BIModelClient:
             if attempt:
                 retry_started()
             try:
-                with attempt_lease(budget, self.timeout):
+                with attempt_lease(budget, self.timeout, read_error_body=read_error_body):
                     response = self.client.chat.completions.create(**kwargs)
                 budget.check()
                 return response
@@ -253,18 +278,34 @@ class BIModelClient:
         max_output_tokens: int | None = None,
     ) -> ModelResponse[T]:
         schema_json = response_model.model_json_schema()
+        use_schema = self._supports_json_schema
 
-        structured_format = {
-            "type": "json_schema",
-            "json_schema": {"name": response_model.__name__, "schema": schema_json, "strict": True},
-        }
+        if use_schema:
+            structured_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_model.__name__,
+                    "schema": schema_json,
+                    "strict": True,
+                },
+            }
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        else:
+            structured_format = {"type": "json_object"}
+            messages = [
+                {
+                    "role": "system",
+                    "content": _schema_prompt(system_prompt, schema_json),
+                },
+                {"role": "user", "content": user_prompt},
+            ]
 
         request: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": messages,
             "response_format": structured_format,
             "temperature": 0.1,
         }
@@ -280,7 +321,23 @@ class BIModelClient:
 
         metadata: dict[str, Any] = {}
         try:
-            response = self._request(**request)
+            try:
+                response = self._request(read_error_body=use_schema, **request)
+            except APIError as exc:
+                if use_schema and _is_json_schema_rejection(exc):
+                    self._supports_json_schema = False
+                    fallback_req = dict(request)
+                    fallback_req["response_format"] = {"type": "json_object"}
+                    fallback_req["messages"] = [
+                        {
+                            "role": "system",
+                            "content": _schema_prompt(system_prompt, schema_json),
+                        },
+                        {"role": "user", "content": user_prompt},
+                    ]
+                    response = self._request(**fallback_req)
+                else:
+                    raise
 
             capture_usage(response.usage)
             metadata = {
@@ -298,14 +355,54 @@ class BIModelClient:
                     **metadata,
                 )
 
-            raw_content = response.choices[0].message.content.strip()
+            content_val = response.choices[0].message.content
+            raw_content = (content_val or "").strip()
 
-            # Clean markdown code blocks, add array wrapper (e.g. for Gemma) if needed
-            clean_content = raw_content.removeprefix("```json").removesuffix("```").strip()
-            # if clean_content.startswith("[") and clean_content.endswith("]"):
-            # clean_content = clean_content[1:-1]
+            if not raw_content:
+                return ModelResponse(
+                    status="error",
+                    error_type="INVALID_JSON",
+                    message=INVALID_JSON_MESSAGE,
+                    raw_response=raw_content,
+                    **metadata,
+                )
 
-            parsed_json = json.loads(clean_content)
+            # Strip <think>...</think> blocks from reasoning models
+            clean_content = re.sub(r"(?is)<think>.*?</think>", "", raw_content).strip()
+
+            # Clean markdown code blocks
+            if "```" in clean_content:
+                match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_content, re.IGNORECASE)
+                if match:
+                    clean_content = match.group(1).strip()
+                else:
+                    clean_content = (
+                        clean_content.removeprefix("```json")
+                        .removeprefix("```")
+                        .removesuffix("```")
+                        .strip()
+                    )
+
+            try:
+                parsed_json = json.loads(clean_content)
+            except json.JSONDecodeError:
+                start_brace = clean_content.find("{")
+                start_bracket = clean_content.find("[")
+                if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+                    end_brace = clean_content.rfind("}")
+                    if end_brace > start_brace:
+                        parsed_json = json.loads(clean_content[start_brace : end_brace + 1])
+                    else:
+                        raise
+                elif start_bracket != -1:
+                    end_bracket = clean_content.rfind("]")
+                    if end_bracket > start_bracket:
+                        parsed_json = json.loads(clean_content[start_bracket : end_bracket + 1])
+                    else:
+                        raise
+                else:
+                    raise
+
             validated_data = response_model.model_validate(parsed_json)
 
             return ModelResponse(
