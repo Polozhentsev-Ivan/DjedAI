@@ -276,6 +276,12 @@ def _numbers_in(value: Any) -> Iterator[Decimal]:
 
 def _structured_numbers(results: Sequence[Any]) -> Iterator[Decimal]:
     for value in _structured_scalars(results):
+        # DECIMAL приходит из инструментов строкой: без этого денежные суммы не сверить.
+        if isinstance(value, str):
+            try:
+                value = Decimal(value)
+            except InvalidOperation:
+                continue
         number = _decimal(value)
         if number is not None:
             yield number

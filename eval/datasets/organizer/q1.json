@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "dataset_id": "hk_medicines_v1",
+  "source": {
+    "repository_url": "https://gitverse.ru/kban/HK_Datasets",
+    "revision": "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d",
+    "file_name": "09_Лекарственные_препараты.csv",
+    "sha256": "40081d8a1fadfbcb9dc35c45483182503a2eb75d5224ac7f363c9c43f7f4733c",
+    "size_bytes": 98278281
+  }
+}

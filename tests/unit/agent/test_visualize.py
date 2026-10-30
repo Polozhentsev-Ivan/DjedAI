@@ -199,6 +199,8 @@ def test_visualize_reuses_result_from_previous_turn_in_the_same_chat():
             status="success",
             data=PlanResponse(plan=[PlannedCall(tool="value_counts", args={})]),
         ),
+        # Второй проход после разведки: её результатов уже достаточно.
+        ModelResponse(status="success", data=PlanResponse(plan=[])),
         ModelResponse(status="success", data=VisualizeResponse(charts=[_chart("bar")])),
         ModelResponse(status="success", data=ComposeResponse(answer_blocks=[])),
         # Верификатор теперь читает заголовки (Title) графиков, поэтому его нужно замокать:

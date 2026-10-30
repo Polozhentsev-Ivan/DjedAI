@@ -128,3 +128,13 @@ uv run --locked pytest tests/unit/test_eval_runner.py tests/unit/test_eval_valid
 ```
 
 В модель передаются только пользовательские вопросы и штатный каталог. Golden, oracle и готовые ответы остаются на стороне оценки. Наличие ожидаемого графика, дашборда или прогноза не означает готовность соответствующей функции.
+
+## Вопросы организаторов
+
+`organizer_questions.yaml` содержит шесть вопросов из `TestCases.md`, каждый на своём датасете, и эталоны, посчитанные напрямую из CSV. Manifest каждого вопроса лежит в `datasets/organizer/q<N>.json`. Запуск по одному вопросу, файл датасета должен совпасть с хешем manifest:
+
+```bash
+.venv/bin/python scripts/eval_runner.py --questions eval/organizer_questions.yaml --manifest eval/datasets/organizer/q6.json --data-file artifacts/hk-datasets/08_Фоновые_задания.csv --workers 1 --output <файл>
+```
+
+Вопросы других датасетов в таком запуске получают `skipped`. Неверный ответ получает `failed`: эталон сверяется с результатами инструментов. В вопросах 3 и 4 допуск покрывает `quantile_cont` и `quantile_disc`.

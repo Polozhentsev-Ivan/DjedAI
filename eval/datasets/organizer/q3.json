@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "dataset_id": "hk_support_v1",
+  "source": {
+    "repository_url": "https://gitverse.ru/kban/HK_Datasets",
+    "revision": "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d",
+    "file_name": "02_Техническая_поддержка.csv",
+    "sha256": "637e65f0019d8962c2ee4a3f9b96dded13bc2a7b96cece768703daee82653a1c",
+    "size_bytes": 181721714
+  }
+}

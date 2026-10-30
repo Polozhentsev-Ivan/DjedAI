@@ -9,6 +9,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.answer_checks import duration_hints, unsupported_numbers
+from djedai.agent.client import ModelResponse
 from djedai.agent.dashboard import (
     WidgetExecution,
     build_widget_snapshot,
@@ -23,7 +25,12 @@ from djedai.agent.data_policy import (
     policy_for_client,
     sensitive_column_names,
 )
-from djedai.agent.guards import guard_question, lacks_money_fields, reversed_period_update
+from djedai.agent.guards import (
+    guard_question,
+    lacks_money_fields,
+    reversed_period_update,
+    unitless_how_much,
+)
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
@@ -53,6 +60,17 @@ MODEL_ERROR_MARKDOWN = "Не удалось получить ответ моде
 # tools do not produce a stable widget result, and their schemas make the planner
 # prompt large enough for a real endpoint to time out.
 DASHBOARD_TOOL_NAMES = frozenset({"run_sql", "compute_metric"})
+CALCULATION_TOOL_NAMES = DASHBOARD_TOOL_NAMES
+EXPLORATION_TOOLS = frozenset({"describe_column", "value_counts"})
+# В сообщении пользователя правило работает надёжнее, чем в длинном системном промпте.
+ENTITY_NOTE = (
+    "If the question asks about an entity with an identifier column, group by that identifier "
+    "and add its descriptive column with ANY_VALUE."
+)
+HOW_MUCH_NOTE = (
+    "The question says how much without naming a unit: if the table has a fitting money column, "
+    "select both COUNT(*) and SUM of it, per group and in total."
+)
 POLICY_NOTE = (
     "\n\nData policy: raw rows from earlier results are not included. "
     "Use only the provided facts, aggregates and metadata; do not invent values. "
@@ -122,13 +140,20 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
             entry["data"] = data
             if data.get("rows"):
                 usable = True
+                if durations := duration_hints(data.get("columns", []), data["rows"]):
+                    entry["durations"] = durations
         entries.append(entry)
     return entries, usable
 
 
 def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
-    """Результаты шагов для повторного планирования: ошибка вместе с подсказкой."""
+    """Результаты шагов для повторного планирования: ошибка с подсказкой или данные хода.
+
+    Значения успешного шага нужны плану после разведки: без них точные метки статусов
+    пришлось бы угадывать. Строки текущего хода разрешены и в restricted-режиме.
+    """
     lines = []
+    sensitive_columns = state.get("sensitive_columns", ())
     for result in state.get("results", []):
         status = "Success"
         if result.error:
@@ -136,6 +161,16 @@ def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
             status = safe.message
             if safe.suggestion:
                 status = f"{status} Подсказка: {safe.suggestion}"
+        elif result.data is not None:
+            data = policy.result_data(
+                result.data,
+                context=DataContext.CURRENT_RESULT,
+                max_rows=policy.prompt_row_limit(result, sensitive_columns=sensitive_columns),
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
+            )
+            status = f"{status} {json.dumps(data, ensure_ascii=False, default=str)}"
         lines.append(f"Tool {result.tool}: {result.status} - {status}")
     return "\n".join(lines)
 
@@ -209,6 +244,20 @@ def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
 CLARIFY_INTENTS = {"ambiguous", "invalid", "off_topic"}
 
 
+def _deserves_second_look(client: object, response: ModelResponse) -> bool:
+    """Нужен ли повтор с reasoning: без него модель спрашивает то, что вопрос уже задал.
+
+    Только там, где reasoning явно выключен, значит endpoint его поддерживает. Вопросы,
+    которые сразу идут в план, времени не теряют; неудачный повтор оставляет первый ответ.
+    """
+    reasoning_for = getattr(client, "reasoning_for", None)
+    if reasoning_for is None or reasoning_for("understand") != "none":
+        return False
+    if response.status == "success" and response.data:
+        return response.data.intent == "ambiguous"
+    return response.error_type == "SCHEMA_MISMATCH"
+
+
 def understand(state: AgentState, config: RunnableConfig) -> dict:
     """Invokes the model to understand intent."""
     client = config.get("configurable", {}).get("client")
@@ -235,6 +284,12 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         response = client.generate_typed_response(
             sys_prompt, last_msg, Understanding, stage="understand"
         )
+        if _deserves_second_look(client, response):
+            second = client.generate_typed_response(
+                sys_prompt, last_msg, Understanding, stage="understand", reasoning="low"
+            )
+            if second.status == "success" and second.data:
+                response = second
         if response.status == "success" and response.data:
             # Период мог прийти из контекста диалога: «за тот же период».
             if response.data.intent not in CLARIFY_INTENTS:
@@ -260,6 +315,9 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     policy = _policy(config)
 
     registry = get_tools_for_llm()
+    # После разведки нужен расчёт: остальные схемы только удлиняют промпт и второй проход.
+    if any(result.tool in EXPLORATION_TOOLS for result in state.get("results", [])):
+        registry = [tool for tool in registry if tool["name"] in CALCULATION_TOOL_NAMES]
     tools_desc = "\n".join(
         f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
         for t in registry
@@ -281,6 +339,9 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         state.get("understanding").resolved_question if state.get("understanding") else None
     )
     user_prompt = user_prompt or last_msg or "Generate execution plan."
+    user_prompt += f"\n\n{ENTITY_NOTE}"
+    if unitless_how_much(last_msg):
+        user_prompt += f"\n\n{HOW_MUCH_NOTE}"
 
     if client:
         response = client.generate_typed_response(
@@ -777,7 +838,8 @@ def updated_focus_result_ids(state: AgentState) -> list[str]:
     """Обновляет «о чём сейчас разговор» без привязки к чужому чату."""
     current_results = state.get("results", [])
     plan_len = len(state.get("plan", []))
-    plan_results = current_results[-plan_len:] if plan_len > 0 else []
+    # Пустой план после разведки: ответ строится на результатах этого хода.
+    plan_results = current_results[-plan_len:] if plan_len > 0 else current_results
     understanding = state.get("understanding")
     references = understanding.references if understanding else []
     known = {result.result_id for result in [*state.get("history_results", []), *current_results]}
@@ -1029,8 +1091,9 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         }
 
     sys_prompt = load_prompt("compose").format(
+        catalog=state.get("catalog_prompt"),
         facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
-        + _policy_note(facts_and_data)
+        + _policy_note(facts_and_data),
     )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
@@ -1116,8 +1179,14 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         new_blocks.append(Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE))
         return {"is_verified": True, "answer_blocks": new_blocks}
 
+    # Числа без опоры в данных возвращаются на compose до вызова модели. На второй попытке
+    # решает verify: он может убрать такие числа из текста.
+    if state.get("compose_retries", 0) < 2 and unsupported_numbers(draft, facts_and_data):
+        return {"is_verified": False}
+
     if client:
         sys_prompt = load_prompt("verify").format(
+            catalog=state.get("catalog_prompt"),
             facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
             + _policy_note(facts_and_data),
             draft=draft,
@@ -1256,6 +1325,18 @@ METRIC_DECISIONS = {
 def _recent_results(state: AgentState) -> list[ToolResult]:
     plan_len = len(state.get("plan", []))
     return state.get("results", [])[-plan_len:] if plan_len > 0 else []
+
+
+def _only_explored(state: AgentState, recent: list[ToolResult]) -> bool:
+    """План только посмотрел значения колонок: расчёт по ним ещё предстоит.
+
+    Модель обещает написать расчёт следующим шагом, поэтому без второго прохода ответ
+    строился бы по разведке. Второй проход один: новый план может быть и пустым.
+    """
+    if not recent or any(result.tool not in EXPLORATION_TOOLS for result in recent):
+        return False
+    earlier = state.get("results", [])[: -len(recent)]
+    return not any(result.tool in EXPLORATION_TOOLS for result in earlier)
 
 
 def _metric_decision(state: AgentState) -> ToolError | None:
@@ -1482,6 +1563,8 @@ def route_after_execute(state: AgentState) -> str:
     if any(r.tool == "compute_metric" for r in metric_errors):
         return "clarify"
     if has_errors and state.get("retries", 0) <= 2:
+        return "plan"
+    if _only_explored(state, recent_results) and state.get("retries", 0) <= 2:
         return "plan"
     if metric_errors or _quality_blockers(state):
         return "clarify"

@@ -1,0 +1,124 @@
+- id: organizer_q1
+  scenario: organizer
+  dataset: hk_medicines_v1
+  question: Какое лекарство сильнее всего выросло в процентах по среднедневным продажам на аптеку в марте 2025 к февралю,
+    включая дни без продаж? Пришли расчёт.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: medicine.id
+      comparison: exact
+      value: '1019'
+    - key: medicine.growth_percent
+      comparison: approx
+      value: 30.3211
+      unit: процент
+      abs_tolerance: 0.01
+- id: organizer_q2
+  scenario: organizer
+  dataset: hk_sales_v1
+  question: В каком городе сильнее всего выросла чистая выручка в процентах в марте 2025 к февралю с учётом количества, скидок
+    и возвратов?
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: city
+      comparison: exact
+      value: Калининград
+    - key: city.growth_percent
+      comparison: approx
+      value: 62.29
+      unit: процент
+      abs_tolerance: 0.01
+- id: organizer_q3
+  scenario: organizer
+  dataset: hk_support_v1
+  question: У какой группы максимальный 90-й перцентиль времени решения среди обращений, закрытых в марте 2025? Исключи группы
+    с менее чем 100 закрытиями.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: group
+      comparison: exact
+      value: Доставка заказов
+    - key: group.p90_hours
+      comparison: approx
+      value: 72.555
+      unit: часы, quantile_cont или quantile_disc
+      abs_tolerance: 0.07
+- id: organizer_q4
+  scenario: organizer
+  dataset: hk_delivery_v1
+  question: У какого перевозчика максимальный 95-й перцентиль задержки среди доставленных в марте 2025 отправлений? Доставку
+    вовремя считай нулевой задержкой.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: carrier
+      comparison: exact
+      value: Собственная доставка
+    - key: carrier.p95_hours
+      comparison: approx
+      value: 23.195
+      unit: часы, quantile_cont или quantile_disc
+      abs_tolerance: 0.05
+- id: organizer_q5
+  scenario: organizer
+  dataset: hk_purchase_requests_v1
+  question: Сколько было согласовано, но ещё не оплачено на конец 31 марта 2025 по подразделениям, исключая отменённые и отклонённые
+    к этой дате заявки?
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: it.requests
+      comparison: exact
+      value: 4158
+    - key: it.amount
+      comparison: approx
+      value: 851088269.49
+      unit: руб.
+      abs_tolerance: 0.01
+    - key: sales.requests
+      comparison: exact
+      value: 999
+    - key: sales.amount
+      comparison: approx
+      value: 116747232.61
+      unit: руб.
+      abs_tolerance: 0.01
+- id: organizer_q6
+  scenario: organizer
+  dataset: hk_background_jobs_v1
+  question: Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число
+    попыток в таких цепочках.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: cleanup.retried_chains
+      comparison: exact
+      value: 581
+    - key: cleanup.avg_attempts
+      comparison: approx
+      value: 2.3201
+      unit: попытки
+      abs_tolerance: 0.001
+    - key: archive.retried_chains
+      comparison: exact
+      value: 337
+    - key: archive.avg_attempts
+      comparison: approx
+      value: 2.279
+      unit: попытки
+      abs_tolerance: 0.001

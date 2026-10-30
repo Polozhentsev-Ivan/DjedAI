@@ -1,0 +1,115 @@
+"""Проверки ответа кодом: не зависят от силы модели и не требуют её вызова."""
+
+import re
+from collections.abc import Iterable
+from decimal import Decimal, InvalidOperation
+
+_SECONDS_COLUMN_RE = re.compile(r"(?:^|_)(?:secs?|seconds?|sekund\w*)$", re.IGNORECASE)
+_MIN_SECONDS_TO_CONVERT = 3600
+_MAX_DURATIONS = 50
+# Число с разделителями разрядов (пробел, неразрывные пробелы, запятая) и дробной частью.
+_NUMBER_RE = re.compile(
+    r"(?<![\w.,])-?\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?(?![\w])"
+    r"|(?<![\w.,])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\w])"
+    r"|(?<![\w.,])-?\d+(?:[.,]\d+)?(?![\w])"
+)
+# Целые до сотни — дни месяца, порядковые номера и множители формул, а не значения данных.
+_SMALL_INTEGER = 100
+_CODE_RE = re.compile(r"`[^`]*`")
+_DATE_RE = re.compile(
+    r"\b\d{4}-\d{2}(?:-\d{2})?\b|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b|\b(?:19|20)\d{2}\b"
+)
+
+
+def _number(value: object) -> Decimal | None:
+    """Число значения результата; DECIMAL приходит из инструментов строкой."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal, str)):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
+
+
+def duration_hints(columns: list[str], rows: Iterable[list[object]]) -> list[dict]:
+    """Значения колонок в секундах, переведённые в часы для ответа пользователю."""
+    indexes = [i for i, name in enumerate(columns) if _SECONDS_COLUMN_RE.search(str(name))]
+    hints: list[dict] = []
+    for row in rows:
+        for index in indexes:
+            value = _number(row[index]) if index < len(row) else None
+            if value is None or abs(value) < _MIN_SECONDS_TO_CONVERT:
+                continue
+            hints.append(
+                {
+                    "column": columns[index],
+                    "seconds": float(value),
+                    "hours": round(float(value) / 3600, 2),
+                }
+            )
+            if len(hints) >= _MAX_DURATIONS:
+                return hints
+    return hints
+
+
+def _parse(text: str) -> Decimal | None:
+    clean = re.sub(r"[   ]", "", text)
+    if "," in clean and "." in clean:
+        clean = clean.replace(",", "")
+    elif re.fullmatch(r"-?\d{1,3}(?:,\d{3})+", clean):
+        clean = clean.replace(",", "")
+    else:
+        clean = clean.replace(",", ".")
+    try:
+        return Decimal(clean)
+    except InvalidOperation:
+        return None
+
+
+def _known_values(entries: list[dict]) -> list[Decimal]:
+    """Числа строк и фактов результатов, а также суммы колонок для итоговых строк."""
+    known: list[Decimal] = []
+    for entry in entries:
+        for fact in entry.get("facts") or []:
+            values = fact.get("values") if isinstance(fact, dict) else None
+            for value in (values or {}).values():
+                if (number := _number(value)) is not None:
+                    known.append(number)
+        data = entry.get("data") or {}
+        rows = data.get("rows") or []
+        totals: dict[int, Decimal] = {}
+        for row in rows:
+            for index, value in enumerate(row):
+                if (number := _number(value)) is not None:
+                    known.append(number)
+                    totals[index] = totals.get(index, Decimal(0)) + number
+        known.extend(totals.values())
+        known.extend(Decimal(str(hint["hours"])) for hint in entry.get("durations") or [])
+        if data.get("row_count") is not None and (number := _number(data["row_count"])):
+            known.append(number)
+    return known
+
+
+def _matches(shown: Decimal, known: Decimal) -> bool:
+    """Показанное число — это значение данных с округлением, в том числе как доля в процентах."""
+    decimals = max(-shown.as_tuple().exponent, 0)
+    step = Decimal(1).scaleb(-decimals)
+    # Округление до показанной точности; половина шага — запас на другой режим округления.
+    return any(abs(abs(shown) - abs(candidate)) <= step / 2 for candidate in (known, known * 100))
+
+
+def unsupported_numbers(draft: str, entries: list[dict]) -> list[str]:
+    """Числа черновика, которых нет в данных результата: модель досчитала их сама."""
+    known = _known_values(entries)
+    if not known:
+        return []
+    text = _DATE_RE.sub(" ", _CODE_RE.sub(" ", draft))
+    unsupported = []
+    for match in _NUMBER_RE.finditer(text):
+        shown = _parse(match[0])
+        if shown is None or (shown == shown.to_integral_value() and abs(shown) <= _SMALL_INTEGER):
+            continue
+        if not any(_matches(shown, value) for value in known):
+            unsupported.append(match[0])
+    return list(dict.fromkeys(unsupported))
