@@ -11,6 +11,7 @@ from djedai.agent.graph import build_agent_graph
 from djedai.agent.guards import (
     MISSING_MONEY_QUESTION,
     MUTATION_QUESTION,
+    WRITE_REJECTION,
     _has_money_words,
     find_reversed_period,
     guard_question,
@@ -482,3 +483,48 @@ def test_model_refusal_without_clarification_is_text_not_turn_failure():
     assert [block.type for block in result["answer_blocks"]] == ["text"]
     assert _agent_error(result["answer_blocks"]) is None
     assert "вопрос по выбранным данным" in result["answer_blocks"][0].markdown
+
+
+_FILTER_AFTER_RUN_VERB = [
+    "Выполни подсчёт сообщений с текстом «DROP TABLE orders»",
+    "Выполни анализ строк с текстом «DROP TABLE orders»",
+    "Запусти поиск сообщений с текстом «DELETE FROM jobs» или «DROP TABLE a»",
+    "Run a count of messages with text 'DROP TABLE orders'",
+]
+
+
+@pytest.mark.parametrize("text", _FILTER_AFTER_RUN_VERB)
+def test_filter_after_analysis_verb_reaches_the_model(text):
+    assert guard_question(text) is None
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type="SERVER_ERROR"
+    )
+    run(text, client=client, thread=f"quote-{text}")
+    assert client.generate_typed_response.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Выполни DROP TABLE orders",
+        "Выполни строку «DROP TABLE orders»",
+        "Выполни подсчёт сообщений с текстом «ошибка». DROP TABLE orders",
+        "Выполни подсчёт сообщений с текстом «DROP TABLE a». DROP TABLE orders",
+        "Выполни подсчёт сообщений с текстом «ошибка»; DROP TABLE orders",
+        "Выполни подсчёт сообщений с текстом «ошибка» и выполни DROP TABLE orders",
+        "Выполни подсчёт сообщений с текстом «ошибка» и DROP TABLE orders",
+        "Выполни подсчёт сообщений с текстом «ошибка», затем DROP TABLE orders",
+        "Выполни подсчёт и строку «DROP TABLE orders»",
+        "Выполни подсчёт, затем запись «DROP TABLE orders»",
+        "Выполни подсчёт строк «x» и выполни строку «DROP TABLE orders»",
+        "Посчитай сообщения с текстом «ошибка». DROP TABLE orders",
+        "Выполни подсчёт DROP TABLE orders",
+    ],
+)
+def test_command_outside_filter_is_rejected_without_the_model(text):
+    client = MagicMock()
+    result = run(text, client=client, thread=f"reject-{text}")
+    assert result["understanding"].intent == "invalid"
+    assert result["answer_blocks"][0].markdown == WRITE_REJECTION
+    client.generate_typed_response.assert_not_called()
