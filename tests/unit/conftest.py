@@ -4,6 +4,7 @@ Also the orders/items/payments dataset shared by metric semantics tests (B2-9) a
 the dataset with typing losses and ambiguities for data quality tests (B2-10).
 """
 
+import gzip
 import json
 import threading
 import time
@@ -30,13 +31,21 @@ def model_endpoint() -> Callable:
     @contextmanager
     def serve(reply: Callable[[int, dict[str, Any]], dict[str, Any]]) -> Iterator[SimpleNamespace]:
         calls: list[dict[str, Any]] = []
+        wire_calls: list[dict[str, Any]] = []
         started, peer_closed, stopped = (threading.Event() for _ in range(3))
         lock = threading.Lock()
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                wire = self.rfile.read(int(self.headers["Content-Length"]))
+                body = (
+                    gzip.decompress(wire)
+                    if self.headers.get("Content-Encoding") == "gzip"
+                    else wire
+                )
+                payload = json.loads(body)
                 with lock:
+                    wire_calls.append({"headers": dict(self.headers), "body": wire})
                     calls.append(payload)
                     number = len(calls)
                 options = reply(number, payload)
@@ -115,6 +124,7 @@ def model_endpoint() -> Callable:
                 yield SimpleNamespace(
                     base_url=f"http://127.0.0.1:{server.server_port}/v1",
                     calls=calls,
+                    wire_calls=wire_calls,
                     started=started,
                     peer_closed=peer_closed,
                 )
