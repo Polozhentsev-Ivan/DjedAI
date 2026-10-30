@@ -41,7 +41,7 @@ from djedai.contracts.agent import (
     VerifyResponse,
     VisualizeResponse,
 )
-from djedai.contracts.chart import ChartSpec
+from djedai.contracts.chart import ChartSpec, ColorField, XAxis, YMeasure
 from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
@@ -800,6 +800,8 @@ def describe_result_for_chart(
     return policy.chart_result(result, context=context, sensitive_columns=sensitive_columns)
 
 
+CHART_TYPES_WITH_FILLABLE_AXES = frozenset({"bar", "line", "area", "pie", "heatmap", "kpi"})
+
 NUMERIC_TYPES = {
     "INT",
     "INTEGER",
@@ -859,6 +861,39 @@ def _column_is_numeric(rows: list[list[object]], index: int, column_type: str | 
     return _values_are_numeric(rows, index) is not False
 
 
+def _fill_missing_axes(
+    chart: ChartSpec, result: ToolResult, columns: dict[str, tuple[int, str | None]]
+) -> ChartSpec:
+    """Дополняет опущенные моделью оси: сначала по подсказке инструмента, затем по колонкам."""
+    if chart.type not in CHART_TYPES_WITH_FILLABLE_AXES or result.data is None:
+        return chart
+
+    categories = []
+    measures = []
+    for name, (index, column_type) in columns.items():
+        numeric = _column_is_numeric(result.data.rows, index, column_type)
+        (measures if numeric else categories).append(name)
+
+    hint = result.chart_hint
+    hinted_y = [field for field in (hint.y if hint else []) if field in columns]
+    update: dict[str, object] = {}
+    if not chart.y and (hinted_y or measures):
+        update["y"] = [YMeasure(field=field) for field in hinted_y or measures[:1]]
+    if chart.type != "kpi" and chart.x is None:
+        x_field = hint.x if hint and hint.x in columns else next(iter(categories), None)
+        if x_field is not None:
+            column_type = columns[x_field][1] or ""
+            is_time = any(token in column_type.upper() for token in ("DATE", "TIME"))
+            update["x"] = XAxis(field=x_field, kind="time" if is_time else "category")
+    if chart.type == "heatmap" and chart.color is None:
+        x_field = update["x"].field if "x" in update else chart.x.field if chart.x else None
+        color_field = hint.color if hint and hint.color in columns else None
+        color_field = color_field or next((c for c in categories if c != x_field), None)
+        if color_field is not None:
+            update["color"] = ColorField(field=color_field)
+    return chart.model_copy(update=update) if update else chart
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
     """Оставляет только графики, совместимые с сохранённым результатом.
 
@@ -881,6 +916,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
             if name is not None:
                 columns[name] = (index, column_type)
 
+        chart = _fill_missing_axes(chart, res, columns)
         is_valid = True
 
         # Проверка оси X (наличие и совместимость типа)

@@ -554,3 +554,10 @@ def test_preview_contains_charts_and_link_and_focus_skips_failed_widgets():
     assert blocks[3].dashboard_id == "d_test"
     assert blocks[3].title == "Продажи"
     assert dashboard_output_result_ids(snapshot) == ["r_total", "r_categories"]
+
+
+def test_dashboard_step_schema_requires_args():
+    """Без обязательного поля модель в строгом режиме может опустить аргументы шага."""
+    step_schema = DashboardPlanResponse.model_json_schema()["$defs"]["DashboardStepPlan"]
+
+    assert "args" in step_schema["required"]

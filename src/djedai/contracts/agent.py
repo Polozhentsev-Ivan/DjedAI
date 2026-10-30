@@ -75,7 +75,7 @@ class DashboardStepPlan(BaseModel):
 
     step_id: str = Field(min_length=1, description="Идентификатор шага внутри виджета")
     tool: str = Field(min_length=1, description="Имя инструмента из реестра")
-    args: dict[str, Any] = Field(default_factory=dict, description="Параметры вызова")
+    args: dict[str, Any] = Field(description="Параметры вызова")
     source_step_id: str | None = Field(
         default=None,
         description="Предыдущий шаг этого же виджета; его данные доступны как source_result",

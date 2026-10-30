@@ -170,7 +170,7 @@ def test_reversed_period_never_reaches_the_model():
         "Другой период: указать правильные начальную и конечную даты",
     ]
     assert isinstance(_block_to_message_block(block), ClarificationBlock)
-    assert evaluate_case(case, result)[0] == "passed"
+    assert evaluate_case(case, result)[0] == "needs_review"
 
 
 def test_reversed_period_in_model_resolution_is_stopped():
@@ -207,7 +207,7 @@ def test_dangerous_request_is_rejected_with_reason_before_model(case_id, phrase)
     # Отказ не должен выглядеть для чата как сбой хода.
     assert _agent_error(result["answer_blocks"]) is None
     assert isinstance(_block_to_message_block(result["answer_blocks"][0]), TextBlock)
-    assert evaluate_case(case, result)[0] == "passed"
+    assert evaluate_case(case, result)[0] == "needs_review"
 
 
 @pytest.mark.parametrize(
@@ -310,7 +310,7 @@ def test_natural_language_deletion_asks_for_a_safe_alternative():
 
     client.generate_typed_response.assert_not_called()
     assert "Исходные данные не изменены" in result["answer_blocks"][0].markdown
-    assert evaluate_case(case, result)[0] == "passed"
+    assert evaluate_case(case, result)[0] == "needs_review"
 
 
 def test_polite_table_deletion_is_stopped():
@@ -453,7 +453,7 @@ def test_missing_money_fields_are_explained_without_tools():
     assert block.type == "clarification"
     assert "нет денежных полей" in block.markdown
     assert "нельзя получить из имеющихся счётчиков" in block.markdown
-    assert evaluate_case(case, result)[0] == "passed"
+    assert evaluate_case(case, result)[0] == "needs_review"
     # Кнопки становятся следующим сообщением и не должны запускать проверку снова.
     for option in block.options:
         assert guard_question(option, money_fields_absent=True) is None

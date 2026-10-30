@@ -28,6 +28,7 @@ from djedai.execution import TurnTimeout, current_budget  # noqa: E402
 from scripts.eval_runner import (  # noqa: E402
     GoldenDataset,
     _case_skip_reason,
+    _evaluate_semantics,
     check_fact,
     evaluate_case,
     process_case,
@@ -1400,3 +1401,17 @@ def test_timed_out_turn_is_never_automated_passed():
     assert report["status"] == "failed"
     assert report["automated_status"] == "failed"
     assert report["error_type"] == "TurnTimeout"
+
+
+def test_semantics_report_clarification_options_as_not_evaluated():
+    """Варианты уточнения заданы списком: это не должно ронять оценку вопроса."""
+    case = {
+        "id": "c",
+        "question": "q",
+        "expect": {"clarification": {"resolves": "причина", "options": ["а", "б"]}},
+    }
+
+    semantics = _evaluate_semantics(case, "", [])
+
+    options = [r for r in semantics["rubrics"] if r["kind"] == "clarification.options"]
+    assert options[0]["status"] == "not_evaluated"

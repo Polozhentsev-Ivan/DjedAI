@@ -1031,7 +1031,7 @@ def _evaluate_semantics(case: dict, text: str, results: Sequence[Any]) -> dict[s
     rubrics: list[dict[str, Any]] = []
 
     def add(kind: str, rubric: Any) -> None:
-        evaluator = RUBRIC_EVALUATORS.get(rubric)
+        evaluator = RUBRIC_EVALUATORS.get(rubric) if isinstance(rubric, str) else None
         status, reason = evaluator(case, results) if evaluator else ("not_evaluated", None)
         rubrics.append({"kind": kind, "rubric": rubric, "status": status, "reason": reason})
 
