@@ -26,6 +26,7 @@ from djedai.agent.data_policy import (
     sensitive_column_names,
 )
 from djedai.agent.guards import (
+    asks_state_on_date,
     guard_question,
     lacks_money_fields,
     reversed_period_update,
@@ -66,6 +67,10 @@ EXPLORATION_TOOLS = frozenset({"describe_column", "value_counts"})
 ENTITY_NOTE = (
     "If the question asks about an entity with an identifier column, group by that identifier "
     "and add its descriptive column with ANY_VALUE."
+)
+STATE_ON_DATE_NOTE = (
+    "The question asks about a state on a date: every event in the conditions, including the one "
+    "that must have happened, is compared with that date by its timestamp, never by IS NOT NULL."
 )
 HOW_MUCH_NOTE = (
     "The question says how much without naming a unit: if the table has a fitting money column, "
@@ -347,6 +352,8 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     user_prompt += f"\n\n{ENTITY_NOTE}"
     if unitless_how_much(last_msg):
         user_prompt += f"\n\n{HOW_MUCH_NOTE}"
+    if asks_state_on_date(last_msg):
+        user_prompt += f"\n\n{STATE_ON_DATE_NOTE}"
 
     if client:
         response = client.generate_typed_response(

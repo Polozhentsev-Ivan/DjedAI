@@ -15,6 +15,7 @@ from djedai.analytics.scope import (
     DatasetScopeError,
     parse_read_query,
     quote_catalog_tables,
+    rename_reserved_ctes,
     validate_dataset_query,
 )
 from djedai.config import get_limits
@@ -226,7 +227,7 @@ def run_sql(
             min(max_rows, limits.sql_max_rows) if max_rows is not None else limits.sql_max_rows
         )
         if allowed_tables is not None:
-            sql = quote_catalog_tables(sql, allowed_tables)
+            sql = rename_reserved_ctes(quote_catalog_tables(sql, allowed_tables))
         # 1. ПАРСИМ SQL
         try:
             parsed = parse_read_query(sql)

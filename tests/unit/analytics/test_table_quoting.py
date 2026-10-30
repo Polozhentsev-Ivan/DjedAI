@@ -4,7 +4,7 @@ import duckdb
 import pytest
 
 from djedai.analytics.registry import execute_tool
-from djedai.analytics.scope import quote_catalog_tables
+from djedai.analytics.scope import quote_catalog_tables, rename_reserved_ctes
 
 TABLE = "08_fonovye_zadaniya"
 
@@ -114,3 +114,15 @@ def test_forbidden_function_hint_names_no_sql(connection):
     assert result.error.code == "dataset_scope_violation"
     assert "EXTRACT" in result.error.suggestion
     assert "toDayOfWeek" not in result.error.model_dump_json()
+
+
+def test_cte_named_pivot_is_renamed_and_runs():
+    sql = "WITH a AS (SELECT 1 AS x), pivot AS (SELECT x FROM a) SELECT 'pivot' AS s, x FROM pivot"
+    renamed = rename_reserved_ctes(sql)
+    assert renamed.endswith("FROM pivot_cte") and "'pivot' AS s" in renamed
+    assert duckdb.connect().execute(renamed).fetchall() == [("pivot", 1)]
+
+
+def test_pivot_operator_is_left_alone():
+    sql = "SELECT * FROM t PIVOT (SUM(x) FOR y IN (1, 2))"
+    assert rename_reserved_ctes(sql) == sql

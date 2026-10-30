@@ -51,6 +51,36 @@ def _skip_quoted(sql: str, start: int) -> int:
     return start
 
 
+_RESERVED_CTE = re.compile(r"(?:\bwith|,)\s+(pivot|unpivot)\s+as\s*\(", re.IGNORECASE)
+
+
+def rename_reserved_ctes(sql: str) -> str:
+    """Rename a CTE called ``pivot``: DuckDB rejects it, and models keep writing it.
+
+    Such a query is a syntax error anyway, so the rename cannot change a working one.
+    Literals, comments and quoted identifiers stay intact.
+    """
+    reserved = {match.group(1).casefold() for match in _RESERVED_CTE.finditer(sql)}
+    if not reserved:
+        return sql
+    parts: list[str] = []
+    index = 0
+    while index < len(sql):
+        end = _skip_quoted(sql, index)
+        if end != index:
+            parts.append(sql[index:end])
+            index = end
+        elif word := _WORD.match(sql, index):
+            parts.append(
+                f"{word.group()}_cte" if word.group().casefold() in reserved else word.group()
+            )
+            index = word.end()
+        else:
+            parts.append(sql[index])
+            index += 1
+    return "".join(parts)
+
+
 def quote_catalog_tables(sql: str, allowed_tables: Collection[str]) -> str:
     """Quote catalog tables whose names cannot be written bare (``08_jobs``).
 
