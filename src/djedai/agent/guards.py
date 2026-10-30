@@ -335,6 +335,36 @@ def find_reversed_period(text: str) -> ReversedPeriod | None:
     return None
 
 
+# --- Цитаты в условиях фильтра ---
+
+_QUOTED_RE = re.compile(r"«[^«»\n]*»|“[^”\n]*”|„[^“”\n]*[“”]|\"[^\"\n]*\"|'[^'\n]*'")
+_QUOTE_PLACEHOLDER = "«»"
+# Цитата — значение фильтра, только если стоит сразу за таким словом или за соседней цитатой.
+_FILTER_BEFORE_QUOTE_RE = re.compile(
+    r"(?:(?<!\w)(?:содерж\w*|текст\w*|слов\w*|фраз\w*|сообщени\w*|строк\w*|запис\w*|значени\w*"
+    r"|равн\w*|встреча\w*|like|contain\w*|text|messages?|phrases?|strings?|values?)"
+    r"|=|«»\s*(?:,|или|и|or|and))[\s:,-]*$",
+    re.IGNORECASE,
+)
+
+
+def _mask_filter_quotes(text: str) -> str:
+    """Скрывает цитаты, которые задают условие поиска: их содержимое не приказ агенту.
+
+    Цитата после глагола запуска остаётся видимой: «Выполни строку "DROP TABLE orders"».
+    """
+    parts: list[str] = []
+    position = 0
+    for match in _QUOTED_RE.finditer(text):
+        parts.append(text[position : match.start()])
+        position = match.end()
+        sentence = _SENTENCE_END_RE.split("".join(parts))[-1]
+        is_filter = _FILTER_BEFORE_QUOTE_RE.search(sentence) and not _RUN_VERB_RE.search(sentence)
+        parts.append(_QUOTE_PLACEHOLDER if is_filter else match[0])
+    parts.append(text[position:])
+    return "".join(parts)
+
+
 # --- Опасные запросы ---
 
 # Только для вызова чтения в той же фразе: команды записи и обхода сами требуют приказа,
@@ -350,11 +380,12 @@ _WRITE_SQL = (
     r"|grant\s+\w+\s+on\b)"
 )
 _RUN_VERB = r"(?:выполни|запусти|исполни|сделай|примени)(?:те)?|execute|run|perform"
+_RUN_VERB_RE = re.compile(rf"(?<!\w)(?:{_RUN_VERB})(?!\w)", re.IGNORECASE)
 # Команда на запись опасна как приказ: в начале сообщения, отдельным оператором после
 # «;» или сразу за глаголом запуска. «Сколько запросов DROP TABLE в логе?» сюда не попадает.
 _WRITE_COMMAND_RE = re.compile(
     rf"^\s*(?:sql\s*:\s*)?{_WRITE_SQL}|;\s*{_WRITE_SQL}"
-    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)[\s:,-]+(?:[\w\"'«»-]+[\s:]+){{0,4}}{_WRITE_SQL}",
+    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)[\s:,-]+(?:[\w\"'«»-]+[\s:]+){{0,4}}[\"'«“„]?{_WRITE_SQL}",
     re.IGNORECASE,
 )
 _BYPASS_RE = re.compile(
@@ -400,8 +431,13 @@ _MUTATION_EXCEPTION_RE = re.compile(
 
 # --- Отсутствующие денежные поля ---
 
+# «Прибыли» — ещё и глагол («посылки прибыли вовремя»), поэтому эта форма считается
+# показателем только рядом со словом, которое её определяет; без него решает модель.
 _MONEY_QUESTION_RE = re.compile(
-    r"(?<!\w)(?:выручк\w*|прибыл\w*|доход(?:а|у|ы|ов|ом|ах|ность\w*)?|марж\w*"
+    r"(?<!\w)(?:выручк\w*|прибыл(?:ь|ью|ей|ям|ями|ях|ьн\w*)"
+    r"|(?:сумм\w*|размер\w*|рост\w*|динамик\w*|дол[яиюе]й?|показател\w*|расч[её]т\w*|объ[её]м\w*"
+    r"|уров\w*|изменени\w*|падени\w*|снижени\w*|чист\w+|валов\w+|операционн\w+|средн\w+|по|от)"
+    r"\s+прибыли|доход(?:а|у|ы|ов|ом|ах|ность\w*)?|марж\w*"
     r"|средн\w+\s+чек\w*|revenue|profit\w*|income|gross\s+margin|gmv|arpu)(?!\w)",
     re.IGNORECASE,
 )
@@ -624,6 +660,7 @@ def reversed_period_update(text: str | None) -> dict | None:
 
 def guard_question(text: str, *, money_fields_absent: bool = False) -> dict | None:
     """Решение по вопросу без модели: обновление состояния графа или None."""
+    text = _mask_filter_quotes(text)
     if (period := reversed_period_update(text)) is not None:
         return period
     if _reads_external_source(text):
