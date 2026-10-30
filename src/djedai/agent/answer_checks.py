@@ -67,27 +67,36 @@ def _parse(text: str) -> Decimal | None:
         return None
 
 
+def _numbers_in(value: object) -> Iterable[Decimal]:
+    """Все числа значения любой вложенности, включая написанные в тексте факта."""
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _numbers_in(item)
+    elif isinstance(value, str):
+        for match in _NUMBER_RE.finditer(value):
+            if (number := _parse(match[0])) is not None:
+                yield number
+    elif (number := _number(value)) is not None:
+        yield number
+
+
 def _known_values(entries: list[dict]) -> list[Decimal]:
-    """Числа строк и фактов результатов, а также суммы колонок для итоговых строк."""
+    """Числа результатов, а также суммы колонок для итоговых строк."""
     known: list[Decimal] = []
     for entry in entries:
-        for fact in entry.get("facts") or []:
-            values = fact.get("values") if isinstance(fact, dict) else None
-            for value in (values or {}).values():
-                if (number := _number(value)) is not None:
-                    known.append(number)
+        known.extend(_numbers_in(entry.get("facts")))
+        known.extend(_numbers_in(entry.get("durations")))
         data = entry.get("data") or {}
-        rows = data.get("rows") or []
+        known.extend(_numbers_in(data.get("rows")))
+        known.extend(_numbers_in(data.get("row_count")))
         totals: dict[int, Decimal] = {}
-        for row in rows:
+        for row in data.get("rows") or []:
             for index, value in enumerate(row):
                 if (number := _number(value)) is not None:
-                    known.append(number)
                     totals[index] = totals.get(index, Decimal(0)) + number
         known.extend(totals.values())
-        known.extend(Decimal(str(hint["hours"])) for hint in entry.get("durations") or [])
-        if data.get("row_count") is not None and (number := _number(data["row_count"])):
-            known.append(number)
     return known
 
 

@@ -32,6 +32,11 @@ def test_decimal_values_serialized_as_strings_are_data():
     assert unsupported_numbers("851 088 269,49 руб., всего 1 179 264 074,28 руб.", entries) == []
 
 
+def test_numbers_in_fact_text_and_nested_values_are_data():
+    entries = [{"facts": [{"text": "Выручка 1200", "values": {"a": {"b": [5290.5]}}}]}]
+    assert unsupported_numbers("Выручка 1200, сумма 5 290,5.", entries) == []
+
+
 def test_column_total_is_supported():
     assert unsupported_numbers("Всего 7 159 заявок", ENTRIES) == []
 
