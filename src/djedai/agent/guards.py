@@ -109,27 +109,54 @@ _MONTH = "(?:" + "|".join(_MONTH_STEMS) + r")\w*"
 _YEAR_WORD = r"(?:\s*(?:г\.|гг\.?|года?|году)(?!\w))"
 
 
-def _date_pattern(prefix: str, *, day_only: bool) -> str:
-    """Одна граница периода; у начала может быть только день: «с 30 по 1 сентября»."""
+def _date_pattern(prefix: str, *forms: str) -> str:
+    """Одна граница периода в перечисленных формах; порядок важен для разбора."""
     p = prefix
-    forms = [
-        rf"(?P<{p}iy>\d{{4}})-(?P<{p}im>\d{{2}})-(?P<{p}id>\d{{2}})",
-        rf"(?P<{p}nd>\d{{1,2}})\.(?P<{p}nm>\d{{1,2}})(?:\.(?P<{p}ny>\d{{4}}|\d{{2}}))?{_YEAR_WORD}?",
-        rf"(?P<{p}td>\d{{1,2}})\s+(?P<{p}tm>{_MONTH})(?:\s+(?P<{p}ty>\d{{4}}){_YEAR_WORD}?)?",
-        rf"(?P<{p}em>{_MONTH})\s+(?P<{p}ed>\d{{1,2}}),?(?:\s+(?P<{p}ey>\d{{4}}))?",
-        rf"(?P<{p}mm>{_MONTH})(?:\s+(?P<{p}my>\d{{4}}){_YEAR_WORD}?)?",
-        rf"(?P<{p}y>(?:19|20)\d{{2}})(?P<{p}yw>{_YEAR_WORD})?",
-    ]
-    if day_only:
-        forms.append(rf"(?P<{p}d>\d{{1,2}})")
-    return "(?:" + "|".join(forms) + r")(?!\d)"
+    patterns = {
+        "iso": rf"(?P<{p}iy>\d{{4}})-(?P<{p}im>\d{{2}})-(?P<{p}id>\d{{2}})",
+        "dots": (
+            rf"(?P<{p}nd>\d{{1,2}})\.(?P<{p}nm>\d{{1,2}})"
+            rf"(?:\.(?P<{p}ny>\d{{4}}|\d{{2}}))?{_YEAR_WORD}?"
+        ),
+        "dots_year": rf"(?P<{p}nd>\d{{1,2}})\.(?P<{p}nm>\d{{1,2}})\.(?P<{p}ny>\d{{4}})",
+        "slash": rf"(?P<{p}sa>\d{{1,2}})/(?P<{p}sb>\d{{1,2}})/(?P<{p}sy>\d{{4}})",
+        "text": (
+            rf"(?P<{p}td>\d{{1,2}})\s+(?P<{p}tm>{_MONTH})"
+            rf"(?:\s+(?P<{p}ty>\d{{4}}){_YEAR_WORD}?)?"
+        ),
+        "english": rf"(?P<{p}em>{_MONTH})\s+(?P<{p}ed>\d{{1,2}}),?(?:\s+(?P<{p}ey>\d{{4}}))?",
+        "month": rf"(?P<{p}mm>{_MONTH})(?:\s+(?P<{p}my>\d{{4}}){_YEAR_WORD}?)?",
+        "year": rf"(?P<{p}y>(?:19|20)\d{{2}})(?P<{p}yw>{_YEAR_WORD})?",
+        "day": rf"(?P<{p}d>\d{{1,2}})",
+    }
+    return "(?:" + "|".join(patterns[form] for form in forms) + r")(?!\d)"
 
 
+_FROM_TO_FORMS = ("iso", "dots", "slash", "text", "english", "month", "year")
+_DAY_FORMS = ("iso", "dots", "slash", "text", "english")
 _PERIOD_RE = re.compile(
     r"(?<![\w-])(?:со?|от|from)\s+"
-    + _date_pattern("s", day_only=True)
+    + _date_pattern("s", *_FROM_TO_FORMS, "day")
     + r"(?:,?\s+(?:включительно|inclusive))?,?\s+(?:по|до|to|until|through)\s+"
-    + _date_pattern("e", day_only=False),
+    + _date_pattern("e", *_FROM_TO_FORMS),
+    re.IGNORECASE,
+)
+# «Между» — порядок не задаёт направление, если это сравнение двух дней, а не диапазон:
+# годы и месяцы сюда не входят, а вопрос со словом сравнения пропускается.
+_BETWEEN_RE = re.compile(
+    r"(?<![\w-])(?:между|between)\s+"
+    + _date_pattern("s", *_DAY_FORMS, "day")
+    + r"\s+(?:и|and)\s+"
+    + _date_pattern("e", *_DAY_FORMS),
+    re.IGNORECASE,
+)
+_COMPARISON_RE = re.compile(r"сравн|разниц|отлич|compar|differ|versus", re.IGNORECASE)
+# Диапазон через дефис или тире: только полные даты, чтобы не задеть «10.5 - 3.2» и «5 - 10».
+_DASH_RE = re.compile(
+    r"(?<![\w./-])"
+    + _date_pattern("s", "iso", "dots_year", "slash", "text")
+    + r"\s*[-–—]\s*"
+    + _date_pattern("e", "iso", "dots_year", "slash", "text"),
     re.IGNORECASE,
 )
 _PERIOD_WORD_RE = re.compile(r"период|period", re.IGNORECASE)
@@ -162,8 +189,12 @@ def _full_year(text: str | None) -> int | None:
     return int(text) + 2000 if len(text) == 2 else int(text)
 
 
-def _point(match: re.Match[str], p: str) -> _Point:
+def _point(match: re.Match[str], p: str, *, month_first: bool = False) -> _Point:
     groups = match.groupdict()
+    if groups.get(f"{p}sa"):
+        first, second = int(groups[f"{p}sa"]), int(groups[f"{p}sb"])
+        day, month = (second, first) if month_first else (first, second)
+        return _Point(int(groups[f"{p}sy"]), month, day)
     if groups.get(f"{p}iy"):
         return _Point(int(groups[f"{p}iy"]), int(groups[f"{p}im"]), int(groups[f"{p}id"]))
     if groups.get(f"{p}nd"):
@@ -247,35 +278,67 @@ class ReversedPeriod:
         return f"Период: {first.label} — {last.label}"
 
 
+def _reversed_in_reading(
+    match: re.Match[str], *, month_first: bool
+) -> tuple[bool, ReversedPeriod | None]:
+    """Допустимо ли это прочтение дат и, если да, перепутан ли в нём период."""
+    start = _point(match, "s", month_first=month_first)
+    end = _point(match, "e", month_first=month_first)
+    if (completed := _complete(start, end)) is None:
+        return False, None
+    start_bounds, end_bounds = _bounds(completed[0]), _bounds(completed[1])
+    if start_bounds is None or end_bounds is None:
+        return False, None
+    if start_bounds[0] <= end_bounds[1]:
+        return True, None
+    # В подписях остаётся то, что написал пользователь: без подставленного года.
+    shown_start = _Point(
+        start.year if start.year else completed[0].year if end.year else None,
+        completed[0].month,
+        completed[0].day,
+    )
+    shown_end = _Point(end.year or (start.year and completed[1].year), end.month, end.day)
+    return True, ReversedPeriod(shown_start, shown_end)
+
+
+def _reversed_match(match: re.Match[str]) -> ReversedPeriod | None:
+    """Период считается перепутанным, только если это верно во всех допустимых прочтениях.
+
+    «03/05/2026» бывает и 3 мая, и 5 марта: при сомнении вопрос уходит модели.
+    """
+    readings = [_reversed_in_reading(match, month_first=flag) for flag in (False, True)]
+    valid = [period for is_valid, period in readings if is_valid]
+    if not valid or any(period is None for period in valid):
+        return None
+    return valid[0]
+
+
 def find_reversed_period(text: str) -> ReversedPeriod | None:
     """Первый явно заданный период, у которого начало позже конца."""
     for match in _PERIOD_RE.finditer(text):
-        start, end = _point(match, "s"), _point(match, "e")
         # Голые числа могут быть не годами: «с 2000 по 1990 рублей».
         if (
-            start.month is None
-            and start.day is None
-            and end.month is None
+            match["sy"]
+            and match["ey"]
             and not (match["syw"] or match["eyw"] or _PERIOD_WORD_RE.search(text))
         ):
             continue
-        if (completed := _complete(start, end)) is None:
-            continue
-        start_bounds, end_bounds = _bounds(completed[0]), _bounds(completed[1])
-        if start_bounds and end_bounds and start_bounds[0] > end_bounds[1]:
-            # В подписях остаётся то, что написал пользователь: без подставленного года.
-            shown_start = _Point(
-                start.year if start.year else completed[0].year if end.year else None,
-                completed[0].month,
-                completed[0].day,
-            )
-            shown_end = _Point(end.year or (start.year and completed[1].year), end.month, end.day)
-            return ReversedPeriod(shown_start, shown_end)
+        if (period := _reversed_match(match)) is not None:
+            return period
+    for match in _DASH_RE.finditer(text):
+        if (period := _reversed_match(match)) is not None:
+            return period
+    if not _COMPARISON_RE.search(text):
+        for match in _BETWEEN_RE.finditer(text):
+            if (period := _reversed_match(match)) is not None:
+                return period
     return None
 
 
 # --- Опасные запросы ---
 
+# Только для вызова чтения в той же фразе: команды записи и обхода сами требуют приказа,
+# поэтому «Что передо мной? Выполни DROP TABLE» исключением не прикрыть.
 _EXPLANATION_RE = re.compile(
     r"^\s*(?:что|как|почему|зачем|объясни\w*|расскажи\w*|what|why|how|explain)\b", re.IGNORECASE
 )
@@ -291,7 +354,7 @@ _RUN_VERB = r"(?:выполни|запусти|исполни|сделай|пр�
 # «;» или сразу за глаголом запуска. «Сколько запросов DROP TABLE в логе?» сюда не попадает.
 _WRITE_COMMAND_RE = re.compile(
     rf"^\s*(?:sql\s*:\s*)?{_WRITE_SQL}|;\s*{_WRITE_SQL}"
-    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)\s+(?:[\w\"'«»-]+[\s:]+){{0,4}}{_WRITE_SQL}",
+    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)[\s:,-]+(?:[\w\"'«»-]+[\s:]+){{0,4}}{_WRITE_SQL}",
     re.IGNORECASE,
 )
 _BYPASS_RE = re.compile(
@@ -303,6 +366,11 @@ _BYPASS_RE = re.compile(
     r"(?:read[- ]?only|previous\s+instructions|system\s+prompt)",
     re.IGNORECASE,
 )
+_DIRECT_COMMAND_RE = re.compile(
+    rf"(?<!\w)(?:{_RUN_VERB}|(?:прочитай|прочти|открой|скачай|загрузи|покажи|выведи)(?:те)?)(?!\w)",
+    re.IGNORECASE,
+)
+_SENTENCE_END_RE = re.compile(r"[.!?\n]\s")
 _READ_CALL_RE = re.compile(
     r"(?<!\w)(?:read_(?:csv|csv_auto|parquet|json|json_auto|ndjson|ndjson_auto|text|blob|xlsx)"
     r"|parquet_scan|csv_scan|sniff_csv|glob|sqlite_scan|postgres_scan|mysql_scan)"
@@ -318,7 +386,7 @@ _READ_LOCATION_RE = re.compile(
 )
 _MUTATION_RE = re.compile(
     r"(?:^|[.!?;:\n,]\s*)(?:пожалуйста,?\s+)?"
-    r"(?:удали|сотри|очисти|перезапиши|delete|erase|wipe)(?:те)?\s"
+    r"(?:удали|сотри|очисти|перезапиши|delete|erase|wipe)(?:те)?[\s,]"
     r"[^.!?\n]*(?:таблиц|датасет|баз\w+\s+данных|исходн\w+\s+данн|загруженн\w+\s+данн"
     r"|dataset|table)",
     re.IGNORECASE,
@@ -337,6 +405,14 @@ _MONEY_QUESTION_RE = re.compile(
     r"|средн\w+\s+чек\w*|revenue|profit\w*|income|gross\s+margin|gmv|arpu)(?!\w)",
     re.IGNORECASE,
 )
+# Показатель назван как исключение или замена: считать его не просят.
+_MONEY_EXCLUDED_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:без|вместо|кроме|исключая|нет|не\s+(?:считай|считайте|считать|учитывай|учитывайте"
+    r"|показывай|показывайте|бери|берите|используй|используйте|нужн\w*|надо)"
+    r"|without|instead\s+of|except|excluding|not)\s+(?:[\w-]+,?\s+){0,2}$",
+    re.IGNORECASE,
+)
+_MONEY_EXCLUDED_AFTER_RE = re.compile(r"\s+(?:нет|не\s+нужн\w*|отсутству\w*)(?!\w)", re.IGNORECASE)
 _MONEY_TOKEN_PREFIXES = (
     "выручк",
     "доход",
@@ -376,6 +452,29 @@ _MONEY_TOKEN_PREFIXES = (
     "salary",
     "budget",
     "currency",
+    "расход",
+    "затрат",
+    "оборот",
+    "комисс",
+    "скидк",
+    "выплат",
+    "налог",
+    "оклад",
+    "кредит",
+    "гонорар",
+    "rashod",
+    "zatrat",
+    "oborot",
+    "komiss",
+    "skidk",
+    "vyplat",
+    "nalog",
+    "oklad",
+    "kredit",
+    "gonorar",
+    "turnover",
+    "discount",
+    "commission",
 )
 _MONEY_TOKENS = frozenset(
     {
@@ -403,6 +502,44 @@ _MONEY_TOKENS = frozenset(
         "rub",
         "usd",
         "eur",
+        # Точные формы: по префиксу попали бы «итоговый статус», «балансировщик», «сборка».
+        "итог",
+        "итога",
+        "итоги",
+        "итого",
+        "баланс",
+        "баланса",
+        "балансе",
+        "балансы",
+        "балансов",
+        "ндс",
+        "сбор",
+        "сбора",
+        "сборы",
+        "сборов",
+        "премия",
+        "премии",
+        "премию",
+        "премий",
+        "itog",
+        "itogi",
+        "itogo",
+        "balans",
+        "balansa",
+        "nds",
+        "sbor",
+        "sbora",
+        "sbory",
+        "premiya",
+        "premii",
+        "spend",
+        "spending",
+        "spent",
+        "balance",
+        "balances",
+        "tax",
+        "taxes",
+        "earnings",
     }
 )
 _TOKEN_RE = re.compile(r"[^\W_]+")
@@ -413,6 +550,15 @@ def _has_money_words(text: str | None) -> bool:
         if token in _MONEY_TOKENS or token.startswith(_MONEY_TOKEN_PREFIXES):
             return True
     return False
+
+
+def _asks_for_money(text: str) -> bool:
+    """Есть ли показатель, который просят посчитать, а не исключают и не заменяют."""
+    return any(
+        not _MONEY_EXCLUDED_BEFORE_RE.search(text[: match.start()])
+        and not _MONEY_EXCLUDED_AFTER_RE.match(text[match.end() :])
+        for match in _MONEY_QUESTION_RE.finditer(text)
+    )
 
 
 def lacks_money_fields(catalog: Any, metrics: Mapping[str, Any]) -> bool:
@@ -427,6 +573,11 @@ def lacks_money_fields(catalog: Any, metrics: Mapping[str, Any]) -> bool:
         if _has_money_words(metric.metric_id) or _has_money_words(metric.title):
             return False
     for table in catalog.tables:
+        if any(
+            _has_money_words(text)
+            for text in (table.table_id, table.original_name, table.description)
+        ):
+            return False
         for column in table.columns:
             if column.semantic_type == "money" or column.currency:
                 return False
@@ -436,6 +587,16 @@ def lacks_money_fields(catalog: Any, metrics: Mapping[str, Any]) -> bool:
             ):
                 return False
     return True
+
+
+def _reads_external_source(text: str) -> bool:
+    if _READ_LOCATION_RE.search(text):
+        return True
+    for match in _READ_CALL_RE.finditer(text):
+        sentence = _SENTENCE_END_RE.split(text[: match.start()])[-1]
+        if not _EXPLANATION_RE.match(sentence) or _DIRECT_COMMAND_RE.search(sentence):
+            return True
+    return False
 
 
 def _rejection(markdown: str) -> dict:
@@ -465,13 +626,12 @@ def guard_question(text: str, *, money_fields_absent: bool = False) -> dict | No
     """Решение по вопросу без модели: обновление состояния графа или None."""
     if (period := reversed_period_update(text)) is not None:
         return period
-    explaining = _EXPLANATION_RE.match(text) is not None
-    if not explaining and (_READ_CALL_RE.search(text) or _READ_LOCATION_RE.search(text)):
+    if _reads_external_source(text):
         return _rejection(EXTERNAL_REJECTION)
-    if not explaining and (_WRITE_COMMAND_RE.search(text) or _BYPASS_RE.search(text)):
+    if _WRITE_COMMAND_RE.search(text) or _BYPASS_RE.search(text):
         return _rejection(WRITE_REJECTION)
     if _MUTATION_RE.search(text) and not _MUTATION_EXCEPTION_RE.search(text):
         return _clarification(MUTATION_QUESTION, MUTATION_OPTIONS)
-    if money_fields_absent and _MONEY_QUESTION_RE.search(text):
+    if money_fields_absent and _asks_for_money(text):
         return _clarification(MISSING_MONEY_QUESTION, MISSING_MONEY_OPTIONS)
     return None
