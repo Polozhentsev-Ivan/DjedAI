@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from djedai.agent.diagnostics import invalid_plan_step
+from djedai.analytics.registry import TOOLS_REGISTRY
 from djedai.contracts.agent import (
     Block,
     DashboardPlanResponse,
@@ -26,6 +30,8 @@ from djedai.contracts.tool_result import ToolError, ToolResult
 DASHBOARD_MIN_WIDGETS = 3
 DASHBOARD_MAX_WIDGETS = 8
 DASHBOARD_MAX_WIDGET_STEPS = 5
+
+_TOOL_PARAMETERS = {tool.name: tool.parameters_model for tool in TOOLS_REGISTRY}
 
 _NUMERIC_TYPES = {
     "INT",
@@ -62,6 +68,31 @@ class WidgetExecution:
     def is_successful(self) -> bool:
         output = self.output
         return self.error is None and output is not None and output.status in ("ok", "empty")
+
+
+def _check_step_args(step: DashboardStepPlan, *, widget_index: int, step_index: int) -> None:
+    """Отклоняет шаг, который упал бы при выполнении; значения аргументов не попадают в текст."""
+    parameters = _TOOL_PARAMETERS.get(step.tool)
+    if parameters is None:
+        return
+    try:
+        parameters.model_validate(step.args)
+    except ValidationError as exc:
+        invalid_plan_step(step.tool, step.model_fields_set, step.args)
+        fields = sorted(
+            {
+                str(error["loc"][0])
+                for error in exc.errors(
+                    include_url=False, include_context=False, include_input=False
+                )
+                if error["loc"] and error["loc"][0] in parameters.model_fields
+            }
+        )
+        detail = f": {', '.join(fields)}" if fields else ""
+        raise ValueError(
+            f"Шаг {step_index} виджета {widget_index} содержит неверные параметры "
+            f"инструмента {step.tool}{detail}"
+        ) from None
 
 
 def normalize_dashboard_plan(
@@ -105,6 +136,7 @@ def normalize_dashboard_plan(
                     f"Шаг {step.step_id} ссылается на неизвестный или последующий "
                     f"шаг {step.source_step_id}"
                 )
+            _check_step_args(step, widget_index=widget_index, step_index=step_index)
             new_id = f"step_{step_index}"
             steps.append(
                 DashboardStepPlan(

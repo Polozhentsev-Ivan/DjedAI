@@ -11,7 +11,12 @@ from sqlglot import exp
 
 from djedai.analytics.metrics import MetricContext, MetricError, metric_guard
 from djedai.analytics.queries import check_budget, check_dataset_table, execute_dataset_query
-from djedai.analytics.scope import DatasetScopeError, parse_read_query, validate_dataset_query
+from djedai.analytics.scope import (
+    DatasetScopeError,
+    parse_read_query,
+    quote_catalog_tables,
+    validate_dataset_query,
+)
 from djedai.config import get_limits
 from djedai.contracts.tool_result import (
     ChartHint,
@@ -90,6 +95,7 @@ _FREQ_MIN_SECONDS = {
     "year": 365 * 86_400,
 }
 _MAX_CALENDAR_BUCKETS = 200_000
+_SCOPE_HINT_TABLES = 10
 _ANOMALY_METHODS = {"iqr", "zscore", "mad", "stl-residual"}
 _DEFAULT_THRESHOLDS = {
     "iqr": 1.5,
@@ -185,6 +191,17 @@ def _cohens_d_label(d: float) -> str:
     return "large"
 
 
+def _scope_suggestion(error: Exception, allowed_tables: Collection[str]) -> str:
+    """Подсказка без текста ошибки: только имена таблиц, уже известные модели из каталога."""
+    if isinstance(error, DatasetScopeError) and "Функция" in str(error):
+        return (
+            "Функция недоступна. Используйте стандартные функции SQL и DuckDB, "
+            "например EXTRACT, date_trunc, COUNT, SUM."
+        )
+    tables = ", ".join(_quote_id(name) for name in sorted(allowed_tables)[:_SCOPE_HINT_TABLES])
+    return f"Используйте только таблицы каталога: {tables}."
+
+
 def run_sql(
     sql: str,
     max_rows: int | None = None,
@@ -208,6 +225,8 @@ def run_sql(
         max_rows = (
             min(max_rows, limits.sql_max_rows) if max_rows is not None else limits.sql_max_rows
         )
+        if allowed_tables is not None:
+            sql = quote_catalog_tables(sql, allowed_tables)
         # 1. ПАРСИМ SQL
         try:
             parsed = parse_read_query(sql)
@@ -243,13 +262,14 @@ def run_sql(
         if allowed_tables is not None:
             try:
                 validate_dataset_query(parsed, allowed_tables)
-            except (DatasetScopeError, sqlglot.errors.OptimizeError):
+            except (DatasetScopeError, sqlglot.errors.OptimizeError) as e:
                 return ToolResult(
                     result_id=str(uuid.uuid4()),
                     status="error",
                     error=ToolError(
                         code="dataset_scope_violation",
                         message="Запрос выходит за область выбранного датасета.",
+                        suggestion=_scope_suggestion(e, allowed_tables),
                     ),
                 )
 
