@@ -1380,3 +1380,23 @@ def test_no_golden_case_is_skipped_except_input_validation():
         total += len(expect["must_explain"]) + len(expect["must_not_claim"])
         assert not _case_skip_reason(item) or expect["outcome"] == "input_error"
     assert total == 203
+
+
+def test_timed_out_turn_is_never_automated_passed():
+    prepared = state(result([[1]], columns=["n"]), "Ответ 1")
+
+    def invoke(*_args, **_kwargs):
+        raise TurnTimeout
+
+    graph = SimpleNamespace(
+        invoke=invoke, get_state=lambda _config: SimpleNamespace(values=prepared)
+    )
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation", tables=[]),
+        load_catalog=None,
+        dispatch=None,
+    )
+    report = process_case(case(), {}, None, graph, dataset)
+    assert report["status"] == "failed"
+    assert report["automated_status"] == "failed"
+    assert report["error_type"] == "TurnTimeout"

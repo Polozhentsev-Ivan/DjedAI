@@ -1531,7 +1531,7 @@ def process_case(
                 {
                     "id": dependency_id,
                     "status": "failed",
-                    "automated_status": details.get("automated_status", "failed"),
+                    "automated_status": "failed",
                     "semantic_status": details.get("semantic_status", "failed"),
                     **details,
                     "issues": [f"Graph execution failed: {error}"],
@@ -1596,7 +1596,7 @@ def process_case(
             **details,
             "id": case_id,
             "status": "failed",
-            "automated_status": details.get("automated_status", "failed"),
+            "automated_status": "failed",  # A partial checkpoint is not a finished turn.
             "semantic_status": details.get("semantic_status", "failed"),
             "duration_seconds": round(time.perf_counter() - start_time, 2),
             "total_duration_seconds": round(time.perf_counter() - overall_start, 2),
@@ -1718,6 +1718,7 @@ def run_eval(
             "semantic_failed": 0,
             "semantic_partial": 0,
             "semantic_not_evaluated": 0,
+            "timed_out": 0,
             "rubrics_passed": 0,
             "rubrics_failed": 0,
             "rubrics_not_evaluated": 0,
@@ -1794,6 +1795,8 @@ def run_eval(
                     for axis in ("automated", "semantic"):
                         if axis_status := result.get(f"{axis}_status"):
                             report["summary"][f"{axis}_{axis_status}"] += 1
+                    if result.get("error_type") == "TurnTimeout":
+                        report["summary"]["timed_out"] += 1
                     for rubric in result.get("semantic_rubrics") or []:
                         report["summary"][f"rubrics_{rubric['status']}"] += 1
                     report["summary"]["pending"] -= 1
