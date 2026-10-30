@@ -67,9 +67,15 @@ def _parse(text: str) -> Decimal | None:
         return None
 
 
+def _is_total_row(row: list[object]) -> bool:
+    """Строка ROLLUP: группы пусты, есть только числа. Прибавить её — посчитать итог вдвое."""
+    groups = [value for value in row if _number(value) is None]
+    return len(groups) > 0 and all(value is None for value in groups)
+
+
 def column_totals(columns: list[str], rows: list[list[object]]) -> dict[str, int | float]:
     """Суммы числовых колонок: складывать столбец в уме модель может с ошибкой на порядок."""
-    if len(rows) < 2:
+    if len(rows) < 2 or any(_is_total_row(row) for row in rows):
         return {}
     totals: dict[str, int | float] = {}
     for index, name in enumerate(columns):

@@ -45,6 +45,15 @@ def test_column_totals_sum_numbers_and_decimal_strings_exactly():
     assert totals == {"n": 5157, "amount": 2007280012.82}
 
 
+def test_result_with_a_rollup_row_is_not_totalled_twice():
+    rows = [["a", 3, "1.50"], ["b", 4, "2.50"], [None, 7, "4.00"]]
+    assert column_totals(["dep", "n", "amount"], rows) == {}
+
+
+def test_empty_measure_is_not_a_total_row():
+    assert column_totals(["dep", "n"], [["a", None], ["b", 4]]) == {"n": 4}
+
+
 def test_single_row_has_no_totals():
     assert column_totals(["n"], [[1]]) == {}
 
