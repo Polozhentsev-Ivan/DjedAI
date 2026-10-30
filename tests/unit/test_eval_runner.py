@@ -406,7 +406,7 @@ def test_run_eval_skips_unsupported(mock_yaml_load, mock_build_graph, tmp_path):
         {
             "id": "unsupported_case",
             "dataset": "ds_1",
-            "expect": {"requirements": ["dashboards"]},
+            "expect": {"outcome": "answer", "requirements": ["unsupported_custom_feature"]},
         }
     ]
     dummy_yaml = tmp_path / "dummy.yaml"
@@ -419,6 +419,12 @@ def test_run_eval_skips_unsupported(mock_yaml_load, mock_build_graph, tmp_path):
     assert report["summary"]["skipped"] == 1
     assert report["summary"]["total"] == 0
     assert report["cases"][0]["status"] == "skipped"
+
+
+def test_supported_requirements_include_charts_dashboards_correlation_forecast():
+    from scripts.eval_runner import SUPPORTED_REQUIREMENTS
+
+    assert {"charts", "dashboards", "correlation", "forecast"}.issubset(SUPPORTED_REQUIREMENTS)
 
 
 @patch("scripts.eval_runner.build_agent_graph")
