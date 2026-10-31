@@ -387,7 +387,7 @@ def _without_calculation_constants(text: str) -> str:
     )
 
 
-def _without_verified_formulas(text: str, report: Any, results: Sequence[Any]) -> str:
+def _without_runtime_calculations(text: str, report: Any, results: Sequence[Any]) -> str:
     """Keep runtime-proven arithmetic out of the independent scalar lookup.
 
     Only the exact verified expression is exempt: its SQL-backed constants do
@@ -396,8 +396,29 @@ def _without_verified_formulas(text: str, report: Any, results: Sequence[Any]) -
     if _field(report, "status") not in {"verified", "corrected"}:
         return text
     current_ids = {_field(item, "result_id") for item in results}
-    scoped_ids = current_ids & set(_field(report, "result_ids", []) or [])
+    report_ids = set(_field(report, "result_ids", []) or [])
+    if not report_ids or not report_ids <= current_ids:
+        return text
+    scoped_ids = current_ids & report_ids
     for assertion in _field(report, "assertions", []) or []:
+        if (
+            _field(assertion, "kind") == "constant"
+            and _field(assertion, "status") == "ignored"
+            and _field(assertion, "reason_code") == "non_analytical"
+            and _decimal(_field(assertion, "value")) == 100
+        ):
+            source = _field(assertion, "text")
+            if source and source in text:
+                # Only the proven percentage multiplier, never another 100 in
+                # this sentence or elsewhere in the answer.
+                masked = re.sub(
+                    r"(умноженн\w*\s+на\s+)100(?![\d.,])",
+                    r"\g<1>   ",
+                    source,
+                    flags=re.I,
+                )
+                text = text.replace(source, masked)
+            continue
         if _field(assertion, "kind") != "formula" or _field(assertion, "status") != "verified":
             continue
         evidence = _field(assertion, "evidence", []) or []
@@ -426,7 +447,9 @@ def _answer_issues(
     uniq = list(dict.fromkeys(numbers))
 
     constants = set(_claim_numbers(case.get("question") or ""))
-    text = _without_calculation_constants(_without_verified_formulas(text, verification, results))
+    text = _without_calculation_constants(
+        _without_runtime_calculations(text, verification, results)
+    )
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []

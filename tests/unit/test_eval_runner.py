@@ -323,6 +323,50 @@ def test_verified_formula_constants_do_not_authorize_unrelated_measurements(text
     assert "Number 28 in the answer is not backed by tool results" in issues
 
 
+def test_runtime_proven_percent_multiplier_does_not_exempt_an_analytical_count():
+    import duckdb
+
+    from djedai.agent.graph import verify
+    from djedai.analytics.tools import run_sql
+    from djedai.contracts.agent import Block as AnswerBlock
+    from djedai.contracts.agent import Message
+
+    text = (
+        "Рост 62,29 %. Рост рассчитан как разница между выручкой марта и февраля, "
+        "делённая на выручку февраля и умноженная на 100"
+    )
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT (2640589.1392 - 1627110.3466) / 1627110.3466 * 100 AS growth_pct",
+            connection=connection,
+        )
+    report = verify(
+        {
+            "messages": [Message(role="user", content="Какой рост?")],
+            "results": [result],
+            "answer_blocks": [AnswerBlock(type="text", markdown=text)],
+            "compose_retries": 2,
+        },
+        {"configurable": {}},
+    )["verification"]
+    assert report.status == "verified"
+    case = answer_case("percent_multiplier", answer_contains_value={"from_result": True})
+
+    def evaluate(answer, proof=report):
+        return evaluate_case(
+            case,
+            {"results": [result], "verification": proof, "answer_blocks": [Block("text", answer)]},
+        )
+
+    assert evaluate(text)[0] == "passed"
+    assert evaluate(text, None)[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"result_ids": ["foreign"]}))[0] == "failed"
+    assert evaluate(text.replace("умноженная на 100", "Получено 100 заказов"))[0] == "failed"
+    status, issues, _ = evaluate(f"{text}. Всего 100 заказов.")
+    assert status == "failed"
+    assert "Number 100 in the answer is not backed by tool results" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",
