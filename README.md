@@ -73,3 +73,7 @@ docker compose -f compose.yaml -f infra/compose.model-host.yaml up -d --build --
 <a id="запуск-cp1-через-compose"></a>
 
 Запуск из исходников через Docker Compose описан в [руководстве установки](docs/administrator/local-build.md).
+
+## Лицензия
+
+[MIT](LICENSE). Лицензии использованных компонентов — в [отдельной сводке](docs/developer/licenses.md).

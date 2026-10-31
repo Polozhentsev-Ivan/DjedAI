@@ -3,6 +3,7 @@ name = "djedai"
 version = "0.0.0"
 description = "Локальная аналитическая платформа: вопросы к данным на русском языке"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13.16,<3.14"
 dependencies = [
     "pandas==3.0.6",
