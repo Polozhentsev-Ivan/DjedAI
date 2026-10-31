@@ -397,7 +397,7 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
         # Direct rounding check
         found = False
         for n in uniq:
-            if _matches(n):
+            if _matches(n) or (policy == "percent" and abs(n) <= 1 and _matches(n * 100)):
                 found = True
                 break
 
@@ -520,7 +520,8 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
 
         def labelled(line: str, labels=labels) -> bool:
             return any(
-                re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in labels
+                re.search(r"(?<!\w)" + re.escape(label) + r"\w{0,2}(?!\w)", line, re.I)
+                for label in labels
             )
 
         def has_values(values: Sequence[Any], required=reference["values"]) -> bool:

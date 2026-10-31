@@ -1466,6 +1466,18 @@ def _verification_failure(
     return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
 
+def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, list[str]]:
+    """Вопрос и SQL хода: источник условий расчёта, но не значений результата."""
+    parts = []
+    understanding = state.get("understanding")
+    if understanding is not None and understanding.resolved_question:
+        parts.append(understanding.resolved_question)
+    messages = state.get("messages", [])
+    if messages and messages[-1].content:
+        parts.append(messages[-1].content)
+    return "\n".join(parts), [str(entry["query"]) for entry in entries if entry.get("query")]
+
+
 def verify(state: AgentState, config: RunnableConfig) -> dict:
     """Проверяет числа детерминированно, затем независимо уточняет у модели.
 
@@ -1515,7 +1527,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     evidence = build_evidence(results, facts_and_data)
-    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    question, queries = _verification_query(state, facts_and_data)
+    deterministic = verify_numeric_text(
+        draft, evidence, result_ids=result_ids, question=question, sql=queries
+    )
     deterministic_ok = deterministic.status != "failed"
     unsupported = unsupported_numbers(draft, facts_and_data)
     budget = current_budget()
@@ -1553,6 +1568,15 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         VerifyResponse,
         stage="verify",
     )
+
+    # Код уже подтвердил все числа: длинный ответ проверяющей модели не повод их удалять.
+    if response.error_type == "OUTPUT_LIMIT" and deterministic.status == "verified":
+        return {
+            "is_verified": True,
+            "verification": _finished_verification(
+                deterministic, status="verified", rejected=_previous_rejected(state)
+            ),
+        }
 
     if response.status != "success" or not response.data:
         message = (
@@ -1603,7 +1627,9 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     corrected = (v_data.corrected_markdown or "").strip()
     if corrected and corrected != draft:
-        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        corrected_report = verify_numeric_text(
+            corrected, evidence, result_ids=result_ids, question=question, sql=queries
+        )
         if corrected_report.status != "failed":
             new_blocks = _publish_corrected(blocks, corrected)
             issues = [

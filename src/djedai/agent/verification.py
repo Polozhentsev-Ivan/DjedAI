@@ -2072,7 +2072,10 @@ def _value_matches(draft: _Draft, evidence: VerificationEvidence) -> bool:
     if draft.unit == "ratio" and evidence.unit == "percent":
         return _values_equal(claimed * 100, actual, _draft_decimals(draft))
     if draft.unit == "money" or evidence.unit == "money":
-        if draft.unit not in ("money", "unknown") or evidence.unit not in ("money", "unknown"):
+        rub_column = draft.currency == "RUB" and _RUB_LABEL_RE.search(evidence.label or "")
+        if draft.unit not in ("money", "unknown") or (
+            evidence.unit not in ("money", "unknown") and not rub_column
+        ):
             return False
     if draft.unit == "count" and evidence.unit not in ("count", "number", "unknown"):
         return False
@@ -2159,10 +2162,90 @@ def _denominator_reason(draft: _Draft, evidence: VerificationEvidence) -> str | 
     return None
 
 
+# Порог, прямо стоящий перед числом: «не менее чем 100», «порог 100».
+_THRESHOLD_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:(?:не\s+)?(?:менее|более|меньше|больше)(?:\s+чем)?|порог\w*|минимум)\s*$",
+    re.IGNORECASE,
+)
+_DAY_BEFORE_MONTH_RE = re.compile(
+    r"^\s*(?:январ|феврал|март|апрел|ма[яйе]|июн|июл|август|сентябр|октябр|ноябр|декабр)",
+    re.IGNORECASE,
+)
+_RUB_LABEL_RE = re.compile(r"(?:^|[\s_])(?:rub|руб)(?:$|[\s_.])", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _QueryContext:
+    """Что пользователь назвал в вопросе и чем SQL ограничил выборку.
+
+    Контекст подтверждает только условия расчёта: порог и период. Значения
+    результата он подтвердить не может.
+    """
+
+    thresholds: frozenset[Decimal] = frozenset()
+    period_start: date | None = None
+    period_end: date | None = None
+    question_keys: frozenset[str] = frozenset()
+
+    def names_population(self, population: str | None) -> bool:
+        # Граница популяции в тексте размыта: сверяем слово, которое её называет.
+        first = next(iter(_words(population or "")), None)
+        return bool(first) and bool(_label_keys(first)) and _label_keys(first) <= self.question_keys
+
+    def covers(self, period: VerificationPeriod | None) -> bool:
+        if period is None or self.period_start is None or self.period_end is None:
+            return False
+        start, end = _date(period.start), _date(period.end)
+        return bool(start and end and self.period_start <= start and end <= self.period_end)
+
+
+def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryContext:
+    thresholds: set[Decimal] = set()
+    bounds: list[date] = []
+    for text in [question or "", *sql]:
+        claims = _date_claims(text)
+        for claim in claims:
+            bounds += [d for d in (_date(claim.period.start), _date(claim.period.end)) if d]
+    question_text = question or ""
+    spans = [(claim.start, claim.end) for claim in _date_claims(question_text)]
+    for token in _tokens(question_text):
+        inside_date = any(token.start >= start and token.end <= end for start, end in spans)
+        if not inside_date and _year_value(token.value) is None:
+            thresholds.add(token.value * token.scale)
+    return _QueryContext(
+        frozenset(thresholds),
+        min(bounds, default=None),
+        max(bounds, default=None),
+        frozenset(_label_keys(question_text)),
+    )
+
+
+def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
+    """Число ответа пересказывает условие вопроса, а не результат расчёта."""
+    if draft.value is None or draft.currency or draft.unit not in ("unknown", "number"):
+        return False
+    start = draft.text.find(draft.raw_text)
+    if start < 0:
+        return False
+    before, after = draft.text[:start], draft.text[start + len(draft.raw_text) :]
+    value = _canonical(draft.value, draft.scale)
+    if value in context.thresholds and _THRESHOLD_BEFORE_RE.search(before):
+        return True
+    # «31 марта 2025»: день даты, а период проверяется отдельным утверждением.
+    return (
+        draft.value == draft.value.to_integral_value()
+        and 1 <= draft.value <= 31
+        and context.period_start is not None
+        and bool(_DAY_BEFORE_MONTH_RE.match(after))
+    )
+
+
 def _match_quantity(
     draft: _Draft,
     evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
 ) -> tuple[list[VerificationEvidence], str | None]:
+    context = context or _QueryContext()
     candidates = [item for item in evidence if _value_matches(draft, item)]
     if not candidates:
         reason = _unit_reason(draft, evidence)
@@ -2184,6 +2267,10 @@ def _match_quantity(
         labelled = [item for item in candidates if _same_label(draft.label, item.label)]
         if labelled:
             candidates = labelled
+        elif context.period_start is not None and _exact_fractional_cell(draft, candidates):
+            # Имя колонки модели (p90_hours) не обязано совпасть с подписью в ответе.
+            # Дробное значение ячейки одного результата случайно не совпадает.
+            candidates = _exact_fractional_cell(draft, candidates)
         elif any(_same_label(draft.label, item.label) for item in evidence):
             return [], "unrelated_result"
         elif len({item.result_id for item in candidates}) > 1:
@@ -2194,7 +2281,16 @@ def _match_quantity(
             return [], "unrelated_result"
 
     if draft.currency:
-        with_currency = [item for item in candidates if item.currency == draft.currency]
+        with_currency = [
+            item
+            for item in candidates
+            if item.currency == draft.currency
+            or (
+                item.currency is None
+                and draft.currency == "RUB"
+                and _RUB_LABEL_RE.search(item.label or "")
+            )
+        ]
         if not with_currency:
             return [], "currency_mismatch"
         candidates = with_currency
@@ -2203,9 +2299,12 @@ def _match_quantity(
         compatible = [
             item for item in candidates if _population_compatible(draft.population, item.population)
         ]
-        if not compatible:
+        if compatible:
+            candidates = compatible
+        elif not context.names_population(draft.population) or any(
+            item.population for item in candidates
+        ):
             return [], "population_mismatch"
-        candidates = compatible
 
     if draft.period:
         covered = [
@@ -2213,9 +2312,10 @@ def _match_quantity(
             for item in candidates
             if item.period is not None and _period_covered(draft.period, [item.period])
         ]
-        if not covered:
+        if covered:
+            candidates = covered
+        elif not context.covers(draft.period) or any(item.period for item in candidates):
             return [], "period_mismatch"
-        candidates = covered
 
     denominator_reason = next(
         (reason for item in candidates if (reason := _denominator_reason(draft, item))),
@@ -2230,8 +2330,42 @@ def _match_quantity(
     return candidates, None
 
 
+def _exact_fractional_cell(
+    draft: _Draft, candidates: Sequence[VerificationEvidence]
+) -> list[VerificationEvidence]:
+    value = _canonical(draft.value, draft.scale)
+    if value is None or value == value.to_integral_value():
+        return []
+    cells = [
+        item
+        for item in candidates
+        if item.cell_address
+        and not (_aggregate_keys(draft.label) and not _aggregates_agree(draft.label, item.label))
+    ]
+    return cells if len({item.result_id for item in cells}) == 1 else []
+
+
+def _aggregate_keys(label: str | None) -> set[str]:
+    return _label_keys(label) & {
+        "__average__",
+        "__min__",
+        "__max__",
+        "__median__",
+        "__std__",
+        "__variance__",
+        "__total__",
+    }
+
+
+def _aggregates_agree(left: str | None, right: str | None) -> bool:
+    actual = _aggregate_keys(right)
+    return not actual or not _aggregate_keys(left).isdisjoint(actual)
+
+
 def _match_date(
-    draft: _Draft, evidence: Sequence[VerificationEvidence]
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
 ) -> tuple[list[VerificationEvidence], str | None]:
     if draft.period is None:
         return [], "period_mismatch"
@@ -2241,6 +2375,8 @@ def _match_date(
         if item.period is not None and _period_covered(draft.period, [item.period])
     ]
     if not candidates:
+        if context is not None and context.covers(draft.period):
+            return [], None
         return [], "period_mismatch"
     return candidates, None
 
@@ -2258,20 +2394,30 @@ def _accept(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
     draft.evidence = list(evidence)
 
 
-def _resolve_draft(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_draft(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
+) -> None:
     if draft.status == "ignored":
         return
     if draft.kind == "formula":
         _resolve_formula(draft, evidence)
         return
     if draft.kind in ("date", "period"):
-        matched, reason = _match_date(draft, evidence)
+        matched, reason = _match_date(draft, evidence, context)
         if reason:
             _reject(draft, reason)
         else:
             _accept(draft, matched)
         return
-    matched, reason = _match_quantity(draft, evidence)
+    if context is not None and _is_query_condition(draft, context):
+        draft.kind = "constant"
+        draft.status = "ignored"
+        draft.reason_code = "non_analytical"
+        draft.reason = _REASON_TEXT["non_analytical"]
+        return
+    matched, reason = _match_quantity(draft, evidence, context)
     if reason:
         if (
             reason == "number_not_found"
@@ -2542,6 +2688,8 @@ def verify_numeric_text(
     evidence: Sequence[VerificationEvidence],
     *,
     result_ids: Sequence[str] | None = None,
+    question: str | None = None,
+    sql: Sequence[str] = (),
 ) -> VerificationReport:
     """Проверяет числа текста по заранее собранному происхождению.
 
@@ -2559,8 +2707,9 @@ def verify_numeric_text(
     assertions: list[NumericAssertion] = []
     rejected: list[NumericAssertion] = []
     issues: list[VerificationIssue] = []
+    context = _query_context(question, sql) if question or sql else None
     for draft in drafts:
-        _resolve_draft(draft, scoped)
+        _resolve_draft(draft, scoped, context)
         assertion = _assertion(draft, len(assertions))
         assertions.append(assertion)
         if draft.status == "rejected":

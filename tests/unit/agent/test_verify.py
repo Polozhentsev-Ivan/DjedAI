@@ -246,3 +246,34 @@ def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
     assert final["verification"].status == "corrected"
     assert final["answer_blocks"][0].markdown == corrected
     assert final["verification"].rejected_assertions[0].reason_code == "unrelated_result"
+
+
+def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_one():
+    results = [
+        ToolResult(
+            result_id="r_rows",
+            tool="describe_dataset",
+            status="ok",
+            facts=[{"text": "Таблица jobs: 500000 строк", "values": {"row_count": 500000}}],
+        )
+    ]
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type="OUTPUT_LIMIT"
+    )
+    config = {"configurable": {"client": client}}
+
+    def state(text):
+        return {
+            "messages": [Message(role="user", content="Сколько строк?")],
+            "results": results,
+            "answer_blocks": [Block(type="text", markdown=text)],
+            "compose_retries": 2,
+        }
+
+    kept = verify(state("Всего 500 000 строк."), config)
+    assert kept["verification"].status == "verified"
+    assert "answer_blocks" not in kept
+    dropped = verify(state("Всего 500 000 запусков."), config)
+    assert dropped["verification"].status == "failed"
+    assert dropped["terminal_error"] == "OUTPUT_LIMIT"

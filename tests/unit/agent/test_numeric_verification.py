@@ -739,3 +739,65 @@ def test_real_sql_aggregates_preserve_their_meaning() -> None:
             evidence = _evidence(results)
             assert _report(wrong, evidence, results).status == "failed"
             assert _report(correct, evidence, results).status == "verified"
+
+
+def _query_result(sql: str, columns: list[str], rows: list[list]) -> list[ToolResult]:
+    return [
+        ToolResult(
+            result_id="r_query",
+            status="ok",
+            tool="run_sql",
+            sql=sql,
+            data=ToolResultData(columns=columns, rows=rows, row_count=len(rows)),
+        )
+    ]
+
+
+def _checked(text: str, results: list[ToolResult], question: str):
+    return verify_numeric_text(
+        text,
+        _evidence(results),
+        result_ids=[item.result_id for item in results],
+        question=question,
+        sql=[item.sql for item in results],
+    )
+
+
+P90_SQL = (
+    "SELECT team, COUNT(*) AS cnt, quantile_cont(hours, 0.9) AS p90_hours FROM tickets "
+    "WHERE closed >= '2025-03-01' AND closed < '2025-04-01' GROUP BY team HAVING COUNT(*) >= 100"
+)
+P90_RESULTS = _query_result(P90_SQL, ["team", "cnt", "p90_hours"], [["Склад", 4515, 72.49]])
+P90_QUESTION = "У какой группы максимальный перцентиль в марте 2025? Исключи группы менее 100."
+
+
+def test_fractional_cell_period_and_threshold_from_the_query_are_accepted() -> None:
+    text = "Среди групп не менее чем 100 в марте 2025 значение составляет 72,49 часа."
+    assert _checked(text, P90_RESULTS, P90_QUESTION).status == "verified"
+
+
+def test_query_context_does_not_confirm_result_values() -> None:
+    assert _checked("Значение составляет 71,49.", P90_RESULTS, P90_QUESTION).status == "failed"
+    # Порог из вопроса не становится результатом, если не назван условием.
+    assert _checked("Заявок 100.", P90_RESULTS, P90_QUESTION).status == "failed"
+    # Период вне условий запроса не подтверждается.
+    text = "В мае 2025 значение составляет 72,49."
+    assert _checked(text, P90_RESULTS, P90_QUESTION).status == "failed"
+
+
+def test_fractional_cell_keeps_a_conflicting_aggregate_rejected() -> None:
+    results = _query_result("SELECT MAX(x) AS m FROM t WHERE d >= '2025-03-01'", ["m"], [[72.49]])
+    assert _checked("Среднее 72,49.", results, "Какой максимум?").status == "failed"
+    assert _checked("Максимум 72,49.", results, "Какой максимум?").status == "verified"
+
+
+def test_integer_cell_with_another_caption_stays_rejected() -> None:
+    assert _checked("Всего 4 515 заказов.", P90_RESULTS, P90_QUESTION).status == "failed"
+
+
+def test_rub_source_column_confirms_rubles_only() -> None:
+    results = _query_result(
+        "SELECT SUM(amount_rub) AS total FROM t WHERE d <= '2025-03-31'", ["total"], [[1234.5]]
+    )
+    assert _checked("Сумма 1 234,50 руб.", results, "Сколько?").status == "verified"
+    assert _checked("Сумма 1 234,50 USD.", results, "Сколько?").status == "failed"
