@@ -365,7 +365,13 @@ def _reused_results(
     return [], source, [f"Context result '{source}' was not found to verify reuse"]
 
 
-CALCULATION_CONSTANTS = {Decimal(day) for day in (28, 29, 30, 31, 100)}
+# Предложение продолжает мысль о той же группе, а не называет другую.
+ANAPHORIC_SENTENCE_RE = re.compile(
+    r"\s*(?:значение|показатель|величина|перцентиль|рост|он|она|оно|это)(?!\w)", re.I
+)
+CALCULATION_CONSTANT_RE = re.compile(
+    r"(?<![\d.,])(?:2[89]|3[01])(?=\s*(?:дн[яе]\w*|день)(?!\w))|[*×·]\s*100(?![\d.,])", re.I
+)
 
 
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
@@ -378,8 +384,9 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     # Unique values, preserving order (summary facts usually at the end)
     uniq = list(dict.fromkeys(numbers))
 
+    constants = set(_claim_numbers(case.get("question") or ""))
     # Дни месяца и множитель процента пересказывают расчёт, а не его результат.
-    constants = set(_claim_numbers(case.get("question") or "")) | CALCULATION_CONSTANTS
+    text = CALCULATION_CONSTANT_RE.sub(" ", text)
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
@@ -590,7 +597,7 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
         # Единственную группу и её значения можно назвать в соседних предложениях,
         # если следующее не подписано другой группой.
         next_sentence = len(expect.get("answer_rows") or []) == 1 and any(
-            labelled(line) and ":" not in following and states_values(following)
+            labelled(line) and ANAPHORIC_SENTENCE_RE.match(following) and states_values(following)
             for line, following in zip(lines, lines[1:], strict=False)
         )
         if not next_sentence and not any(labelled(line) and states_values(line) for line in lines):
