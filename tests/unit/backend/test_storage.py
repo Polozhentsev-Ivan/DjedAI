@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sqlite3
 import subprocess
@@ -545,16 +546,19 @@ def test_assistant_message_blocks_persistence() -> None:
         assert message_to_chat_message(saved).verification == msg.verification
 
 
-def test_alembic_migrations_lifecycle(tmp_path: Path) -> None:
+def test_alembic_migrations_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Проверяет применение миграций Alembic к пустой БД и откат (upgrade/downgrade)."""
     db_file = tmp_path / "alembic_lifecycle.db"
     db_url = f"sqlite:///{db_file.as_posix()}"
 
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+    application_logger = logging.getLogger("djedai.backend.diagnostics")
+    monkeypatch.setattr(application_logger, "disabled", False)
 
     # 1. Применяем миграции к пустой БД
     command.upgrade(alembic_cfg, "head")
+    assert not application_logger.disabled, "migrations must preserve application diagnostics"
 
     # Проверяем, что таблицы созданы и в них можно писать связанные записи
     test_engine = create_db_engine(db_url)
