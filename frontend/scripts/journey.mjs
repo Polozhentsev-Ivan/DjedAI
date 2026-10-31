@@ -100,6 +100,7 @@ async function source(kind, otherOwner = false) {
 const categoryQuestion = 'Покажи столбчатый график суммы amount по category за январь 2025.';
 async function ask(question) {
   const before = await page.locator('[data-role="assistant"]').count();
+  const verifiesBefore = (await model('/observations')).calls.filter((c) => c.stage === 'VerifyResponse' && c.finished).length;
   await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill(question);
   await page.getByRole('button', { name: 'Отправить', exact: true }).click();
   await expect(page.locator('[data-role="assistant"]')).toHaveCount(before + 1, { timeout: 90_000 });
@@ -110,7 +111,9 @@ async function ask(question) {
   assert(!message.blocks.some((b) => b.type === 'error'), JSON.stringify(message.blocks));
   const chart = message.blocks.find((b) => b.type === 'chart')?.chart;
   assert(chart, JSON.stringify(message.blocks));
-  await expect(page.locator('[data-role="assistant"]').last().getByRole('img')).toBeVisible();
+  await expect(page.locator('[data-role="assistant"]').last().locator('[role="img"]')).toBeVisible();
+  assert.equal(chart.y[0].field, 'total');
+  assert((await model('/observations')).calls.filter((c) => c.stage === 'VerifyResponse' && c.finished).length > verifiesBefore);
   return { chatId, chart };
 }
 async function result(id, rows) {
@@ -143,7 +146,10 @@ async function refresh(id) {
   await expect(page.getByRole('button', { name: 'Обновить данные', exact: true })).toBeEnabled();
   return received.json();
 }
-function check(name) { report.checks.push({ name, phase: values.phase, passed: true }); }
+function check(name) {
+  report.checks.push({ name, phase: values.phase, passed: true });
+  console.log(`PASS ${name}`);
+}
 
 try {
   await login(report.username, values.phase === 'prepare');
@@ -177,7 +183,7 @@ try {
       await page.goto(`/dashboards/${dashboard.dashboard_id}`);
       await page.reload();
       await expect(page.getByRole('heading', { name: 'Дашборд: Сумма по группам' })).toBeVisible();
-      await expect(page.getByRole('img')).toHaveCount(2);
+      await expect(page.locator('[role="img"]')).toHaveCount(2);
       assert.deepEqual(await json(`/api/dashboards/${dashboard.dashboard_id}`), dashboard);
       await page.screenshot({ path: path.join(output, `${kind}-saved.png`), fullPage: true });
       report.sources.push({ kind, dataset_id: datasetId, chat_id: first.chatId, dashboard });
@@ -225,7 +231,7 @@ try {
     const callsBefore = (await model('/observations')).calls.length;
     for (const s of report.sources) {
       await page.goto(`/dashboards/${s.dashboard.dashboard_id}`);
-      await expect(page.getByRole('img')).toHaveCount(2);
+      await expect(page.locator('[role="img"]')).toHaveCount(2);
       assert.deepEqual(await json(`/api/dashboards/${s.dashboard.dashboard_id}`), s.dashboard);
       const updated = await refresh(s.dashboard.dashboard_id);
       for (const [i, widget] of updated.widgets.entries()) {
@@ -253,9 +259,9 @@ try {
     assert.notEqual(updated.widgets[1].result_id, s.refreshed.widgets[1].result_id);
     await result(updated.widgets[1].result_id, [['North', 100], ['South', 200]]);
     const failedCard = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Сумма по группам', exact: true }) });
-    await expect(failedCard.getByRole('img')).toHaveCount(0);
+    await expect(failedCard.locator('[role="img"]')).toHaveCount(0);
     await expect(failedCard.getByText(updated.widgets[0].error.message, { exact: true })).toBeVisible();
-    await expect(page.getByRole('img')).toHaveCount(1);
+    await expect(page.locator('[role="img"]')).toHaveCount(1);
     assert.equal((await model('/observations')).calls.length, callsBefore);
     report.partial_refresh = updated;
     await page.screenshot({ path: path.join(output, 'postgres-partial-failure.png'), fullPage: true });
