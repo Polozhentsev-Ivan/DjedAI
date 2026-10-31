@@ -118,6 +118,15 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.contracts.verification import (
+    NumericAssertion,
+    VerificationDenominator,
+    VerificationEvidence,
+    VerificationIssue,
+    VerificationOperand,
+    VerificationPeriod,
+    VerificationReport,
+)
 
 __all__ = [
     "ConnectRequest",
@@ -164,6 +173,14 @@ __all__ = [
     "ToolResult",
     "ToolResultColumn",
     "ToolResultData",
+    # Проверка числовых утверждений (#167)
+    "NumericAssertion",
+    "VerificationDenominator",
+    "VerificationEvidence",
+    "VerificationIssue",
+    "VerificationOperand",
+    "VerificationPeriod",
+    "VerificationReport",
     # Визуализация
     "Annotation",
     "ChartSpec",

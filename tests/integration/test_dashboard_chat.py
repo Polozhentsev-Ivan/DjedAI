@@ -13,11 +13,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from djedai.agent.client import ModelResponse
+from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.reasoning import REASONING_STAGES
 from djedai.backend import chat_service
 from djedai.backend.app import create_app
 from djedai.backend.config import Settings
-from djedai.backend.db.models import ToolResultModel
+from djedai.backend.db.models import ChatModel, ToolResultModel
 from djedai.backend.db.session import init_db
 from djedai.config import get_limits
 from djedai.contracts.agent import (
@@ -384,3 +385,104 @@ def test_agent_dashboard_is_saved_and_refreshes_without_old_results(
         persisted = restarted.get(f"/api/dashboards/{dashboard_id}").json()
         assert persisted["refreshed_at"] == refreshed["refreshed_at"]
         assert _widget(persisted, "Всего")["result_id"] == refreshed_total["result_id"]
+
+        # Продолжение диалога: "открой созданную панель и обнови её" должно
+        # переиспользовать сохранённый dashboard_id, а не создавать новый дашборд.
+        class ChatRefreshPlanner:
+            def __init__(self) -> None:
+                self.stages: list[str] = []
+
+            def generate_typed_response(
+                self, _system_prompt, _user_prompt, response_model, **kwargs
+            ):
+                stage = kwargs["stage"]
+                self.stages.append(stage)
+                if stage == "understand":
+                    return ModelResponse(
+                        status="success",
+                        data=Understanding(intent="dashboard", dashboard_id=dashboard_id),
+                    )
+                raise AssertionError(f"Unexpected model stage: {stage}")
+
+        chat_planner = ChatRefreshPlanner()
+        monkeypatch.setattr(chat_service, "get_agent_client", lambda: chat_planner)
+        chat_refresh = restarted.post(
+            f"/api/chats/{chat_id}/messages",
+            json={"text": "Открой созданную панель и обнови все её виджеты"},
+        )
+        assert chat_refresh.status_code == 200, chat_refresh.text
+        events = parse_sse(chat_refresh.text)
+        assert not [data for name, data in events if name == "error"], chat_refresh.text
+        blocks = [data for name, data in events if name == "block"]
+        assert chat_planner.stages == ["understand"]
+        assert blocks[-1]["type"] == "dashboard_link"
+        assert blocks[-1]["dashboard_id"] == dashboard_id
+        after_chat_refresh = restarted.get(f"/api/dashboards/{dashboard_id}").json()
+        chat_refresh_result_ids = {widget["result_id"] for widget in after_chat_refresh["widgets"]}
+        assert chat_refresh_result_ids.isdisjoint(new_result_ids)
+        assert all(result_id is not None for result_id in chat_refresh_result_ids)
+
+        with restarted.app.state.session_factory() as db:
+            assert set(db.get(ChatModel, chat_id).focus_result_ids) == chat_refresh_result_ids
+
+    # A new process must restore the refreshed focus and answer a text-only
+    # continuation without a new SQL call, using the updated 420 total.
+    class FollowupPlanner:
+        data_policy = DataTransferPolicy.sharing()
+
+        def __init__(self) -> None:
+            self.stages: list[str] = []
+            self.prompts: dict[str, str] = {}
+
+        def generate_typed_response(self, _system_prompt, user_prompt, response_model, **kwargs):
+            stage = kwargs["stage"]
+            self.stages.append(stage)
+            self.prompts[stage] = _system_prompt + "\n" + user_prompt
+            data = {
+                "understand": {"intent": "data_question"},
+                "plan": {"plan": []},
+                "compose": {"answer_blocks": [{"type": "text", "markdown": "Всего 420."}]},
+                "verify": {"is_valid": True, "corrected_markdown": ""},
+            }[stage]
+            return ModelResponse(status="success", data=response_model.model_validate(data))
+
+    followup = FollowupPlanner()
+    monkeypatch.setattr(chat_service, "get_agent_client", lambda: followup)
+    with _new_client(settings) as continued:
+        continued.headers["Authorization"] = f"Bearer {token}"
+        response = continued.post(
+            f"/api/chats/{chat_id}/messages", json={"text": "Напомни общую выручку этой панели"}
+        )
+        events = parse_sse(response.text)
+        assert [name for name, _ in events][-1] == "done", response.text
+        assert not [name for name, _ in events if name in ("error", "tool_call")], response.text
+        assert followup.stages == ["understand", "plan", "compose", "verify"]
+        for stage in ("understand", "plan", "compose"):
+            for result_id in chat_refresh_result_ids:
+                assert result_id in followup.prompts[stage], followup.prompts[stage]
+            assert "420" in followup.prompts[stage], followup.prompts[stage]
+        assert any(
+            name == "block" and data.get("markdown") == "Всего 420." for name, data in events
+        )
+        with continued.app.state.session_factory() as db:
+            assert set(db.get(ChatModel, chat_id).focus_result_ids) == chat_refresh_result_ids
+
+        # An ID from another dataset must be rejected before refresh mutates its
+        # snapshot or saves tool results under an unrelated chat.
+        other_upload = continued.post(
+            "/api/datasets/upload",
+            files=[("files", ("other.csv", b"value\n1\n", "text/csv"))],
+        )
+        assert other_upload.status_code == 202, other_upload.text
+        other_dataset = other_upload.json()["dataset_id"]
+        assert "event: done" in continued.get(f"/api/datasets/{other_dataset}/events").text
+        other_chat = _create_chat(continued, other_dataset)
+        before = continued.get(f"/api/dashboards/{dashboard_id}").json()
+        monkeypatch.setattr(chat_service, "get_agent_client", lambda: ChatRefreshPlanner())
+        rejected = continued.post(
+            f"/api/chats/{other_chat}/messages", json={"text": "Обнови прежнюю панель"}
+        )
+        assert any(name == "error" for name, _ in parse_sse(rejected.text)), rejected.text
+        assert continued.get(f"/api/dashboards/{dashboard_id}").json() == before
+        with continued.app.state.session_factory() as db:
+            assert db.query(ToolResultModel).filter_by(chat_id=other_chat).count() == 0

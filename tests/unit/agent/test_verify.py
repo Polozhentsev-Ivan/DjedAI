@@ -89,3 +89,120 @@ def test_compose_verify_loop_and_strip():
     assert result["is_verified"] is True
     assert len(result["answer_blocks"]) == 1
     assert result["answer_blocks"][0].markdown == "Revenue is strictly unknown."
+    assert result["verification"].status == "corrected"
+
+
+def _verification_config(responses, *, thread_id: str):
+    client = MagicMock()
+    client.generate_typed_response.side_effect = responses
+
+    def dispatcher(tool: str, args: dict) -> ToolResult:
+        return ToolResult(
+            result_id="r_verify",
+            status="ok",
+            tool=tool,
+            params=args,
+            facts=[{"text": "Revenue: 1000 RUB"}],
+        )
+
+    return {
+        "configurable": {
+            "thread_id": thread_id,
+            "client": client,
+            "tool_dispatcher": dispatcher,
+        }
+    }
+
+
+def _understand_and_plan():
+    return [
+        ModelResponse(status="success", data=Understanding(intent="data_question")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(
+                plan=[PlannedCall(tool="run_sql", args={"sql": "SELECT 1000 AS revenue"})]
+            ),
+        ),
+    ]
+
+
+def test_llm_cannot_confirm_a_number_missing_from_facts():
+    """Даже is_valid=True не отменяет детерминированную проверку черновика."""
+    graph = build_agent_graph()
+    config = _verification_config(
+        [
+            *_understand_and_plan(),
+            ModelResponse(
+                status="success",
+                data=ComposeResponse(
+                    answer_blocks=[Block(type="text", markdown="Revenue: 2000 RUB")]
+                ),
+            ),
+            ModelResponse(
+                status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")
+            ),
+            ModelResponse(
+                status="success",
+                data=ComposeResponse(
+                    answer_blocks=[Block(type="text", markdown="Revenue: 1000 RUB")]
+                ),
+            ),
+            ModelResponse(
+                status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")
+            ),
+        ],
+        thread_id="test_verify_llm_cannot_override",
+    )
+    result = graph.invoke(
+        {"chat_id": "c1", "messages": [Message(role="user", content="Show revenue")]},
+        config=config,
+    )
+
+    assert result["compose_retries"] == 2
+    assert [block.markdown for block in result["answer_blocks"]] == ["Revenue: 1000 RUB"]
+    assert result["verification"].status == "verified"
+    assert any(
+        assertion.raw_text == "2000" for assertion in result["verification"].rejected_assertions
+    )
+
+
+def test_invalid_final_correction_is_replaced_by_an_explicit_error():
+    """Исправление модели проходит ту же проверку; иначе ответ не публикуется."""
+    graph = build_agent_graph()
+    attempts = [
+        ModelResponse(
+            status="success",
+            data=VerifyResponse(
+                is_valid=False,
+                issues=["2000 is not supported"],
+                corrected_markdown="Revenue: 3000 RUB",
+            ),
+        )
+        for _ in range(2)
+    ]
+    responses = [*_understand_and_plan()]
+    for verify_response in attempts:
+        responses.extend(
+            [
+                ModelResponse(
+                    status="success",
+                    data=ComposeResponse(
+                        answer_blocks=[Block(type="text", markdown="Revenue: 2000 RUB")]
+                    ),
+                ),
+                verify_response,
+            ]
+        )
+    config = _verification_config(responses, thread_id="test_verify_invalid_correction")
+    result = graph.invoke(
+        {"chat_id": "c1", "messages": [Message(role="user", content="Show revenue")]},
+        config=config,
+    )
+
+    assert result["compose_retries"] == 2
+    assert result["answer_blocks"][-1].type == "error"
+    assert "Не удалось подтвердить числа" in result["answer_blocks"][-1].markdown
+    assert result["verification"].status == "failed"
+    assert "invalid_correction" in {issue.code for issue in result["verification"].issues}
+    assert result["verification"].rejected_assertions
+    assert all("3000" not in block.markdown for block in result["answer_blocks"])

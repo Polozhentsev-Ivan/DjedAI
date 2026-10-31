@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from djedai.contracts.chart import ChartSpec
+from djedai.contracts.verification import VerificationReport
 
 
 class TextBlock(BaseModel):
@@ -116,6 +117,10 @@ class AssistantMessage(BaseModel):
     )
     result_ids: list[str] = Field(
         default_factory=list, description="ID результатов вычислений (provenance: «как посчитано»)"
+    )
+    verification: VerificationReport | None = Field(
+        default=None,
+        description="Детерминированная проверка чисел: утверждения, происхождение и причины отказа",
     )
     trace: list[TraceStep] = Field(
         default_factory=list, description="Шаги графа агента при формировании ответа"

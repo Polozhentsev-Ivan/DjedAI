@@ -679,6 +679,10 @@ _DRIVER_ERROR_SUGGESTIONS = (
         ("conversion error", "could not convert", "explicit type casts"),
         "Типы значений не подходят для операции. Сверьте типы по каталогу и используйте CAST.",
     ),
+    (
+        ('at or near "pivot"', 'at or near "unpivot"'),
+        "PIVOT и UNPIVOT — ключевые слова DuckDB. Назовите подзапрос или псевдоним иначе.",
+    ),
     (("parser error", "syntax error"), _SYNTAX_SUGGESTION),
     (
         ("timeout", "interrupt"),

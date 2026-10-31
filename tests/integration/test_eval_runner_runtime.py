@@ -179,6 +179,22 @@ def test_failed_model_verification_is_not_hidden_by_correct_sql(dataset):
     assert report["status"] == "failed"
     assert any("Terminal error" in issue for issue in report["issues"])
     assert report["tool_results"][0]["data"]["rows"] == [[5]]
+    assert report["terminal_error"] == "TIMEOUT"
+    assert report["diagnostics"][-1]["status"] == "error"
+    assert report["diagnostics"][-1]["error_type"] == "TIMEOUT"
+
+
+def test_model_failure_in_real_graph_never_finishes_successfully(dataset):
+    model = SimpleNamespace(
+        generate_typed_response=lambda *a, **k: ModelResponse(
+            status="error", error_type="SERVER_ERROR"
+        )
+    )
+    report = run(dataset, model, [])
+    assert report["status"] == "failed"
+    assert report["terminal_error"] == "SERVER_ERROR"
+    assert report["diagnostics"][-1]["status"] == "error"
+    assert report["diagnostics"][-1]["error_type"] == "SERVER_ERROR"
 
 
 def test_expired_turn_budget_prevents_any_inference(dataset, monkeypatch):
@@ -221,11 +237,13 @@ def test_percentage_is_derived_from_real_sql_counts_without_a_percentage_cell(tm
                 "abs_tolerance": 0.00005,
             },
         ]
+        # #167: производная допустима только как явная формула из
+        # подтверждённых ячеек; неявное «-50%» детерминированно отклоняется.
         for answer, expected in [
-            ("Изменение: -50%", "passed"),
-            ("Изменение: −50%", "passed"),
-            ("Изменение: 50%", "failed"),
-            ("Изменение: 2%", "failed"),
+            ("Изменение: 1 / 2 - 1 = -50%", "passed"),
+            ("Изменение: 1 / 2 - 1 = −50%", "passed"),
+            ("Изменение: 1 / 2 - 1 = 50%", "failed"),
+            ("Изменение: 1 / 2 - 1 = 2%", "failed"),
         ]:
             report = run(dataset, Model("run_sql", {"sql": sql}, answer), facts)
             assert report["status"] == expected, report["issues"]

@@ -22,6 +22,9 @@ export const categoryLabel = (value: Cell): string => value === null ? 'Нет �
 export const numeric = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const textValue = (value: unknown): string => typeof value === 'object' ? JSON.stringify(value) : typeof value === 'string' ? value : JSON.stringify(value);
 
+/** Above this the browser slows down and points stop being readable; the note under the chart says so. */
+export const MAX_CHART_ROWS = 2000;
+
 /** Sort and limit the returned rows only; never aggregate or mutate the saved result. */
 export function displayData(spec: Spec, data: Data): Data {
   const rows = [...(data.rows ?? [])];
@@ -37,7 +40,7 @@ export function displayData(spec: Spec, data: Data): Data {
       return order * direction;
     });
   }
-  return { ...data, rows: rows.slice(0, spec.limit ?? 20) };
+  return { ...data, rows: rows.slice(0, Math.min(spec.limit ?? MAX_CHART_ROWS, MAX_CHART_ROWS)) };
 }
 
 /** Explain incompatible shapes instead of inventing missing columns, bins or statistics. */

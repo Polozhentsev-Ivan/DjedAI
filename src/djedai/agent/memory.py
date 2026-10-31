@@ -227,8 +227,10 @@ def _block_descriptions(blocks: Sequence[Block], policy: DataTransferPolicy) -> 
                 f"result_id={result_id or '?'}"
             )
         elif block.type == "dashboard_link":
-            title = policy.sanitize_text(block.title or block.dashboard_id or "?")
-            lines.append(f"{index}. dashboard: {title}")
+            title = policy.sanitize_text(block.title or "?")
+            lines.append(
+                f"{index}. dashboard: title={title}, dashboard_id={block.dashboard_id or '?'}"
+            )
         elif block.type == "clarification":
             text = compact_text(policy.sanitize_text(block.markdown), 120)
             lines.append(f"{index}. clarification: {text}")

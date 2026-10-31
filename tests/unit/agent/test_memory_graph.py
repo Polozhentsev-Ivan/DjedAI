@@ -281,7 +281,7 @@ def test_corrected_plan_focus_excludes_superseded_successful_attempt() -> None:
         ),
         ModelResponse(
             status="success",
-            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="2")]),
+            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Готово")]),
         ),
         ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
         # Второй ход: меняем представление без новых ссылок.

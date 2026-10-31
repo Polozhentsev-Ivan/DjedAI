@@ -80,7 +80,8 @@ async function json(url) {
 async function verifyRun(run, index) {
   const detail = await json(`/api/datasets/${run.dataset_id}`);
   assert.deepEqual(detail, run.dataset);
-  await page.goto(run.chat_url);
+  // The same persisted chat may be served on a new port after Compose restarts.
+  await page.goto(new URL(run.chat_url).pathname);
   await page.getByText(run.answer, { exact: true }).waitFor();
   assert.equal(await page.getByText(run.answer, { exact: true }).count(), 1);
   const chat = await json(`/api/chats/${run.chat_id}`);
@@ -98,7 +99,7 @@ try {
   if (values.verify) {
     const report = JSON.parse(await readFile(reportPath, 'utf8'));
     for (const [index, run] of report.runs.entries()) await verifyRun(run, index + 1);
-    report.restart = { passed: true, verified_at: new Date().toISOString() };
+    report.restart = { passed: true, origin: values.url, verified_at: new Date().toISOString() };
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log('PASS: datasets, catalogs, browser history, SQL and result data survived restart');
   } else {

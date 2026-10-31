@@ -369,6 +369,19 @@ def validate_scenario_contracts(cases: list[dict[str, Any]], manifest: dict[str,
                 expect["reuse_result_from"] in dependencies,
                 f"{case_id}: reuse requires prior context",
             )
+        if "reuse_dashboard_from" in expect:
+            require(
+                expect["reuse_dashboard_from"] in dependencies,
+                f"{case_id}: dashboard reuse requires prior context",
+            )
+            require(
+                expect.get("dashboard") is not None,
+                f"{case_id}: dashboard reuse requires a dashboard expectation",
+            )
+            require(
+                previous[expect["reuse_dashboard_from"]]["expect"].get("dashboard") is not None,
+                f"{case_id}: dashboard reuse requires a prerequisite dashboard",
+            )
         facts = {fact["key"]: fact for fact in expect.get("facts", [])}
         chart = expect.get("chart")
         if chart is not None:

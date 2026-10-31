@@ -51,12 +51,68 @@ def _skip_quoted(sql: str, start: int) -> int:
     return start
 
 
+def rename_reserved_ctes(sql: str) -> str:
+    """Quote reserved CTE names and their references without renaming SQL operators.
+
+    Quoting preserves the CTE's identity, including when ``pivot_cte`` already exists.
+    Only unquoted tokens outside literals/comments participate in the rewrite.
+    """
+    tokens: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(sql):
+        end = _skip_quoted(sql, index)
+        if end != index:
+            if not sql.startswith(("--", "/*"), index):
+                tokens.append((index, end, ""))
+            index = end
+        elif word := _WORD.match(sql, index):
+            tokens.append((index, word.end(), word.group().casefold()))
+            index = word.end()
+        else:
+            if not sql[index].isspace():
+                tokens.append((index, index + 1, sql[index]))
+            index += 1
+
+    declarations = {
+        index
+        for index, (_, _, token) in enumerate(tokens)
+        if token in {"pivot", "unpivot"}
+        and index > 0
+        and tokens[index - 1][2] in {"with", "recursive", ","}
+        and [value for _, _, value in tokens[index + 1 : index + 3]] == ["as", "("]
+    }
+    reserved = {tokens[index][2] for index in declarations}
+    if not reserved:
+        return sql
+    parts: list[str] = []
+    previous_end = 0
+    for index, (start, end, token) in enumerate(tokens):
+        if token not in reserved:
+            continue
+        previous = tokens[index - 1][2] if index else ""
+        following = tokens[index + 1][2] if index + 1 < len(tokens) else ""
+        if (
+            index in declarations
+            or following == "."
+            or previous in {"from", "join", "table", ",", "pivot", "unpivot"}
+        ):
+            parts.extend((sql[previous_end:start], '"' + sql[start:end] + '"'))
+            previous_end = end
+    parts.append(sql[previous_end:])
+    return "".join(parts)
+
+
+# ``1e`` is here too: in ``1e-3`` the word ends before the sign.
+_NUMERIC_LOOKALIKE = re.compile(r"\d[\d_]*e\d*|0x[\da-f_]+|0b[01_]+", re.IGNORECASE)
+
+
 def quote_catalog_tables(sql: str, allowed_tables: Collection[str]) -> str:
     """Quote catalog tables whose names cannot be written bare (``08_jobs``).
 
     Literals, comments and quoted identifiers stay intact. Only exact names of the
     selected dataset change, and the result still passes the usual scope validation,
-    so this cannot widen access.
+    so this cannot widen access. A name that also reads as a number (``1e3``) is a
+    table only right after FROM or JOIN; anywhere else it stays a numeric constant.
     """
     names = {
         name.casefold(): name
@@ -67,17 +123,24 @@ def quote_catalog_tables(sql: str, allowed_tables: Collection[str]) -> str:
         return sql
     parts: list[str] = []
     index = 0
+    after_table_keyword = False
     while index < len(sql):
         end = _skip_quoted(sql, index)
         if end > index:
             parts.append(sql[index:end])
             index = end
+            after_table_keyword = False
         elif word := _WORD.match(sql, index):
-            name = names.get(word.group().casefold())
-            parts.append(word.group() if name is None else '"' + name.replace('"', '""') + '"')
+            text = word.group()
+            name = names.get(text.casefold())
+            if name is not None and _NUMERIC_LOOKALIKE.fullmatch(text) and not after_table_keyword:
+                name = None
+            parts.append(text if name is None else '"' + name.replace('"', '""') + '"')
             index = word.end()
+            after_table_keyword = text.casefold() in {"from", "join"}
         else:
             parts.append(sql[index])
+            after_table_keyword = after_table_keyword and sql[index].isspace()
             index += 1
     return "".join(parts)
 

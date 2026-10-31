@@ -1,0 +1,360 @@
+- id: organizer_q1
+  scenario: organizer
+  dataset: hk_medicines_v1
+  question: Какое лекарство сильнее всего выросло в процентах по среднедневным продажам на аптеку в марте
+    2025 к февралю, включая дни без продаж? Пришли расчёт.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: medicine.growth_percent
+      comparison: approx
+      value: 30.3211
+      unit: процент
+      abs_tolerance: 0.01
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - '%|процент'
+    answer_rows:
+    - label: '1019'
+      values:
+      - value: 30.3211
+        abs_tolerance: 0.01
+        unit: percent
+- id: organizer_q2
+  scenario: organizer
+  dataset: hk_sales_v1
+  question: В каком городе сильнее всего выросла чистая выручка в процентах в марте 2025 к февралю с учётом
+    количества, скидок и возвратов?
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: city
+      comparison: exact
+      value: Калининград
+    - key: city.growth_percent
+      comparison: approx
+      value: 62.29
+      unit: процент
+      abs_tolerance: 0.01
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - '%|процент'
+    answer_rows:
+    - label: Калининград
+      values:
+      - value: 62.29
+        abs_tolerance: 0.01
+        unit: percent
+- id: organizer_q3
+  scenario: organizer
+  dataset: hk_support_v1
+  question: У какой группы максимальный 90-й перцентиль времени решения среди обращений, закрытых в марте
+    2025? Исключи группы с менее чем 100 закрытиями.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: group
+      comparison: exact
+      value: Доставка заказов
+    - key: group.p90_hours
+      comparison: approx
+      value: 72.555
+      unit: часы, quantile_cont или quantile_disc
+      abs_tolerance: 0.07
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - \b(?:ч\.?|час\w*)\b
+    answer_rows:
+    - label: Доставка заказов
+      values:
+      - value: 72.555
+        abs_tolerance: 0.07
+        unit: hours
+    result_duration_unit: hours
+- id: organizer_q4
+  scenario: organizer
+  dataset: hk_delivery_v1
+  question: У какого перевозчика максимальный 95-й перцентиль задержки среди доставленных в марте 2025
+    отправлений? Доставку вовремя считай нулевой задержкой.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: carrier
+      comparison: exact
+      value: Собственная доставка
+    - key: carrier.p95_hours
+      comparison: approx
+      value: 23.195
+      unit: часы, quantile_cont или quantile_disc
+      abs_tolerance: 0.05
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - \b(?:ч\.?|час\w*)\b
+    answer_rows:
+    - label: Собственная доставка
+      values:
+      - value: 23.195
+        abs_tolerance: 0.05
+        unit: hours
+    result_duration_unit: hours
+- id: organizer_q5
+  scenario: organizer
+  dataset: hk_purchase_requests_v1
+  question: Сколько было согласовано, но ещё не оплачено на конец 31 марта 2025 по подразделениям, исключая
+    отменённые и отклонённые к этой дате заявки?
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: it.requests
+      comparison: exact
+      value: 4158
+    - key: it.amount
+      comparison: approx
+      value: 851088269.49
+      unit: руб.
+      abs_tolerance: 0.01
+    - key: sales.requests
+      comparison: exact
+      value: 999
+    - key: sales.amount
+      comparison: approx
+      value: 116747232.61
+      unit: руб.
+      abs_tolerance: 0.01
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - руб\w*\.?|₽
+    answer_rows:
+    - label: Административный отдел
+      values:
+      - value: 1046
+      - value: 137229064.54
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Бухгалтерия
+      values:
+      - value: 980
+      - value: 127534498.9
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Информационные технологии
+      values:
+      - value: 4158
+      - value: 851088269.49
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Отдел логистики
+      values:
+      - value: 3001
+      - value: 328175804.79
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Отдел продаж
+      values:
+      - value: 999
+      - value: 116747232.61
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Розничная сеть
+      values:
+      - value: 1015
+      - value: 116750774.35
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Склад
+      values:
+      - value: 1990
+      - value: 206489391.62
+        abs_tolerance: 0.01
+        unit: rub
+    - label: Служба поддержки
+      values:
+      - value: 995
+      - value: 123264976.52
+        abs_tolerance: 0.01
+        unit: rub
+- id: organizer_q6
+  scenario: organizer
+  dataset: hk_background_jobs_v1
+  question: Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток,
+    и среднее число попыток в таких цепочках.
+  expect:
+    outcome: answer
+    tools_any:
+    - run_sql
+    facts:
+    - key: cleanup.avg_attempts
+      comparison: approx
+      value: 2.3201
+      unit: попытки
+      abs_tolerance: 0.001
+    - key: archive.avg_attempts
+      comparison: approx
+      value: 2.279
+      unit: попытки
+      abs_tolerance: 0.001
+    answer_contains_value:
+      from_result: true
+    answer_units:
+    - '%|процент'
+    - попыт\w*
+    answer_rows:
+    - label: Архивирование журналов
+      values:
+      - value: 4.65469613
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.27893175
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Выгрузка документов в ЭДО
+      values:
+      - value: 4.88564799
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.3202171
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Загрузка событий приложения
+      values:
+      - value: 5.0345464
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.31247206
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Загрузка цен поставщиков
+      values:
+      - value: 4.83646642
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.29220779
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Обновление остатков
+      values:
+      - value: 4.83017092
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.3072373
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Обновление поискового индекса
+      values:
+      - value: 4.92100231
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.3006135
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Обновление статусов доставки
+      values:
+      - value: 4.93172655
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.30397471
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Обработка заявок на возврат
+      values:
+      - value: 4.84631216
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.31232877
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Отправка уведомлений о заказах
+      values:
+      - value: 4.91747161
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.31749395
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Очистка временных файлов
+      values:
+      - value: 5.24226293
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.32013769
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Пересчёт доступности товаров
+      values:
+      - value: 5.01907248
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.32088889
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Подготовка отчёта по продажам
+      values:
+      - value: 4.71034109
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.2816092
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Проверка качества данных
+      values:
+      - value: 4.86840923
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.31549815
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Проверка сроков действия сертификатов
+      values:
+      - value: 5.17147523
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.25263158
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Расчёт бонусов за покупки
+      values:
+      - value: 4.92347212
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.31630435
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Резервное копирование справочников
+      values:
+      - value: 4.9622438
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.32065217
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Сверка платёжных операций
+      values:
+      - value: 4.76909146
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.28902954
+        abs_tolerance: 0.005
+        unit: attempts
+    - label: Формирование электронных чеков
+      values:
+      - value: 4.78399711
+        abs_tolerance: 0.005
+        unit: percent
+      - value: 2.30793451
+        abs_tolerance: 0.005
+        unit: attempts

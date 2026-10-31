@@ -1,11 +1,38 @@
-# Deterministic CI/smoke model on the Docker host; application images are unchanged.
-# Start tests/e2e/serve_cp1.py:model_app on 0.0.0.0:18081 before Compose.
+# Isolated CI/smoke stack; run with scripts/test-compose.sh.
 # This overlay never uses a real provider key or contacts external inference.
 services:
   backend:
+    image: ${COMPOSE_PROJECT_NAME:?Use scripts/test-compose.sh}-backend
+    labels:
+      org.djedai.compose-acceptance: ${DJEDAI_COMPOSE_ACCEPTANCE:-local}
     environment:
-      MODEL_BASE_URL: http://host.docker.internal:18081/v1
+      MODEL_BASE_URL: http://model:8000/v1
       MODEL_NAME: cp1-controlled-model
       MODEL_API_KEY: cp1-test-only
-    extra_hosts:
-      - host.docker.internal:host-gateway
+    depends_on:
+      model:
+        condition: service_healthy
+  frontend:
+    labels:
+      org.djedai.compose-acceptance: ${DJEDAI_COMPOSE_ACCEPTANCE:-local}
+  model:
+    image: ${COMPOSE_PROJECT_NAME:?Use scripts/test-compose.sh}-backend
+    pull_policy: never
+    labels:
+      org.djedai.compose-acceptance: ${DJEDAI_COMPOSE_ACCEPTANCE:-local}
+    entrypoint: ["/app/.venv/bin/uvicorn", "--app-dir", "/app/tests/e2e", "serve_cp1:model_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./tests/e2e:/app/tests/e2e:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)"]
+      interval: 2s
+      timeout: 6s
+      retries: 20
+volumes:
+  app-data:
+    labels:
+      org.djedai.compose-acceptance: ${DJEDAI_COMPOSE_ACCEPTANCE:-local}
+networks:
+  default:
+    labels:
+      org.djedai.compose-acceptance: ${DJEDAI_COMPOSE_ACCEPTANCE:-local}

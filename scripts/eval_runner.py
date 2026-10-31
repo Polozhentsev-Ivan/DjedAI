@@ -37,13 +37,22 @@ from eval_values import collection_matches  # noqa: E402
 from verify_golden import check_identity, download_file  # noqa: E402
 
 from djedai.agent.config import get_agent_client  # noqa: E402
+from djedai.agent.dashboard import (  # noqa: E402
+    chart_for_result,
+    dashboard_preview_blocks,
+    dashboard_refresh_blocks,
+)
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
 from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
-from djedai.contracts.dashboard import DashboardSnapshot, WidgetSnapshot  # noqa: E402
+from djedai.contracts.chart import ChartSpec, ChartTemplate  # noqa: E402
+from djedai.contracts.dashboard import (  # noqa: E402
+    DashboardSnapshot,
+    WidgetSnapshot,
+)
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.data.service import CsvSource, ingest_csv_dataset  # noqa: E402
 from djedai.execution import ExecutionBudget  # noqa: E402
@@ -276,6 +285,12 @@ def _numbers_in(value: Any) -> Iterator[Decimal]:
 
 def _structured_numbers(results: Sequence[Any]) -> Iterator[Decimal]:
     for value in _structured_scalars(results):
+        # DECIMAL приходит из инструментов строкой: без этого денежные суммы не сверить.
+        if isinstance(value, str):
+            try:
+                value = Decimal(value)
+            except InvalidOperation:
+                continue
         number = _decimal(value)
         if number is not None:
             yield number
@@ -325,6 +340,29 @@ def _tolerance(fact: dict) -> Decimal:
     if fact["comparison"] != "approx":
         return Decimal(0)
     return Decimal(str(fact["abs_tolerance"]))
+
+
+def _reused_results(
+    expect: dict,
+    context_results: Sequence[dict] | None,
+) -> tuple[list[Any], str | None, list[str]]:
+    """Tool results of the prerequisite that ``reuse_result_from`` names.
+
+    A follow-up may legitimately answer from the previous turn without calling a tool
+    again.  Only the explicitly declared prerequisite is evidence; other context
+    results stay out so one case cannot borrow numbers from an unrelated question.
+    """
+    source = expect.get("reuse_result_from")
+    if not source:
+        return [], None, []
+    for context in context_results or []:
+        if _field(context, "id") != source:
+            continue
+        reused = list(_field(context, "tool_results") or [])
+        if not reused:
+            return [], source, [f"Context result '{source}' has no tool results to verify reuse"]
+        return reused, source, []
+    return [], source, [f"Context result '{source}' was not found to verify reuse"]
 
 
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
@@ -422,6 +460,169 @@ def _missing_answer_values(case: dict, blocks: Sequence[Any], text: str) -> list
         ):
             issues.append(f"Answer text does not state '{fact['key']}' ({fact['value']})")
     return issues
+
+
+def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list[str]:
+    """Check labelled answers against references, preserving group/value association.
+
+    A table or chart block does not exempt these explicit text requirements. Units
+    may be stated in a table header; each group's values must occur in its own
+    line/sentence. This is a numeric check, not a judgement of the explanation.
+    """
+    expect = case.get("expect") or {}
+    issues = []
+    plain = text.replace("*", "").replace("`", "")
+    for pattern in expect.get("answer_units") or []:
+        if not re.search(pattern, plain, re.I):
+            issues.append(f"Answer does not state the required unit: {pattern}")
+    # Decimal separators must not split sentences.
+    lines = re.split(r"\n|;|(?<!\d)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain)
+    unit_patterns = {
+        "hours": r"(?:ч(?:ас\w*)?\.?|hours?|h)\b",
+        "seconds": r"(?:сек\w*|seconds?|secs?|s)\b",
+        "percent": r"(?:%|процент\w*|percent\w*)",
+        "rub": r"(?:руб\w*\.?|RUB|₽)",
+        "attempts": r"(?:попыт\w*|attempts?)\b",
+    }
+
+    def stated_unit(suffix: str) -> str | None:
+        for unit, pattern in unit_patterns.items():
+            if re.match(r"\s*" + pattern, suffix, re.I):
+                return unit
+        return None
+
+    table_headers: dict[str, dict[int, str]] = {}
+    header: dict[int, str] = {}
+    row_labels = [
+        label
+        for row in expect.get("answer_rows") or []
+        for label in [row["label"], *row.get("aliases", [])]
+    ]
+    for line in lines:
+        if "|" not in line:
+            header = {}
+            continue
+        cells = line.split("|")
+        if not any(
+            re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in row_labels
+        ):
+            found = {}
+            for index, cell in enumerate(cells):
+                for unit, pattern in unit_patterns.items():
+                    if re.search(pattern, cell, re.I):
+                        found[index] = unit
+                        break
+            if found:
+                header = found
+        table_headers[line] = dict(header)
+    for reference in expect.get("answer_rows") or []:
+        labels = [reference["label"], *reference.get("aliases", [])]
+
+        def labelled(line: str, labels=labels) -> bool:
+            return any(
+                re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in labels
+            )
+
+        def has_values(values: Sequence[Any], required=reference["values"]) -> bool:
+            numbers = []
+            for value in values:
+                number = _decimal(value)
+                if isinstance(value, str) and re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?", value):
+                    number = Decimal(value.replace(",", "."))
+                if number is not None:
+                    numbers.append(number)
+            return all(
+                any(
+                    abs(number - Decimal(str(wanted["value"])))
+                    <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    for number in numbers
+                )
+                for wanted in required
+            )
+
+        def states_values(line: str, required=reference["values"]) -> bool:
+            if not has_values(list(_text_numbers(line))):
+                return False
+            for wanted in required:
+                unit = wanted.get("unit")
+                if not unit:
+                    continue
+                found = False
+                for match in NUMBER_RE.finditer(line):
+                    numbers = list(_text_numbers(match[0]))
+                    if not numbers or abs(numbers[0] - Decimal(str(wanted["value"]))) > Decimal(
+                        str(wanted.get("abs_tolerance", 0))
+                    ):
+                        continue
+                    explicit = stated_unit(line[match.end() :])
+                    # Units may be inherited from a table header, but an explicit
+                    # contradictory suffix always wins over unrelated text.
+                    inherited = table_headers.get(line, {}).get(line[: match.start()].count("|"))
+                    if explicit == unit or explicit is None and inherited == unit:
+                        found = True
+                if not found:
+                    return False
+            return True
+
+        if not any(labelled(line) and states_values(line) for line in lines):
+            issues.append(f"Answer is missing or misstates values for '{reference['label']}'")
+        if not any(
+            any(labelled(str(cell)) for cell in row) and has_values(row)
+            for group in _structured_groups(results)
+            for row in group
+            if isinstance(row, (list, tuple))
+        ):
+            issues.append(f"Tool results do not confirm the row for '{reference['label']}'")
+    return issues
+
+
+def _duration_result_units(case: dict, results: Sequence[ToolResult]) -> list[ToolResult]:
+    """Expose independently converted hours for explicitly named duration columns.
+
+    Keep original cells as evidence too. No unit is inferred from the magnitude
+    or an ambiguous SQL alias such as ``value``. Used only by opted-in cases.
+    """
+    if (case.get("expect") or {}).get("result_duration_unit") != "hours":
+        return list(results)
+    normalized = []
+    for result in results:
+        data = result.data
+        names = _column_names(data)
+        conversions = []
+        for index, name in enumerate(names):
+            if re.search(r"(?:^|_)(?:secs?|seconds?)$", name, re.I):
+                conversions.append((index, Decimal(3600)))
+            elif re.search(r"(?:^|_)(?:mins?|minutes?)$", name, re.I):
+                conversions.append((index, Decimal(60)))
+        if data is None or not conversions:
+            normalized.append(result)
+            continue
+        rows = []
+        for row in data.rows:
+            converted = []
+            for index, divisor in conversions:
+                try:
+                    value = Decimal(str(row[index])) / divisor
+                    converted.append(float(value) if value.is_finite() else None)
+                except (InvalidOperation, IndexError):
+                    converted.append(None)
+            rows.append([*row, *converted])
+        normalized.append(
+            result.model_copy(
+                update={
+                    "data": data.model_copy(
+                        update={
+                            "columns": [
+                                *data.columns,
+                                *(f"{names[index]}_as_hours" for index, _ in conversions),
+                            ],
+                            "rows": rows,
+                        }
+                    )
+                }
+            )
+        )
+    return normalized
 
 
 def _verified_percentage(
@@ -531,10 +732,15 @@ def check_fact(
 
 
 def _terminal_issues(
-    blocks: Sequence[Any], results: Sequence[Any], plan: Sequence[Any]
+    blocks: Sequence[Any],
+    results: Sequence[Any],
+    plan: Sequence[Any],
+    terminal_error: str | None = None,
 ) -> list[str]:
     """Terminal API, verification and tool failures invalidate any outcome."""
     issues = []
+    if terminal_error:
+        issues.append(f"Terminal model error before answer verification: {terminal_error}")
     for block in blocks:
         if _field(block, "type") != "error":
             continue
@@ -561,6 +767,38 @@ def _intent(result: dict) -> str | None:
 
 def _block_text(blocks: Sequence[Any]) -> str:
     return " ".join(text for block in blocks if (text := _field(block, "markdown")))
+
+
+def _data_claim_text(blocks: Sequence[Any], snapshot: Any) -> str:
+    """Exclude verified service counts, preserving the title and analytical prose."""
+    try:
+        saved = DashboardSnapshot.model_validate(snapshot)
+    except (ValueError, TypeError):
+        return _block_text(blocks)
+    if not any(
+        _field(block, "type") == "dashboard_link"
+        and _field(block, "dashboard_id") == saved.dashboard_id
+        for block in blocks
+    ):
+        return _block_text(blocks)
+
+    # Reproduce the application's own summary from the saved snapshot. Merely
+    # mentioning widgets must not whitelist the same number elsewhere in prose.
+    summaries = [
+        dashboard_preview_blocks(saved)[0].markdown,
+        dashboard_refresh_blocks(saved)[0].markdown,
+    ]
+    parts = []
+    for block in blocks:
+        text = _field(block, "markdown") or ""
+        if _field(block, "type") == "text":
+            for summary in summaries:
+                if summary and text.startswith(summary):
+                    text = saved.title + " " + text[len(summary) :]
+                    break
+        if text:
+            parts.append(text)
+    return " ".join(parts)
 
 
 def _plain(value: Any) -> Any:
@@ -591,6 +829,18 @@ def _plain(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _plain(vars(value))
     return value
+
+
+def _shown_series(chart: Any, data: Any, col_names: list[str]) -> dict[str, Any]:
+    """Only the columns the chart draws: a right number in a neighbouring column proves nothing."""
+    fields = [
+        _field(_field(chart, "x"), "field") if _field(chart, "x") is not None else None,
+        _field(_field(chart, "color"), "field") if _field(chart, "color") is not None else None,
+        *(_field(measure, "field") for measure in _field(chart, "y") or []),
+    ]
+    indexes = [col_names.index(field) for field in fields if field in col_names]
+    rows = [[row[i] for i in indexes if i < len(row)] for row in _field(data, "rows") or []]
+    return {"columns": [col_names[i] for i in indexes], "rows": rows}
 
 
 def _check_chart(
@@ -762,10 +1012,16 @@ def _check_chart(
                 issues.append(
                     f"{prefix}expected data_fact '{data_fact_key}' not defined in case facts"
                 )
-            elif not check_fact(fact, [backing], column_aliases=column_aliases):
-                issues.append(
-                    f"{prefix}backing result does not confirm expected fact '{data_fact_key}'"
-                )
+            else:
+                shown = _shown_series(chart, data, col_names)
+                c_details["data_fact_columns"] = _field(shown, "columns") or []
+                if not check_fact(
+                    fact, [{"status": status, "data": shown}], column_aliases=column_aliases
+                ):
+                    issues.append(
+                        f"{prefix}displayed values of the chart axes do not match "
+                        f"expected fact '{data_fact_key}'"
+                    )
 
         check_details["charts"].append(c_details)
 
@@ -809,10 +1065,53 @@ def _check_dashboard(
 
     actual_widgets = _field(snapshot, "widgets") or []
     check_details["widget_count"] = len(actual_widgets)
+    check_details["widget_ids"] = sorted(
+        widget_id for widget in actual_widgets if (widget_id := _field(widget, "widget_id"))
+    )
     if len(actual_widgets) < 3 or len(actual_widgets) > 8:
         issues.append(f"Dashboard has {len(actual_widgets)} widgets; expected between 3 and 8")
 
-    all_available = list(results)
+    reuse_dashboard = expect.get("reuse_dashboard_from")
+    if reuse_dashboard:
+        prior = next(
+            (cr for cr in context_results or [] if _field(cr, "id") == reuse_dashboard),
+            None,
+        )
+        checks = _field(prior, "dashboard_checks") if prior is not None else None
+        prior_id = _field(checks, "dashboard_id")
+        if prior_id is None:
+            issues.append(
+                f"Cannot verify dashboard reuse: prerequisite '{reuse_dashboard}' "
+                "has no saved dashboard"
+            )
+        elif dashboard_id != prior_id:
+            issues.append(
+                f"dashboard_link '{dashboard_id}' does not reuse prerequisite "
+                f"dashboard '{prior_id}'"
+            )
+        prior_widgets = set(_field(checks, "widget_ids") or [])
+        if prior_widgets and prior_widgets != set(check_details["widget_ids"]):
+            issues.append("Refreshed dashboard does not keep the widgets of the reused dashboard")
+
+    # Recompute the widgets before matching them. A chat refresh creates new result
+    # ids that are not part of this turn's `results`; the recipe replay is the only
+    # independent backing available to the runner.
+    recompute = getattr(dataset, "recompute_widget", None)
+    refreshed_results: list[Any] = []
+    refreshed_by_widget: dict[Any, Any] = {}
+    if recompute is not None:
+        for aw in actual_widgets:
+            wid = _field(aw, "widget_id")
+            try:
+                refreshed = recompute(aw)
+            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
+                issues.append(f"Widget '{wid}' refresh failed: {exc}")
+                continue
+            refreshed_results.append(refreshed)
+            if wid:
+                refreshed_by_widget[wid] = refreshed
+
+    all_available = [*results, *refreshed_results]
     for cr in context_results or []:
         all_available.extend(_field(cr, "tool_results") or [])
 
@@ -844,6 +1143,8 @@ def _check_dashboard(
             if not aw_res_id:
                 continue
             aw_res = next((r for r in all_available if _field(r, "result_id") == aw_res_id), None)
+            if aw_res is None:
+                aw_res = refreshed_by_widget.get(aw_wid)
             if aw_res is None or _field(aw_res, "status") not in ("ok", "empty"):
                 continue
             if exp_facts:
@@ -866,19 +1167,21 @@ def _check_dashboard(
 
     # The runner has no application database: restart and foreign-owner access stay
     # with tests/integration/test_dashboard_chat.py and test_owner_isolation.py.
-    check_details["not_evaluated"] = ["restart", "foreign_owner"]
+    # Widget facts are checked against the whole result, not the axes its chart draws.
+    check_details["not_evaluated"] = ["restart", "foreign_owner", "widget_chart_axes"]
+    check_details["recomputed_tools"] = sorted(
+        {str(tool) for result in refreshed_results if (tool := _field(result, "tool"))}
+    )
+    check_details["_refreshed_results"] = refreshed_results
 
-    recompute = getattr(dataset, "recompute_widget", None)
     if recompute is None:
         check_details["not_evaluated"].append("refresh")
     else:
         for aw in actual_widgets:
             wid = _field(aw, "widget_id")
-            try:
-                refreshed = recompute(aw)
-            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
-                issues.append(f"Widget '{wid}' refresh failed: {exc}")
-                continue
+            refreshed = refreshed_by_widget.get(wid)
+            if refreshed is None:
+                continue  # the recipe failure is already reported above
             if _field(refreshed, "status") != "ok":
                 issues.append(f"Widget '{wid}' refresh returned '{_field(refreshed, 'status')}'")
             if _field(refreshed, "result_id") == _field(aw, "result_id"):
@@ -1084,7 +1387,11 @@ def evaluate_case(
     results = [item for item in (result.get("results") or []) if isinstance(item, ToolResult)]
     plan = list(result.get("plan") or [])
     text = _block_text(blocks)
+    claim_text = _data_claim_text(blocks, result.get("dashboard_snapshot"))
     used_tools = [tool for item in results if (tool := _field(item, "tool"))]
+    reused_results, reuse_source, reuse_issues = _reused_results(expect, context_results)
+    evidence_results = [*results, *reused_results]
+    reused_tools = [tool for item in reused_results if (tool := _field(item, "tool"))]
     forbidden = set(expect.get("tools_forbidden") or [])
     if {"run_sql", "describe_dataset", "describe_column", "value_counts"} <= forbidden:
         forbidden |= SUPPORTED_TOOLS
@@ -1106,10 +1413,22 @@ def evaluate_case(
             "passed": not (called_forbidden or planned_forbidden),
         },
         "diagnostics": result.get("_eval_diagnostics", []),
+        "terminal_error": result.get("terminal_error"),
     }
 
-    automated_issues = _terminal_issues(blocks, results, plan)
-    if automated_issues:
+    if reuse_source is not None:
+        details["reuse"] = {
+            "from": reuse_source,
+            "result_ids": [
+                result_id
+                for result_id in (_field(item, "result_id") for item in reused_results)
+                if result_id
+            ],
+            "tools": list(dict.fromkeys(reused_tools)),
+        }
+    terminal_issues = _terminal_issues(blocks, results, plan, result.get("terminal_error"))
+    automated_issues = [*terminal_issues, *reuse_issues]
+    if terminal_issues:
         semantics = _evaluate_semantics(case, "", [])
         details["automated_status"] = "failed"
         details["automated_issues"] = automated_issues
@@ -1133,32 +1452,75 @@ def evaluate_case(
         tools_any = set(expect.get("tools_any") or []) | (
             set(expect.get("tools_planned") or []) & SUPPORTED_TOOLS
         )
-        if tools_any and not set(tools_any).intersection(used_tools):
-            automated_issues.append(
-                f"Did not use any expected tools {tools_any}. Used: {used_tools}"
-            )
         if not any(
             _field(block, "type") == "text" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
             automated_issues.append("The answer contains no text block")
 
+        results = _duration_result_units(case, results)
+        evidence_results = [*results, *reused_results]
+        # A dashboard refresh has no ordinary tool results: its widget recipes are
+        # replayed by the dashboard check, and those results become the evidence.
+        dash_issues, dash_details = _check_dashboard(
+            case,
+            blocks,
+            result,
+            results,
+            dataset=dataset,
+            context_results=context_results,
+            column_aliases=column_aliases,
+        )
+        dashboard_evidence = list(dash_details.pop("_refreshed_results", []))
+        automated_issues.extend(dash_issues)
+        if dash_details:
+            details["dashboard_checks"] = dash_details
+        reuse_dashboard = expect.get("reuse_dashboard_from")
+        if reuse_dashboard:
+            evidence_results = [*results, *reused_results, *dashboard_evidence]
+
         reference_facts = expect.get("facts") or []
+        facts_from_context = False
+        facts_from_dashboard = False
         for fact in reference_facts:
             result_ok = check_fact(
                 fact, results, column_aliases=column_aliases, reference_facts=reference_facts
             )
+            fact_source = "current"
+            if not result_ok and reused_results:
+                result_ok = check_fact(
+                    fact,
+                    reused_results,
+                    column_aliases=column_aliases,
+                    reference_facts=reference_facts,
+                )
+                if result_ok:
+                    fact_source = f"context:{reuse_source}"
+                    facts_from_context = True
+            if not result_ok and dashboard_evidence:
+                result_ok = check_fact(
+                    fact,
+                    dashboard_evidence,
+                    column_aliases=column_aliases,
+                    reference_facts=reference_facts,
+                )
+                if result_ok:
+                    fact_source = f"dashboard:{dash_details.get('dashboard_id')}"
+                    facts_from_dashboard = True
             fact_check = {
                 "key": fact["key"],
                 "comparison": fact["comparison"],
                 "expected": fact["value"],
                 "result": result_ok,
                 "passed": result_ok,
+                "source": fact_source,
             }
-            derived = _verified_percentage(fact, results, reference_facts, column_aliases)
+            derived = _verified_percentage(fact, evidence_results, reference_facts, column_aliases)
             if derived is not None:
                 fact_check["derivation"] = derived
-                if not _percentage_in_answer(text, Decimal(derived["value"]), _tolerance(fact)):
+                if not _percentage_in_answer(
+                    claim_text, Decimal(derived["value"]), _tolerance(fact)
+                ):
                     automated_issues.append(
                         f"Percentage '{fact['key']}' is missing or incorrect in the answer"
                     )
@@ -1168,8 +1530,44 @@ def evaluate_case(
                     f"Fact '{fact['key']}' (value: {fact['value']}) "
                     "is not confirmed by tool results"
                 )
-        automated_issues.extend(_answer_issues(case, text, results))
-        automated_issues.extend(_missing_answer_values(case, blocks, text))
+
+        expected_from_current = set(tools_any).intersection(used_tools)
+        expected_from_context = set(tools_any).intersection(reused_tools)
+        expected_from_dashboard = set(tools_any).intersection(
+            dash_details.get("recomputed_tools") or []
+        )
+        facts_passed = all(check["passed"] for check in details["fact_checks"])
+        # A memory-only answer is accepted only when the declared prerequisite really
+        # contains the expected tool and every reference fact is confirmed there.
+        memory_satisfies_tools = bool(
+            reuse_source and reused_results and expected_from_context and facts_from_context
+        )
+        # A dashboard refresh runs its recipes inside the backend; the replayed
+        # widget results are the equivalent evidence of those tool calls.
+        dashboard_satisfies_tools = bool(
+            reuse_dashboard
+            and dashboard_evidence
+            and expected_from_dashboard
+            and facts_from_dashboard
+        )
+        if reuse_source:
+            details["reuse"]["accepted"] = bool(memory_satisfies_tools and facts_passed)
+        if reuse_dashboard:
+            details["dashboard_checks"]["reuse_accepted"] = bool(
+                dashboard_satisfies_tools and facts_passed
+            )
+        if (
+            tools_any
+            and not expected_from_current
+            and not (memory_satisfies_tools and facts_passed)
+            and not (dashboard_satisfies_tools and facts_passed)
+        ):
+            automated_issues.append(
+                f"Did not use any expected tools {tools_any}. Used: {used_tools}"
+            )
+        automated_issues.extend(_answer_issues(case, claim_text, evidence_results))
+        automated_issues.extend(_missing_answer_values(case, blocks, claim_text))
+        automated_issues.extend(_required_answer_rows(case, claim_text, results))
 
         # Chart checks
         chart_issues, chart_details = _check_chart(
@@ -1184,22 +1582,8 @@ def evaluate_case(
         if chart_details:
             details["chart_checks"] = chart_details
 
-        # Dashboard checks
-        dash_issues, dash_details = _check_dashboard(
-            case,
-            blocks,
-            result,
-            results,
-            dataset=dataset,
-            context_results=context_results,
-            column_aliases=column_aliases,
-        )
-        automated_issues.extend(dash_issues)
-        if dash_details:
-            details["dashboard_checks"] = dash_details
-
         # Correlation tool checks
-        automated_issues.extend(_check_correlation_results(case, results))
+        automated_issues.extend(_check_correlation_results(case, evidence_results))
 
     elif outcome == "clarify":
         intent = _intent(result)
@@ -1233,7 +1617,7 @@ def evaluate_case(
     else:
         automated_issues.append(f"Unsupported expected outcome '{outcome}'")
 
-    semantics = _evaluate_semantics(case, text, results)
+    semantics = _evaluate_semantics(case, text, evidence_results)
     automated_passed = not automated_issues
 
     details["automated_status"] = "passed" if automated_passed else "failed"
@@ -1250,6 +1634,83 @@ def evaluate_case(
     else:
         status = "needs_review"  # Automated checks hold; the rubrics still need a person.
     return status, all_issues, details
+
+
+class EvalDashboardStore:
+    """Saved dashboards of one evaluation chat, with an autonomous refresh.
+
+    The real application stores dashboards in its database. The eval runner has no
+    application database, but a follow-up may need the dashboard created by its
+    prerequisite, so the same contract is kept in memory for one chat.
+    """
+
+    def __init__(self, dataset: Any) -> None:
+        self.dataset = dataset
+        self._snapshots: dict[str, DashboardSnapshot] = {}
+
+    def save(
+        self, title: str, description: str | None, widgets: list[WidgetSnapshot]
+    ) -> DashboardSnapshot:
+        snapshot = DashboardSnapshot(
+            dashboard_id=f"d_eval_{uuid4().hex[:12]}",
+            dataset_id=self.dataset.catalog.dataset_id,
+            title=title,
+            description=description,
+            widgets=widgets,
+            consistency="immutable",
+            created_at=datetime.now(UTC),
+            refreshed_at=datetime.now(UTC),
+        )
+        self._snapshots[snapshot.dashboard_id] = snapshot
+        return snapshot
+
+    def refresh(self, dashboard_id: str) -> DashboardSnapshot:
+        """Recompute every widget recipe and return the same saved dashboard."""
+        snapshot = self._snapshots.get(dashboard_id)
+        if snapshot is None:
+            raise ValueError("Dashboard not found in this chat")
+        recompute = getattr(self.dataset, "recompute_widget", None)
+        if recompute is None:
+            raise ValueError("Dashboard refresh is unavailable")
+
+        widgets: list[WidgetSnapshot] = []
+        for widget in snapshot.widgets:
+            template = (
+                ChartTemplate(**widget.chart.model_dump(exclude={"result_id"}))
+                if isinstance(widget.chart, ChartSpec)
+                else widget.chart
+            )
+            result = recompute(widget)
+            if result.status not in ("ok", "empty"):
+                widgets.append(
+                    widget.model_copy(
+                        update={
+                            "chart": template,
+                            "result_id": None,
+                            "status": "error",
+                            "error": result.error,
+                        }
+                    )
+                )
+                continue
+            read = result.read
+            widgets.append(
+                widget.model_copy(
+                    update={
+                        "chart": chart_for_result(template, result),
+                        "result_id": result.result_id,
+                        "status": result.status,
+                        "error": None,
+                        "read_started_at": read.started_at if read is not None else None,
+                        "read_finished_at": read.finished_at if read is not None else None,
+                    }
+                )
+            )
+        refreshed = snapshot.model_copy(
+            update={"widgets": widgets, "refreshed_at": datetime.now(UTC)}
+        )
+        self._snapshots[dashboard_id] = refreshed
+        return refreshed
 
 
 class GoldenDataset:
@@ -1390,6 +1851,8 @@ def _invoke(
     thread_id: str,
     history: Sequence[Message],
     question: str,
+    *,
+    dashboards: EvalDashboardStore | None = None,
 ) -> dict:
     state = {
         "chat_id": thread_id,
@@ -1406,31 +1869,19 @@ def _invoke(
     )
     budget = ExecutionBudget(get_limits().agent_turn_timeout_seconds)
 
-    def saver(
-        title: str, description: str | None, widgets: list[WidgetSnapshot]
-    ) -> DashboardSnapshot:
-        return DashboardSnapshot(
-            dashboard_id=f"d_eval_{uuid4().hex[:12]}",
-            dataset_id=dataset.catalog.dataset_id,
-            title=title,
-            description=description,
-            widgets=widgets,
-            consistency="immutable",
-            created_at=datetime.now(UTC),
-            refreshed_at=datetime.now(UTC),
-        )
-
     config = {
         "configurable": {
             "thread_id": thread_id,
             "client": client,
             "catalog_loader": dataset.load_catalog,
             "tool_dispatcher": dataset.dispatch,
-            "dashboard_saver": saver,
             "budget": budget,
             "diagnostics": diagnostics,
         }
     }
+    if dashboards is not None:
+        config["configurable"]["dashboard_saver"] = dashboards.save
+        config["configurable"]["dashboard_refresher"] = dashboards.refresh
     try:
         with budget.activate():
             result = graph.invoke(state, config=config)
@@ -1445,10 +1896,14 @@ def _invoke(
             pass
         raise EvalInvocationError(error, {**partial, "_eval_diagnostics": events}) from error
     terminal = _terminal_issues(
-        result.get("answer_blocks", []), result.get("results", []), result.get("plan", [])
+        result.get("answer_blocks", []),
+        result.get("results", []),
+        result.get("plan", []),
+        result.get("terminal_error"),
     )
     diagnostics.finish(
-        "error" if terminal else "success", diagnostics.last_error if terminal else None
+        "error" if terminal else "success",
+        (result.get("terminal_error") or diagnostics.last_error) if terminal else None,
     )
     return {**result, "_eval_diagnostics": events}
 
@@ -1477,6 +1932,7 @@ def process_case(
     history: list[Message] = []
     executed_context: list[str] = []
     context_results: list[dict] = []
+    dashboards = EvalDashboardStore(dataset)
     column_aliases = {
         column.original_name: column.name
         for table in getattr(dataset.catalog, "tables", [])
@@ -1518,6 +1974,7 @@ def process_case(
                 thread_id,
                 history,
                 dependency.get("question", ""),
+                dashboards=dashboards,
             )
         except Exception as error:  # noqa: BLE001 - a prerequisite failure blocks the case
             partial = error.result if isinstance(error, EvalInvocationError) else {}
@@ -1582,7 +2039,15 @@ def process_case(
 
     start_time = time.perf_counter()
     try:
-        result = _invoke(graph, dataset, client, thread_id, history, case.get("question", ""))
+        result = _invoke(
+            graph,
+            dataset,
+            client,
+            thread_id,
+            history,
+            case.get("question", ""),
+            dashboards=dashboards,
+        )
     except Exception as error:  # noqa: BLE001 - report the failed run, not a crash
         partial = error.result if isinstance(error, EvalInvocationError) else {}
         _, _, details = evaluate_case(
@@ -1705,7 +2170,7 @@ def run_eval(
         "status": "running",
         "started_at": started_at,
         "summary": {
-            "total": len(runnable),
+            "total": len(cases),
             "passed": 0,
             "failed": 0,
             "needs_review": 0,

@@ -10,6 +10,7 @@ import duckdb
 import pytest
 import yaml
 
+from djedai.agent.dashboard import dashboard_preview_blocks, dashboard_refresh_blocks
 from djedai.contracts.agent import Block
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.dashboard import (
@@ -702,7 +703,8 @@ def test_chart_data_fact_mismatch_fails():
     status, issues, _ = evaluate_case(c, s)
     assert status == "failed"
     assert any(
-        "Chart backing result does not confirm expected fact 'chart.peak'" in i for i in issues
+        "Chart displayed values of the chart axes do not match expected fact 'chart.peak'" in i
+        for i in issues
     )
 
 
@@ -753,6 +755,90 @@ def _make_dashboard_widget(widget_id, chart_type="line", result_id="r1", tool_pa
         layout=WidgetLayout(x=0, y=0, w=4, h=2),
         tool_call=WidgetToolCall(tool="run_sql", params=tool_params or {"query": "SELECT 1"}),
     )
+
+
+def dashboard_answer(preview=dashboard_preview_blocks, *, title="Показатели", count=3):
+    snapshot = DashboardSnapshot(
+        dashboard_id="dash_counts",
+        dataset_id="ds_validation",
+        title=title,
+        created_at=datetime.now(UTC),
+        widgets=[_make_dashboard_widget(f"w{i}", result_id=f"r{i}") for i in range(count)],
+    )
+    return {
+        "results": [
+            result([["ready", 123]], columns=["date", "cnt"], result_id=f"r{i}")
+            for i in range(count)
+        ],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": preview(snapshot),
+        "dashboard_snapshot": snapshot,
+    }
+
+
+@pytest.mark.parametrize("preview", [dashboard_preview_blocks, dashboard_refresh_blocks])
+@pytest.mark.parametrize("count", [3, 8])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_dashboard_service_counts_are_verified_by_snapshot(preview, count, serialized):
+    s = dashboard_answer(preview, count=count)
+    original = s["answer_blocks"][0].markdown
+    if serialized:
+        s["dashboard_snapshot"] = s["dashboard_snapshot"].model_dump(mode="json")
+        s["answer_blocks"] = [block.model_dump(mode="json") for block in s["answer_blocks"]]
+    status, issues, details = evaluate_case(case(dashboard={}), s)
+    assert status == "passed", issues
+    assert details["answer"] == original
+    assert details["dashboard_checks"]["widget_count"] == count
+
+
+@pytest.mark.parametrize("number", [3, 999])
+@pytest.mark.parametrize("separate_block", [False, True])
+def test_dashboard_service_count_never_justifies_an_analytical_number(number, separate_block):
+    s = dashboard_answer()
+    claim = f"Всего {number} строк."
+    if separate_block:
+        s["answer_blocks"].append(Block(type="text", markdown=claim))
+    else:
+        s["answer_blocks"][0].markdown += " " + claim
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_dashboard_summary_keeps_correct_analytical_prose_and_checks_title():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown += " Всего 123 строки."
+    assert evaluate_case(case(dashboard={}), s)[0] == "passed"
+    status, issues, _ = evaluate_case(case(dashboard={}), dashboard_answer(title="Всего 999 строк"))
+    assert status == "failed"
+    assert "Number 999 in the answer is not backed by tool results" in issues
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing_snapshot", "invalid_snapshot", "wrong_link", "wrong_count"]
+)
+def test_dashboard_count_exemption_requires_matching_saved_evidence(defect):
+    s = dashboard_answer()
+    if defect == "missing_snapshot":
+        s.pop("dashboard_snapshot")
+    elif defect == "invalid_snapshot":
+        s["dashboard_snapshot"] = {"widgets": []}
+    elif defect == "wrong_link":
+        s["answer_blocks"][-1].dashboard_id = "another_dashboard"
+    else:
+        s["answer_blocks"][0].markdown = s["answer_blocks"][0].markdown.replace("3", "7")
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    number = 7 if defect == "wrong_count" else 3
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_ordinary_widget_mentions_are_still_numeric_claims():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown = "Виджетов: 3."
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert "Number 3 in the answer is not backed by tool results" in issues
 
 
 def test_dashboard_missing_link_or_snapshot_fails():
@@ -1323,7 +1409,11 @@ def test_dashboard_refresh_must_recompute_the_same_values():
     )
     status, issues, details = evaluate_case(_dashboard_case(), _dashboard_state(), dataset=fresh)
     assert status == "passed", issues
-    assert details["dashboard_checks"]["not_evaluated"] == ["restart", "foreign_owner"]
+    assert details["dashboard_checks"]["not_evaluated"] == [
+        "restart",
+        "foreign_owner",
+        "widget_chart_axes",
+    ]
 
     wrong = SimpleNamespace(
         recompute_widget=lambda w: result([[8]], columns=["cnt"], result_id=f"new_{w.widget_id}")
@@ -1415,3 +1505,171 @@ def test_semantics_report_clarification_options_as_not_evaluated():
 
     options = [r for r in semantics["rubrics"] if r["kind"] == "clarification.options"]
     assert options[0]["status"] == "not_evaluated"
+
+
+STATUS_ROWS = [["Успешно", 454882, 0], ["Ошибка", 40414, 0], ["Отменено", 4704, 0]]
+STATUS_TEXT = "Успешно 454882, Ошибка 40414, Отменено 4704"
+
+
+def _status_answer(x_field="status", y_field="n", rows=None, columns=None, **chart_fields):
+    res = result(
+        rows or STATUS_ROWS, columns=columns or ["status", "n", "unrelated"], result_id="r_chart"
+    )
+    spec = ChartSpec(
+        chart_id="c1",
+        type="bar",
+        title="Статусы",
+        result_id="r_chart",
+        x=XAxis(field=x_field, kind="category"),
+        y=[YMeasure(field=y_field, format="int")],
+        **chart_fields,
+    )
+    answer = state(res, STATUS_TEXT)
+    answer["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
+    return evaluate_case(_status_case(), answer)
+
+
+def _status_case():
+    golden = yaml.safe_load(
+        (Path(__file__).parents[2] / "eval/questions.yaml").read_text(encoding="utf-8")
+    )
+    return next(item for item in golden if item["id"] == "s4_status_bar_01")
+
+
+def _chart_issues(issues):
+    return [issue for issue in issues if "Chart" in issue]
+
+
+def test_chart_on_the_measure_column_passes_the_golden_check():
+    status, issues, details = _status_answer()
+    assert _chart_issues(issues) == []
+    assert details["chart_checks"]["passed"] is True
+    assert details["chart_checks"]["charts"][0]["data_fact_columns"] == ["status", "n"]
+    assert status == "needs_review"
+
+
+def test_chart_on_an_unrelated_column_fails_although_the_result_has_the_numbers():
+    status, issues, details = _status_answer(y_field="unrelated")
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+    assert details["chart_checks"]["passed"] is False
+
+
+def test_chart_with_a_wrong_x_fails_although_the_right_column_is_next_to_it():
+    rows = [[label, "другое", n] for label, n, _ in STATUS_ROWS]
+    status, issues, _ = _status_answer(x_field="wrong", rows=rows, columns=["status", "wrong", "n"])
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+
+
+def test_chart_with_axes_on_shuffled_pairs_fails():
+    rows = [["Успешно", 40414, 0], ["Ошибка", 454882, 0], ["Отменено", 4704, 0]]
+    status, issues, _ = _status_answer(rows=rows)
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+
+
+def test_other_chart_checks_stay_next_to_the_axes_check():
+    _, issues, _ = _status_answer(limit=2)
+    assert any("truncates series" in issue for issue in issues)
+    assert not any("displayed values" in issue for issue in issues)
+
+
+def test_chart_without_limit_shows_the_whole_series():
+    """Ряд не режется пределом, который никто не задавал (#245)."""
+    rows = [[f"2026-01-{day:02d}", day] for day in range(1, 25)]
+    c = case(chart={"types_any": ["line"], "min_points": 24})
+    spec = ChartSpec(
+        chart_id="c1",
+        type="line",
+        title="Chart",
+        result_id="r_chart",
+        x=XAxis(field="date", kind="time"),
+        y=[YMeasure(field="val", format="number")],
+    )
+    assert spec.limit is None
+    s = state(result(rows, columns=["date", "val"], result_id="r_chart"), "24")
+    s["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
+    assert not [issue for issue in evaluate_case(c, s)[1] if "truncates" in issue]
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Не удалось получить ответ модели. Попробуйте повторить запрос.", "Changed wording"],
+)
+def test_typed_terminal_error_fails_even_with_matching_facts(message):
+    s = state(result([[123]]), "123")
+    s["answer_blocks"].append(Block(type="error", markdown=message))
+    s["terminal_error"] = "SERVER_ERROR"
+    c = case(facts=[{"key": "count", "comparison": "exact", "value": 123}])
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    graph = SimpleNamespace(invoke=lambda *a, **k: s)
+    report = process_case(c, {c["id"]: c}, None, graph, dataset)
+    assert report["status"] == "failed"
+    assert report["fact_checks"] == []
+    assert report["terminal_error"] == "SERVER_ERROR"
+    assert report["diagnostics"][-1]["status"] == "error"
+    assert report["diagnostics"][-1]["error_type"] == "SERVER_ERROR"
+
+
+def test_recovered_model_error_does_not_fail_successful_turn():
+    def invoke(input_state, config):
+        config["configurable"]["diagnostics"].last_error = "SERVER_ERROR"
+        return state(result([[123]]), "123")
+
+    c = case()
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = process_case(c, {c["id"]: c}, None, SimpleNamespace(invoke=invoke), dataset)
+    assert report["status"] == "passed"
+    assert report["diagnostics"][-1]["status"] == "success"
+    assert report["diagnostics"][-1]["error_type"] is None
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_total_includes_every_outcome_in_partial_and_completed_reports(
+    tmp_path, monkeypatch, blocked
+):
+    skipped = case(outcome="input_error")
+    skipped["id"] = "skipped"
+    questions, manifest = suite_files(tmp_path, [case(), skipped])
+    output = tmp_path / "report.json"
+    outcomes = ("passed", "failed", "needs_review", "skipped", "blocked", "pending")
+
+    def assert_counts(report):
+        summary = report["summary"]
+        assert summary["total"] == len(report["cases"]) == 2
+        assert summary["total"] == sum(summary[key] for key in outcomes)
+
+    def invoke(*args, **kwargs):
+        partial = json.loads(output.read_text("utf-8"))
+        assert_counts(partial)
+        assert partial["summary"]["pending"] == 1
+        assert partial["summary"]["skipped"] == 1
+        return state(result([[123]]), "123")
+
+    def client():
+        if blocked:
+            raise ValueError("Unavailable")
+        return None
+
+    monkeypatch.setattr("scripts.eval_runner.get_agent_client", client)
+    monkeypatch.setattr(
+        "scripts.eval_runner.build_agent_graph", lambda: SimpleNamespace(invoke=invoke)
+    )
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = run_eval(questions, output, manifest_path=manifest, dataset=dataset)
+    assert_counts(report)
+    assert report["summary"]["pending"] == 0
+    assert report["summary"]["blocked" if blocked else "passed"] == 1
