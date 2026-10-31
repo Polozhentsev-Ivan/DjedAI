@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderRoute } from '@/test/renderRoute';
 
@@ -19,14 +19,14 @@ describe('routing', () => {
     const { router } = await renderRoute('/sources');
     await userEvent.click(screen.getByRole('link', { name: 'Дашборды' }));
     expect(await screen.findByRole('heading', { name: 'Дашборд: Квартальная статистика продаж' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByRole('link', { name: /Регионы/ })).toHaveAttribute('href', '/dashboards/d_r');
     await userEvent.click(screen.getByRole('link', { name: 'Чат' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
-    const regionsChat = await waitFor(() => {
-      const link = screen.getByRole('link', { name: /Регионы/ });
-      expect(link).toHaveAttribute('href', '/chat/c_reg');
-      return link;
-    });
-    await userEvent.click(regionsChat);
+    // Router state can update before React replaces the previous page's links.
+    expect(await screen.findByRole('heading', { name: 'Новый чат' })).toBeInTheDocument();
+    const chatLink = await within(screen.getByRole('complementary')).findByRole('link', { name: /Регионы/ });
+    expect(chatLink).toHaveAttribute('href', '/chat/c_reg');
+    await userEvent.click(chatLink);
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/c_reg'); });
     expect(await screen.findByRole('heading', { name: 'Регионы' })).toBeInTheDocument();
   });
