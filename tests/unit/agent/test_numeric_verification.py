@@ -931,3 +931,59 @@ def test_model_rephrasing_does_not_confirm_constants() -> None:
         "compose_retries": 2,
     }
     assert verify(state, {"configurable": {}})["verification"].status == "failed"
+
+
+def test_as_of_caption_requires_its_own_sql_cutoffs() -> None:
+    sql = (
+        "SELECT COUNT(*) AS cnt FROM t WHERE soglasovana_msk < '2025-04-01' "
+        "AND (oplachena_msk IS NULL OR oplachena_msk >= '2025-04-01') "
+        "AND (otmenena_msk IS NULL OR otmenena_msk >= '2025-04-01') "
+        "AND (otklonena_msk IS NULL OR otklonena_msk >= '2025-04-01')"
+    )
+    caption = (
+        "Результаты запроса по подразделениям (сумма согласованных заявок, "
+        "где дата согласования ранее 2025-04-01, а даты оплаты, отмены "
+        "или отклонения отсутствуют или позже 2025-04-01):"
+    )
+    results = _query_result(sql, ["cnt"], [[3]])
+    question = "Сколько согласовано, но не оплачено на конец 31 марта 2025 года?"
+    assert _checked(caption, results, question).status == "verified"
+    assert _checked("На конец 31 марта 2025 года: строк 3", results, question).status == "verified"
+    assert _checked("На конец 30 марта 2025 года: строк 3", results, question).status == "failed"
+    renamed = _query_result(
+        sql.replace("soglasovana_msk", "created_at").replace("oplachena_msk", "paid_at"),
+        ["cnt"],
+        [[3]],
+    )
+    assert _checked("На конец 31 марта 2025 года: строк 3", renamed, question).status == "verified"
+    assert (
+        _checked(caption.replace("2025-04-01", "2025-04-02"), results, question).status == "failed"
+    )
+    # The caption cannot borrow only a repeated date or a partial filter.
+    partial = _query_result("SELECT 3 AS cnt WHERE TRUE -- 2025-04-01", ["cnt"], [[3]])
+    assert _checked(caption, partial, question).status == "failed"
+    wrong_operator = _query_result(
+        sql.replace("soglasovana_msk <", "soglasovana_msk >="), ["cnt"], [[3]]
+    )
+    assert _checked(caption, wrong_operator, question).status == "failed"
+    assert _checked("В апреле 2025 строк 3", results, "Сколько?").status == "failed"
+    # An as-of caption on an analytical value cannot borrow a second result's filter.
+    foreign = _query_result("SELECT 77 AS value", ["value"], [[77]], "r_foreign")
+    assert (
+        _checked("На конец 31 марта 2025 года: значение 77", foreign + results, question).status
+        == "failed"
+    )
+
+
+def test_calendar_day_counts_bind_to_the_nearest_month_clause() -> None:
+    results = _query_result(
+        "SELECT 7 AS value WHERE d >= '2025-02-01' AND d < '2025-04-01'", ["value"], [[7]]
+    )
+    assert (
+        _checked("Февраль 2025: 28 дней; март 2025: 31 день", results, "Сколько?").status
+        != "failed"
+    )
+    assert (
+        _checked("Февраль 2025: 31 день; март 2025: 28 дней", results, "Сколько?").status
+        == "failed"
+    )

@@ -13,12 +13,23 @@
       value: 30.3211
       unit: процент
       abs_tolerance: 0.01
+    - key: medicine.id
+      comparison: exact
+      value: '1019'
+    - key: medicine.feb_daily_per_pharmacy
+      comparison: approx
+      value: 1.5464285714285715
+      abs_tolerance: 0.005
+    - key: medicine.mar_daily_per_pharmacy
+      comparison: approx
+      value: 2.015322580645161
+      abs_tolerance: 0.005
     answer_contains_value:
       from_result: true
     answer_units:
     - '%|процент'
     answer_rows:
-    - label: '1019'
+    - label: Цетиризин
       values:
       - value: 30.3211
         abs_tolerance: 0.01
