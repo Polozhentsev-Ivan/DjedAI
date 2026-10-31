@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium, expect as baseExpect } from '@playwright/test';
+import { assertWidgetIdentities, verifyRefreshResults } from './journey-refresh.mjs';
 
 const expect = baseExpect.configure({ timeout: 30_000 });
 
@@ -252,13 +253,10 @@ try {
       await expect(page.locator('[role="img"]')).toHaveCount(2);
       assert.deepEqual(await json(`/api/dashboards/${s.dashboard.dashboard_id}`), s.dashboard);
       const updated = await refresh(s.dashboard.dashboard_id);
-      for (const [i, widget] of updated.widgets.entries()) {
-        assert.equal(widget.status, 'ok');
-        assert.notEqual(widget.result_id, s.dashboard.widgets[i].result_id);
-        assert.deepEqual(widget.recipe, s.dashboard.widgets[i].recipe);
-        assert.deepEqual(widget.tool_call, s.dashboard.widgets[i].tool_call);
-        await result(widget.result_id, i === 1 ? [['North', 100], ['South', 200]] : [['North', s.kind === 'postgres' ? 30 : 20], ['South', 30]]);
-      }
+      await verifyRefreshResults(updated, s.dashboard, [
+        [['North', s.kind === 'postgres' ? 30 : 20], ['South', 30]],
+        [['North', 100], ['South', 200]],
+      ], result);
       s.refreshed = updated;
       await page.screenshot({ path: path.join(output, `${s.kind}-restart-refresh.png`), fullPage: true });
       check(`${s.kind}: restart preserves definitions and refresh creates fresh correct results`);
@@ -270,6 +268,7 @@ try {
     await page.goto(`/dashboards/${s.dashboard.dashboard_id}`);
     const callsBefore = (await model('/observations')).calls.length;
     const updated = await refresh(s.dashboard.dashboard_id);
+    assertWidgetIdentities(updated, s.dashboard);
     assert.equal(updated.widgets[0].status, 'error');
     assert.equal(updated.widgets[0].result_id, null);
     assert(updated.widgets[0].error);
