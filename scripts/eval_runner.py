@@ -37,7 +37,11 @@ from eval_values import collection_matches  # noqa: E402
 from verify_golden import check_identity, download_file  # noqa: E402
 
 from djedai.agent.config import get_agent_client  # noqa: E402
-from djedai.agent.dashboard import chart_for_result  # noqa: E402
+from djedai.agent.dashboard import (  # noqa: E402
+    chart_for_result,
+    dashboard_preview_blocks,
+    dashboard_refresh_blocks,
+)
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
 from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
@@ -760,6 +764,38 @@ def _block_text(blocks: Sequence[Any]) -> str:
     return " ".join(text for block in blocks if (text := _field(block, "markdown")))
 
 
+def _data_claim_text(blocks: Sequence[Any], snapshot: Any) -> str:
+    """Exclude verified service counts, preserving the title and analytical prose."""
+    try:
+        saved = DashboardSnapshot.model_validate(snapshot)
+    except (ValueError, TypeError):
+        return _block_text(blocks)
+    if not any(
+        _field(block, "type") == "dashboard_link"
+        and _field(block, "dashboard_id") == saved.dashboard_id
+        for block in blocks
+    ):
+        return _block_text(blocks)
+
+    # Reproduce the application's own summary from the saved snapshot. Merely
+    # mentioning widgets must not whitelist the same number elsewhere in prose.
+    summaries = [
+        dashboard_preview_blocks(saved)[0].markdown,
+        dashboard_refresh_blocks(saved)[0].markdown,
+    ]
+    parts = []
+    for block in blocks:
+        text = _field(block, "markdown") or ""
+        if _field(block, "type") == "text":
+            for summary in summaries:
+                if summary and text.startswith(summary):
+                    text = saved.title + " " + text[len(summary) :]
+                    break
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
 def _plain(value: Any) -> Any:
     """Snapshot graph data, excluding the client/configuration and provider response."""
     if hasattr(value, "model_dump"):
@@ -1346,6 +1382,7 @@ def evaluate_case(
     results = [item for item in (result.get("results") or []) if isinstance(item, ToolResult)]
     plan = list(result.get("plan") or [])
     text = _block_text(blocks)
+    claim_text = _data_claim_text(blocks, result.get("dashboard_snapshot"))
     used_tools = [tool for item in results if (tool := _field(item, "tool"))]
     reused_results, reuse_source, reuse_issues = _reused_results(expect, context_results)
     evidence_results = [*results, *reused_results]
@@ -1475,7 +1512,9 @@ def evaluate_case(
             derived = _verified_percentage(fact, evidence_results, reference_facts, column_aliases)
             if derived is not None:
                 fact_check["derivation"] = derived
-                if not _percentage_in_answer(text, Decimal(derived["value"]), _tolerance(fact)):
+                if not _percentage_in_answer(
+                    claim_text, Decimal(derived["value"]), _tolerance(fact)
+                ):
                     automated_issues.append(
                         f"Percentage '{fact['key']}' is missing or incorrect in the answer"
                     )
@@ -1520,9 +1559,9 @@ def evaluate_case(
             automated_issues.append(
                 f"Did not use any expected tools {tools_any}. Used: {used_tools}"
             )
-        automated_issues.extend(_answer_issues(case, text, evidence_results))
-        automated_issues.extend(_missing_answer_values(case, blocks, text))
-        automated_issues.extend(_required_answer_rows(case, text, results))
+        automated_issues.extend(_answer_issues(case, claim_text, evidence_results))
+        automated_issues.extend(_missing_answer_values(case, blocks, claim_text))
+        automated_issues.extend(_required_answer_rows(case, claim_text, results))
 
         # Chart checks
         chart_issues, chart_details = _check_chart(
