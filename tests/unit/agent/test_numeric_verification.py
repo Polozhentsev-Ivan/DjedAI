@@ -1017,3 +1017,55 @@ def test_calendar_day_counts_bind_to_the_nearest_month_clause() -> None:
         _checked("Февраль 2025: 31 день; март 2025: 28 дней", results, "Сколько?").status
         == "failed"
     )
+
+
+def test_parenthesized_per_day_per_entity_calculation_uses_sql_operands() -> None:
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT 1732 AS feb_sales, 2499 AS mar_sales, 40 AS pharmacies, "
+            "1732.0 / (40 * 28.0) AS feb_avg, 2499.0 / (40 * 31.0) AS mar_avg, "
+            "((2499.0 / (40 * 31.0)) / (1732.0 / (40 * 28.0)) - 1) * 100 AS growth",
+            connection=connection,
+        )
+    assert result.status == "ok"
+    results = [result]
+    for text in (
+        "1 732 / (40 * 28) = 1,55",
+        "2 499 / (40 * 31) = 2,02",
+        "(2,02 - 1,55) / 1,55 * 100 = 30,32 %",
+    ):
+        report = _checked(text, results, "Покажи расчёт")
+        assert report.status == "verified"
+        assertion = report.assertions[0]
+        assert assertion.kind == "formula"
+        assert assertion.operands
+        assert {item.result_id for item in assertion.evidence} == {result.result_id}
+    annotated = _checked("Для февраля (28 дней): 1 732 / (28 × 40) = 1,55", results, "Расчёт")
+    assert annotated.status == "verified"
+    assert any(item.kind == "formula" for item in annotated.assertions)
+    for text in (
+        "1 732 / (40 * 28) = 61,86",  # Missing entity normalization.
+        "1 732 / 40 * 28 = 1,55",  # Parentheses change the calculation.
+        "1 732 / (40 * 29) = 1,49",  # Unknown SQL divisor.
+        "(2,02 - 1,55) / 1,55 * 100 = 3032 %",  # No double percent scaling.
+        "1 732 / (40 * 0) = 0",
+    ):
+        assert _checked(text, results, "Покажи расчёт").status == "failed"
+    prose = "Рост в процентах — разница, делённая на исходное значение, умноженная на 100."
+    assert _checked(prose, results, "Покажи расчёт").status == "not_applicable"
+    revenue_prose = (
+        "Рост рассчитан как разница между выручкой марта и февраля, "
+        "делённая на выручку февраля и умноженная на 100"
+    )
+    assert _checked(revenue_prose, results, "Покажи расчёт").status == "not_applicable"
+    assert _checked("Всего 100 заказов", results, "Покажи расчёт").status == "failed"
+    no_scaling = _query_result("SELECT 1732 AS sales", ["sales"], [[1732]])
+    assert _checked(prose, no_scaling, "Покажи расчёт").status == "failed"
+
+
+def test_parenthesized_formula_cannot_borrow_a_foreign_divisor() -> None:
+    results = _query_result(
+        "SELECT 1732 AS sales, 40 AS pharmacies", ["sales", "pharmacies"], [[1732, 40]]
+    )
+    results += _query_result("SELECT 7.0 / 28 AS other", ["other"], [[0.25]], "r_other")
+    assert _checked("1732 / (40 * 28) = 1,55", results, "Расчёт").status == "failed"

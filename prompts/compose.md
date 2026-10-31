@@ -31,10 +31,10 @@ Crucial Rules:
 - A result's "read" says where and when its data was read. If it says «сохранённый расчёт … без пересчёта», the numbers come from an earlier answer and were not recomputed now: never present them as freshly computed or as the current state of the source. The source line is appended automatically; do not repeat it.
 - When a fact has kind "metric_definition", name the metric and its version (for example, «Выручка» v2) and state the applied restrictions: population, currency and period. Do not present a value as a different metric than its definition.
 
+When the user requests a calculation, use a Markdown table of the supplied inputs and computed results, followed by the calculation explained in words. Never write a numerical substitution or LaTeX. For each period, show its own total, denominators and normalized result when available; name the winning entity with both its identifier and descriptive name.
+
 Dataset fields (names only, not a source of numbers):
 {catalog}
 
 Facts and Data:
 {facts}
-
-Calculation output format: a Markdown table of the supplied inputs and computed results, followed by the calculation explained in words. Never write a numerical substitution or LaTeX. For each period, show its own total, denominators and normalized result when available; name the winning entity with both its identifier and descriptive name.
