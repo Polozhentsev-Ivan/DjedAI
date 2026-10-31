@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
+import numbers
 import re
 import sys
 import tempfile
@@ -22,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 import duckdb
+import pandas as pd
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +43,7 @@ from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
+from djedai.contracts.dashboard import DashboardSnapshot, WidgetSnapshot  # noqa: E402
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.data.service import CsvSource, ingest_csv_dataset  # noqa: E402
 from djedai.execution import ExecutionBudget  # noqa: E402
@@ -55,6 +59,12 @@ if {"seasonality", "time_aggregate"} <= SUPPORTED_TOOLS:
     SUPPORTED_REQUIREMENTS.add("seasonality")
 if {"segment_profile", "compare_segments"} <= SUPPORTED_TOOLS:
     SUPPORTED_REQUIREMENTS.add("segments")
+if {"correlation", "lagged_correlation"} <= SUPPORTED_TOOLS:
+    SUPPORTED_REQUIREMENTS.add("correlation")
+if "forecast" in SUPPORTED_TOOLS:
+    SUPPORTED_REQUIREMENTS.add("forecast")
+SUPPORTED_REQUIREMENTS.add("charts")
+SUPPORTED_REQUIREMENTS.add("dashboards")
 
 # Terminal failures published by the graph when the model or the verifier API
 # is unavailable. Ordinary rejection/clarification notices do not match them.
@@ -85,6 +95,14 @@ DATE_ONLY_RE = re.compile(
     r"|\b[1-4](?:-й)?\s+квартал(?:а|е|у)?\s+\d{4}\b",
     re.IGNORECASE,
 )
+SCOPE_CLAIM_RE = re.compile(
+    r"(?:выборк|данн|информаци)\w*[^.\n]{0,60}\b(?:только|лишь)\s+(?:по|за|об?)\s+(?:одн\w+|\d+)[^.\n]*",
+    re.IGNORECASE,
+)
+LIMIT_RE = re.compile(r"\blimit\s+(\d+)\s*;?\s*$", re.IGNORECASE)
+ROWS_NOUN_RE = re.compile(r"\s*строк", re.IGNORECASE)
+WEEKDAY_STEMS = ("понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресень")
+WEEKDAY_LABEL_RE = re.compile(rf"\b((?:{'|'.join(WEEKDAY_STEMS)})\w*)\s*\((\d)\)", re.IGNORECASE)
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -122,11 +140,23 @@ def _walk(value: Any) -> Iterator[Any]:
         yield value
 
 
+def _is_finite_number(value: Any) -> bool:
+    """Check if value is a real finite number, including numpy types and Decimals."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float, Decimal, numbers.Real)):
+        try:
+            return math.isfinite(float(value))
+        except (ValueError, TypeError, OverflowError):
+            return False
+    return False
+
+
 def _decimal(value: Any) -> Decimal | None:
     """Numeric value of a cell, excluding booleans and non-finite numbers."""
     if value is None or isinstance(value, bool):
         return None
-    if not isinstance(value, (int, float, Decimal)):
+    if not isinstance(value, (int, float, Decimal, numbers.Real)):
         return None
     try:
         number = Decimal(str(value))
@@ -367,6 +397,33 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     return issues
 
 
+def _missing_answer_values(case: dict, blocks: Sequence[Any], text: str) -> list[str]:
+    """Reference numbers must reach the answer: a confirmed tool result alone is not an answer.
+
+    Small integers are skipped because prose may spell them out, and charts or dashboards
+    deliver their values outside the text.
+    """
+    expect = case.get("expect") or {}
+    if not (expect.get("answer_contains_value") or {}).get("from_result"):
+        return []
+    if any(_field(block, "type") in {"chart", "dashboard_link", "table"} for block in blocks):
+        return []
+    claims = _claim_numbers(text)
+    issues = []
+    for fact in expect.get("facts") or []:
+        value = _decimal(fact["value"])
+        if value is None or abs(value) < 10 and value == value.to_integral_value():
+            continue
+        tolerance = _tolerance(fact)
+        if not any(
+            abs(claim - value) <= tolerance
+            or claim == value.quantize(Decimal(1).scaleb(min(0, claim.as_tuple().exponent)))
+            for claim in claims
+        ):
+            issues.append(f"Answer text does not state '{fact['key']}' ({fact['value']})")
+    return issues
+
+
 def _verified_percentage(
     fact: dict,
     results: Sequence[Any],
@@ -509,18 +566,535 @@ def _block_text(blocks: Sequence[Any]) -> str:
 def _plain(value: Any) -> Any:
     """Snapshot graph data, excluding the client/configuration and provider response."""
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
+        try:
+            return value.model_dump(mode="json")
+        except Exception:
+            return _plain(value.model_dump(mode="python"))
+    if hasattr(value, "tolist") and callable(value.tolist):
+        return _plain(value.tolist())
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, dict):
         return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set)):
         return [_plain(item) for item in value]
     if hasattr(value, "__dict__"):
         return _plain(vars(value))
     return value
 
 
+def _shown_series(chart: Any, data: Any, col_names: list[str]) -> dict[str, Any]:
+    """Only the columns the chart draws: a right number in a neighbouring column proves nothing."""
+    fields = [
+        _field(_field(chart, "x"), "field") if _field(chart, "x") is not None else None,
+        _field(_field(chart, "color"), "field") if _field(chart, "color") is not None else None,
+        *(_field(measure, "field") for measure in _field(chart, "y") or []),
+    ]
+    indexes = [col_names.index(field) for field in fields if field in col_names]
+    rows = [[row[i] for i in indexes if i < len(row)] for row in _field(data, "rows") or []]
+    return {"columns": [col_names[i] for i in indexes], "rows": rows}
+
+
+def _check_chart(
+    case: dict,
+    blocks: Sequence[Any],
+    result: dict,
+    results: Sequence[Any],
+    *,
+    context_results: Sequence[dict] | None = None,
+    column_aliases: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    expect = case.get("expect") or {}
+    chart_expect = expect.get("chart")
+    blocks_include = expect.get("blocks_include") or []
+
+    if chart_expect is None and "chart" not in blocks_include:
+        return [], {}
+
+    chart_blocks = [
+        _field(b, "chart")
+        for b in blocks
+        if _field(b, "type") == "chart" and _field(b, "chart") is not None
+    ]
+    if not chart_blocks and isinstance(result, dict) and result.get("charts"):
+        chart_blocks = list(result["charts"])
+
+    issues: list[str] = []
+    check_details: dict[str, Any] = {
+        "found": len(chart_blocks) > 0,
+        "charts_count": len(chart_blocks),
+        "charts": [],
+    }
+    if not chart_blocks:
+        issues.append("Expected a chart block in the answer, but none was found")
+        return issues, check_details
+
+    allowed_types = (chart_expect or {}).get("types_any") or []
+    expected_x_kind = (chart_expect or {}).get("x_kind")
+    min_points = (chart_expect or {}).get("min_points")
+    data_fact_key = (chart_expect or {}).get("data_fact")
+    reuse_from = expect.get("reuse_result_from")
+
+    all_available = list(results)
+    for cr in context_results or []:
+        all_available.extend(_field(cr, "tool_results") or [])
+
+    # Validate all charts in the answer
+    for idx, chart in enumerate(chart_blocks):
+        c_details: dict[str, Any] = {}
+        chart_type = _field(chart, "type")
+        c_details["type"] = chart_type
+
+        prefix = f"Chart [{idx}] " if len(chart_blocks) > 1 else "Chart "
+
+        if allowed_types and chart_type not in allowed_types:
+            issues.append(f"{prefix}type '{chart_type}' is not in expected types {allowed_types}")
+
+        result_id = _field(chart, "result_id")
+        c_details["result_id"] = result_id
+        if not result_id:
+            issues.append(f"{prefix}does not contain a result_id")
+            check_details["charts"].append(c_details)
+            continue
+
+        if reuse_from:
+            prereq_res_ids = {
+                _field(tr, "result_id")
+                for cr in (context_results or [])
+                if _field(cr, "id") == reuse_from
+                for tr in (_field(cr, "tool_results") or [])
+            }
+            if not prereq_res_ids:
+                issues.append(
+                    f"{prefix}cannot verify reuse: prerequisite '{reuse_from}' "
+                    f"has no tool results or was not found in context"
+                )
+            elif result_id not in prereq_res_ids:
+                issues.append(
+                    f"{prefix}result_id '{result_id}' "
+                    f"was not reused from prerequisite '{reuse_from}'"
+                )
+
+        backing = next((r for r in all_available if _field(r, "result_id") == result_id), None)
+        if backing is None:
+            issues.append(f"{prefix}result_id '{result_id}' was not found in tool results")
+            check_details["charts"].append(c_details)
+            continue
+
+        status = _field(backing, "status")
+        if status not in ("ok", "empty"):
+            issues.append(f"{prefix}backing result '{result_id}' has error status '{status}'")
+            check_details["charts"].append(c_details)
+            continue
+
+        data = _field(backing, "data")
+        columns_info = _field(data, "columns") or []
+        col_names = [
+            _field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)
+            for c in columns_info
+        ]
+        c_details["columns"] = col_names
+
+        # Missing column metadata is not accepted as passing
+        if not col_names and status == "ok":
+            issues.append(
+                f"{prefix}backing result '{result_id}' has no column metadata to verify axes"
+            )
+
+        chart_x = _field(chart, "x")
+        if expected_x_kind is not None:
+            if chart_x is None:
+                issues.append(
+                    f"{prefix}missing X axis configuration; expected kind '{expected_x_kind}'"
+                )
+            elif _field(chart_x, "kind") != expected_x_kind:
+                issues.append(
+                    f"{prefix}X axis kind '{_field(chart_x, 'kind')}' "
+                    f"does not match expected '{expected_x_kind}'"
+                )
+
+        if chart_x is not None:
+            x_field = _field(chart_x, "field")
+            if col_names and x_field not in col_names:
+                issues.append(
+                    f"{prefix}X axis field '{x_field}' not in backing result columns {col_names}"
+                )
+
+        y_measures = _field(chart, "y") or []
+        if not y_measures and chart_type != "kpi":
+            issues.append(f"{prefix}must specify at least one Y measure")
+        for ym in y_measures:
+            yf = _field(ym, "field")
+            if col_names and yf not in col_names:
+                issues.append(
+                    f"{prefix}Y measure field '{yf}' not in backing result columns {col_names}"
+                )
+
+        if min_points is not None:
+            limit = _field(chart, "limit")
+            if limit is not None and limit < min_points:
+                issues.append(
+                    f"{prefix}limit {limit} truncates series below required {min_points} points"
+                )
+            rows = _field(data, "rows") or []
+            if len(rows) < min_points:
+                issues.append(
+                    f"{prefix}backing result has {len(rows)} data rows, "
+                    f"fewer than required {min_points} points"
+                )
+            else:
+                for ym in y_measures:
+                    yf = _field(ym, "field")
+                    if col_names and yf in col_names:
+                        y_idx = col_names.index(yf)
+                        valid_pts = sum(
+                            1 for r in rows if len(r) > y_idx and _is_finite_number(r[y_idx])
+                        )
+                        if valid_pts < min_points:
+                            issues.append(
+                                f"{prefix}backing result has only {valid_pts} valid points "
+                                f"for measure '{yf}', fewer than required {min_points} points"
+                            )
+
+        if data_fact_key is not None:
+            fact = next(
+                (f for f in (expect.get("facts") or []) if f.get("key") == data_fact_key), None
+            )
+            if fact is None:
+                issues.append(
+                    f"{prefix}expected data_fact '{data_fact_key}' not defined in case facts"
+                )
+            else:
+                shown = _shown_series(chart, data, col_names)
+                c_details["data_fact_columns"] = _field(shown, "columns") or []
+                if not check_fact(
+                    fact, [{"status": status, "data": shown}], column_aliases=column_aliases
+                ):
+                    issues.append(
+                        f"{prefix}displayed values of the chart axes do not match "
+                        f"expected fact '{data_fact_key}'"
+                    )
+
+        check_details["charts"].append(c_details)
+
+    check_details["passed"] = len(issues) == 0
+    return issues, check_details
+
+
+def _check_dashboard(
+    case: dict,
+    blocks: Sequence[Any],
+    result: dict,
+    results: Sequence[Any],
+    *,
+    dataset: Any = None,
+    context_results: Sequence[dict] | None = None,
+    column_aliases: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    expect = case.get("expect") or {}
+    dash_expect = expect.get("dashboard")
+    blocks_include = expect.get("blocks_include") or []
+    if dash_expect is None and "dashboard_link" not in blocks_include:
+        return [], {}
+
+    issues: list[str] = []
+    check_details: dict[str, Any] = {}
+
+    link_block = next((b for b in blocks if _field(b, "type") == "dashboard_link"), None)
+    if link_block is None:
+        issues.append("Dashboard outcome produced no dashboard_link block")
+        return issues, check_details
+    dashboard_id = _field(link_block, "dashboard_id")
+    if not dashboard_id:
+        issues.append("dashboard_link block has no dashboard_id")
+        return issues, check_details
+    check_details["dashboard_id"] = dashboard_id
+
+    snapshot = result.get("dashboard_snapshot")
+    if snapshot is None:
+        issues.append("Dashboard snapshot is missing")
+        return issues, check_details
+
+    actual_widgets = _field(snapshot, "widgets") or []
+    check_details["widget_count"] = len(actual_widgets)
+    if len(actual_widgets) < 3 or len(actual_widgets) > 8:
+        issues.append(f"Dashboard has {len(actual_widgets)} widgets; expected between 3 and 8")
+
+    all_available = list(results)
+    for cr in context_results or []:
+        all_available.extend(_field(cr, "tool_results") or [])
+
+    expected_widgets = (dash_expect or {}).get("widgets") or []
+    matched_widget_ids: set[str] = set()
+    widget_facts: dict[Any, list[dict]] = {}
+    for exp_w in expected_widgets:
+        wid = exp_w.get("id")
+        exp_types = exp_w.get("chart_types_any") or []
+        exp_facts = exp_w.get("facts") or []
+        matched = False
+        exact_match = next(
+            (aw for aw in actual_widgets if wid and _field(aw, "widget_id") == wid),
+            None,
+        )
+        candidates = [exact_match] if exact_match is not None else actual_widgets
+        for aw in candidates:
+            aw_wid = _field(aw, "widget_id") or str(id(aw))
+            if aw_wid in matched_widget_ids:
+                continue
+            aw_chart = _field(aw, "chart")
+            aw_type = _field(aw_chart, "type") if aw_chart else None
+            if exp_types and aw_type not in exp_types:
+                continue
+            aw_status = _field(aw, "status")
+            if aw_status not in ("ok", "empty"):
+                continue
+            aw_res_id = _field(aw, "result_id")
+            if not aw_res_id:
+                continue
+            aw_res = next((r for r in all_available if _field(r, "result_id") == aw_res_id), None)
+            if aw_res is None or _field(aw_res, "status") not in ("ok", "empty"):
+                continue
+            if exp_facts:
+                needed_facts = [f for f in (expect.get("facts") or []) if f.get("key") in exp_facts]
+                if needed_facts and all(
+                    check_fact(f, [aw_res], column_aliases=column_aliases) for f in needed_facts
+                ):
+                    matched = True
+                    matched_widget_ids.add(aw_wid)
+                    widget_facts[_field(aw, "widget_id")] = needed_facts
+                    break
+            else:
+                matched = True
+                matched_widget_ids.add(aw_wid)
+                break
+        if not matched:
+            issues.append(
+                f"Dashboard widget '{wid}' (types={exp_types}, facts={exp_facts}) was not satisfied"
+            )
+
+    # The runner has no application database: restart and foreign-owner access stay
+    # with tests/integration/test_dashboard_chat.py and test_owner_isolation.py.
+    # Widget facts are checked against the whole result, not the axes its chart draws.
+    check_details["not_evaluated"] = ["restart", "foreign_owner", "widget_chart_axes"]
+
+    recompute = getattr(dataset, "recompute_widget", None)
+    if recompute is None:
+        check_details["not_evaluated"].append("refresh")
+    else:
+        for aw in actual_widgets:
+            wid = _field(aw, "widget_id")
+            try:
+                refreshed = recompute(aw)
+            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
+                issues.append(f"Widget '{wid}' refresh failed: {exc}")
+                continue
+            if _field(refreshed, "status") != "ok":
+                issues.append(f"Widget '{wid}' refresh returned '{_field(refreshed, 'status')}'")
+            if _field(refreshed, "result_id") == _field(aw, "result_id"):
+                issues.append(f"Widget '{wid}' refresh did not produce a new result_id")
+            for fact in widget_facts.get(wid, []):
+                if not check_fact(fact, [refreshed], column_aliases=column_aliases):
+                    issues.append(f"Widget '{wid}' refresh does not confirm fact '{fact['key']}'")
+
+    check_details["passed"] = len(issues) == 0
+    return issues, check_details
+
+
+def _column_names(data: Any) -> list[str]:
+    return [
+        _field(c, "name") if hasattr(c, "name") or isinstance(c, dict) else str(c)
+        for c in (_field(data, "columns") or [])
+    ]
+
+
+def _check_correlation_results(case: dict, results: Sequence[Any]) -> list[str]:
+    """Check correlation tools by their own columns; other tools are covered by facts."""
+    expect = case.get("expect") or {}
+    facts = {fact["key"]: fact for fact in expect.get("facts") or []}
+    issues: list[str] = []
+    for result in _ok_results(results):
+        tool = _field(result, "tool")
+        if tool not in {"correlation", "lagged_correlation"}:
+            continue
+        data = _field(result, "data")
+        names = _column_names(data)
+        rows = _field(data, "rows") or []
+        if "r" not in names:
+            issues.append(f"Tool '{tool}' result has no 'r' column")
+            continue
+        r_index = names.index("r")
+        for row in rows:
+            if not _is_finite_number(row[r_index]) or not -1 <= float(row[r_index]) <= 1:
+                issues.append(f"Tool '{tool}' produced invalid Pearson r: {row[r_index]}")
+        if tool == "correlation" and expect.get("population") == "complete_measure_pairs":
+            n_index = names.index("n") if "n" in names else None
+            if n_index is None or not any(row[n_index] == 500000 for row in rows):
+                issues.append("Correlation was not computed over 500000 complete pairs")
+        if tool == "lagged_correlation" and "lag" in names:
+            by_lag = {row[names.index("lag")]: row[r_index] for row in rows}
+            for lag, key in (
+                (5, "lag.plus5_r"),
+                (facts.get("lag.best_days", {}).get("value"), "lag.best_r"),
+            ):
+                fact = facts.get(key)
+                if fact is None:
+                    continue
+                actual = _decimal(by_lag.get(lag))
+                if actual is None or abs(actual - _decimal(fact["value"])) > _tolerance(fact):
+                    issues.append(f"Lag {lag} does not have the expected r for '{key}': {actual}")
+    return issues
+
+
+def _holdout_leak_rubric(case: dict, results: Sequence[Any]) -> tuple[str, str | None]:
+    """Structured evidence only: the confirmed reference table separates forecast from actual."""
+    fact = next(
+        (
+            f
+            for f in (case.get("expect") or {}).get("facts") or []
+            if f["key"] == "forecast.holdout7"
+        ),
+        None,
+    )
+    if fact is not None and check_fact(fact, results):
+        return "passed", None
+    for result in _ok_results(results):
+        data = _field(result, "data")
+        names = [str(name).lower() for name in _column_names(data)]
+        forecast = next(
+            (
+                i
+                for i, c in enumerate(names)
+                if any(k in c for k in ("forecast", "прогноз", "yhat"))
+            ),
+            None,
+        )
+        actual = next(
+            (i for i, c in enumerate(names) if any(k in c for k in ("actual", "fact", "факт"))),
+            None,
+        )
+        rows = _field(data, "rows") or []
+        if forecast is None or actual is None or len(rows) < 3:
+            continue
+        if sum(row[forecast] == row[actual] for row in rows) / len(rows) >= 0.7:
+            return "failed", "Forecast values systematically equal holdout actuals"
+    return "not_evaluated", None
+
+
+# Rubrics decided by structured evidence. Prose has no reliable evaluator: keywords
+# cannot tell "это не выручка" from "это выручка", so everything else stays not_evaluated.
+RUBRIC_EVALUATORS = {
+    "Факт holdout использован как его прогноз.": _holdout_leak_rubric,
+}
+
+
+def _truncated_scope_issues(text: str, results: Sequence[Any]) -> list[str]:
+    """A claim about the whole data must not be drawn from a result cut by LIMIT."""
+    if not SCOPE_CLAIM_RE.search(text):
+        return []
+    for result in _ok_results(results):
+        limit = LIMIT_RE.search(_field(result, "sql") or "")
+        rows = _field(_field(result, "data"), "rows") or []
+        if limit and len(rows) == int(limit[1]):
+            return [
+                f"Answer describes the data scope from a result cut by LIMIT {limit[1]}: "
+                f"'{SCOPE_CLAIM_RE.search(text)[0]}'"
+            ]
+    return []
+
+
+def _unit_claim_issues(case: dict, text: str) -> list[str]:
+    """A count of distinct codes or chains must not be presented as a number of rows."""
+    plain = text.replace("*", "").replace("`", "")
+    issues = []
+    for fact in (case.get("expect") or {}).get("facts") or []:
+        unit = str(fact.get("unit") or "").lower()
+        value = _decimal(fact["value"])
+        if value is None or not unit.startswith("разн") or "попыток" in unit:
+            continue
+        for match in NUMBER_RE.finditer(plain):
+            numbers = list(_text_numbers(match[0]))
+            if numbers and numbers[0] == value and ROWS_NOUN_RE.match(plain[match.end() :]):
+                issues.append(
+                    f"Answer calls {format(value, 'f')} rows; fact '{fact['key']}' counts: {unit}"
+                )
+                break
+    return issues
+
+
+def _weekday_label_issues(case: dict, text: str) -> list[str]:
+    """Check "Пятница (4)" pairs when the question fixes the Monday=0 numbering."""
+    facts = (case.get("expect") or {}).get("facts") or []
+    if not any("понедельник=0" in str(fact.get("unit")) for fact in facts):
+        return []
+    issues = []
+    for name, number in WEEKDAY_LABEL_RE.findall(text):
+        expected = next(i for i, stem in enumerate(WEEKDAY_STEMS) if name.lower().startswith(stem))
+        if int(number) != expected:
+            issues.append(f"Weekday '{name}' is labelled {number}; Monday=0 makes it {expected}")
+    return issues
+
+
+def _evaluate_semantics(case: dict, text: str, results: Sequence[Any]) -> dict[str, Any]:
+    """Report rubrics separately; a rubric without honest evidence is not_evaluated."""
+    expect = case.get("expect") or {}
+    rubrics: list[dict[str, Any]] = []
+
+    def add(kind: str, rubric: Any) -> None:
+        evaluator = RUBRIC_EVALUATORS.get(rubric) if isinstance(rubric, str) else None
+        status, reason = evaluator(case, results) if evaluator else ("not_evaluated", None)
+        rubrics.append({"kind": kind, "rubric": rubric, "status": status, "reason": reason})
+
+    for kind in ("must_explain", "must_not_claim"):
+        for rubric in expect.get(kind) or []:
+            add(kind, rubric)
+    clarification = expect.get("clarification") or {}
+    if clarification.get("resolves"):
+        add("clarification.resolves", clarification["resolves"])
+    if clarification.get("options"):
+        add("clarification.options", clarification["options"])
+
+    code_issues = [
+        *_truncated_scope_issues(text, results),
+        *_unit_claim_issues(case, text),
+        *_weekday_label_issues(case, text),
+    ]
+    statuses = {rubric["status"] for rubric in rubrics}
+    if code_issues or "failed" in statuses:
+        status = "failed"
+    elif statuses <= {"passed"}:  # A case without rubrics has nothing left to review.
+        status = "passed"
+    elif "passed" in statuses:
+        status = "partial"
+    else:
+        status = "not_evaluated"
+    issues = [
+        *code_issues,
+        *(
+            f"Rubric '{rubric['rubric']}' failed: {rubric['reason']}"
+            for rubric in rubrics
+            if rubric["status"] == "failed"
+        ),
+    ]
+    return {"status": status, "rubrics": rubrics, "issues": issues}
+
+
 def evaluate_case(
-    case: dict, result: dict, *, column_aliases: dict[str, str] | None = None
+    case: dict,
+    result: dict,
+    *,
+    column_aliases: dict[str, str] | None = None,
+    dataset: Any = None,
+    context_results: Sequence[dict] | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
     """Score one graph result; terminal failures are rejected before facts/intent."""
     expect = case.get("expect", {})
@@ -550,28 +1124,43 @@ def evaluate_case(
             "planned_forbidden": planned_forbidden,
             "passed": not (called_forbidden or planned_forbidden),
         },
-        "unchecked_rubrics": [key for key in ("must_explain", "must_not_claim") if expect.get(key)],
         "diagnostics": result.get("_eval_diagnostics", []),
     }
 
-    issues = _terminal_issues(blocks, results, plan)
-    if issues:
-        return "failed", issues, details
+    automated_issues = _terminal_issues(blocks, results, plan)
+    if automated_issues:
+        semantics = _evaluate_semantics(case, "", [])
+        details["automated_status"] = "failed"
+        details["automated_issues"] = automated_issues
+        details["semantic_status"] = semantics["status"]
+        details["semantic_issues"] = semantics["issues"]
+        details["semantic_rubrics"] = semantics["rubrics"]
+        return "failed", automated_issues, details
+
     if called_forbidden or planned_forbidden:
         violations = sorted(set(called_forbidden + planned_forbidden))
-        issues.append(f"Used or planned forbidden tools: {violations}")
+        automated_issues.append(f"Used or planned forbidden tools: {violations}")
+
+    # Check required blocks
+    for bt in expect.get("blocks_include") or []:
+        if not any(_field(b, "type") == bt for b in blocks):
+            automated_issues.append(
+                f"Expected block of type '{bt}' in answer blocks, but none found"
+            )
 
     if outcome == "answer":
         tools_any = set(expect.get("tools_any") or []) | (
             set(expect.get("tools_planned") or []) & SUPPORTED_TOOLS
         )
         if tools_any and not set(tools_any).intersection(used_tools):
-            issues.append(f"Did not use any expected tools {tools_any}. Used: {used_tools}")
+            automated_issues.append(
+                f"Did not use any expected tools {tools_any}. Used: {used_tools}"
+            )
         if not any(
             _field(block, "type") == "text" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
-            issues.append("The answer contains no text block")
+            automated_issues.append("The answer contains no text block")
 
         reference_facts = expect.get("facts") or []
         for fact in reference_facts:
@@ -588,29 +1177,58 @@ def evaluate_case(
             derived = _verified_percentage(fact, results, reference_facts, column_aliases)
             if derived is not None:
                 fact_check["derivation"] = derived
-                # Execution metadata (e.g. two SQL rows) must not justify a wrong 2% answer.
                 if not _percentage_in_answer(text, Decimal(derived["value"]), _tolerance(fact)):
-                    issues.append(
+                    automated_issues.append(
                         f"Percentage '{fact['key']}' is missing or incorrect in the answer"
                     )
             details["fact_checks"].append(fact_check)
             if not result_ok:
-                issues.append(
+                automated_issues.append(
                     f"Fact '{fact['key']}' (value: {fact['value']}) "
                     "is not confirmed by tool results"
                 )
-        # The answer is checked separately: every number it states must come from the tools.
-        issues.extend(_answer_issues(case, text, results))
+        automated_issues.extend(_answer_issues(case, text, results))
+        automated_issues.extend(_missing_answer_values(case, blocks, text))
+
+        # Chart checks
+        chart_issues, chart_details = _check_chart(
+            case,
+            blocks,
+            result,
+            results,
+            context_results=context_results,
+            column_aliases=column_aliases,
+        )
+        automated_issues.extend(chart_issues)
+        if chart_details:
+            details["chart_checks"] = chart_details
+
+        # Dashboard checks
+        dash_issues, dash_details = _check_dashboard(
+            case,
+            blocks,
+            result,
+            results,
+            dataset=dataset,
+            context_results=context_results,
+            column_aliases=column_aliases,
+        )
+        automated_issues.extend(dash_issues)
+        if dash_details:
+            details["dashboard_checks"] = dash_details
+
+        # Correlation tool checks
+        automated_issues.extend(_check_correlation_results(case, results))
 
     elif outcome == "clarify":
         intent = _intent(result)
         if intent != expect.get("intent"):
-            issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
+            automated_issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
         elif not any(
             _field(block, "type") == "clarification" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
-            issues.append("Clarification outcome produced no clarification block")
+            automated_issues.append("Clarification outcome produced no clarification block")
         if expect.get("clarification"):
             clarification = _field(result.get("understanding"), "clarification")
             options = list(_field(clarification, "options", []) or [])
@@ -622,20 +1240,35 @@ def evaluate_case(
                 option.strip() for option in options if isinstance(option, str) and option.strip()
             }
             if len(choices) < 2:
-                issues.append("Clarification provides fewer than two distinct options")
-            details["unchecked_rubrics"].append("clarification.resolves_and_options_meaning")
+                automated_issues.append("Clarification provides fewer than two distinct options")
 
     elif outcome == "reject":
         intent = _intent(result)
         if intent != expect.get("intent"):
-            issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
+            automated_issues.append(f"Expected intent '{expect.get('intent')}', got '{intent}'")
         elif not text.strip():
-            issues.append("Rejection produced no answer blocks")
+            automated_issues.append("Rejection produced no answer blocks")
 
     else:
-        issues.append(f"Unsupported expected outcome '{outcome}'")
+        automated_issues.append(f"Unsupported expected outcome '{outcome}'")
 
-    return ("passed" if not issues else "failed"), issues, details
+    semantics = _evaluate_semantics(case, text, results)
+    automated_passed = not automated_issues
+
+    details["automated_status"] = "passed" if automated_passed else "failed"
+    details["automated_issues"] = list(automated_issues)
+    details["semantic_status"] = semantics["status"]
+    details["semantic_issues"] = semantics["issues"]
+    details["semantic_rubrics"] = semantics["rubrics"]
+
+    all_issues = automated_issues + semantics["issues"]
+    if all_issues:
+        status = "failed"
+    elif semantics["status"] == "passed":
+        status = "passed"
+    else:
+        status = "needs_review"  # Automated checks hold; the rubrics still need a person.
+    return status, all_issues, details
 
 
 class GoldenDataset:
@@ -657,15 +1290,47 @@ class GoldenDataset:
             raise ValueError(f"Agent requested unknown dataset {dataset_id!r}")
         return self.catalog
 
-    def dispatch(self, tool: str, params: dict[str, Any]) -> ToolResult:
-        with duckdb.connect(
+    def _connect(self) -> duckdb.DuckDBPyConnection:
+        return duckdb.connect(
             str(self.database_path),
             read_only=True,
             config={"enable_external_access": False},
-        ) as connection:
-            return execute_tool(
-                tool, params, connection=connection, allowed_tables=self.allowed_tables
-            )
+        )
+
+    def _run_step(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        tool: str,
+        params: dict[str, Any],
+        source_result: ToolResult | None,
+    ) -> ToolResult:
+        allowed_tables = set(self.allowed_tables)
+        if source_result is not None and source_result.data is not None:
+            frame = pd.DataFrame(source_result.data.rows, columns=source_result.data.columns)
+            connection.register("source_result", frame)
+            allowed_tables.add("source_result")
+        return execute_tool(tool, params, connection=connection, allowed_tables=allowed_tables)
+
+    def dispatch(
+        self, tool: str, params: dict[str, Any], source_result: ToolResult | None = None
+    ) -> ToolResult:
+        with self._connect() as connection:
+            return self._run_step(connection, tool, params, source_result)
+
+    def recompute_widget(self, widget: WidgetSnapshot) -> ToolResult:
+        """Re-run a saved recipe with the production tools, as dashboard refresh does."""
+        with self._connect() as connection:
+            if widget.tool_call is not None:
+                return self._run_step(
+                    connection, widget.tool_call.tool, widget.tool_call.params, None
+                )
+            results: dict[str, ToolResult] = {}
+            for step in widget.recipe.steps:
+                parent = results.get(step.source_step_id) if step.source_step_id else None
+                results[step.step_id] = self._run_step(
+                    connection, step.call.tool, step.call.params, parent
+                )
+            return results[widget.recipe.output_step_id]
 
     def close(self) -> None:
         self._temporary.cleanup()
@@ -759,12 +1424,28 @@ def _invoke(
         user_message_id=f"eval_{uuid4().hex}",
     )
     budget = ExecutionBudget(get_limits().agent_turn_timeout_seconds)
+
+    def saver(
+        title: str, description: str | None, widgets: list[WidgetSnapshot]
+    ) -> DashboardSnapshot:
+        return DashboardSnapshot(
+            dashboard_id=f"d_eval_{uuid4().hex[:12]}",
+            dataset_id=dataset.catalog.dataset_id,
+            title=title,
+            description=description,
+            widgets=widgets,
+            consistency="immutable",
+            created_at=datetime.now(UTC),
+            refreshed_at=datetime.now(UTC),
+        )
+
     config = {
         "configurable": {
             "thread_id": thread_id,
             "client": client,
             "catalog_loader": dataset.load_catalog,
             "tool_dispatcher": dataset.dispatch,
+            "dashboard_saver": saver,
             "budget": budget,
             "diagnostics": diagnostics,
         }
@@ -859,11 +1540,18 @@ def process_case(
             )
         except Exception as error:  # noqa: BLE001 - a prerequisite failure blocks the case
             partial = error.result if isinstance(error, EvalInvocationError) else {}
-            _, _, details = evaluate_case(dependency, partial, column_aliases=column_aliases)
+            _, _, details = evaluate_case(
+                dependency,
+                partial,
+                column_aliases=column_aliases,
+                dataset=dataset,
+            )
             context_results.append(
                 {
                     "id": dependency_id,
                     "status": "failed",
+                    "automated_status": "failed",
+                    "semantic_status": details.get("semantic_status", "failed"),
                     **details,
                     "issues": [f"Graph execution failed: {error}"],
                     "duration_seconds": round(time.perf_counter() - dependency_start, 2),
@@ -878,18 +1566,24 @@ def process_case(
                 "context_results": context_results,
             }
         status, issues, details = evaluate_case(
-            dependency, dependency_result, column_aliases=column_aliases
+            dependency,
+            dependency_result,
+            column_aliases=column_aliases,
+            dataset=dataset,
         )
         context_results.append(
             {
                 "id": dependency_id,
                 "status": status,
+                "automated_status": details.get("automated_status", status),
+                "semantic_status": details.get("semantic_status", status),
                 "issues": issues,
                 **details,
                 "duration_seconds": round(time.perf_counter() - dependency_start, 2),
             }
         )
-        if status != "passed":
+        # Unreviewed rubrics do not break the chat history; failed automated checks do.
+        if details["automated_status"] != "passed":
             return {
                 "id": case_id,
                 "status": "blocked",
@@ -910,11 +1604,19 @@ def process_case(
         result = _invoke(graph, dataset, client, thread_id, history, case.get("question", ""))
     except Exception as error:  # noqa: BLE001 - report the failed run, not a crash
         partial = error.result if isinstance(error, EvalInvocationError) else {}
-        _, _, details = evaluate_case(case, partial, column_aliases=column_aliases)
+        _, _, details = evaluate_case(
+            case,
+            partial,
+            column_aliases=column_aliases,
+            dataset=dataset,
+            context_results=context_results,
+        )
         return {
             **details,
             "id": case_id,
             "status": "failed",
+            "automated_status": "failed",  # A partial checkpoint is not a finished turn.
+            "semantic_status": details.get("semantic_status", "failed"),
             "duration_seconds": round(time.perf_counter() - start_time, 2),
             "total_duration_seconds": round(time.perf_counter() - overall_start, 2),
             "thread_id": thread_id,
@@ -927,11 +1629,19 @@ def process_case(
         }
 
     duration = time.perf_counter() - start_time
-    status, issues, details = evaluate_case(case, result, column_aliases=column_aliases)
+    status, issues, details = evaluate_case(
+        case,
+        result,
+        column_aliases=column_aliases,
+        dataset=dataset,
+        context_results=context_results,
+    )
     return {
         **details,
         "id": case_id,
         "status": status,
+        "automated_status": details.get("automated_status", status),
+        "semantic_status": details.get("semantic_status", status),
         "duration_seconds": round(duration, 2),
         "total_duration_seconds": round(time.perf_counter() - overall_start, 2),
         "thread_id": thread_id,
@@ -1007,7 +1717,7 @@ def run_eval(
             "requirements": sorted(SUPPORTED_REQUIREMENTS),
         },
         "evaluation_scope": {
-            "semantic_rubrics": "not_run",
+            "semantic_rubrics": "code_checks_only_rest_not_evaluated",
             "transport": "direct_graph",
             "turn_timeout_seconds": get_limits().agent_turn_timeout_seconds,
         },
@@ -1017,9 +1727,20 @@ def run_eval(
             "total": len(runnable),
             "passed": 0,
             "failed": 0,
+            "needs_review": 0,
             "skipped": 0,
             "blocked": 0,
             "pending": len(runnable),
+            "automated_passed": 0,
+            "automated_failed": 0,
+            "semantic_passed": 0,
+            "semantic_failed": 0,
+            "semantic_partial": 0,
+            "semantic_not_evaluated": 0,
+            "timed_out": 0,
+            "rubrics_passed": 0,
+            "rubrics_failed": 0,
+            "rubrics_not_evaluated": 0,
         },
         "cases": [
             {
@@ -1090,6 +1811,13 @@ def run_eval(
                     result["scenario"] = cases[index].get("scenario")
                     report["cases"][index] = result
                     report["summary"][result["status"]] += 1
+                    for axis in ("automated", "semantic"):
+                        if axis_status := result.get(f"{axis}_status"):
+                            report["summary"][f"{axis}_{axis_status}"] += 1
+                    if result.get("error_type") == "TurnTimeout":
+                        report["summary"]["timed_out"] += 1
+                    for rubric in result.get("semantic_rubrics") or []:
+                        report["summary"][f"rubrics_{rubric['status']}"] += 1
                     report["summary"]["pending"] -= 1
                     save()
                     print(f"Completed case: {result['id']} -> {result['status']}")

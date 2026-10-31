@@ -13,8 +13,10 @@ from djedai.contracts.settings import ModelCheckResult, ModelSettingsRead, Model
 router = APIRouter(prefix="/settings/model", tags=["settings"])
 
 
-def get_model_settings(request: Request) -> ModelSettingsService:
-    return model_settings_for(request.app)
+def get_model_settings(
+    request: Request, user_id: Annotated[str, Depends(current_owner_id)]
+) -> ModelSettingsService:
+    return model_settings_for(request.app, user_id)
 
 
 ModelSettingsDep = Annotated[ModelSettingsService, Depends(get_model_settings)]

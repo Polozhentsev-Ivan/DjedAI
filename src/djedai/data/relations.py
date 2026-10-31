@@ -71,7 +71,7 @@ STRONG_OVERLAP = 0.95  # почти полное покрытие: high при �
 MEDIUM_OVERLAP = 0.8
 MIN_JACCARD = 0.5  # без совпадения имён множества значений должны быть близки
 MIN_DISTINCT = 2  # колонка из одного значения не ключ
-KEY_TYPES = ("integer", "text")  # кроме ``id``: такие колонки — кандидаты по имени или ключу
+KEY_TYPES = ("integer", "category", "text")  # кроме ``id``: кандидаты по имени или ключу
 _ID_TOKENS = ("id", "kod")
 
 

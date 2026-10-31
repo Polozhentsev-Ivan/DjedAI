@@ -94,9 +94,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     cfg = app.state.settings
 
-    def description_context() -> tuple[ModelClient, bool]:
+    def description_context(owner_id: str) -> tuple[ModelClient, bool]:
         # The permission and the recipient must come from the same UI snapshot.
-        override = model_settings_for(app).override()
+        override = model_settings_for(app, owner_id).override()
         return get_agent_client(override), data_sharing_allowed(override)
 
     app.state.dataset_service = DatasetService(

@@ -15,7 +15,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi import Request
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect
+from sqlalchemy import MetaData, Table, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from djedai.agent.client import ModelResponse
@@ -293,11 +293,15 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f211merge0001"]
+    heads = ScriptDirectory.from_config(cfg).get_heads()
+    assert len(heads) == 1
     command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)
     try:
+        with engine.connect() as db:
+            versions = Table("alembic_version", MetaData(), autoload_with=db)
+            assert db.scalars(select(versions.c.version_num)).all() == heads
         assert "quality" in {c["name"] for c in inspect(engine).get_columns("results")}
         assert {"summary", "focus_result_ids"} <= {
             c["name"] for c in inspect(engine).get_columns("chats")

@@ -8,6 +8,8 @@ Rules:
 - Pass parameters strictly according to the tool's JSON schema.
 - If previous steps failed (check 'Previous Results/Errors'), fix your parameters in the new plan.
 - For a confirmed business metric from the «Метрики» section use `compute_metric` with its `metric_id`, never `run_sql`: it keeps the metric's grain, population, currency and calendar. Use `group_by` as table.column and a half-open period `period_start` / `period_end`.
+- Compute shares, percentages, averages, ratios and changes inside the query or tool call, never leave them for the answer text. To count groups, return the count itself rather than listing the groups.
+- In `run_sql`, write a table name that starts with a digit in double quotes: `FROM "08_table"`.
 - Do not fix row multiplication after JOIN with DISTINCT. If `run_sql` returns `metric_grain_violation` or `metric_rows_lost`, switch to `compute_metric`.
 
 Table and column descriptions and the dataset summary in the catalog are generated automatically by a language model: treat them as hints about meaning. Types, statistics, keys, relations and warnings are computed from the data.
