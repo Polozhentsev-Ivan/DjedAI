@@ -476,7 +476,9 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
         if not re.search(pattern, plain, re.I):
             issues.append(f"Answer does not state the required unit: {pattern}")
     # Decimal separators must not split sentences.
-    lines = re.split(r"\n|;|(?<!\d)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain)
+    lines = re.split(
+        r"\n|;|(?<!\d)(?<!шт)(?<!руб)(?<!тыс)(?<!млн)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain
+    )
     unit_patterns = {
         "hours": r"(?:ч(?:ас\w*)?\.?|hours?|h)\b",
         "seconds": r"(?:сек\w*|seconds?|secs?|s)\b",
@@ -488,6 +490,13 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
     def stated_unit(suffix: str) -> str | None:
         for unit, pattern in unit_patterns.items():
             if re.match(r"\s*" + pattern, suffix, re.I):
+                return unit
+        return None
+
+    def unit_before(prefix: str) -> str | None:
+        # «среднее число попыток 2,28»: единица названа прямо перед числом.
+        for unit, pattern in unit_patterns.items():
+            if re.search(pattern + r"\s*:?\s*$", prefix, re.I):
                 return unit
         return None
 
@@ -536,6 +545,12 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                 any(
                     abs(number - Decimal(str(wanted["value"])))
                     <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    # Результат может хранить долю, а эталон задан в процентах.
+                    or (
+                        wanted.get("unit") == "percent"
+                        and abs(number * 100 - Decimal(str(wanted["value"])))
+                        <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    )
                     for number in numbers
                 )
                 for wanted in required
@@ -555,7 +570,9 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                         str(wanted.get("abs_tolerance", 0))
                     ):
                         continue
-                    explicit = stated_unit(line[match.end() :])
+                    explicit = stated_unit(line[match.end() :]) or unit_before(
+                        line[: match.start()]
+                    )
                     # Units may be inherited from a table header, but an explicit
                     # contradictory suffix always wins over unrelated text.
                     inherited = table_headers.get(line, {}).get(line[: match.start()].count("|"))

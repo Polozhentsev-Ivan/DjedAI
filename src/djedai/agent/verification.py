@@ -2171,6 +2171,8 @@ _DAY_BEFORE_MONTH_RE = re.compile(
     r"^\s*(?:январ|феврал|март|апрел|ма[яйе]|июн|июл|август|сентябр|октябр|ноябр|декабр)",
     re.IGNORECASE,
 )
+_DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
+_PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
 _RUB_LABEL_RE = re.compile(r"(?:^|[\s_])(?:rub|руб)(?:$|[\s_.])", re.IGNORECASE)
 
 
@@ -2186,10 +2188,11 @@ class _QueryContext:
     period_start: date | None = None
     period_end: date | None = None
     question_keys: frozenset[str] = frozenset()
+    sql_numbers: frozenset[Decimal] = frozenset()
 
     def names_population(self, population: str | None) -> bool:
         # Граница популяции в тексте размыта: сверяем слово, которое её называет.
-        first = next(iter(_words(population or "")), None)
+        first = next((word for word in _words(population or "") if word != "среди"), None)
         return bool(first) and bool(_label_keys(first)) and _label_keys(first) <= self.question_keys
 
     def covers(self, period: VerificationPeriod | None) -> bool:
@@ -2206,6 +2209,12 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
         claims = _date_claims(text)
         for claim in claims:
             bounds += [d for d in (_date(claim.period.start), _date(claim.period.end)) if d]
+    sql_numbers = {
+        token.value * token.scale
+        for text in sql
+        for token in _tokens(_ISO_DATETIME_RE.sub(" ", text))
+        if token.scale == 1
+    }
     question_text = question or ""
     spans = [(claim.start, claim.end) for claim in _date_claims(question_text)]
     for token in _tokens(question_text):
@@ -2217,19 +2226,27 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
         min(bounds, default=None),
         max(bounds, default=None),
         frozenset(_label_keys(question_text)),
+        frozenset(sql_numbers),
     )
 
 
 def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     """Число ответа пересказывает условие вопроса, а не результат расчёта."""
-    if draft.value is None or draft.currency or draft.unit not in ("unknown", "number"):
+    if draft.value is None or draft.currency:
         return False
     start = draft.text.find(draft.raw_text)
     if start < 0:
         return False
     before, after = draft.text[:start], draft.text[start + len(draft.raw_text) :]
     value = _canonical(draft.value, draft.scale)
+    # «(28 дней)» и «… * 100 =»: постоянные расчёта, а не его результат.
+    if value in context.sql_numbers and _DAYS_AFTER_RE.match(after):
+        return True
+    if draft.unit not in ("unknown", "number"):
+        return False
     if value in context.thresholds and _THRESHOLD_BEFORE_RE.search(before):
+        return True
+    if value == 100 and _PERCENT_FACTOR_BEFORE_RE.search(before):
         return True
     # «31 марта 2025»: день даты, а период проверяется отдельным утверждением.
     return (
@@ -2402,7 +2419,7 @@ def _resolve_draft(
     if draft.status == "ignored":
         return
     if draft.kind == "formula":
-        _resolve_formula(draft, evidence)
+        _resolve_formula(draft, evidence, context)
         return
     if draft.kind in ("date", "period"):
         matched, reason = _match_date(draft, evidence, context)
@@ -2557,7 +2574,11 @@ def _formula_result_matches(
     return _values_equal(claimed, calculated, _draft_decimals(draft))
 
 
-def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_formula(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
+) -> None:
     spec = _formula_specs(draft.text, _tokens(draft.text))
     raw_spec = next(
         (item for item in spec if item.raw == draft.raw_text or item.expression == draft.formula),
@@ -2596,7 +2617,11 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         if reason:
             if (
                 reason == "number_not_found"
-                and token.value * token.scale in _FORMULA_CONSTANTS
+                and (
+                    token.value * token.scale in _FORMULA_CONSTANTS
+                    # Делитель из SQL: сама формула всё равно пересчитывается.
+                    or (context and token.value * token.scale in context.sql_numbers)
+                )
                 and token.unit in ("unknown", "number")
             ):
                 # Постоянные коэффициенты (0, 1, 100, 1000) не требуют

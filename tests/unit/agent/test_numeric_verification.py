@@ -801,3 +801,15 @@ def test_rub_source_column_confirms_rubles_only() -> None:
     )
     assert _checked("Сумма 1 234,50 руб.", results, "Сколько?").status == "verified"
     assert _checked("Сумма 1 234,50 USD.", results, "Сколько?").status == "failed"
+
+
+def test_sql_constants_confirm_a_formula_and_day_counts_but_not_results() -> None:
+    results = _query_result(
+        "SELECT feb, feb / 28.0 AS daily FROM t WHERE d >= '2025-02-01'",
+        ["feb", "daily"],
+        [[1732, 61.857142857142854]],
+    )
+    assert _checked("Итого: 1 732 / 28 = 61,86", results, "Сколько?").status == "verified"
+    assert _checked("За февраль (28 дней)", results, "Сколько?").status != "failed"
+    assert _checked("Итого: 1 732 / 28 = 70,00", results, "Сколько?").status == "failed"
+    assert _checked("Продаж 28.", results, "Сколько?").status == "failed"
