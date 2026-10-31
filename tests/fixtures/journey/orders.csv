@@ -1,0 +1,5 @@
+id,ordered_at,category,region,amount
+1,2025-01-01,A,North,12
+2,2025-01-15,A,South,30
+3,2025-01-31,B,North,8
+4,2025-02-01,A,South,900

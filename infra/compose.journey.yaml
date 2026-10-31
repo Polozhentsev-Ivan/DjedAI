@@ -1,0 +1,28 @@
+# Applied after compose.test.yaml, only by scripts/test-journey.sh.
+services:
+  backend:
+    environment:
+      MODEL_NAME: journey-controlled-model
+      CATALOG_DESCRIPTIONS: "false"
+      MODEL_SETTINGS_FROM_UI: "false"
+      SOURCE_ENCRYPTION_KEY: ${JOURNEY_ENCRYPTION_KEY:?Use scripts/test-journey.sh}
+    depends_on:
+      journey-postgres:
+        condition: service_healthy
+  model:
+    entrypoint: ["/app/.venv/bin/uvicorn", "--app-dir", "/app/tests/e2e", "serve_journey:model_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1::8000"
+  journey-postgres:
+    image: postgres:17.11-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_PASSWORD: journey-admin-test-only
+      POSTGRES_DB: journey
+    volumes:
+      - ./tests/fixtures/journey:/fixtures:ro
+      - ./tests/fixtures/journey/postgres.sql:/docker-entrypoint-initdb.d/journey.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "journey"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
