@@ -195,6 +195,19 @@ def _upload(client, name="sales", values=(10, 20)):
     return dataset_id, response.json()["chat_id"]
 
 
+def _upload_many(client, files: list[tuple[str, bytes]]):
+    response = client.post(
+        "/api/datasets/upload",
+        files=[("files", (name, content, "text/csv")) for name, content in files],
+    )
+    assert response.status_code == 202
+    dataset_id = response.json()["dataset_id"]
+    assert "event: done\n" in client.get(f"/api/datasets/{dataset_id}/events").text
+    response = client.post("/api/chats", json={"dataset_id": dataset_id})
+    assert response.status_code == 201
+    return dataset_id, response.json()["chat_id"]
+
+
 def _events(text):
     parsed = []
     for frame in text.split("\n\n"):
@@ -362,6 +375,67 @@ def test_fast_path_count_and_structure_skip_model_and_survive_reload(
         reloaded = restarted.get(f"/api/chats/{chat_id}").json()["messages"]
         assert reloaded[-3]["result_ids"] == [result_id]
         assert "**Структура таблицы `fast_sales`**" in reloaded[-1]["blocks"][0]["markdown"]
+
+
+@pytest.mark.parametrize(
+    "count_question,structure_question",
+    [
+        (
+            "How many rows are in the table ‘table orders.csv’?",
+            "Show structure of table ‘table orders.csv’",
+        ),
+        (
+            "Сколько строк в таблице table orders.csv?",
+            "Покажи структуру таблицы table orders.csv",
+        ),
+    ],
+)
+def test_fast_path_original_name_keeps_table_prefix(
+    configured, monkeypatch, count_question, structure_question
+) -> None:
+    settings, _ = configured
+    model = _model(monkeypatch)
+    with _client(settings) as client:
+        _, chat_id = _upload_many(
+            client,
+            [
+                ("orders.csv", b"wrong_column\n10\n20\n"),
+                ("table orders.csv", b"amount\n1\n2\n3\n4\n5\n"),
+            ],
+        )
+        count_events = _events(
+            client.post(
+                f"/api/chats/{chat_id}/messages",
+                json={"text": count_question},
+            ).text
+        )
+        assert count_events[-1][0] == "done"
+        assert "error" not in [event for event, _ in count_events]
+        result_id = next(
+            data["result_id"] for event, data in count_events if event == "tool_result"
+        )
+        blocks = [data for event, data in count_events if event == "block"]
+        assert blocks[0] == {
+            "type": "text",
+            "markdown": "Строк в таблице `table_orders`: 5.",
+        }
+        metadata = client.get(f"/api/results/{result_id}").json()
+        assert metadata["sql"] == 'SELECT COUNT(*) AS row_count FROM "table_orders"'
+        assert client.get(f"/api/results/{result_id}/data").json()["rows"] == [[5]]
+
+        structure_events = _events(
+            client.post(
+                f"/api/chats/{chat_id}/messages",
+                json={"text": structure_question},
+            ).text
+        )
+        assert structure_events[-1][0] == "done"
+        assert "tool_result" not in [event for event, _ in structure_events]
+        structure_blocks = [data for event, data in structure_events if event == "block"]
+        assert "**Структура таблицы `table_orders`**" in structure_blocks[0]["markdown"]
+        assert "`amount`" in structure_blocks[0]["markdown"]
+        assert "`wrong_column`" not in structure_blocks[0]["markdown"]
+        assert model.calls == []
 
 
 @pytest.mark.parametrize("failure", ["empty", "timeout", "timeout_after_rejection"])

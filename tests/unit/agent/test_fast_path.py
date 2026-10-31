@@ -36,6 +36,7 @@ def one_table(catalog: DatasetCatalog) -> DatasetCatalog:
         ("Сколько записей в clients?", "row_count", "clients"),
         ("Какое количество строк в таблице clients?", "row_count", "clients"),
         ("How many rows in table clients?", "row_count", "clients"),
+        ("How many rows are in the table clients?", "row_count", "clients"),
         ("What is the row count of table clients?", "row_count", "clients"),
         ("Какова структура таблицы orders?", "structure", "orders"),
         ("Покажи структуру таблицы clients, пожалуйста?", "structure", "clients"),
@@ -93,7 +94,9 @@ def test_single_table_allows_omitting_its_name(one_table):
 @pytest.mark.parametrize(
     "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
 )
-@pytest.mark.parametrize("quotes", [('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("`", "`")])
+@pytest.mark.parametrize(
+    "quotes", [('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("‘", "’"), ("`", "`")]
+)
 @pytest.mark.parametrize("name", ["table orders.csv", "таблица orders.csv", "table", "a  b.csv"])
 def test_quoted_table_names_are_preserved(catalog, template, quotes, name):
     target = catalog.tables[1].model_copy(update={"original_name": name})
@@ -112,6 +115,81 @@ def test_quoted_table_names_are_preserved(catalog, template, quotes, name):
 def test_unknown_quoted_generic_word_is_not_an_implicit_single_table(one_table):
     assert classify_fast_query('Сколько строк в таблице "table"?', one_table) is None
     assert classify_fast_query('Сколько строк в таблице ""?', one_table) is None
+
+
+@pytest.mark.parametrize("generic", ["table", "таблица", "таблице"])
+@pytest.mark.parametrize("template", ["Сколько строк в {}?", "Покажи структуру {}?"])
+def test_generic_word_needs_quotes_to_select_a_table_with_that_name(catalog, generic, template):
+    target = catalog.tables[0].model_copy(update={"table_id": generic, "original_name": generic})
+    catalog = catalog.model_copy(update={"tables": [target, catalog.tables[1]]})
+
+    assert classify_fast_query(template.format(generic), catalog) is None
+    path = classify_fast_query(template.format(f'"{generic}"'), catalog)
+    assert path is not None
+    assert path.table_id == generic
+
+
+def test_english_generic_table_still_means_omitted_name(catalog):
+    target = catalog.tables[0].model_copy(update={"table_id": "table", "original_name": "table"})
+    catalog = catalog.model_copy(update={"tables": [target, catalog.tables[1]]})
+
+    assert classify_fast_query("How many rows in table?", catalog) is None
+    assert classify_fast_query('How many rows in "table"?', catalog).table_id == "table"
+
+
+@pytest.mark.parametrize(
+    "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
+)
+@pytest.mark.parametrize(
+    "name", ["table orders.csv", "таблица orders.csv", "table table orders.csv"]
+)
+def test_unquoted_exact_original_name_wins_over_a_shorter_table(catalog, template, name):
+    other = catalog.tables[0].model_copy(update={"original_name": "orders.csv"})
+    target = catalog.tables[1].model_copy(update={"original_name": name})
+    catalog = catalog.model_copy(update={"tables": [other, target]})
+
+    path = classify_fast_query(template.format(name), catalog)
+
+    assert path is not None
+    assert path.table_id == target.table_id
+
+
+@pytest.mark.parametrize(
+    "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
+)
+def test_ambiguous_full_name_cannot_fall_back_to_a_shorter_name(catalog, template):
+    first = catalog.tables[0].model_copy(update={"original_name": "table orders.csv"})
+    second = catalog.tables[1].model_copy(update={"original_name": "table orders.csv"})
+    shorter = first.model_copy(update={"table_id": "shorter", "original_name": "orders.csv"})
+    catalog = catalog.model_copy(update={"tables": [first, second, shorter]})
+
+    assert classify_fast_query(template.format("table orders.csv"), catalog) is None
+
+
+@pytest.mark.parametrize(
+    "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
+)
+def test_prefix_fallback_stops_at_the_first_exact_name(catalog, template):
+    other = catalog.tables[0].model_copy(update={"original_name": "orders.csv"})
+    target = catalog.tables[1].model_copy(update={"original_name": "table orders.csv"})
+    catalog = catalog.model_copy(update={"tables": [other, target]})
+
+    path = classify_fast_query(template.format("table table orders.csv"), catalog)
+
+    assert path is not None
+    assert path.table_id == target.table_id
+
+
+@pytest.mark.parametrize(
+    "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
+)
+def test_unknown_quoted_name_cannot_fall_back_to_a_shorter_name(catalog, template):
+    other = catalog.tables[0].model_copy(update={"original_name": "orders.csv"})
+    catalog = catalog.model_copy(update={"tables": [other]})
+
+    assert classify_fast_query(template.format('"table orders.csv"'), catalog) is None
+    # Без кавычек неизвестное служебное слово остаётся допустимой грамматикой.
+    assert classify_fast_query(template.format("table orders.csv"), catalog).table_id == "orders"
 
 
 @pytest.mark.parametrize(
