@@ -845,3 +845,13 @@ def test_equal_fractional_value_in_two_queries_of_a_turn_is_one_measure() -> Non
     results.append(results[0].model_copy(update={"result_id": "r_second"}))
     assert _checked("Значение 2,32.", results, "Сколько?").status == "verified"
     assert _checked("Значение 2,33.", results, "Сколько?").status == "failed"
+
+
+def test_count_alias_through_a_cte_names_its_entity() -> None:
+    results = _query_result(
+        "WITH g AS (SELECT team, COUNT(*) AS cnt FROM t WHERE d >= '2025-03-01' GROUP BY team) "
+        "SELECT team, cnt FROM g",
+        ["team", "cnt"],
+        [["Склад", 4515]],
+    )
+    assert _checked("Вошло 4 515 обращений.", results, P90_QUESTION).status == "verified"

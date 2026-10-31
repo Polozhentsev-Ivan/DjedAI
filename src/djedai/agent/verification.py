@@ -2189,6 +2189,8 @@ _DAY_BEFORE_MONTH_RE = re.compile(
 )
 _DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
 _PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
+# Внешний SELECT по CTE сохраняет только алиас подсчёта, не сам COUNT(*).
+_COUNT_ALIAS_RE = re.compile(r"(?:^|[\s_])(?:cnt|count|num)(?:$|[\s_])", re.IGNORECASE)
 _RUB_LABEL_RE = re.compile(r"(?:^|[\s_])(?:rub|руб)(?:$|[\s_.])", re.IGNORECASE)
 
 
@@ -2390,7 +2392,10 @@ def _filtered_count_cell(
     if not context.filtered or draft.currency or draft.unit == "percent":
         return []
     return [
-        item for item in candidates if item.cell_address and "__rows__" in _label_keys(item.label)
+        item
+        for item in candidates
+        if item.cell_address
+        and ("__rows__" in _label_keys(item.label) or _COUNT_ALIAS_RE.search(item.label or ""))
     ]
 
 
