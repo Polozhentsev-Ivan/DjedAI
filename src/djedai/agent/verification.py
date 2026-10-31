@@ -854,26 +854,43 @@ def _population_compatible(left: str | None, right: str | None) -> bool:
     if not right:
         return False
 
-    def signature(text: str) -> tuple[bool, frozenset[tuple[str, ...]]]:
-        negative_words = {"без", "кроме", "without", "excluding", "except", "not", "ne"}
+    def signature(text: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        negative_words = {"без", "кроме", "without", "excluding", "except"}
         scope_words = {"только", "среди", "among", "only"}
-        negative = False
-        conditions: set[tuple[str, ...]] = set()
+        conditions: list[tuple[str, tuple[str, ...]]] = []
+        marker = "context"
+        body: list[str] = []
+
+        def normalize(word: str) -> str:
+            if re.fullmatch(r"[а-я]+", word):
+                stem = re.sub(
+                    r"(?:ыми|ими|ого|его|ому|ему|ых|их|ые|ие|ый|ий|ой|ая|яя|ое|ее|ую|юю|"
+                    r"ами|ями|ов|ев|ам|ям|ах|ях|ом|ем|ы|и|а|я|у|ю|е)$",
+                    "",
+                    word,
+                )
+                return stem if len(stem) >= 3 else word
+            return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
         for word in _words(text):
-            if word in negative_words or word.startswith("исключ"):
-                negative = True
+            is_negative = word in negative_words or word == "исключая"
+            if is_negative or word in scope_words:
+                if body or marker != "context":
+                    conditions.append((marker, tuple(body)))
+                marker = "exclude" if is_negative else "include"
+                body = []
                 continue
-            if word in scope_words or word in _STOPWORDS:
-                continue
-            groups = sorted(key for key in _label_keys(word) if key.startswith("__"))
-            conditions.add(tuple(groups) if groups else (word[:5] if not word.isdigit() else word,))
-        return negative, frozenset(conditions)
+            body.append(normalize(word))
+        if body or marker != "context":
+            conditions.append((marker, tuple(body)))
+        return tuple(conditions)
 
     # Общие слова «без»/without и «заказы»/orders не подтверждают условие
-    # фильтра. Сравниваем все условия, сохраняя полярность и числовые пороги.
+    # фильтра. Каждый маркер остаётся связан со своим условием; общий набор
+    # слов не разрешает переставить включённую и исключённую популяции.
     claimed = signature(left)
     actual = signature(right)
-    return bool(claimed[1]) and claimed == actual
+    return bool(claimed) and claimed == actual
 
 
 def _words(text: str) -> list[str]:
