@@ -54,11 +54,27 @@ MODEL_BASE_URL=https://api.deepinfra.com/v1/openai
 MODEL_NAME=Qwen/Qwen3.6-27B
 MODEL_API_KEY=ваш_ключ_провайдера
 MODEL_SETTINGS_FROM_UI=false
+MODEL_TIMEOUT_SECONDS=120
+AGENT_TURN_TIMEOUT_SECONDS=120
+MODEL_REASONING_SUPPORTED=true
+MODEL_REASONING_UNDERSTAND=none
+MODEL_REASONING_PLAN=provider_default
+MODEL_REASONING_VISUALIZE=none
+MODEL_REASONING_COMPOSE=none
+MODEL_REASONING_VERIFY=none
 ALLOW_DATA_SHARING=false
 DJEDAI_PORT=8080
 ```
 
 Замените `ваш_ключ_провайдера` действительным ключом. `.env` исключён из Git и Docker build context. `MODEL_BASE_URL` — полный базовый URL OpenAI-совместимого API, включая путь провайдера; для другой модели нужны совместимый endpoint и точный ID. Ключи не помещаются в `VITE_*`: эти переменные видны браузеру.
+
+Это профиль DeepInfra/Qwen3.6-27B с лимитом 120 с на весь ответ. При обновлении
+существующего `.env` перенесите указанные значения явно: копирование образца не
+меняет старый файл. Для неизвестного сервера организаторов используйте профиль
+из [README](../../README.md#подключить-модель-организаторов): поддержка reasoning
+зависит от конкретного endpoint. Политика `ALLOW_DATA_SHARING=false` ограничивает
+передаваемый контекст; финальные прогоны публичных CSV выполнялись с `true`, что отдельно
+указано в [конфигурации](configuration.md#таймауты-и-reasoning).
 
 Для первых CSV-проверок остальные настройки можно оставить из `.env.example`. `SOURCE_ENCRYPTION_KEY` пока может быть пустым: он нужен для сохранённых подключений БД и ключа модели из UI, а не для CSV. `SESSION_SECRET` для используемых серверных Bearer-сессий не требуется.
 
