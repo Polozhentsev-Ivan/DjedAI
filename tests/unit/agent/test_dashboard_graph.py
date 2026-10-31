@@ -9,7 +9,12 @@ import pytest
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.data_policy import REDACTED, DataTransferPolicy
-from djedai.agent.graph import build_agent_graph, execute_dashboard, understand
+from djedai.agent.graph import (
+    build_agent_graph,
+    execute_dashboard,
+    route_after_understand,
+    understand,
+)
 from djedai.agent.reasoning import REASONING_STAGES
 from djedai.config import get_limits
 from djedai.contracts.agent import (
@@ -476,6 +481,9 @@ def test_dashboard_refresh_failure_is_explicit_and_does_not_reuse_old_snapshot()
         {
             "chat_id": "chat_refresh_error",
             "dataset_id": "ds_test",
+            "previous_blocks": [
+                Block(type="dashboard_link", dashboard_id="d_missing", title="Обзор")
+            ],
             "messages": [Message(role="user", content="Обнови панель")],
         },
         config={
@@ -499,6 +507,7 @@ def test_dashboard_refresh_without_service_is_explicit():
         {
             "chat_id": "chat_refresh_unavailable",
             "dataset_id": "ds_test",
+            "previous_blocks": [Block(type="dashboard_link", dashboard_id="d_prev", title="Обзор")],
             "messages": [Message(role="user", content="Обнови панель")],
         },
         config={"configurable": {"thread_id": "chat_refresh_unavailable", "client": client}},
@@ -683,3 +692,11 @@ def test_history_restores_sensitive_columns_for_next_turn(policy) -> None:
     prompt = client.system_prompts[-1]
     assert SECRET_VALUE not in prompt
     assert REDACTED in prompt
+
+
+def test_invented_dashboard_id_creates_a_dashboard_instead_of_refreshing():
+    understanding = Understanding(intent="dashboard", dashboard_id="made_up")
+    state = {"understanding": understanding, "previous_blocks": []}
+    assert route_after_understand(state) == "plan_dashboard"
+    known = Block(type="dashboard_link", dashboard_id="made_up", title="Обзор")
+    assert route_after_understand({**state, "previous_blocks": [known]}) == "refresh_dashboard"
