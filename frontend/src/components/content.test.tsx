@@ -151,6 +151,26 @@ describe('WidgetCard', () => {
 });
 
 describe('Markdown', () => {
+  it('renders a pipe table with inline formatting and keeps the text around it', () => {
+    const { container } = render(<Markdown text={'Итоги:\n| Отдел | Заявок |\n|---|---|\n| Склад | 1 990 |\n| **Итого** | **14 184** |\nКак посчитано.'} />);
+    expect([...container.querySelectorAll('th')].map((cell) => cell.textContent)).toEqual(['Отдел', 'Заявок']);
+    expect([...container.querySelectorAll('tbody tr')].map((row) => [...row.children].map((cell) => cell.textContent))).toEqual([['Склад', '1 990'], ['Итого', '14 184']]);
+    expect(container.querySelector('tbody strong')).toHaveTextContent('Итого');
+    expect(container.querySelectorAll('p')[0]).toHaveTextContent('Итоги:');
+    expect(container.querySelectorAll('p')[1]).toHaveTextContent('Как посчитано.');
+  });
+
+  it('keeps pipes as text without a table separator', () => {
+    const { container } = render(<Markdown text={'a | b\nc | d'} />);
+    expect(container.querySelector('table')).toBeNull();
+    expect(container).toHaveTextContent('a | b');
+  });
+
+  it('keeps an escaped pipe inside a cell', () => {
+    const { container } = render(<Markdown text={'| Код |\n|---|\n| a\\|b |'} />);
+    expect(container.querySelector('td')).toHaveTextContent('a|b');
+  });
+
   it('renders the agent subset as elements and keeps HTML as text', () => {
     const { container } = render(<Markdown text={'## Итог\nВыручка выросла на **12%**, *см.* `orders`.\nВторая строка\n\n- первый\n- второй\n1. шаг\n\n<b>не HTML</b>'} />);
     expect(screen.getByText('Итог')).toHaveClass('font-semibold');
