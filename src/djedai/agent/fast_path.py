@@ -115,34 +115,28 @@ def _normalize(text: str) -> str:
     return text.strip().casefold()
 
 
-def _clean_table_token(token: str | None) -> str:
-    """Убирает кавычки и слова «таблица/table», не меняя само имя."""
-    if not token:
-        return ""
-    cleaned = token.strip().strip("?!. ")
-    previous = None
-    while cleaned != previous:
-        if len(cleaned) >= 2 and _QUOTE_PAIRS.get(cleaned[0]) == cleaned[-1]:
-            # Граница кавычек отделяет имя от служебных слов вопроса.
-            return cleaned[1:-1] or cleaned
-        if _GENERIC_TABLE.fullmatch(cleaned):
-            return ""
-        previous = cleaned
-        cleaned = _TABLE_PREFIX.sub("", cleaned).strip()
-    return cleaned
-
-
 def _resolve_table(catalog: DatasetCatalog, token: str | None) -> str | None:
-    """Разрешает имя таблицы по table_id или original_name, только если оно одно."""
-    cleaned = _clean_table_token(token)
-    if cleaned:
-        folded = cleaned.casefold()
+    """Сначала ищет полное имя; только неизвестный префикс может быть грамматикой."""
+    candidate = (token or "").strip().strip("?!. ")
+    while candidate:
+        quoted = len(candidate) >= 2 and _QUOTE_PAIRS.get(candidate[0]) == candidate[-1]
+        if not quoted and _GENERIC_TABLE.fullmatch(candidate):
+            # Голое «table/таблица» может означать отсутствие имени, а не literal.
+            break
+        literal = candidate[1:-1] if quoted else candidate
+        folded = literal.casefold()
         matches = [
             table
             for table in catalog.tables
             if table.table_id.casefold() == folded or table.original_name.casefold() == folded
         ]
-        return matches[0].table_id if len(matches) == 1 else None
+        if matches or quoted:
+            # Неоднозначное точное имя и неизвестное имя в кавычках не сокращаются.
+            return matches[0].table_id if len(matches) == 1 else None
+        stripped = _TABLE_PREFIX.sub("", candidate, count=1).strip()
+        if stripped == candidate:
+            return None
+        candidate = stripped
     # Без имени таблицы выбор допустим только при единственной таблице.
     return catalog.tables[0].table_id if len(catalog.tables) == 1 else None
 

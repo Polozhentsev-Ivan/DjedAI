@@ -377,21 +377,36 @@ def test_fast_path_count_and_structure_skip_model_and_survive_reload(
         assert "**Структура таблицы `fast_sales`**" in reloaded[-1]["blocks"][0]["markdown"]
 
 
-def test_fast_path_quoted_original_name_keeps_table_prefix(configured, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "count_question,structure_question",
+    [
+        (
+            "How many rows are in the table ‘table orders.csv’?",
+            "Show structure of table ‘table orders.csv’",
+        ),
+        (
+            "Сколько строк в таблице table orders.csv?",
+            "Покажи структуру таблицы table orders.csv",
+        ),
+    ],
+)
+def test_fast_path_original_name_keeps_table_prefix(
+    configured, monkeypatch, count_question, structure_question
+) -> None:
     settings, _ = configured
     model = _model(monkeypatch)
     with _client(settings) as client:
         _, chat_id = _upload_many(
             client,
             [
-                ("orders.csv", b"amount\n10\n20\n"),
+                ("orders.csv", b"wrong_column\n10\n20\n"),
                 ("table orders.csv", b"amount\n1\n2\n3\n4\n5\n"),
             ],
         )
         count_events = _events(
             client.post(
                 f"/api/chats/{chat_id}/messages",
-                json={"text": "How many rows are in the table ‘table orders.csv’?"},
+                json={"text": count_question},
             ).text
         )
         assert count_events[-1][0] == "done"
@@ -411,7 +426,7 @@ def test_fast_path_quoted_original_name_keeps_table_prefix(configured, monkeypat
         structure_events = _events(
             client.post(
                 f"/api/chats/{chat_id}/messages",
-                json={"text": "Show structure of table ‘table orders.csv’"},
+                json={"text": structure_question},
             ).text
         )
         assert structure_events[-1][0] == "done"
@@ -419,6 +434,7 @@ def test_fast_path_quoted_original_name_keeps_table_prefix(configured, monkeypat
         structure_blocks = [data for event, data in structure_events if event == "block"]
         assert "**Структура таблицы `table_orders`**" in structure_blocks[0]["markdown"]
         assert "`amount`" in structure_blocks[0]["markdown"]
+        assert "`wrong_column`" not in structure_blocks[0]["markdown"]
         assert model.calls == []
 
 
