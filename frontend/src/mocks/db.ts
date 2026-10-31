@@ -191,7 +191,7 @@ function daysAgoAt(daysAgo: number, hours: number, minutes: number): string {
 }
 
 /** Address and model the mock backend treats as configured in .env. */
-export const ENV_MODEL = { base_url: 'https://api.deepinfra.com/v1/openai', model_name: 'Qwen/Qwen3.6-35B-A3B' } as const;
+export const ENV_MODEL = { base_url: 'https://api.deepinfra.com/v1/openai', model_name: 'Qwen/Qwen3.6-27B' } as const;
 
 export interface MockDb {
   datasets: DatasetDetail[];

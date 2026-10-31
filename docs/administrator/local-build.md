@@ -51,7 +51,7 @@ test -f .env || cp .env.example .env
 
 ```dotenv
 MODEL_BASE_URL=https://api.deepinfra.com/v1/openai
-MODEL_NAME=Qwen/Qwen3.6-35B-A3B
+MODEL_NAME=Qwen/Qwen3.6-27B
 MODEL_API_KEY=ваш_ключ_провайдера
 MODEL_SETTINGS_FROM_UI=false
 ALLOW_DATA_SHARING=false
