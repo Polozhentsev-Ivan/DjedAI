@@ -7,10 +7,11 @@ from decimal import Decimal
 import duckdb
 
 from djedai.agent.data_policy import DataTransferPolicy
-from djedai.agent.graph import _answer_payload
+from djedai.agent.graph import _answer_payload, verify
 from djedai.agent.verification import build_evidence, verify_numeric_text
 from djedai.analytics.metrics import MetricContext, compute_metric
 from djedai.analytics.tools import run_sql
+from djedai.contracts.agent import Block, Message, Understanding
 from djedai.contracts.metrics import MetricDefinition, MetricFilter, MetricGrain, MetricProvenance
 from djedai.contracts.tool_result import Fact, ToolResult, ToolResultData
 
@@ -741,10 +742,12 @@ def test_real_sql_aggregates_preserve_their_meaning() -> None:
             assert _report(correct, evidence, results).status == "verified"
 
 
-def _query_result(sql: str, columns: list[str], rows: list[list]) -> list[ToolResult]:
+def _query_result(
+    sql: str, columns: list[str], rows: list[list], result_id: str = "r_query"
+) -> list[ToolResult]:
     return [
         ToolResult(
-            result_id="r_query",
+            result_id=result_id,
             status="ok",
             tool="run_sql",
             sql=sql,
@@ -759,7 +762,7 @@ def _checked(text: str, results: list[ToolResult], question: str):
         _evidence(results),
         result_ids=[item.result_id for item in results],
         question=question,
-        sql=[item.sql for item in results],
+        sql={item.result_id: item.sql for item in results if item.sql},
     )
 
 
@@ -772,7 +775,7 @@ P90_QUESTION = "У какой группы максимальный перцен
 
 
 def test_fractional_cell_period_and_threshold_from_the_query_are_accepted() -> None:
-    text = "Среди групп не менее чем 100 в марте 2025 значение составляет 72,49 часа."
+    text = "Не менее чем 100 в марте 2025: значение составляет 72,49 часа."
     assert _checked(text, P90_RESULTS, P90_QUESTION).status == "verified"
 
 
@@ -912,3 +915,49 @@ def test_disputed_caption_does_not_bypass_currency_period_or_aggregate() -> None
         "SELECT MAX(amount / 1000.0) AS m, COUNT(*) AS n FROM orders", ["m", "n"], [[2.0, 2]]
     )
     assert _checked("Average 2.", results, "Сколько?").status == "failed"
+
+
+def test_second_review_bypasses_stay_rejected() -> None:
+    # Делитель соседнего запроса и слагаемое знаменателя не подтверждают формулу.
+    results = _query_result("SELECT 77 AS value", ["value"], [[77]])
+    results += _query_result("SELECT 10.0/5 AS other", ["other"], [[2.0]], "r_other")
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT 77 AS value, 10.0/(2+5) AS o", ["value", "o"], [[77, 1.4]])
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT 77 AS value, 10.0/28 AS o", ["value", "o"], [[77, 0.36]])
+    text = "Средняя длительность 28 дней; значение 77"
+    assert _checked(text, results, "Сколько?").status == "failed"
+    # Фильтр соседнего запроса и неравенство не подтверждают период.
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[110]])
+    results += _query_result(
+        "SELECT COUNT(*) AS n FROM t WHERE d >= '2025-03-01' AND d < '2025-04-01'",
+        ["n"],
+        [[1]],
+        "r_march",
+    )
+    assert _checked("В марте 2025 выручка 110", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT SUM(a) AS revenue FROM t WHERE dept <> '2025-03-01' AND dept <> '2025-04-01'",
+        ["revenue"],
+        [[110]],
+    )
+    assert _checked("В марте 2025 выручка 110", results, "Сколько?").status == "failed"
+    # Направление условия отбора.
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[110]])
+    text = "Выручка 110 среди отменённых заказов"
+    assert _checked(text, results, "Выручка без отменённых заказов?").status == "failed"
+    # COUNT по денежной колонке считает строки.
+    results = _query_result("SELECT COUNT(amount_rub) AS n FROM t", ["n"], [[2]])
+    assert _checked("Сумма 2 RUB", results, "Сколько?").status == "failed"
+
+
+def test_model_rephrasing_does_not_confirm_constants() -> None:
+    results = _query_result("SELECT 3 AS value", ["value"], [[3]])
+    state = {
+        "messages": [Message(role="user", content="Сколько?")],
+        "understanding": Understanding(intent="data_question", resolved_question="порог 9999"),
+        "results": results,
+        "answer_blocks": [Block(type="text", markdown="Порог 9999; значение 3")],
+        "compose_retries": 2,
+    }
+    assert verify(state, {"configurable": {}})["verification"].status == "failed"

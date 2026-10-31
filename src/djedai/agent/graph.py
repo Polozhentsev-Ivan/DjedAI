@@ -1466,16 +1466,16 @@ def _verification_failure(
     return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
 
-def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, list[str]]:
-    """Вопрос и SQL хода: источник условий расчёта, но не значений результата."""
-    parts = []
-    understanding = state.get("understanding")
-    if understanding is not None and understanding.resolved_question:
-        parts.append(understanding.resolved_question)
+def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, dict[str, str]]:
+    """Текст пользователя и SQL каждого результата: переформулировка модели сюда не входит."""
     messages = state.get("messages", [])
-    if messages and messages[-1].content:
-        parts.append(messages[-1].content)
-    return "\n".join(parts), [str(entry["query"]) for entry in entries if entry.get("query")]
+    question = messages[-1].content if messages and messages[-1].role == "user" else ""
+    queries = {
+        str(entry["result_id"]): str(entry["query"])
+        for entry in entries
+        if entry.get("query") and entry.get("result_id")
+    }
+    return question or "", queries
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:
