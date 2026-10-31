@@ -387,7 +387,35 @@ def _without_calculation_constants(text: str) -> str:
     )
 
 
-def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
+def _without_verified_formulas(text: str, report: Any, results: Sequence[Any]) -> str:
+    """Keep runtime-proven arithmetic out of the independent scalar lookup.
+
+    Only the exact verified expression is exempt: its SQL-backed constants do
+    not authorize the same numbers in an unrelated measurement elsewhere.
+    """
+    if _field(report, "status") not in {"verified", "corrected"}:
+        return text
+    current_ids = {_field(item, "result_id") for item in results}
+    scoped_ids = current_ids & set(_field(report, "result_ids", []) or [])
+    for assertion in _field(report, "assertions", []) or []:
+        if _field(assertion, "kind") != "formula" or _field(assertion, "status") != "verified":
+            continue
+        evidence = _field(assertion, "evidence", []) or []
+        operands = _field(assertion, "operands", []) or []
+        if not evidence or not operands:
+            continue
+        references = [*evidence, *(item for op in operands for item in _field(op, "evidence", []))]
+        if any(_field(item, "result_id") not in scoped_ids for item in references):
+            continue
+        raw = _field(assertion, "raw_text")
+        if raw:
+            text = text.replace(raw, " " * len(raw))
+    return text
+
+
+def _answer_issues(
+    case: dict, text: str, results: Sequence[Any], verification: Any = None
+) -> list[str]:
     """Numbers in the answer must originate in tool results; user constants are exempt."""
     expect = case.get("expect") or {}
     if not (expect.get("answer_contains_value") or {}).get("from_result"):
@@ -398,7 +426,7 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     uniq = list(dict.fromkeys(numbers))
 
     constants = set(_claim_numbers(case.get("question") or ""))
-    text = _without_calculation_constants(text)
+    text = _without_calculation_constants(_without_verified_formulas(text, verification, results))
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
@@ -1614,7 +1642,9 @@ def evaluate_case(
             automated_issues.append(
                 f"Did not use any expected tools {tools_any}. Used: {used_tools}"
             )
-        automated_issues.extend(_answer_issues(case, claim_text, evidence_results))
+        automated_issues.extend(
+            _answer_issues(case, claim_text, evidence_results, result.get("verification"))
+        )
         automated_issues.extend(_missing_answer_values(case, blocks, claim_text))
         automated_issues.extend(_required_answer_rows(case, claim_text, results))
 
