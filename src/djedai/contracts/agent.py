@@ -6,6 +6,7 @@ from djedai.contracts.chart import ChartSpec, ChartTemplate
 from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, MetricSpec
 from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.verification import VerificationReport
 
 
 class Entities(BaseModel):
@@ -35,6 +36,8 @@ class Understanding(BaseModel):
     resolved_question: str | None = None
     entities: Entities = Field(default_factory=Entities)
     references: list[str] = Field(default_factory=list)
+    # Сохранённая панель, которую пользователь просит открыть или обновить.
+    dashboard_id: str | None = None
     clarification: Clarification | None = None
 
 
@@ -119,6 +122,8 @@ class AgentState(TypedDict, total=False):
     dataset_id: str
     messages: list[Message]
     catalog_prompt: str
+    # Только имена колонок: compose и verify не берут из каталога числа для ответа.
+    catalog_fields: str
     # Normalized column names whose original header is sensitive; keeps
     # `dbPasswordText` sensitive after normalization to `dbpasswordtext`.
     sensitive_columns: tuple[str, ...]
@@ -140,9 +145,13 @@ class AgentState(TypedDict, total=False):
     previous_blocks: list[Block]
     charts: list[ChartSpec]
     answer_blocks: list[Block]
+    # Terminal model failure for this turn; reset before the next user message.
+    terminal_error: str | None
     retries: int
     compose_retries: int
     is_verified: bool
+    # Детерминированная проверка чисел последнего черновика/опубликованного текста (#167).
+    verification: VerificationReport | None
     # Отдельная ветка дашборда: план виджетов, их вычисления и сохранённый снимок.
     dashboard_plan: DashboardPlanResponse | None
     dashboard_widgets: list[Any]

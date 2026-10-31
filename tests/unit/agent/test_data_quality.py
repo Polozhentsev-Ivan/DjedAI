@@ -66,11 +66,12 @@ def answer(sql: str, text: str) -> list[ModelResponse]:
 
 
 def test_losses_are_appended_even_if_the_model_is_silent(quality_dataset):
-    result, client = run(quality_dataset, answer(SUM, "Сумма — 5 290,5."), ["Сумма заказов?"])
+    # Независимый эталон: 96 распознанных значений 8,5..103,5 — это 5376,0.
+    result, client = run(quality_dataset, answer(SUM, "Сумма — 5 376,0."), ["Сумма заказов?"])
     (computed,) = result["results"]
     assert computed.quality.columns[0].parse_failed == 4
     text, limits = result["answer_blocks"]
-    assert text.markdown == "Сумма — 5 290,5."
+    assert text.markdown == "Сумма — 5 376,0."
     assert limits.markdown.startswith("**Ограничения данных.**")
     assert "4 из 100" in limits.markdown
 

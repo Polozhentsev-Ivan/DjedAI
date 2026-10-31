@@ -144,11 +144,11 @@ def _facts(columns: list[str], rows: list[list[Any]]) -> str:
 
 
 def _compose_system(facts: str) -> str:
-    return load_prompt("compose").format(facts=facts)
+    return load_prompt("compose").format(catalog=CATALOG, facts=facts)
 
 
 def _verify_system(facts: str, draft: str) -> str:
-    return load_prompt("verify").format(facts=facts, draft=draft)
+    return load_prompt("verify").format(catalog=CATALOG, facts=facts, draft=draft)
 
 
 def _visualize_system(query: str, rows: list[list[Any]]) -> str:
@@ -663,7 +663,7 @@ def charts_ok(
             return False
         # These cases require all source categories. Sorting cannot recover
         # categories cut off by the renderer's display limit.
-        if len(source.data.rows) > chart.limit:
+        if chart.limit is not None and len(source.data.rows) > chart.limit:
             return False
         columns = source.data.columns
         fields = [chart.x.field, chart.y[0].field]

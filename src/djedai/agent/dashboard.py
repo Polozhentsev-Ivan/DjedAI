@@ -319,10 +319,10 @@ def build_widget_snapshot(execution: WidgetExecution, index: int) -> WidgetSnaps
     )
 
 
-def dashboard_preview_blocks(snapshot: DashboardSnapshot) -> list[Block]:
+def _dashboard_result_blocks(snapshot: DashboardSnapshot, *, action: str) -> list[Block]:
     """Текстовое резюме, графики успешных виджетов и ссылка на дашборд."""
     failed = [widget for widget in snapshot.widgets if widget.status == "error"]
-    text = f"Дашборд «{snapshot.title}» сохранён. Виджетов: {len(snapshot.widgets)}."
+    text = f"Дашборд «{snapshot.title}» {action}. Виджетов: {len(snapshot.widgets)}."
     if failed:
         text += f" Не удалось посчитать: {len(failed)}."
     blocks = [Block(type="text", markdown=text)]
@@ -337,6 +337,16 @@ def dashboard_preview_blocks(snapshot: DashboardSnapshot) -> list[Block]:
         )
     )
     return blocks
+
+
+def dashboard_preview_blocks(snapshot: DashboardSnapshot) -> list[Block]:
+    """Превью только что сохранённого дашборда."""
+    return _dashboard_result_blocks(snapshot, action="сохранён")
+
+
+def dashboard_refresh_blocks(snapshot: DashboardSnapshot) -> list[Block]:
+    """Превью существующего дашборда после пересчёта его виджетов."""
+    return _dashboard_result_blocks(snapshot, action="обновлён")
 
 
 def dashboard_output_result_ids(snapshot: DashboardSnapshot) -> list[str]:

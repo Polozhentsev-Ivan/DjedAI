@@ -26,19 +26,19 @@ _TABLE_PREFIX = re.compile(
     r"(?:таблица|таблице|таблицы|таблицу|table)\s+",
     re.IGNORECASE,
 )
-_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "‘": "’", "`": "`"}
+_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "`": "`"}
 
 _COUNT_PREFIX = (
     r"(?:сколько(?:\s+всего)?|какое\s+количество|каково\s+количество|число)\s+"
     r"(?:строк|записей)"
-    r"|how\s+many\s+(?:rows|records)(?:\s+are)?"
+    r"|how\s+many\s+(?:rows|records)"
     r"|(?:what\s+is\s+)?(?:the\s+)?(?:row\s+count|number\s+of\s+rows)"
 )
 _COUNT_RE = re.compile(
     rf"^(?:{_COUNT_PREFIX})"
     r"(?:\s+(?:в|во|in|of)\s+"
     r"(?:(?:этой|данной|this|the)\s+)?"
-    r"(?:(?:таблице|таблицы|таблица|таблицу|table)\s*)?"
+    r"(?:(?:таблице|таблицы|таблица|таблицу|table)(?:\s+|$))?"
     r"(?P<table>.+))?$",
     re.IGNORECASE,
 )
@@ -46,47 +46,47 @@ _COUNT_RE = re.compile(
 _STRUCTURE_PATTERNS = [
     re.compile(
         r"^(?:покажи|выведи|показать|вывести)\s+(?:мне\s+)?"
-        r"(?:структуру|схему)(?:\s+(?:таблицы|таблица|таблицу))?\s*"
+        r"(?:структуру|схему)(?:\s+(?:таблицы|таблица|таблицу)\b)?\s*"
         r"(?P<table>.*)$"
     ),
     re.compile(
-        r"^(?:структура|схема)(?:\s+(?:таблицы|таблица|таблицу))?\s*"
+        r"^(?:структура|схема)(?:\s+(?:таблицы|таблица|таблицу)\b)?\s*"
         r"(?P<table>.*)$"
     ),
     re.compile(
         r"^(?:какая|какова)\s+(?:структура|схема)(?:\s+(?:у|в))?\s*"
-        r"(?:(?:таблицы|таблица|таблице|таблицу)\s*)?"
+        r"(?:(?:таблицы|таблица|таблице|таблицу)(?:\s+|$))?"
         r"(?P<table>.*)$"
     ),
     re.compile(
         r"^(?:опиши|описание)\s+(?:структуру|схему)"
-        r"(?:\s+(?:таблицы|таблица|таблицу))?\s*(?P<table>.*)$"
+        r"(?:\s+(?:таблицы|таблица|таблицу)\b)?\s*(?P<table>.*)$"
     ),
     re.compile(r"^опиши\s+(?:таблицу|таблица|таблицы)\s+(?P<table>.+)$"),
     re.compile(
         r"^(?:какие|какой)\s+(?:колонки|столбцы|поля)"
         r"(?:\s+(?:в|у|есть))?\s*"
-        r"(?:(?:таблице|таблицы|таблица|таблицу)\s*)?"
+        r"(?:(?:таблице|таблицы|таблица|таблицу)(?:\s+|$))?"
         r"(?P<table>.*)$"
     ),
     re.compile(
         r"^(?:колонки|столбцы|поля)"
-        r"(?:\s+(?:таблицы|таблица|таблице))?\s*(?P<table>.*)$"
+        r"(?:\s+(?:таблицы|таблица|таблице)\b)?\s*(?P<table>.*)$"
     ),
     re.compile(
         r"^(?:show|display|describe)\s+(?:me\s+)?(?:the\s+)?"
         r"(?:structure|schema)(?:\s+of)?\s*"
-        r"(?:(?:the\s+)?(?:table|dataset)\s*)?(?P<table>.*)$",
+        r"(?:(?:the\s+)?(?:table|dataset)(?:\s+|$))?(?P<table>.*)$",
         re.IGNORECASE,
     ),
     re.compile(
         r"^(?:what|which)\s+(?:columns|fields)\s+(?:are\s+)?(?:in|does)\s+"
-        r"(?:the\s+)?(?:(?:table)\s*)?(?P<table>.+?)(?:\s+have)?$",
+        r"(?:the\s+)?(?:table\s+)?(?P<table>.+?)(?:\s+have)?$",
         re.IGNORECASE,
     ),
     re.compile(
         r"^(?:show|display)\s+(?:me\s+)?(?:the\s+)?(?:columns|fields)\s+"
-        r"(?:of|in)\s+(?:the\s+)?(?:(?:table)\s*)?(?P<table>.+)$",
+        r"(?:of|in)\s+(?:the\s+)?(?:table\s+)?(?P<table>.+)$",
         re.IGNORECASE,
     ),
     re.compile(r"^describe\s+(?:the\s+)?(?:table\s+)?(?P<table>.+)$", re.IGNORECASE),
@@ -104,78 +104,47 @@ class FastPathError(ValueError):
 
 def _normalize(text: str) -> str:
     text = text.strip()
-    text = re.sub(r"\s+", " ", text)
+    # Пробелы внутри явно указанного имени принадлежат имени, а не грамматике.
+    text = re.sub(
+        r""""[^"]*"|'[^']*'|«[^»]*»|“[^”]*”|`[^`]*`|\s+""",
+        lambda match: " " if match.group().isspace() else match.group(),
+        text,
+    )
     text = re.sub(r"(?:\s*[?!.])+$", "", text)
     text = re.sub(r"\s*,?\s*(?:пожалуйста|please)$", "", text, flags=re.IGNORECASE)
     return text.strip().casefold()
 
 
-def _strip_quotes(token: str) -> tuple[str, bool]:
-    """Убирает обрамляющие кавычки и сообщает, были ли они."""
+def _clean_table_token(token: str | None) -> str:
+    """Убирает кавычки и слова «таблица/table», не меняя само имя."""
+    if not token:
+        return ""
     cleaned = token.strip().strip("?!. ")
-    if len(cleaned) >= 2:
-        opener = cleaned[0]
-        closer = _QUOTE_PAIRS.get(opener)
-        if closer is not None and cleaned[-1] == closer:
-            return cleaned[1:-1].strip(), True
-    return cleaned, False
-
-
-def _matching_table_ids(catalog: DatasetCatalog, name: str) -> list[str]:
-    folded = name.casefold()
-    return [
-        table.table_id
-        for table in catalog.tables
-        if table.table_id.casefold() == folded or table.original_name.casefold() == folded
-    ]
-
-
-def _without_table_prefix(name: str) -> str:
     previous = None
-    while name != previous:
-        previous = name
-        name = _TABLE_PREFIX.sub("", name).strip()
-    return name
-
-
-def _only_table_id(catalog: DatasetCatalog) -> str | None:
-    """Без имени таблицы выбор допустим только при единственной таблице."""
-    return catalog.tables[0].table_id if len(catalog.tables) == 1 else None
+    while cleaned != previous:
+        if len(cleaned) >= 2 and _QUOTE_PAIRS.get(cleaned[0]) == cleaned[-1]:
+            # Граница кавычек отделяет имя от служебных слов вопроса.
+            return cleaned[1:-1] or cleaned
+        if _GENERIC_TABLE.fullmatch(cleaned):
+            return ""
+        previous = cleaned
+        cleaned = _TABLE_PREFIX.sub("", cleaned).strip()
+    return cleaned
 
 
 def _resolve_table(catalog: DatasetCatalog, token: str | None) -> str | None:
-    """Разрешает имя таблицы по table_id или original_name, только если оно одно.
-
-    Сначала проверяется точное имя из вопроса. Это важно, когда само имя
-    начинается с «table » или «таблица »: снимать такой префикс можно только
-    как запасной вариант. Имя в кавычках считается буквальным и не очищается.
-    """
-    if not token:
-        return _only_table_id(catalog)
-
-    cleaned, quoted = _strip_quotes(token)
-    if quoted:
-        candidates = [cleaned] if cleaned else []
-    else:
-        if _GENERIC_TABLE.fullmatch(cleaned):
-            return _only_table_id(catalog)
-        candidates = [cleaned]
-        stripped = _without_table_prefix(cleaned)
-        if stripped and stripped != cleaned:
-            candidates.append(stripped)
-            # Префикс может стоять вне кавычек: table "orders.csv".
-            unquoted, inner_quoted = _strip_quotes(stripped)
-            if inner_quoted and unquoted and unquoted != stripped:
-                candidates.append(unquoted)
-
-    for candidate in candidates:
-        matches = _matching_table_ids(catalog, candidate)
-        if len(matches) == 1:
-            return matches[0]
-        if matches:
-            # Неоднозначное точное имя нельзя «уточнять» ещё одним разбором.
-            return None
-    return None
+    """Разрешает имя таблицы по table_id или original_name, только если оно одно."""
+    cleaned = _clean_table_token(token)
+    if cleaned:
+        folded = cleaned.casefold()
+        matches = [
+            table
+            for table in catalog.tables
+            if table.table_id.casefold() == folded or table.original_name.casefold() == folded
+        ]
+        return matches[0].table_id if len(matches) == 1 else None
+    # Без имени таблицы выбор допустим только при единственной таблице.
+    return catalog.tables[0].table_id if len(catalog.tables) == 1 else None
 
 
 def _structure_match(text: str) -> str | None:

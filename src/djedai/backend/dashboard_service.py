@@ -422,8 +422,15 @@ class DashboardService:
         metric_service: MetricService,
         owner_id: str,
         dashboard_id: str,
+        *,
+        chat_id: str | None = None,
     ) -> DashboardSnapshot:
-        """Перевыполняет все виджеты дашборда автономно без активного чата."""
+        """Перевыполняет все виджеты дашборда в пределах владельца и датасета.
+
+        ``chat_id`` связывает новые результаты с чатом, из которого запросили
+        обновление. Открытый через API refresh таких результатов не создаёт и
+        оставляет их без чата, как и раньше.
+        """
         dashboard = repo_get_dashboard(db, dashboard_id, owner_id=owner_id)
         if dashboard is None:
             raise HTTPException(404, "Дашборд не найден")
@@ -521,7 +528,7 @@ class DashboardService:
                         save_tool_result(
                             db,
                             tool_res,
-                            chat_id=None,
+                            chat_id=chat_id,
                             owner_id=owner_id,
                             persist_data=True,
                             storage_dir=self.settings.results_data_dir,
@@ -719,7 +726,7 @@ class DashboardService:
                             save_tool_result(
                                 db,
                                 step_res,
-                                chat_id=None,
+                                chat_id=chat_id,
                                 owner_id=owner_id,
                                 persist_data=True,
                                 storage_dir=self.settings.results_data_dir,

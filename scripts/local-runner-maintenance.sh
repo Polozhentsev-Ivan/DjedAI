@@ -16,15 +16,21 @@ cleanup() {
     # SIGKILL and interrupted job reporting can bypass Python's finally blocks.
     remove_test_containers org.djedai.postgres-acceptance
     remove_test_containers org.djedai.clickhouse-acceptance
-    remove_test_containers 'com.docker.compose.project=djedai' # CI's smoke stack
+    remove_test_containers 'org.djedai.compose-acceptance=true'
     local output
     output=$(timeout 15 docker volume ls -q \
-        --filter label=com.docker.compose.project=djedai \
+        --filter label=org.djedai.compose-acceptance=true \
         --filter label=com.docker.compose.volume=app-data)
     if [[ -n $output ]]; then
         local -a volumes
         mapfile -t volumes <<< "$output"
         timeout 20 docker volume rm "${volumes[@]}"
+    fi
+    output=$(timeout 15 docker network ls -q --filter label=org.djedai.compose-acceptance=true)
+    if [[ -n $output ]]; then
+        local -a networks
+        mapfile -t networks <<< "$output"
+        timeout 20 docker network rm "${networks[@]}"
     fi
 }
 

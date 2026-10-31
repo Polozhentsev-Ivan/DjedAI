@@ -1415,6 +1415,7 @@
     requirements:
     - memory
     population: all_attempt_rows
+    reuse_result_from: s3_top_services_01
     facts:
     - key: service.top5
       comparison: exact
@@ -1459,6 +1460,7 @@
     - dashboards
     - charts
     population: all_attempt_rows
+    reuse_dashboard_from: s5_overview_dashboard_01
     facts:
     - key: dataset.row_count
       comparison: exact
@@ -1529,6 +1531,7 @@
     requirements:
     - memory
     population: complete_duration_attempt_rows
+    reuse_result_from: s3_duration_extremes_01
     facts:
     - key: duration.min_seconds
       comparison: exact

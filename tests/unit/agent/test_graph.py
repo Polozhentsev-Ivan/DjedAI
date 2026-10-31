@@ -1,9 +1,13 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import duckdb
+import pytest
+
 from djedai.agent.client import ModelResponse
 from djedai.agent.diagnostics import NODES, RunDiagnostics
 from djedai.agent.graph import build_agent_graph
+from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -199,6 +203,35 @@ def test_fast_count_runs_secure_sql_and_composes_without_model():
     assert result["answer_blocks"][0].markdown == "Строк в таблице `orders`: 125430."
     assert result["results"][0].result_id == "r_fast_count"
     assert result["focus_result_ids"] == ["r_fast_count"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", ["table orders.csv", "a  b.csv", "tableorders.csv"])
+def test_fast_quoted_table_selection_through_graph_and_duckdb(name):
+    catalog = _catalog()
+    first = catalog.tables[0].model_copy(
+        update={"original_name": "a b.csv" if name == "a  b.csv" else "orders.csv"}
+    )
+    target = catalog.tables[1].model_copy(update={"original_name": name})
+    catalog = catalog.model_copy(update={"tables": [first, target]})
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE orders AS SELECT * FROM range(2)")
+        connection.execute("CREATE TABLE clients AS SELECT * FROM range(5)")
+
+        def dispatcher(tool, args):
+            assert tool == "run_sql"
+            return run_sql(**args, connection=connection, allowed_tables={"orders", "clients"})
+
+        count = _invoke_fast(f"Сколько строк в таблице «{name}»?", dispatcher, catalog)
+        structure = _invoke_fast(f"Покажи структуру таблицы «{name}»?", dispatcher, catalog)
+
+    assert count["answer_blocks"][0].markdown == "Строк в таблице `clients`: 5."
+    assert count["results"][0].sql == 'SELECT COUNT(*) AS row_count FROM "clients"'
+    assert count["results"][0].data.rows == [[5]]
+    assert structure["results"] == []
+    assert "Структура таблицы `clients`" in structure["answer_blocks"][0].markdown
+    assert "`id`" in structure["answer_blocks"][0].markdown
+    assert "`order_id`" not in structure["answer_blocks"][0].markdown
 
 
 def test_fast_path_diagnostics_measure_stages_without_model_calls():

@@ -9,11 +9,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from djedai.agent.answer_checks import column_totals, duration_hints, unsupported_numbers
+from djedai.agent.client import ModelResponse
 from djedai.agent.dashboard import (
     WidgetExecution,
     build_widget_snapshot,
     dashboard_output_result_ids,
     dashboard_preview_blocks,
+    dashboard_refresh_blocks,
     normalize_dashboard_plan,
 )
 from djedai.agent.data_policy import (
@@ -31,9 +34,16 @@ from djedai.agent.fast_path import (
     count_sql,
     structure_markdown,
 )
-from djedai.agent.guards import guard_question, lacks_money_fields, reversed_period_update
+from djedai.agent.guards import (
+    asks_state_on_date,
+    guard_question,
+    lacks_money_fields,
+    reversed_period_update,
+    unitless_how_much,
+)
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
+from djedai.agent.verification import build_evidence, verify_numeric_text
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
 from djedai.config import get_limits
@@ -54,14 +64,40 @@ from djedai.contracts.chart import ChartSpec, ColorField, XAxis, YMeasure
 from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
-from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.contracts.tool_result import Fact, ToolError, ToolResult
+from djedai.contracts.verification import (
+    NumericAssertion,
+    VerificationIssue,
+    VerificationReport,
+)
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 MODEL_ERROR_MARKDOWN = "Не удалось получить ответ модели. Попробуйте повторить запрос."
+VERIFICATION_ERROR_MARKDOWN = (
+    "Не удалось подтвердить числа в ответе по фактам и данным. "
+    "Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос."
+)
 # Dashboard widgets must be independently refreshable. The exploratory analytics
 # tools do not produce a stable widget result, and their schemas make the planner
 # prompt large enough for a real endpoint to time out.
 DASHBOARD_TOOL_NAMES = frozenset({"run_sql", "compute_metric"})
+CALCULATION_TOOL_NAMES = DASHBOARD_TOOL_NAMES
+EXPLORATION_TOOLS = frozenset({"describe_column", "value_counts"})
+# В сообщении пользователя правило работает надёжнее, чем в длинном системном промпте.
+ENTITY_NOTE = (
+    "If the question asks about an entity with an identifier column, group by that identifier "
+    "and add its descriptive column with ANY_VALUE."
+)
+STATE_ON_DATE_NOTE = (
+    "The question asks about a state on a date: every event in the conditions, including the one "
+    "that must have happened, is compared with that date by its timestamp, never by IS NOT NULL."
+)
+# Повтор compose и новая проверка не успеют: лучше сразу назвать числа в verify.
+COMPOSE_RETRY_MIN_SECONDS = 45
+HOW_MUCH_NOTE = (
+    "The question says how much without naming a unit: if the table has a fitting money column, "
+    "select both COUNT(*) and SUM of it, per group and in total."
+)
 POLICY_NOTE = (
     "\n\nData policy: raw rows from earlier results are not included. "
     "Use only the provided facts, aggregates and metadata; do not invent values. "
@@ -111,6 +147,9 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
     sensitive_columns = state.get("sensitive_columns", ())
     for result in answer_results(state):
         entry: dict = {"result_id": result.result_id, "tool": result.tool}
+        # Без запроса модель не видит применённых условий и решает, что их не было.
+        if result.sql:
+            entry["query"] = policy.sanitize_text(result.sql)
         if result.facts:
             sensitive = policy.result_has_sensitive_source(
                 result, sensitive_columns=sensitive_columns
@@ -136,8 +175,13 @@ def _answer_payload(state: AgentState, policy: DataTransferPolicy) -> tuple[list
 
 
 def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
-    """Результаты шагов для повторного планирования: ошибка вместе с подсказкой."""
+    """Результаты шагов для повторного планирования: ошибка с подсказкой или данные хода.
+
+    Значения успешного шага нужны плану после разведки: без них точные метки статусов
+    пришлось бы угадывать. Строки текущего хода разрешены и в restricted-режиме.
+    """
     lines = []
+    sensitive_columns = state.get("sensitive_columns", ())
     for result in state.get("results", []):
         status = "Success"
         if result.error:
@@ -145,6 +189,16 @@ def _results_for_plan(state: AgentState, policy: DataTransferPolicy) -> str:
             status = safe.message
             if safe.suggestion:
                 status = f"{status} Подсказка: {safe.suggestion}"
+        elif result.data is not None:
+            data = policy.result_data(
+                result.data,
+                context=DataContext.CURRENT_RESULT,
+                max_rows=policy.prompt_row_limit(result, sensitive_columns=sensitive_columns),
+                sensitive_columns=policy.sensitive_result_columns(
+                    result, sensitive_columns=sensitive_columns
+                ),
+            )
+            status = f"{status} {json.dumps(data, ensure_ascii=False, default=str)}"
         lines.append(f"Tool {result.tool}: {result.status} - {status}")
     return "\n".join(lines)
 
@@ -179,6 +233,9 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
             known_ids.add(result.result_id)
     return {
         "catalog_prompt": catalog_prompt,
+        "catalog_fields": (
+            policy.sanitize_text(_catalog_fields(catalog)) if catalog is not None else ""
+        ),
         # Normalized column names whose original header is sensitive. Results keep
         # the normalized name, so this is what preserves `dbPasswordText` after
         # normalization to `dbpasswordtext`.
@@ -191,10 +248,12 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "results": [],
         "charts": [],
         "answer_blocks": [],
+        "terminal_error": None,
         "fast_path": None,
         "retries": 0,
         "compose_retries": 0,
         "is_verified": False,
+        "verification": None,
         "dashboard_plan": None,
         "dashboard_widgets": [],
         "dashboard_snapshot": None,
@@ -291,6 +350,16 @@ def fast_compose(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def _catalog_fields(catalog: object) -> str:
+    """Имена колонок для compose/verify: без статистики, чтобы она не попадала в ответ как факт."""
+    lines = []
+    for table in catalog.tables:
+        for column in table.columns:
+            currency = f", {column.currency}" if column.currency else ""
+            lines.append(f"- {table.table_id}.{column.name} «{column.original_name}»{currency}")
+    return "\n".join(lines)
+
+
 def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
     """Собирает единый контекст диалога для understand/plan."""
     messages = state.get("messages", [])
@@ -306,6 +375,20 @@ def memory_context(state: AgentState, policy: DataTransferPolicy) -> str:
 
 
 CLARIFY_INTENTS = {"ambiguous", "invalid", "off_topic"}
+
+
+def _deserves_second_look(client: object, response: ModelResponse) -> bool:
+    """Нужен ли повтор с reasoning: без него модель спрашивает то, что вопрос уже задал.
+
+    Только там, где reasoning явно выключен, значит endpoint его поддерживает. Вопросы,
+    которые сразу идут в план, времени не теряют; неудачный повтор оставляет первый ответ.
+    """
+    reasoning_for = getattr(client, "reasoning_for", None)
+    if reasoning_for is None or reasoning_for("understand") != "none":
+        return False
+    if response.status == "success" and response.data:
+        return response.data.intent == "ambiguous"
+    return response.error_type == "SCHEMA_MISMATCH"
 
 
 def understand(state: AgentState, config: RunnableConfig) -> dict:
@@ -334,6 +417,12 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
         response = client.generate_typed_response(
             sys_prompt, last_msg, Understanding, stage="understand"
         )
+        if _deserves_second_look(client, response):
+            second = client.generate_typed_response(
+                sys_prompt, last_msg, Understanding, stage="understand", reasoning="low"
+            )
+            if second.status == "success" and second.data:
+                response = second
         if response.status == "success" and response.data:
             # Период мог прийти из контекста диалога: «за тот же период».
             if response.data.intent not in CLARIFY_INTENTS:
@@ -344,10 +433,12 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
             return {
                 "understanding": Understanding(intent="invalid"),
                 "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+                "terminal_error": response.error_type,
             }
         return {
             "understanding": Understanding(intent="ambiguous"),
             "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     intent = "ambiguous" if "ambiguous" in last_msg.lower() else "data_question"
@@ -359,6 +450,9 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     policy = _policy(config)
 
     registry = get_tools_for_llm()
+    # После разведки нужен расчёт: остальные схемы только удлиняют промпт и второй проход.
+    if any(result.tool in EXPLORATION_TOOLS for result in state.get("results", [])):
+        registry = [tool for tool in registry if tool["name"] in CALCULATION_TOOL_NAMES]
     tools_desc = "\n".join(
         f"- {t['name']}: {t['description']} \n  Schema: {json.dumps(t['parameters_schema'])}"
         for t in registry
@@ -380,6 +474,11 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
         state.get("understanding").resolved_question if state.get("understanding") else None
     )
     user_prompt = user_prompt or last_msg or "Generate execution plan."
+    user_prompt += f"\n\n{ENTITY_NOTE}"
+    if unitless_how_much(last_msg):
+        user_prompt += f"\n\n{HOW_MUCH_NOTE}"
+    if asks_state_on_date(last_msg):
+        user_prompt += f"\n\n{STATE_ON_DATE_NOTE}"
 
     if client:
         response = client.generate_typed_response(
@@ -396,6 +495,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
             "plan": [],
             "retries": state.get("retries", 0) + 1,
             "answer_blocks": [Block(type="error", markdown=message)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     return {"plan": state.get("plan", []), "retries": state.get("retries", 0) + 1}
@@ -463,12 +563,14 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
             "dashboard_plan": None,
             "dashboard_retries": retries,
             "answer_blocks": [Block(type="error", markdown=message)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     return {
         "dashboard_plan": None,
         "dashboard_retries": retries,
         "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+        "terminal_error": "UNKNOWN_ERROR",
     }
 
 
@@ -650,6 +752,81 @@ def save_dashboard(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def refresh_dashboard(state: AgentState, config: RunnableConfig) -> dict:
+    """Пересчитывает существующий дашборд, выбранный в контексте диалога.
+
+    Права владельца, dataset и актуальность рецептов проверяет backend-сервис, а не
+    модель. Ошибка возвращается явным блоком: старый снимок не выдаётся за свежий.
+    """
+    understanding = state.get("understanding")
+    dashboard_id = understanding.dashboard_id if understanding is not None else None
+    if not dashboard_id:
+        return {
+            "answer_blocks": [Block(type="error", markdown="Не указан дашборд для обновления.")]
+        }
+
+    refresher = config.get("configurable", {}).get("dashboard_refresher")
+    if refresher is None:
+        return {
+            "answer_blocks": [
+                Block(type="error", markdown="Обновление сохранённых дашбордов сейчас недоступно.")
+            ]
+        }
+
+    try:
+        snapshot = refresher(dashboard_id)
+        if isinstance(snapshot, dict):
+            snapshot = DashboardSnapshot.model_validate(snapshot)
+    except (TurnTimeout, TurnCancelled):
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed refresh is the finding
+        policy = _policy(config)
+        return {
+            "answer_blocks": [
+                Block(
+                    type="error",
+                    markdown="Не удалось обновить дашборд. "
+                    + (policy.sanitize_text(str(exc)) or "Повторите запрос позднее."),
+                )
+            ]
+        }
+
+    return {
+        "dashboard_snapshot": snapshot,
+        "answer_blocks": dashboard_refresh_blocks(snapshot),
+        "charts": [
+            widget.chart for widget in snapshot.widgets if isinstance(widget.chart, ChartSpec)
+        ],
+        "focus_result_ids": dashboard_output_result_ids(snapshot),
+    }
+
+
+def _with_derived_facts(result: ToolResult) -> ToolResult:
+    """Итоги колонок и часы как факты результата: так они сохраняются и проверяются вместе с ним."""
+    if result.status != "ok" or result.data is None:
+        return result
+    names = [_column_info(column)[0] for column in result.data.columns]
+    facts = list(result.facts)
+    if durations := duration_hints(names, result.data.rows):
+        facts.append(
+            Fact(
+                text="Длительности из секунд в часах",
+                kind="summary",
+                values={"durations": durations},
+            )
+        )
+    totals = {} if result.data.truncated else column_totals(names, result.data.rows)
+    if totals:
+        facts.append(
+            Fact(
+                text="Суммы числовых колонок по всем строкам результата",
+                kind="summary",
+                values={"column_totals": totals},
+            )
+        )
+    return result.model_copy(update={"facts": facts})
+
+
 def execute(state: AgentState, config: RunnableConfig) -> dict:
     plan_steps = state.get("plan", [])
     existing_results = state.get("results", [])
@@ -683,6 +860,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
                     ),
                 )
 
+            res = _with_derived_facts(res)
             # Ensure metadata is stamped on the result (ToolResult is frozen).
             # Errors and facts are stored sanitized because they can reach both
             # the planner and the final answer.
@@ -876,7 +1054,8 @@ def updated_focus_result_ids(state: AgentState) -> list[str]:
     """Обновляет «о чём сейчас разговор» без привязки к чужому чату."""
     current_results = state.get("results", [])
     plan_len = len(state.get("plan", []))
-    plan_results = current_results[-plan_len:] if plan_len > 0 else []
+    # Пустой план после разведки: ответ строится на результатах этого хода.
+    plan_results = current_results[-plan_len:] if plan_len > 0 else current_results
     understanding = state.get("understanding")
     references = understanding.references if understanding else []
     known = {result.result_id for result in [*state.get("history_results", []), *current_results]}
@@ -1104,6 +1283,7 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
                 "charts": [],
                 "focus_result_ids": focus,
                 "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+                "terminal_error": response.error_type,
             }
 
     return {"charts": [], "focus_result_ids": focus}
@@ -1128,8 +1308,9 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         }
 
     sys_prompt = load_prompt("compose").format(
+        catalog=state.get("catalog_fields", ""),
         facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
-        + _policy_note(facts_and_data)
+        + _policy_note(facts_and_data),
     )
 
     last_msg = state.get("messages", [])[-1].content if state.get("messages") else ""
@@ -1144,6 +1325,13 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             "Please carefully check formatting, rounding, and units, "
             "and ensure ALL numbers strictly match the facts."
         )
+        previous = state.get("verification")
+        if previous is not None and previous.issues:
+            reasons = "\n".join(f"- {issue.message}" for issue in previous.issues)
+            user_prompt += (
+                "\nThe deterministic verifier rejected these points; do not repeat them:\n"
+                + reasons
+            )
 
     if last_msg and user_prompt != last_msg:
         user_prompt += f"\nOriginal question and response requirements: {last_msg}"
@@ -1160,7 +1348,12 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
                 if response.error_type == "POLICY_RESTRICTED"
                 else MODEL_ERROR_MARKDOWN
             )
-            blocks = [Block(type="error", markdown=message)]
+            return {
+                "answer_blocks": [Block(type="error", markdown=message)],
+                "terminal_error": response.error_type or "UNKNOWN_ERROR",
+                "compose_retries": state.get("compose_retries", 0) + 1,
+                "focus_result_ids": focus,
+            }
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
@@ -1176,10 +1369,92 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def _verification_issue(code: str) -> VerificationIssue:
+    messages = {
+        "llm_reported": "Модель отметила утверждение как неподтверждённое.",
+        "llm_unavailable": "Проверка ответа моделью недоступна.",
+        "invalid_correction": "Исправленный моделью текст не прошёл проверку чисел.",
+    }
+    return VerificationIssue(code=code, message=messages[code])  # type: ignore[arg-type]
+
+
+def _previous_rejected(state: AgentState) -> list[NumericAssertion]:
+    report = state.get("verification")
+    return list(report.rejected_assertions) if report is not None else []
+
+
+def _unique_assertions(items: Collection[NumericAssertion]) -> list[NumericAssertion]:
+    unique: dict[tuple[object, ...], NumericAssertion] = {}
+    for item in items:
+        key = (item.kind, item.raw_text, item.reason_code, item.text)
+        unique.setdefault(key, item)
+    return list(unique.values())
+
+
+def _unique_issues(items: Collection[VerificationIssue]) -> list[VerificationIssue]:
+    unique: dict[tuple[str, str], VerificationIssue] = {}
+    for item in items:
+        unique.setdefault((item.code, item.message), item)
+    return list(unique.values())
+
+
+def _finished_verification(
+    report: VerificationReport,
+    *,
+    status: str,
+    rejected: Collection[NumericAssertion] = (),
+    issues: Collection[VerificationIssue] = (),
+) -> VerificationReport:
+    return report.model_copy(
+        update={
+            "status": status,
+            "rejected_assertions": _unique_assertions([*report.rejected_assertions, *rejected]),
+            "issues": _unique_issues(issues),
+        }
+    )
+
+
+def _publish_corrected(blocks: list[Block], corrected: str) -> list[Block]:
+    new_blocks = [block for block in blocks if block.type not in ("text", "chart")]
+    new_blocks.append(Block(type="text", markdown=corrected))
+    return new_blocks
+
+
+def _verification_failure(
+    state: AgentState,
+    blocks: list[Block],
+    report: VerificationReport,
+    *,
+    extra_rejected: Collection[NumericAssertion] = (),
+    extra_issues: Collection[VerificationIssue] = (),
+) -> dict:
+    rejected = [
+        *_previous_rejected(state),
+        *report.rejected_assertions,
+        *extra_rejected,
+    ]
+    issues = [
+        *(state.get("verification").issues if state.get("verification") else ()),
+        *report.issues,
+        *extra_issues,
+    ]
+    failed = _finished_verification(report, status="failed", rejected=rejected, issues=issues)
+    new_blocks = [block for block in blocks if block.type not in ("text", "chart")]
+    new_blocks.append(Block(type="error", markdown=VERIFICATION_ERROR_MARKDOWN))
+    return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
+
+
 def verify(state: AgentState, config: RunnableConfig) -> dict:
-    """Final check of numbers in text and chart metadata vs data."""
+    """Проверяет числа детерминированно, затем независимо уточняет у модели.
+
+    Модель не может подтвердить число, которое не прошло детерминированную
+    проверку. Исправленный ею текст проверяется тем же алгоритмом; если он
+    снова не проходит, публикуется явная ошибка, а не «проверенный» ответ.
+    """
     client = config.get("configurable", {}).get("client")
     blocks = state.get("answer_blocks", [])
+    results = answer_results(state)
+    result_ids = [result.result_id for result in results]
 
     draft_parts = []
     for b in blocks:
@@ -1197,66 +1472,148 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                 draft_parts.append(sub)
 
     if not draft_parts:
-        return {"is_verified": True}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "verification": report}
 
     draft = "\n\n".join(draft_parts)
 
     policy = _policy(config)
-    results = answer_results(state)
     facts_and_data, usable = _answer_payload(state, policy)
 
     if not facts_and_data:
         new_blocks = [b for b in blocks if b.type != "text"]
         new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
-        return {"is_verified": True, "answer_blocks": new_blocks}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     if results and not usable:
         new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
         new_blocks.append(Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE))
-        return {"is_verified": True, "answer_blocks": new_blocks}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
-    if client:
-        sys_prompt = load_prompt("verify").format(
-            facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
-            + _policy_note(facts_and_data),
-            draft=draft,
-        )
-        response = client.generate_typed_response(
-            sys_prompt,
-            "Verify the numbers and formats.",
-            VerifyResponse,
-            stage="verify",
-        )
+    evidence = build_evidence(results, facts_and_data)
+    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    deterministic_ok = deterministic.status != "failed"
+    unsupported = unsupported_numbers(draft, facts_and_data)
+    budget = current_budget()
+    enough_time = budget is None or budget.remaining > COMPOSE_RETRY_MIN_SECONDS
+    if unsupported and state.get("compose_retries", 0) < 2 and enough_time and client:
+        return {
+            "is_verified": False,
+            "verification": _finished_verification(
+                deterministic, status="failed", rejected=_previous_rejected(state)
+            ),
+        }
 
-        if response.status == "success" and response.data:
-            v_data = response.data
-            if v_data.is_valid:
-                return {"is_verified": True}
-            else:
-                # If we've reached max retries, accept the corrected/stripped markdown
-                if state.get("compose_retries", 0) >= 2:
-                    new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
-                    new_blocks.append(Block(type="text", markdown=v_data.corrected_markdown))
-                    return {"is_verified": True, "answer_blocks": new_blocks}
-                else:
-                    # Triggers conditional route to loop back to compose
-                    return {"is_verified": False}
-        else:
-            # The API failed (timeout, 500, policy restriction, etc.).
-            # We do not allow the publication of an unvalidated draft.
-            new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
-            message = (
-                RESTRICTED_CONTEXT_MESSAGE
-                if response.error_type == "POLICY_RESTRICTED"
-                else (
-                    "Ошибка проверки ответа: недоступен API верификации. "
-                    "Неподтвержденный ответ удален."
-                )
+    if not client:
+        if deterministic_ok:
+            status = "verified" if deterministic.status == "verified" else "not_applicable"
+            return {
+                "is_verified": True,
+                "verification": _finished_verification(
+                    deterministic, status=status, rejected=_previous_rejected(state)
+                ),
+            }
+        return _verification_failure(state, blocks, deterministic)
+
+    sys_prompt = load_prompt("verify").format(
+        facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
+        + _policy_note(facts_and_data),
+        catalog=state.get("catalog_fields") or "",
+        draft=draft,
+    )
+    response = client.generate_typed_response(
+        sys_prompt,
+        "Verify the numbers and formats."
+        + (f" Not found in the data: {', '.join(unsupported)}." if unsupported else ""),
+        VerifyResponse,
+        stage="verify",
+    )
+
+    if response.status != "success" or not response.data:
+        message = (
+            RESTRICTED_CONTEXT_MESSAGE
+            if response.error_type == "POLICY_RESTRICTED"
+            else (
+                "Ошибка проверки ответа: недоступен API верификации. Неподтвержденный ответ удален."
             )
-            new_blocks.append(Block(type="error", markdown=message))
-            return {"is_verified": True, "answer_blocks": new_blocks}
+        )
+        new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
+        new_blocks.append(Block(type="error", markdown=message))
+        failed = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[*deterministic.issues, _verification_issue("llm_unavailable")],
+        )
+        return {
+            "is_verified": True,
+            "answer_blocks": new_blocks,
+            "verification": failed,
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
+        }
 
-    return {"is_verified": True}
+    v_data = response.data
+    if v_data.is_valid and deterministic_ok:
+        status = "verified" if deterministic.status == "verified" else "not_applicable"
+        return {
+            "is_verified": True,
+            "verification": _finished_verification(
+                deterministic, status=status, rejected=_previous_rejected(state)
+            ),
+        }
+
+    llm_rejected = not v_data.is_valid
+    at_last_attempt = state.get("compose_retries", 0) >= 2
+    if not at_last_attempt:
+        report = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[
+                *deterministic.issues,
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+            ],
+        )
+        return {"is_verified": False, "verification": report}
+
+    corrected = (v_data.corrected_markdown or "").strip()
+    if corrected and corrected != draft:
+        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        if corrected_report.status != "failed":
+            new_blocks = _publish_corrected(blocks, corrected)
+            issues = [
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+                *deterministic.issues,
+            ]
+            return {
+                "is_verified": True,
+                "answer_blocks": new_blocks,
+                "verification": _finished_verification(
+                    corrected_report,
+                    status="corrected",
+                    rejected=[
+                        *_previous_rejected(state),
+                        *deterministic.rejected_assertions,
+                    ],
+                    issues=issues,
+                ),
+            }
+        return _verification_failure(
+            state,
+            blocks,
+            corrected_report,
+            extra_rejected=[*deterministic.rejected_assertions],
+            extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+        )
+
+    return _verification_failure(
+        state,
+        blocks,
+        deterministic,
+        extra_issues=[*([_verification_issue("llm_reported")] if llm_rejected else [])],
+    )
 
 
 def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
@@ -1355,6 +1712,18 @@ METRIC_DECISIONS = {
 def _recent_results(state: AgentState) -> list[ToolResult]:
     plan_len = len(state.get("plan", []))
     return state.get("results", [])[-plan_len:] if plan_len > 0 else []
+
+
+def _only_explored(state: AgentState, recent: list[ToolResult]) -> bool:
+    """План только посмотрел значения колонок: расчёт по ним ещё предстоит.
+
+    Модель обещает написать расчёт следующим шагом, поэтому без второго прохода ответ
+    строился бы по разведке. Второй проход один: новый план может быть и пустым.
+    """
+    if not recent or any(result.tool not in EXPLORATION_TOOLS for result in recent):
+        return False
+    earlier = state.get("results", [])[: -len(recent)]
+    return not any(result.tool in EXPLORATION_TOOLS for result in earlier)
 
 
 def _metric_decision(state: AgentState) -> ToolError | None:
@@ -1554,10 +1923,13 @@ def route_after_fast_compose(state: AgentState) -> str:
 
 
 def route_after_understand(state: AgentState) -> str:
-    """Conditional edge: уточнения — в clarify, дашборд — в свою ветку, иначе plan."""
-    intent = state["understanding"].intent
+    """Уточнения — в clarify, существующий дашборд — в refresh, новый — в plan_dashboard."""
+    understanding = state["understanding"]
+    intent = understanding.intent
     if intent in CLARIFY_INTENTS:
         return "clarify"
+    if understanding.dashboard_id:
+        return "refresh_dashboard"
     if intent == "dashboard":
         return "plan_dashboard"
     return "plan"
@@ -1600,6 +1972,8 @@ def route_after_execute(state: AgentState) -> str:
         return "clarify"
     if has_errors and state.get("retries", 0) <= 2:
         return "plan"
+    if _only_explored(state, recent_results) and state.get("retries", 0) <= 2:
+        return "plan"
     if metric_errors or _quality_blockers(state):
         return "clarify"
     return "visualize"
@@ -1635,6 +2009,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("plan_dashboard", observed("plan_dashboard", plan_dashboard))
     workflow.add_node("execute_dashboard", observed("execute_dashboard", execute_dashboard))
     workflow.add_node("save_dashboard", observed("save_dashboard", save_dashboard))
+    workflow.add_node("refresh_dashboard", observed("refresh_dashboard", refresh_dashboard))
     workflow.add_node("visualize", observed("visualize", visualize, state_only=False))
     workflow.add_node("compose", observed("compose", compose))
     workflow.add_node("verify", observed("verify", verify))
@@ -1658,7 +2033,12 @@ def build_agent_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "understand",
         route_after_understand,
-        {"plan": "plan", "plan_dashboard": "plan_dashboard", "clarify": "clarify"},
+        {
+            "plan": "plan",
+            "plan_dashboard": "plan_dashboard",
+            "refresh_dashboard": "refresh_dashboard",
+            "clarify": "clarify",
+        },
     )
 
     workflow.add_edge("plan", "execute")
@@ -1693,6 +2073,7 @@ def build_agent_graph() -> StateGraph:
         {"plan_dashboard": "plan_dashboard", "save_dashboard": "save_dashboard"},
     )
     workflow.add_edge("save_dashboard", END)
+    workflow.add_edge("refresh_dashboard", END)
 
     workflow.add_edge("visualize", "compose")
     workflow.add_edge("compose", "verify")

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "dataset_id": "hk_purchase_requests_v1",
+  "source": {
+    "repository_url": "https://gitverse.ru/kban/HK_Datasets",
+    "revision": "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d",
+    "file_name": "07_Заявки_на_закупку.csv",
+    "sha256": "828eb441b00e6569cfc05013bdebda102532e97e3d3aa1b30271efd22eafba36",
+    "size_bytes": 190300753
+  }
+}

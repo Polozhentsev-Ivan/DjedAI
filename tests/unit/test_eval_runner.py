@@ -1,4 +1,5 @@
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+from djedai.contracts.chart import ChartSpec, XAxis, YMeasure  # noqa: E402
+from djedai.contracts.dashboard import (  # noqa: E402
+    DashboardSnapshot,
+    WidgetLayout,
+    WidgetSnapshot,
+    WidgetToolCall,
+)
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData  # noqa: E402
 from scripts.eval_runner import (  # noqa: E402
     check_fact,
@@ -16,12 +24,15 @@ from scripts.eval_runner import (  # noqa: E402
     open_dataset,
     run_eval,
 )
+from scripts.verify_golden import load_suite  # noqa: E402
 
 
 class Block:
-    def __init__(self, type: str = "text", markdown: str = ""):
+    def __init__(self, type: str = "text", markdown: str = "", **fields):
         self.type = type
         self.markdown = markdown
+        for name, value in fields.items():
+            setattr(self, name, value)
 
 
 def tool_result(
@@ -31,9 +42,10 @@ def tool_result(
     tool: str = "run_sql",
     status: str = "ok",
     error: ToolError | None = None,
+    result_id: str | None = None,
 ) -> ToolResult:
     return ToolResult(
-        result_id=f"r_{tool}_{status}",
+        result_id=result_id or f"r_{tool}_{status}",
         status=status,
         tool=tool,
         data=ToolResultData(columns=[], rows=rows or []),
@@ -324,6 +336,29 @@ def test_answer_rounding_and_user_constants_are_allowed():
     assert status == "passed", issues
 
 
+def test_hour_conversion_reaches_answer_evidence_without_dashboard():
+    case = answer_case(
+        "duration_hours",
+        result_duration_unit="hours",
+        answer_contains_value={"from_result": True},
+    )
+    computed = ToolResult(
+        result_id="r_seconds",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["p90_sec"], rows=[[260964.0]], row_count=1),
+    )
+    result = {
+        "results": [computed],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Duration: 72.49 hours")],
+    }
+    status, issues, _ = evaluate_case(case, result)
+    assert status == "passed", issues
+    assert computed.data.columns == ["p90_sec"]
+    assert computed.data.rows == [[260964.0]]
+
+
 def test_answer_may_derive_share_from_tool_counts():
     case = answer_case("s2_status_01", answer_contains_value={"from_result": True})
     result = {
@@ -417,7 +452,7 @@ def test_run_eval_skips_unsupported(mock_yaml_load, mock_build_graph, tmp_path):
 
     mock_build_graph.assert_not_called()
     assert report["summary"]["skipped"] == 1
-    assert report["summary"]["total"] == 0
+    assert report["summary"]["total"] == 1
     assert report["cases"][0]["status"] == "skipped"
 
 
@@ -449,7 +484,7 @@ def test_run_eval_skips_input_validation(
     mock_build_graph.assert_not_called()
     mock_get_client.assert_not_called()
     assert report["summary"]["skipped"] == 1
-    assert report["summary"]["total"] == 0
+    assert report["summary"]["total"] == 1
 
 
 @patch("scripts.eval_runner.build_agent_graph")
@@ -623,6 +658,306 @@ def test_failed_prerequisite_blocks_context_case(
         if call.kwargs["config"]["configurable"]["thread_id"] == "eval_s6_filter_production_01"
     ]
     assert len(executed) == 1
+
+
+TOP_SERVICES = [
+    ["Уведомления", 71655],
+    ["Каталог товаров", 71593],
+    ["Платежи", 67068],
+    ["Складской учёт", 63375],
+    ["Хранилище данных", 59316],
+]
+
+
+def _memory_case(**overrides):
+    expect = {
+        "facts": [{"key": "service.top5", "comparison": "exact", "value": TOP_SERVICES}],
+        "reuse_result_from": "s3_top_services_01",
+        "answer_contains_value": {"from_result": True},
+    }
+    expect.update(overrides)
+    return answer_case("s6_second_ranked_service_01", **expect)
+
+
+def _memory_context():
+    return [
+        {
+            "id": "s3_top_services_01",
+            "tool_results": [tool_result(rows=TOP_SERVICES)],
+        }
+    ]
+
+
+def test_memory_answer_is_confirmed_by_declared_previous_result_without_new_tool_call():
+    case = _memory_case()
+    result = {
+        "results": [],
+        "plan": [],
+        "answer_blocks": [Block("text", "Второй — «Каталог товаров», 71593 попытки.")],
+    }
+
+    status, issues, details = evaluate_case(case, result, context_results=_memory_context())
+
+    assert status == "passed", issues
+    assert details["fact_checks"][0]["source"] == "context:s3_top_services_01"
+    assert details["reuse"] == {
+        "from": "s3_top_services_01",
+        "result_ids": ["r_run_sql_ok"],
+        "tools": ["run_sql"],
+        "accepted": True,
+    }
+
+
+def test_memory_answer_with_wrong_number_is_still_failed():
+    case = _memory_case()
+    result = {
+        "results": [],
+        "plan": [],
+        "answer_blocks": [Block("text", "Второй — «Каталог товаров», 71594 попытки.")],
+    }
+
+    status, issues, details = evaluate_case(case, result, context_results=_memory_context())
+
+    assert status == "failed"
+    assert details["fact_checks"][0]["passed"] is True
+    assert details["fact_checks"][0]["source"] == "context:s3_top_services_01"
+    assert any("71594" in issue and "not backed" in issue for issue in issues)
+
+
+def test_memory_answer_requires_an_explicit_reuse_declaration():
+    case = _memory_case(reuse_result_from=None)
+    result = {
+        "results": [],
+        "plan": [],
+        "answer_blocks": [Block("text", "Второй — «Каталог товаров», 71593 попытки.")],
+    }
+
+    status, issues, _ = evaluate_case(case, result, context_results=_memory_context())
+
+    assert status == "failed"
+    assert any("Did not use any expected tools" in issue for issue in issues)
+    assert any("not confirmed by tool results" in issue for issue in issues)
+
+
+def test_memory_answer_requires_the_declared_previous_result_to_exist():
+    case = _memory_case()
+    result = {
+        "results": [],
+        "plan": [],
+        "answer_blocks": [Block("text", "Второй — «Каталог товаров», 71593 попытки.")],
+    }
+
+    status, issues, details = evaluate_case(case, result, context_results=[])
+
+    assert status == "failed"
+    assert any("was not found to verify reuse" in issue for issue in issues)
+    assert details["fact_checks"][0]["passed"] is False
+
+
+def _dashboard_widget(widget_id: str, chart_type: str, result_id: str) -> WidgetSnapshot:
+    return WidgetSnapshot(
+        widget_id=widget_id,
+        chart=ChartSpec(
+            chart_id=f"ch_{widget_id}",
+            type=chart_type,
+            title=f"Widget {widget_id}",
+            result_id=result_id,
+            x=XAxis(field="category") if chart_type != "kpi" else None,
+            y=[YMeasure(field="count")],
+        ),
+        layout=WidgetLayout(x=0, y=0, w=4, h=2),
+        tool_call=WidgetToolCall(tool="run_sql", params={"sql": "SELECT 1"}),
+        result_id=result_id,
+        status="ok",
+    )
+
+
+def test_refreshed_dashboard_must_reuse_the_previous_saved_dashboard():
+    case = answer_case(
+        "s6_refresh_previous_dashboard_01",
+        blocks_include=["dashboard_link"],
+        reuse_dashboard_from="s5_overview_dashboard_01",
+        dashboard={
+            "persisted": True,
+            "refresh": "recompute_recipes",
+            "widgets": [
+                {"id": "a", "chart_types_any": ["kpi"]},
+                {"id": "b", "chart_types_any": ["bar"]},
+                {"id": "c", "chart_types_any": ["pie"]},
+            ],
+        },
+    )
+    widgets = [
+        _dashboard_widget("w1", "kpi", "r1"),
+        _dashboard_widget("w2", "bar", "r2"),
+        _dashboard_widget("w3", "pie", "r3"),
+    ]
+    snapshot = DashboardSnapshot(
+        dashboard_id="d_prior",
+        dataset_id="hk_background_jobs_v1",
+        title="Обзор фоновых заданий",
+        widgets=widgets,
+        created_at=datetime.now(UTC),
+        refreshed_at=datetime.now(UTC),
+    )
+    results = [tool_result(rows=[[1]], result_id=f"r{index}") for index in range(1, 4)]
+    context = [
+        {
+            "id": "s5_overview_dashboard_01",
+            "dashboard_checks": {
+                "dashboard_id": "d_prior",
+                "widget_ids": ["w1", "w2", "w3"],
+            },
+        }
+    ]
+
+    def score(dashboard_id: str):
+        return evaluate_case(
+            case,
+            {
+                "results": results,
+                "plan": [SimpleNamespace(tool="run_sql")],
+                "answer_blocks": [
+                    Block("text", "Дашборд обновлён."),
+                    Block("dashboard_link", dashboard_id=dashboard_id),
+                ],
+                "dashboard_snapshot": snapshot,
+            },
+            context_results=context,
+        )
+
+    status, issues, _ = score("d_prior")
+    assert status == "passed", issues
+
+    status, issues, _ = score("d_other")
+    assert status == "failed"
+    assert any("does not reuse prerequisite dashboard" in issue for issue in issues)
+
+
+def test_refreshed_dashboard_facts_and_tools_come_from_replayed_recipes():
+    case = answer_case(
+        "s6_refresh_previous_dashboard_01",
+        blocks_include=["dashboard_link"],
+        facts=[{"key": "total", "comparison": "exact", "value": 42}],
+        reuse_dashboard_from="s5_overview_dashboard_01",
+        dashboard={
+            "persisted": True,
+            "refresh": "recompute_recipes",
+            "widgets": [
+                {"id": "a", "facts": ["total"], "chart_types_any": ["kpi"]},
+                {"id": "b", "chart_types_any": ["bar"]},
+                {"id": "c", "chart_types_any": ["pie"]},
+            ],
+        },
+    )
+    widgets = [
+        _dashboard_widget("w1", "kpi", "r1"),
+        _dashboard_widget("w2", "bar", "r2"),
+        _dashboard_widget("w3", "pie", "r3"),
+    ]
+    snapshot = DashboardSnapshot(
+        dashboard_id="d_prior",
+        dataset_id="hk_background_jobs_v1",
+        title="Обзор фоновых заданий",
+        widgets=widgets,
+        created_at=datetime.now(UTC),
+        refreshed_at=datetime.now(UTC),
+    )
+
+    class RecomputeDataset:
+        """The graph created new results; the runner replays the widget recipes."""
+
+        def recompute_widget(self, widget):
+            return tool_result(rows=[[42]], result_id=f"new_{widget.widget_id}")
+
+    context = [
+        {
+            "id": "s5_overview_dashboard_01",
+            "dashboard_checks": {
+                "dashboard_id": "d_prior",
+                "widget_ids": ["w1", "w2", "w3"],
+            },
+        }
+    ]
+    status, issues, details = evaluate_case(
+        case,
+        {
+            "results": [],
+            "plan": [],
+            "answer_blocks": [
+                Block("text", "Дашборд обновлён: всего 42 попытки."),
+                Block("dashboard_link", dashboard_id="d_prior"),
+            ],
+            "dashboard_snapshot": snapshot,
+        },
+        dataset=RecomputeDataset(),
+        context_results=context,
+    )
+
+    assert status == "passed", issues
+    assert details["fact_checks"][0]["source"] == "dashboard:d_prior"
+    assert details["dashboard_checks"]["reuse_accepted"] is True
+    assert details["dashboard_checks"]["recomputed_tools"] == ["run_sql"]
+
+
+@pytest.mark.parametrize("dashboard_id", ["d_prior", "d_unrelated"])
+def test_real_golden_dashboard_refresh_contract(dashboard_id):
+    cases, _ = load_suite()
+    case = next(case for case in cases if case["id"] == "s6_refresh_previous_dashboard_01")
+    expected = case["expect"]
+    facts = {fact["key"]: fact for fact in expected["facts"]}
+    widgets = [
+        _dashboard_widget(widget["id"], widget["chart_types_any"][0], f"r_{index}")
+        for index, widget in enumerate(expected["dashboard"]["widgets"])
+    ]
+    widget_facts = {
+        widget["id"]: facts[widget["facts"][0]]["value"]
+        for widget in expected["dashboard"]["widgets"]
+    }
+
+    class RecomputeDataset:
+        def recompute_widget(self, widget):
+            value = widget_facts[widget.widget_id]
+            return tool_result(
+                rows=value if isinstance(value, list) else [[value]],
+                result_id=f"new_{widget.widget_id}",
+            )
+
+    snapshot = DashboardSnapshot(
+        dashboard_id=dashboard_id,
+        dataset_id=case["dataset"],
+        title="Обзор фоновых заданий",
+        widgets=widgets,
+        created_at=datetime.now(UTC),
+        refreshed_at=datetime.now(UTC),
+    )
+    status, issues, details = evaluate_case(
+        case,
+        {
+            "results": [],
+            "plan": [],
+            "answer_blocks": [
+                Block("text", "Панель обновлена."),
+                Block("dashboard_link", dashboard_id=dashboard_id),
+            ],
+            "dashboard_snapshot": snapshot,
+        },
+        dataset=RecomputeDataset(),
+        context_results=[
+            {
+                "id": expected["reuse_dashboard_from"],
+                "dashboard_checks": {
+                    "dashboard_id": "d_prior",
+                    "widget_ids": [widget.widget_id for widget in widgets],
+                },
+            }
+        ],
+    )
+    assert status == ("needs_review" if dashboard_id == "d_prior" else "failed"), issues
+    assert details["automated_status"] == ("passed" if dashboard_id == "d_prior" else "failed")
+    assert details["dashboard_checks"]["reuse_accepted"] is True
+    if dashboard_id != "d_prior":
+        assert any("does not reuse prerequisite" in issue for issue in issues)
 
 
 def test_open_dataset_uses_ingested_table_not_mock_database(tmp_path):

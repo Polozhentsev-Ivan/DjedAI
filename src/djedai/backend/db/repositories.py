@@ -50,6 +50,7 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.contracts.verification import VerificationReport
 from djedai.execution import ExecutionBudget, TurnCancelled
 
 logger = logging.getLogger(__name__)
@@ -965,6 +966,7 @@ def save_message(
     content: str | None = None,
     blocks: list[dict[str, Any]] | None = None,
     result_ids: list[str] | None = None,
+    verification: dict[str, Any] | None = None,
     trace: list[dict[str, Any]] | None = None,
     turn: dict[str, Any] | None = None,
     created_at: datetime | None = None,
@@ -987,6 +989,7 @@ def save_message(
         content=content,
         blocks=blocks,
         result_ids=result_ids,
+        verification=verification,
         trace=trace,
         turn=turn,
         created_at=effective_created_at,
@@ -1025,6 +1028,9 @@ def save_assistant_message(
     """
     blocks_data = [b.model_dump() for b in message.blocks]
     trace_data = [t.model_dump() for t in message.trace]
+    verification_data = (
+        message.verification.model_dump(mode="json") if message.verification is not None else None
+    )
 
     def write(session: Session) -> MessageModel:
         if question_id is not None and completed_turn is not None:
@@ -1056,6 +1062,7 @@ def save_assistant_message(
             content=None,
             blocks=blocks_data,
             result_ids=message.result_ids,
+            verification=verification_data,
             trace=trace_data,
             created_at=message.created_at,
             before_commit=before_commit if also is not None or budget is not None else None,
@@ -1079,6 +1086,11 @@ def to_assistant_message(message_model: MessageModel) -> AssistantMessage:
         created_at=created_at,
         blocks=message_model.blocks or [],
         result_ids=message_model.result_ids or [],
+        verification=(
+            VerificationReport.model_validate(message_model.verification)
+            if message_model.verification
+            else None
+        ),
         trace=message_model.trace or [],
     )
 

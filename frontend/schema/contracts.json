@@ -99,6 +99,18 @@
             "title": "Result Ids",
             "type": "array"
           },
+          "verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Детерминированная проверка чисел: утверждения, происхождение и причины отказа"
+          },
           "trace": {
             "description": "Шаги графа агента при формировании ответа",
             "items": {
@@ -331,11 +343,18 @@
             "description": "Сортировка"
           },
           "limit": {
-            "default": 20,
-            "description": "Лимит отображаемых категорий/точек",
-            "minimum": 1,
-            "title": "Limit",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Лимит точек, только если пользователь просил ограничить; иначе весь ряд",
+            "title": "Limit"
           },
           "annotations": {
             "description": "Текстовые метки на точках",
@@ -465,11 +484,18 @@
             "description": "Сортировка"
           },
           "limit": {
-            "default": 20,
-            "description": "Лимит отображаемых категорий/точек",
-            "minimum": 1,
-            "title": "Limit",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Лимит точек, только если пользователь просил ограничить; иначе весь ряд",
+            "title": "Limit"
           },
           "annotations": {
             "description": "Текстовые метки на точках",
@@ -647,6 +673,18 @@
             },
             "title": "Result Ids",
             "type": "array"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Проверка чисел опубликованного ответа и её причины"
           },
           "turn": {
             "anyOf": [
@@ -2736,6 +2774,230 @@
         "title": "ModelSettingsUpdate",
         "description": "Изменение настроек; не переданное поле не меняется, пустая строка возвращает .env."
       },
+      "NumericAssertion": {
+        "additionalProperties": false,
+        "description": "Одно числовое утверждение и результат его детерминированной проверки.",
+        "properties": {
+          "assertion_id": {
+            "description": "Стабильный ID утверждения внутри ответа",
+            "title": "Assertion Id",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Вид утверждения",
+            "enum": [
+              "quantity",
+              "formula",
+              "date",
+              "period",
+              "list_number",
+              "constant"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "description": "Принято, отклонено или не аналитическое",
+            "enum": [
+              "verified",
+              "rejected",
+              "ignored"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "description": "Фрагмент ответа, в котором встретилось утверждение",
+            "title": "Text",
+            "type": "string"
+          },
+          "raw_text": {
+            "description": "Число или формула так, как записаны в ответе",
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Каноническое значение",
+            "title": "Value"
+          },
+          "scale": {
+            "default": "1",
+            "description": "Явный множитель утверждения",
+            "title": "Scale",
+            "type": "string"
+          },
+          "unit": {
+            "default": "unknown",
+            "description": "Единица измерения",
+            "enum": [
+              "money",
+              "count",
+              "number",
+              "percent",
+              "ratio",
+              "date",
+              "unknown"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Валюта утверждения",
+            "title": "Currency"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationPeriod"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Период утверждения"
+          },
+          "population": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Популяция утверждения",
+            "title": "Population"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationDenominator"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Знаменатель утверждения"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Подпись утверждения из текста",
+            "title": "Label"
+          },
+          "evidence": {
+            "description": "Принятое происхождение утверждения",
+            "items": {
+              "$ref": "#/components/schemas/VerificationEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "formula": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Явная формула производного значения",
+            "title": "Formula"
+          },
+          "operands": {
+            "description": "Операнды формулы с ссылками на происхождение",
+            "items": {
+              "$ref": "#/components/schemas/VerificationOperand"
+            },
+            "title": "Operands",
+            "type": "array"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "number_not_found",
+                  "ambiguous_number",
+                  "unrelated_result",
+                  "unit_mismatch",
+                  "currency_mismatch",
+                  "period_mismatch",
+                  "population_mismatch",
+                  "denominator_mismatch",
+                  "zero_denominator",
+                  "missing_operand",
+                  "invalid_formula",
+                  "rounding_mismatch",
+                  "unsupported_assertion",
+                  "non_analytical",
+                  "llm_reported",
+                  "invalid_correction",
+                  "llm_unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Безопасный код причины отказа",
+            "title": "Reason Code"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Безопасное пояснение причины отказа",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "assertion_id",
+          "kind",
+          "status",
+          "text",
+          "raw_text"
+        ],
+        "title": "NumericAssertion",
+        "type": "object"
+      },
       "ParseInfo": {
         "additionalProperties": false,
         "properties": {
@@ -4311,6 +4573,482 @@
           "created_at"
         ],
         "title": "UserRead",
+        "type": "object"
+      },
+      "VerificationDenominator": {
+        "additionalProperties": false,
+        "description": "Знаменатель доли или процента и его происхождение.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Что именно является знаменателем",
+            "title": "Label"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Значение знаменателя",
+            "title": "Value"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Результат, из которого взят знаменатель",
+            "title": "Result Id"
+          },
+          "fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Факт, из которого взят знаменатель",
+            "title": "Fact Id"
+          },
+          "cell_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ячейка знаменателя, если известна",
+            "title": "Cell Address"
+          }
+        },
+        "title": "VerificationDenominator",
+        "type": "object"
+      },
+      "VerificationEvidence": {
+        "additionalProperties": false,
+        "description": "Одно допустимое происхождение числа.\n\n``value`` — значение в единицах источника, ``scale`` — явный множитель\n(например, 1000 для «тыс.»). Каноническое значение — ``value * scale``.\nНеявного умножения на 1000 проверка не делает.",
+        "properties": {
+          "result_id": {
+            "description": "ID результата инструмента",
+            "title": "Result Id",
+            "type": "string"
+          },
+          "fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ID факта вида result:fact:index",
+            "title": "Fact Id"
+          },
+          "cell_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Адрес ячейки вида data.rows[0].revenue или data.row_count",
+            "title": "Cell Address"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Значение в единицах источника",
+            "title": "Value"
+          },
+          "scale": {
+            "default": "1",
+            "description": "Явный множитель из текста источника",
+            "title": "Scale",
+            "type": "string"
+          },
+          "unit": {
+            "default": "unknown",
+            "description": "Единица измерения значения",
+            "enum": [
+              "money",
+              "count",
+              "number",
+              "percent",
+              "ratio",
+              "date",
+              "unknown"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Код валюты, если он известен",
+            "title": "Currency"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationPeriod"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Период значения"
+          },
+          "population": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Популяция или фильтры значения",
+            "title": "Population"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationDenominator"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Знаменатель для доли или процента"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Подпись значения из факта или колонки",
+            "title": "Label"
+          },
+          "source": {
+            "description": "Откуда взято происхождение",
+            "enum": [
+              "fact",
+              "data_cell",
+              "row_count",
+              "metric",
+              "period"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "unknown": {
+            "description": "Явно неизвестные части происхождения: period, population, denominator и т. п.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "result_id",
+          "source"
+        ],
+        "title": "VerificationEvidence",
+        "type": "object"
+      },
+      "VerificationIssue": {
+        "additionalProperties": false,
+        "description": "Безопасная причина, по которой утверждение не было принято.",
+        "properties": {
+          "code": {
+            "description": "Код причины",
+            "enum": [
+              "number_not_found",
+              "ambiguous_number",
+              "unrelated_result",
+              "unit_mismatch",
+              "currency_mismatch",
+              "period_mismatch",
+              "population_mismatch",
+              "denominator_mismatch",
+              "zero_denominator",
+              "missing_operand",
+              "invalid_formula",
+              "rounding_mismatch",
+              "unsupported_assertion",
+              "non_analytical",
+              "llm_reported",
+              "invalid_correction",
+              "llm_unavailable"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Пояснение, пригодное для пользователя",
+            "title": "Message",
+            "type": "string"
+          },
+          "assertion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Связанное утверждение",
+            "title": "Assertion Id"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "VerificationIssue",
+        "type": "object"
+      },
+      "VerificationOperand": {
+        "additionalProperties": false,
+        "description": "Операнд явной формулы с собственной ссылкой на происхождение.",
+        "properties": {
+          "role": {
+            "description": "Роль операнда в формуле",
+            "enum": [
+              "addend",
+              "minuend",
+              "subtrahend",
+              "factor",
+              "numerator",
+              "denominator",
+              "operand"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "raw_text": {
+            "description": "Как операнд записан в ответе",
+            "title": "Raw Text",
+            "type": "string"
+          },
+          "value": {
+            "description": "Каноническое значение операнда",
+            "title": "Value",
+            "type": "string"
+          },
+          "unit": {
+            "default": "unknown",
+            "description": "Единица измерения операнда",
+            "enum": [
+              "money",
+              "count",
+              "number",
+              "percent",
+              "ratio",
+              "date",
+              "unknown"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Валюта операнда",
+            "title": "Currency"
+          },
+          "evidence": {
+            "description": "Происхождение операнда; пусто только у константы формулы",
+            "items": {
+              "$ref": "#/components/schemas/VerificationEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "role",
+          "raw_text",
+          "value"
+        ],
+        "title": "VerificationOperand",
+        "type": "object"
+      },
+      "VerificationPeriod": {
+        "additionalProperties": false,
+        "description": "Период, к которому относится значение.\n\n``start`` включительно, ``end`` не включительно, даты — ISO. ``None`` означает,\nчто граница неизвестна; ``unknown`` у evidence перечисляет такие поля.",
+        "properties": {
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Начало периода включительно (ISO)",
+            "title": "Start"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Конец периода не включительно (ISO)",
+            "title": "End"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Период так, как он назван в источнике",
+            "title": "Label"
+          },
+          "grain": {
+            "default": "unknown",
+            "description": "Гранулярность периода",
+            "enum": [
+              "day",
+              "week",
+              "month",
+              "quarter",
+              "year",
+              "range",
+              "unknown"
+            ],
+            "title": "Grain",
+            "type": "string"
+          }
+        },
+        "title": "VerificationPeriod",
+        "type": "object"
+      },
+      "VerificationReport": {
+        "additionalProperties": false,
+        "description": "Итог проверки чисел в опубликованном ответе.",
+        "properties": {
+          "status": {
+            "description": "Итоговый статус проверки",
+            "enum": [
+              "verified",
+              "corrected",
+              "failed",
+              "not_applicable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "assertions": {
+            "description": "Утверждения финального текста",
+            "items": {
+              "$ref": "#/components/schemas/NumericAssertion"
+            },
+            "title": "Assertions",
+            "type": "array"
+          },
+          "rejected_assertions": {
+            "description": "Отклонённые утверждения предыдущих черновиков",
+            "items": {
+              "$ref": "#/components/schemas/NumericAssertion"
+            },
+            "title": "Rejected Assertions",
+            "type": "array"
+          },
+          "issues": {
+            "description": "Причины отказа и исправления",
+            "items": {
+              "$ref": "#/components/schemas/VerificationIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "result_ids": {
+            "description": "Результаты, в границах которых проверялся ответ",
+            "items": {
+              "type": "string"
+            },
+            "title": "Result Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "VerificationReport",
         "type": "object"
       },
       "WidgetLayout": {

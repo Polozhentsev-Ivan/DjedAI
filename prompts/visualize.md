@@ -17,6 +17,7 @@ Rules:
 7. Provide a meaningful `title` (and `subtitle` when the context allows) in the user's language.
 8. Configure `x` (XAxis), `y` (list of YMeasure), and optionally `color`. For `kpi` a single measure is enough. Fill `label` with the business wording of the field (or the column label when it is given).
 9. If the user asks to change the display of an already calculated result, reuse that result instead of asking for a new calculation.
-10. If no chart is needed, return an empty `charts` list.
+10. Leave `limit` null so the chart shows the whole result. Set it only if the user asked to limit the chart (for example, top 5).
+11. If no chart is needed, return an empty `charts` list.
 
 Output strictly valid JSON matching the schema.
