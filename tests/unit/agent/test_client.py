@@ -430,12 +430,12 @@ def test_http_client_fallback_from_json_schema_to_json_object(model_endpoint):
 
 
 def test_http_client_fallback_shares_execution_budget(model_endpoint):
-    import time
-
     from djedai.execution import ExecutionBudget, TurnTimeout
 
     def reply(n, payload):
-        time.sleep(0.05)
+        # Exhaust the shared budget only after the first request reached the server.
+        # A tiny wall-clock deadline can expire before any HTTP request on a busy host.
+        budget.deadline = 0.0
         return {
             "status": 400,
             "error_body": {
@@ -445,7 +445,8 @@ def test_http_client_fallback_shares_execution_budget(model_endpoint):
 
     with model_endpoint(reply) as endpoint:
         client = BIModelClient(api_key="k", base_url=endpoint.base_url, model_name="qwen")
-        with pytest.raises(TurnTimeout), ExecutionBudget(0.03).activate():
+        budget = ExecutionBudget(5)
+        with pytest.raises(TurnTimeout), budget.activate():
             client.generate_typed_response("sys", "user", Understanding)
 
         # Budget was exhausted during first call/attempt, so fallback was not executed

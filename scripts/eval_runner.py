@@ -44,6 +44,7 @@ from djedai.agent.dashboard import (  # noqa: E402
 )
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
+from djedai.agent.verification import is_calendar_days  # noqa: E402
 from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
@@ -367,11 +368,23 @@ def _reused_results(
 
 # Предложение продолжает мысль о той же группе, а не называет другую.
 ANAPHORIC_SENTENCE_RE = re.compile(
-    r"\s*(?:значение|показатель|величина|перцентиль|рост|он|она|оно|это)(?!\w)", re.I
+    r"\s*(?:значение|показатель|величина|перцентиль|рост|он|она|оно|это)"
+    r"(?!\w)(?!\s+[А-ЯЁA-Z])",
+    re.I,
 )
-CALCULATION_CONSTANT_RE = re.compile(
-    r"(?<![\d.,])(?:2[89]|3[01])(?=\s*(?:дн[яе]\w*|день)(?!\w))|[*×·]\s*100(?![\d.,])", re.I
-)
+PERCENT_FACTOR_RE = re.compile(r"[*×·]\s*100(?![\d.,])")
+CALENDAR_DAYS_RE = re.compile(r"(?<![\d.,])(?:2[89]|3[01])(?![\d.,])")
+
+
+def _without_calculation_constants(text: str) -> str:
+    """Длина названного месяца и множитель процента пересказывают расчёт, а не результат."""
+    kept = PERCENT_FACTOR_RE.sub(" ", text)
+    return CALENDAR_DAYS_RE.sub(
+        lambda m: (
+            " " if is_calendar_days(kept, m.start(), m.end(), Decimal(m.group())) else m.group()
+        ),
+        kept,
+    )
 
 
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
@@ -385,8 +398,7 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     uniq = list(dict.fromkeys(numbers))
 
     constants = set(_claim_numbers(case.get("question") or ""))
-    # Дни месяца и множитель процента пересказывают расчёт, а не его результат.
-    text = CALCULATION_CONSTANT_RE.sub(" ", text)
+    text = _without_calculation_constants(text)
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
