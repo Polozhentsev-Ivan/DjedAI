@@ -702,7 +702,8 @@ def test_chart_data_fact_mismatch_fails():
     status, issues, _ = evaluate_case(c, s)
     assert status == "failed"
     assert any(
-        "Chart backing result does not confirm expected fact 'chart.peak'" in i for i in issues
+        "Chart displayed values of the chart axes do not match expected fact 'chart.peak'" in i
+        for i in issues
     )
 
 
@@ -1323,7 +1324,11 @@ def test_dashboard_refresh_must_recompute_the_same_values():
     )
     status, issues, details = evaluate_case(_dashboard_case(), _dashboard_state(), dataset=fresh)
     assert status == "passed", issues
-    assert details["dashboard_checks"]["not_evaluated"] == ["restart", "foreign_owner"]
+    assert details["dashboard_checks"]["not_evaluated"] == [
+        "restart",
+        "foreign_owner",
+        "widget_chart_axes",
+    ]
 
     wrong = SimpleNamespace(
         recompute_widget=lambda w: result([[8]], columns=["cnt"], result_id=f"new_{w.widget_id}")
@@ -1415,6 +1420,74 @@ def test_semantics_report_clarification_options_as_not_evaluated():
 
     options = [r for r in semantics["rubrics"] if r["kind"] == "clarification.options"]
     assert options[0]["status"] == "not_evaluated"
+
+
+STATUS_ROWS = [["Успешно", 454882, 0], ["Ошибка", 40414, 0], ["Отменено", 4704, 0]]
+STATUS_TEXT = "Успешно 454882, Ошибка 40414, Отменено 4704"
+
+
+def _status_answer(x_field="status", y_field="n", rows=None, columns=None, **chart_fields):
+    res = result(
+        rows or STATUS_ROWS, columns=columns or ["status", "n", "unrelated"], result_id="r_chart"
+    )
+    spec = ChartSpec(
+        chart_id="c1",
+        type="bar",
+        title="Статусы",
+        result_id="r_chart",
+        x=XAxis(field=x_field, kind="category"),
+        y=[YMeasure(field=y_field, format="int")],
+        **chart_fields,
+    )
+    answer = state(res, STATUS_TEXT)
+    answer["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
+    return evaluate_case(_status_case(), answer)
+
+
+def _status_case():
+    golden = yaml.safe_load(
+        (Path(__file__).parents[2] / "eval/questions.yaml").read_text(encoding="utf-8")
+    )
+    return next(item for item in golden if item["id"] == "s4_status_bar_01")
+
+
+def _chart_issues(issues):
+    return [issue for issue in issues if "Chart" in issue]
+
+
+def test_chart_on_the_measure_column_passes_the_golden_check():
+    status, issues, details = _status_answer()
+    assert _chart_issues(issues) == []
+    assert details["chart_checks"]["passed"] is True
+    assert details["chart_checks"]["charts"][0]["data_fact_columns"] == ["status", "n"]
+    assert status == "needs_review"
+
+
+def test_chart_on_an_unrelated_column_fails_although_the_result_has_the_numbers():
+    status, issues, details = _status_answer(y_field="unrelated")
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+    assert details["chart_checks"]["passed"] is False
+
+
+def test_chart_with_a_wrong_x_fails_although_the_right_column_is_next_to_it():
+    rows = [[label, "другое", n] for label, n, _ in STATUS_ROWS]
+    status, issues, _ = _status_answer(x_field="wrong", rows=rows, columns=["status", "wrong", "n"])
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+
+
+def test_chart_with_axes_on_shuffled_pairs_fails():
+    rows = [["Успешно", 40414, 0], ["Ошибка", 454882, 0], ["Отменено", 4704, 0]]
+    status, issues, _ = _status_answer(rows=rows)
+    assert status == "failed"
+    assert any("displayed values of the chart axes" in issue for issue in issues)
+
+
+def test_other_chart_checks_stay_next_to_the_axes_check():
+    _, issues, _ = _status_answer(limit=2)
+    assert any("truncates series" in issue for issue in issues)
+    assert not any("displayed values" in issue for issue in issues)
 
 
 def test_chart_without_limit_shows_the_whole_series():

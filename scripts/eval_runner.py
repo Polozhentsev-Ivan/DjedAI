@@ -593,6 +593,18 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _shown_series(chart: Any, data: Any, col_names: list[str]) -> dict[str, Any]:
+    """Only the columns the chart draws: a right number in a neighbouring column proves nothing."""
+    fields = [
+        _field(_field(chart, "x"), "field") if _field(chart, "x") is not None else None,
+        _field(_field(chart, "color"), "field") if _field(chart, "color") is not None else None,
+        *(_field(measure, "field") for measure in _field(chart, "y") or []),
+    ]
+    indexes = [col_names.index(field) for field in fields if field in col_names]
+    rows = [[row[i] for i in indexes if i < len(row)] for row in _field(data, "rows") or []]
+    return {"columns": [col_names[i] for i in indexes], "rows": rows}
+
+
 def _check_chart(
     case: dict,
     blocks: Sequence[Any],
@@ -762,10 +774,16 @@ def _check_chart(
                 issues.append(
                     f"{prefix}expected data_fact '{data_fact_key}' not defined in case facts"
                 )
-            elif not check_fact(fact, [backing], column_aliases=column_aliases):
-                issues.append(
-                    f"{prefix}backing result does not confirm expected fact '{data_fact_key}'"
-                )
+            else:
+                shown = _shown_series(chart, data, col_names)
+                c_details["data_fact_columns"] = _field(shown, "columns") or []
+                if not check_fact(
+                    fact, [{"status": status, "data": shown}], column_aliases=column_aliases
+                ):
+                    issues.append(
+                        f"{prefix}displayed values of the chart axes do not match "
+                        f"expected fact '{data_fact_key}'"
+                    )
 
         check_details["charts"].append(c_details)
 
@@ -866,7 +884,8 @@ def _check_dashboard(
 
     # The runner has no application database: restart and foreign-owner access stay
     # with tests/integration/test_dashboard_chat.py and test_owner_isolation.py.
-    check_details["not_evaluated"] = ["restart", "foreign_owner"]
+    # Widget facts are checked against the whole result, not the axes its chart draws.
+    check_details["not_evaluated"] = ["restart", "foreign_owner", "widget_chart_axes"]
 
     recompute = getattr(dataset, "recompute_widget", None)
     if recompute is None:
