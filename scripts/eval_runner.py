@@ -1416,6 +1416,7 @@ def evaluate_case(
             automated_issues.append("The answer contains no text block")
 
         results = _duration_result_units(case, results)
+        evidence_results = [*results, *reused_results]
         # A dashboard refresh has no ordinary tool results: its widget recipes are
         # replayed by the dashboard check, and those results become the evidence.
         dash_issues, dash_details = _check_dashboard(
