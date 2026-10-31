@@ -227,3 +227,12 @@ def test_calculation_constants_and_next_sentence_do_not_hide_wrong_answers():
     assert _evaluate("organizer_q2", result, f"{good} Всего 31 заказ.")[0] == "failed"
     text = "Калининград показал стабильность. Москва выросла на 62,29 %."
     assert _evaluate("organizer_q2", result, text)[0] == "failed"
+
+
+def test_durations_and_named_groups_are_not_calculation_context():
+    result = _result(["city", "growth"], [["Калининград", 62.29]])
+    good = "Калининград | 62.29 %."
+    assert _evaluate("organizer_q2", result, f"{good} Средняя длительность 28 дней.")[0] == "failed"
+    assert _evaluate("organizer_q2", result, f"{good} Февраль 2025: 31 день.")[0] == "failed"
+    text = "Калининград показал стабильность. Рост Москвы составляет 62,29 %."
+    assert _evaluate("organizer_q2", result, text)[0] == "failed"

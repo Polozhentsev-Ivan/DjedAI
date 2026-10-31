@@ -319,3 +319,25 @@ def test_line_over_dates_gets_a_time_axis_but_other_lines_do_not():
 
     assert chart_for("2025-02-01T00:00:00").x.kind == "time"
     assert chart_for("Север").x.kind == "category"
+
+
+def test_hourly_line_keeps_categories_and_chart_code_alone_never_gives_an_empty_answer():
+    result = ToolResult(
+        result_id="r1",
+        tool="run_sql",
+        status="ok",
+        data=ToolResultData(columns=["x", "y"], rows=[["2024-01-15 10:00:00", 1]], row_count=1),
+    )
+    spec = ChartSpec(
+        chart_id="c", type="line", title="t", x={"field": "x"}, y=[{"field": "y"}], result_id="r1"
+    )
+    assert sanitize_charts([spec], [result])[0].x.kind == "category"
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success",
+        data=ComposeResponse(answer_blocks=[Block(type="text", markdown="```mermaid\nx\n```")]),
+    )
+    state = {"messages": [Message(role="user", content="Покажи")], "results": [result]}
+    blocks = compose(state, {"configurable": {"client": client}})["answer_blocks"]
+    assert [block.type for block in blocks] == ["text"]
+    assert blocks[0].markdown

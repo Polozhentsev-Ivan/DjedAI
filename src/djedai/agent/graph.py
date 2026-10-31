@@ -1183,6 +1183,10 @@ def _fill_missing_axes(
     return chart.model_copy(update=update) if update else chart
 
 
+# Подпись оси time показывает только дату: почасовые значения остаются категориями.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]00:00:00(?:\.0+)?)?")
+
+
 def _time_axis_for_date_line(chart: ChartSpec, result: ToolResult, columns: dict) -> ChartSpec:
     """Линия по датам — временной ряд, даже если модель назвала ось категорией."""
     column = columns.get(chart.x.field) if chart.x else None
@@ -1190,7 +1194,7 @@ def _time_axis_for_date_line(chart: ChartSpec, result: ToolResult, columns: dict
         return chart
     rows = result.data.rows or []
     if rows and all(
-        re.match(r"\d{4}-\d{2}-\d{2}", str(row[column[0]])) for row in rows if column[0] < len(row)
+        _DATE_ONLY_RE.fullmatch(str(row[column[0]])) for row in rows if column[0] < len(row)
     ):
         return chart.model_copy(update={"x": chart.x.model_copy(update={"kind": "time"})})
     return chart
@@ -1406,9 +1410,14 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         if response.status == "success" and response.data:
             blocks = _without_chart_code(response.data.answer_blocks)
             had_text = any(block.type == "text" for block in response.data.answer_blocks)
-            if had_text and state.get("charts") and not any(b.type == "text" for b in blocks):
-                # Без блока текста ответ из одного графика нечем пересказать в истории.
-                blocks.append(Block(type="text", markdown="Результат показан на графике."))
+            if had_text and not any(block.type == "text" for block in blocks):
+                # От текста остался только код диаграммы: пустой ответ пользователю не отдаём.
+                markdown = (
+                    "Результат показан на графике."
+                    if state.get("charts")
+                    else "Расчёт выполнен, но текст ответа не сформирован. Повторите запрос."
+                )
+                blocks.append(Block(type="text", markdown=markdown))
         else:
             message = (
                 RESTRICTED_CONTEXT_MESSAGE
@@ -1511,16 +1520,16 @@ def _verification_failure(
     return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
 
-def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, list[str]]:
-    """Вопрос и SQL хода: источник условий расчёта, но не значений результата."""
-    parts = []
-    understanding = state.get("understanding")
-    if understanding is not None and understanding.resolved_question:
-        parts.append(understanding.resolved_question)
+def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, dict[str, str]]:
+    """Текст пользователя и SQL каждого результата: переформулировка модели сюда не входит."""
     messages = state.get("messages", [])
-    if messages and messages[-1].content:
-        parts.append(messages[-1].content)
-    return "\n".join(parts), [str(entry["query"]) for entry in entries if entry.get("query")]
+    question = messages[-1].content if messages and messages[-1].role == "user" else ""
+    queries = {
+        str(entry["result_id"]): str(entry["query"])
+        for entry in entries
+        if entry.get("query") and entry.get("result_id")
+    }
+    return question or "", queries
 
 
 def verify(state: AgentState, config: RunnableConfig) -> dict:

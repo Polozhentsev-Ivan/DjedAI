@@ -1534,10 +1534,9 @@ def _with_source_markers(label: str, projection: exp.Expression, select: exp.Sel
     if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Star | exp.Literal):
         if owner.args.get("where") or owner.args.get("group"):
             markers.append(_FILTERED_COUNT)
-    if any(
-        re.search(r"(?:^|_)(?:rub|руб)$", column.name, re.I)
-        for column in inner.find_all(exp.Column)
-    ):
+    # COUNT(amount_rub) считает строки: его результат не денежная сумма.
+    columns = () if isinstance(inner, exp.Count) else inner.find_all(exp.Column)
+    if any(re.search(r"(?:^|_)(?:rub|руб)$", column.name, re.I) for column in columns):
         markers.append(_RUB_SOURCE)
     return " ".join([label, *markers]).strip()
 
@@ -2240,64 +2239,107 @@ _DAY_BEFORE_MONTH_RE = re.compile(
 _DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
 _PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
 _POPULATION_SKIP = {"среди", "без", "из", "кроме", "не"}
+_GENERIC_MEASURE_COLUMNS = {"value", "cnt", "count", "n", "total", "yhat"}
 _RUB_SOURCE = "source_rub"
 _FILTERED_COUNT = "filtered_count"
 
 
 @dataclass(frozen=True)
+class _ResultConditions:
+    """Условия одного запроса: чужой фильтр или делитель этот результат не подтверждают."""
+
+    start: date | None = None
+    end: date | None = None
+    divisors: frozenset[Decimal] = frozenset()
+
+    def covers(self, period: VerificationPeriod) -> bool:
+        first, last = _date(period.start), _date(period.end)
+        if not (self.start and self.end and first and last):
+            return False
+        return self.start <= first and last <= self.end
+
+
+@dataclass(frozen=True)
 class _QueryContext:
-    """Что пользователь назвал в вопросе и чем SQL ограничил выборку.
+    """Что написал пользователь и чем SQL ограничил свой результат.
 
     Контекст подтверждает только условия расчёта: порог и период. Значения
-    результата он подтвердить не может.
+    результата он подтвердить не может, а переформулировка модели в него не входит.
     """
 
     thresholds: frozenset[Decimal] = frozenset()
-    period_start: date | None = None
-    period_end: date | None = None
-    question_keys: frozenset[str] = frozenset()
-    sql_numbers: frozenset[Decimal] = frozenset()
+    question: str = ""
+    results: Mapping[str, _ResultConditions] = field(default_factory=dict)
     active: bool = False
 
     def names_population(self, population: str | None) -> bool:
-        # Граница популяции в тексте размыта: сверяем первые слова условия целиком.
-        words = [word for word in _words(population or "") if word not in _POPULATION_SKIP][:2]
-        return bool(words) and all(_label_keys(word) <= self.question_keys for word in words)
-
-    def covers(self, period: VerificationPeriod | None) -> bool:
-        if period is None or self.period_start is None or self.period_end is None:
+        # Граница популяции в тексте размыта: сверяем её предлог и первое слово.
+        words = _words(population or "")
+        if not words:
             return False
-        start, end = _date(period.start), _date(period.end)
-        return bool(start and end and self.period_start <= start and end <= self.period_end)
+        if words[0] in _POPULATION_SKIP and words[0] not in _words(self.question):
+            return False
+        named = next((word for word in words if word not in _POPULATION_SKIP), None)
+        keys = _label_keys(named)
+        return bool(keys) and keys <= _label_keys(self.question)
+
+    def covers(
+        self, period: VerificationPeriod | None, result_ids: Iterable[str] | None = None
+    ) -> bool:
+        if period is None:
+            return False
+        ids = self.results if result_ids is None else result_ids
+        return any(
+            conditions.covers(period)
+            for result_id in ids
+            if (conditions := self.results.get(result_id)) is not None
+        )
+
+    def divisors(self, result_ids: Iterable[str] | None = None) -> set[Decimal]:
+        ids = self.results if result_ids is None else result_ids
+        found: set[Decimal] = set()
+        for result_id in ids:
+            if (conditions := self.results.get(result_id)) is not None:
+                found |= conditions.divisors
+        return found
+
+    def has_dates(self) -> bool:
+        return any(conditions.start is not None for conditions in self.results.values())
 
 
-def _sql_conditions(sql: str) -> tuple[list[date], set[Decimal]]:
-    """Даты из применённых условий и делители расчёта: комментарии и LIMIT сюда не входят."""
+def _direct_divisors(expression: exp.Expression) -> set[Decimal]:
+    """Литералы, на которые действительно делят: `x / 28.0`, `x / (28.0 * n)`, но не `(2 + 5)`."""
+    while isinstance(expression, exp.Paren):
+        expression = expression.this
+    if isinstance(expression, exp.Mul):
+        return _direct_divisors(expression.left) | _direct_divisors(expression.right)
+    if isinstance(expression, exp.Literal) and not expression.is_string:
+        with suppress(InvalidOperation):
+            return {Decimal(expression.this)}
+    return set()
+
+
+def _sql_conditions(sql: str) -> _ResultConditions:
+    """Даты из сравнений условий и делители расчёта: комментарии и LIMIT сюда не входят."""
     try:
         parsed = sqlglot.parse_one(sql, read="duckdb")
     except Exception:
-        return [], set()
+        return _ResultConditions()
     bounds: list[date] = []
     for scope in parsed.find_all(exp.Where, exp.Having, exp.If):
-        for literal in scope.find_all(exp.Literal):
-            if literal.is_string and (parsed_date := _date(literal.this[:10])):
-                bounds.append(parsed_date)
+        for comparison in scope.find_all(exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.Between):
+            for literal in comparison.find_all(exp.Literal):
+                if literal.is_string and (parsed_date := _date(literal.this[:10])):
+                    bounds.append(parsed_date)
     divisors: set[Decimal] = set()
     for division in parsed.find_all(exp.Div):
-        for literal in division.expression.find_all(exp.Literal):
-            if not literal.is_string:
-                with suppress(InvalidOperation):
-                    divisors.add(Decimal(literal.this))
-    return bounds, divisors
+        divisors |= _direct_divisors(division.expression)
+    return _ResultConditions(
+        min(bounds, default=None), max(bounds, default=None), frozenset(divisors)
+    )
 
 
-def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryContext:
-    bounds: list[date] = []
-    divisors: set[Decimal] = set()
-    for text in sql:
-        text_bounds, text_divisors = _sql_conditions(text)
-        bounds += text_bounds
-        divisors |= text_divisors
+def _query_context(question: str | None, sql: Mapping[str, str] | None = None) -> _QueryContext:
     question_text = question or ""
     spans = [(claim.start, claim.end) for claim in _date_claims(question_text)]
     thresholds: set[Decimal] = set()
@@ -2307,10 +2349,8 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
             thresholds.add(token.value * token.scale)
     return _QueryContext(
         frozenset(thresholds),
-        min(bounds, default=None),
-        max(bounds, default=None),
-        frozenset(_label_keys(question_text)),
-        frozenset(divisors),
+        question_text,
+        {result_id: _sql_conditions(text) for result_id, text in (sql or {}).items()},
         active=True,
     )
 
@@ -2332,6 +2372,35 @@ def _label_only_rejection(
     return reason in (None, "ambiguous_number")
 
 
+_MONTH_DAYS = (
+    ("январ", 31),
+    ("феврал", 28),
+    ("март", 31),
+    ("апрел", 30),
+    ("ма[яйе]", 31),
+    ("июн", 30),
+    ("июл", 31),
+    ("август", 31),
+    ("сентябр", 30),
+    ("октябр", 31),
+    ("ноябр", 30),
+    ("декабр", 31),
+)
+
+
+def is_calendar_days(text: str, start: int, end: int, value: Decimal) -> bool:
+    """«в феврале 2025 (28 дней)»: длина названного месяца, а не измеренная длительность."""
+    if not _DAYS_AFTER_RE.match(text[end:]) or re.search(
+        r"длительн|средн|срок|duration", text[max(0, start - 60) : start], re.I
+    ):
+        return False
+    window = text[max(0, start - 40) : start] + " " + text[end : end + 25]
+    for pattern, days in _MONTH_DAYS:
+        if re.search(rf"(?<!\w){pattern}", window, re.I):
+            return value == days or (days == 28 and value == 29)
+    return False
+
+
 def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     """Число ответа пересказывает условие вопроса, а не результат расчёта."""
     if draft.value is None or draft.currency:
@@ -2342,7 +2411,9 @@ def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     before, after = draft.text[:start], draft.text[start + len(draft.raw_text) :]
     value = _canonical(draft.value, draft.scale)
     # «(28 дней)» и «… * 100 =»: постоянные расчёта, а не его результат.
-    if value in context.sql_numbers and _DAYS_AFTER_RE.match(after):
+    if value is not None and is_calendar_days(
+        draft.text, start, start + len(draft.raw_text), value
+    ):
         return True
     if draft.unit not in ("unknown", "number"):
         return False
@@ -2354,7 +2425,7 @@ def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     return (
         draft.value == draft.value.to_integral_value()
         and 1 <= draft.value <= 31
-        and context.period_start is not None
+        and context.has_dates()
         and bool(_DAY_BEFORE_MONTH_RE.match(after))
     )
 
@@ -2440,13 +2511,15 @@ def _match_quantity(
                 item
                 for item in evidence
                 if _value_matches(draft, item)
+                and _same_measure(draft, item)
                 and item.period is not None
                 and _period_covered(draft.period, [item.period])
             ]
         if covered:
             candidates = covered
         elif not (
-            context.covers(draft.period) or _within_result_span(draft.period, evidence)
+            context.covers(draft.period, {item.result_id for item in candidates})
+            or _spans_whole_result(draft.period, candidates, evidence)
         ) or any(item.period for item in evidence if _value_matches(draft, item)):
             return [], "period_mismatch"
 
@@ -2464,24 +2537,30 @@ def _match_quantity(
     return candidates, None
 
 
-def _within_result_span(
-    period: VerificationPeriod | None, evidence: Sequence[VerificationEvidence]
+def _spans_whole_result(
+    period: VerificationPeriod | None,
+    candidates: Sequence[VerificationEvidence],
+    evidence: Sequence[VerificationEvidence],
 ) -> bool:
-    """Период внутри диапазона дат результата или назван «весь период» этого диапазона."""
+    """«За весь период»: утверждение охватывает все даты результата, откуда взято число."""
     if period is None:
         return False
     start, end = _date(period.start), _date(period.end)
+    result_ids = {item.result_id for item in candidates}
     bounds = [
         day
         for item in evidence
-        if item.period is not None
+        if item.period is not None and item.result_id in result_ids
         for day in (_date(item.period.start), _date(item.period.end))
         if day
     ]
-    if not (start and end and bounds):
-        return False
-    first, last = min(bounds), max(bounds)
-    return first <= start and end <= last or start <= first and last <= end
+    return bool(start and end and bounds) and start <= min(bounds) and max(bounds) <= end
+
+
+def _same_measure(draft: _Draft, item: VerificationEvidence) -> bool:
+    """Колонка без названия показателя не спорит с подписью, а Profit не подтверждает Revenue."""
+    column = (item.cell_address or "").rsplit(".", 1)[-1].lower()
+    return column in _GENERIC_MEASURE_COLUMNS or _same_label(draft.label, item.label)
 
 
 def _exact_fractional_cell(
@@ -2539,7 +2618,7 @@ def _match_date(
     ]
     if not candidates:
         if context is not None and (
-            context.covers(draft.period) or _within_result_span(draft.period, evidence)
+            context.covers(draft.period) or _spans_whole_result(draft.period, evidence, evidence)
         ):
             return [], None
         return [], "period_mismatch"
@@ -2739,6 +2818,7 @@ def _resolve_formula(
     matched_evidence: list[VerificationEvidence] = []
     resolved_tokens: list[_NumberToken] = []
     shared_result_ids: set[str] | None = None
+    sql_divisors: set[Decimal] = set()
     operators: list[str] = []
     for before, after in zip(raw_spec.left, raw_spec.left[1:], strict=False):
         gap = draft.text[before.end : after.start].strip()
@@ -2767,11 +2847,12 @@ def _resolve_formula(
                 reason == "number_not_found"
                 and (
                     token.value * token.scale in _FORMULA_CONSTANTS
-                    # Делитель из SQL: сама формула всё равно пересчитывается.
-                    or (context and token.value * token.scale in context.sql_numbers)
+                    or (context and token.value * token.scale in context.divisors())
                 )
                 and token.unit in ("unknown", "number")
             ):
+                if token.value * token.scale not in _FORMULA_CONSTANTS:
+                    sql_divisors.add(token.value * token.scale)
                 # Постоянные коэффициенты (0, 1, 100, 1000) не требуют
                 # происхождения; совпавшее значение всё равно сохраняем.
                 matched, reason = [], None
@@ -2812,6 +2893,12 @@ def _resolve_formula(
                 evidence=matched,
             )
         )
+    # Делитель должен принадлежать тому же запросу, что и остальные числа формулы.
+    if sql_divisors and not (
+        context and shared_result_ids and sql_divisors <= context.divisors(shared_result_ids)
+    ):
+        _reject(draft, "number_not_found")
+        return
     try:
         calculated, unit = _evaluate_formula(resolved_tokens, operators)
     except _FormulaError as error:
@@ -2862,7 +2949,7 @@ def verify_numeric_text(
     *,
     result_ids: Sequence[str] | None = None,
     question: str | None = None,
-    sql: Sequence[str] = (),
+    sql: Mapping[str, str] | None = None,
 ) -> VerificationReport:
     """Проверяет числа текста по заранее собранному происхождению.
 
