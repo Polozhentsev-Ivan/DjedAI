@@ -191,7 +191,9 @@ try {
     }
     const sample = report.sources[0];
     await page.goto(`/chat/${sample.chat_id}`);
-    const assistantsBefore = await page.locator('[data-role="assistant"]').count();
+    const restored = await json(`/api/chats/${sample.chat_id}`);
+    const assistantsBefore = restored.messages.filter((m) => m.role === 'assistant').length;
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(assistantsBefore);
     const postsBefore = posts;
     const callsBefore = (await model('/observations')).calls.length;
     await model('/control', { hold: true });
