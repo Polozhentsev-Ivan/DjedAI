@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 import djedai.agent.graph as agent_graph
@@ -2020,7 +2021,10 @@ def test_reasoning_configuration_failure_is_explained_and_persisted(chat_api):
     assert "private-key-and-dsn" not in str(saved)
 
 
-def test_get_expires_orphaned_turn_but_preserves_legacy_messages(chat_api):
+@pytest.mark.parametrize("expire_first_write", [False, True])
+def test_get_expires_orphaned_turn_but_preserves_legacy_messages(
+    chat_api, monkeypatch, expire_first_write
+):
     client, factory, _ = chat_api
     chat_id = _create_chat(client)
     now = datetime.now(UTC)
@@ -2048,11 +2052,39 @@ def test_get_expires_orphaned_turn_but_preserves_legacy_messages(chat_api):
             ]
         )
         db.commit()
-    messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
-    assert messages[0]["turn"] is None
-    assert messages[1]["turn"]["status"] == "timeout"
-    assert messages[1]["turn"]["code"] == "turn_timeout"
-    assert client.get(f"/api/chats/{chat_id}").json()["messages"] == messages
+    # Exercise recovery semantics independently of the host's ability to finish
+    # the best-effort write in 200 ms. Keep the real budget checks and SQL writes.
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 0.001
+        return clock[0]
+
+    monkeypatch.setattr("djedai.execution.monotonic", monotonic)
+    expire_next_write = expire_first_write
+
+    def after_write(_connection, _cursor, statement, *_args):
+        nonlocal expire_next_write
+        if expire_next_write and statement.startswith("UPDATE messages"):
+            clock[0] += 1
+            expire_next_write = False
+
+    engine = factory.kw["bind"]
+    event.listen(engine, "after_cursor_execute", after_write)
+    try:
+        if expire_first_write:
+            pending = client.get(f"/api/chats/{chat_id}").json()["messages"]
+            assert pending[0]["turn"] is None
+            assert pending[1]["turn"] == state.model_dump(mode="json")
+            with factory() as db:
+                assert db.get(MessageModel, "m_orphan").turn == state.model_dump(mode="json")
+        messages = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert messages[0]["turn"] is None
+        assert messages[1]["turn"]["status"] == "timeout"
+        assert messages[1]["turn"]["code"] == "turn_timeout"
+        assert client.get(f"/api/chats/{chat_id}").json()["messages"] == messages
+    finally:
+        event.remove(engine, "after_cursor_execute", after_write)
 
 
 def test_cancel_requires_owned_chat_and_matching_question(chat_api, account_password_hash):
