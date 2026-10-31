@@ -24,6 +24,7 @@ from scripts.eval_runner import (  # noqa: E402
     open_dataset,
     run_eval,
 )
+from scripts.verify_golden import load_suite  # noqa: E402
 
 
 class Block:
@@ -752,10 +753,10 @@ def test_refreshed_dashboard_must_reuse_the_previous_saved_dashboard():
     case = answer_case(
         "s6_refresh_previous_dashboard_01",
         blocks_include=["dashboard_link"],
+        reuse_dashboard_from="s5_overview_dashboard_01",
         dashboard={
             "persisted": True,
             "refresh": "recompute_recipes",
-            "reuse_dashboard_from": "s5_overview_dashboard_01",
             "widgets": [
                 {"id": "a", "chart_types_any": ["kpi"]},
                 {"id": "b", "chart_types_any": ["bar"]},
@@ -815,10 +816,10 @@ def test_refreshed_dashboard_facts_and_tools_come_from_replayed_recipes():
         "s6_refresh_previous_dashboard_01",
         blocks_include=["dashboard_link"],
         facts=[{"key": "total", "comparison": "exact", "value": 42}],
+        reuse_dashboard_from="s5_overview_dashboard_01",
         dashboard={
             "persisted": True,
             "refresh": "recompute_recipes",
-            "reuse_dashboard_from": "s5_overview_dashboard_01",
             "widgets": [
                 {"id": "a", "facts": ["total"], "chart_types_any": ["kpi"]},
                 {"id": "b", "chart_types_any": ["bar"]},
@@ -874,6 +875,66 @@ def test_refreshed_dashboard_facts_and_tools_come_from_replayed_recipes():
     assert details["fact_checks"][0]["source"] == "dashboard:d_prior"
     assert details["dashboard_checks"]["reuse_accepted"] is True
     assert details["dashboard_checks"]["recomputed_tools"] == ["run_sql"]
+
+
+@pytest.mark.parametrize("dashboard_id", ["d_prior", "d_unrelated"])
+def test_real_golden_dashboard_refresh_contract(dashboard_id):
+    cases, _ = load_suite()
+    case = next(case for case in cases if case["id"] == "s6_refresh_previous_dashboard_01")
+    expected = case["expect"]
+    facts = {fact["key"]: fact for fact in expected["facts"]}
+    widgets = [
+        _dashboard_widget(widget["id"], widget["chart_types_any"][0], f"r_{index}")
+        for index, widget in enumerate(expected["dashboard"]["widgets"])
+    ]
+    widget_facts = {
+        widget["id"]: facts[widget["facts"][0]]["value"]
+        for widget in expected["dashboard"]["widgets"]
+    }
+
+    class RecomputeDataset:
+        def recompute_widget(self, widget):
+            value = widget_facts[widget.widget_id]
+            return tool_result(
+                rows=value if isinstance(value, list) else [[value]],
+                result_id=f"new_{widget.widget_id}",
+            )
+
+    snapshot = DashboardSnapshot(
+        dashboard_id=dashboard_id,
+        dataset_id=case["dataset"],
+        title="Обзор фоновых заданий",
+        widgets=widgets,
+        created_at=datetime.now(UTC),
+        refreshed_at=datetime.now(UTC),
+    )
+    status, issues, details = evaluate_case(
+        case,
+        {
+            "results": [],
+            "plan": [],
+            "answer_blocks": [
+                Block("text", "Панель обновлена."),
+                Block("dashboard_link", dashboard_id=dashboard_id),
+            ],
+            "dashboard_snapshot": snapshot,
+        },
+        dataset=RecomputeDataset(),
+        context_results=[
+            {
+                "id": expected["reuse_dashboard_from"],
+                "dashboard_checks": {
+                    "dashboard_id": "d_prior",
+                    "widget_ids": [widget.widget_id for widget in widgets],
+                },
+            }
+        ],
+    )
+    assert status == ("needs_review" if dashboard_id == "d_prior" else "failed"), issues
+    assert details["automated_status"] == ("passed" if dashboard_id == "d_prior" else "failed")
+    assert details["dashboard_checks"]["reuse_accepted"] is True
+    if dashboard_id != "d_prior":
+        assert any("does not reuse prerequisite" in issue for issue in issues)
 
 
 def test_open_dataset_uses_ingested_table_not_mock_database(tmp_path):

@@ -720,6 +720,13 @@ def stream_chat_turn(
                 dashboard_service = runtime.dashboard_service
 
                 def refresh_saved_dashboard(dashboard_id: str):
+                    dashboard = db.get(DashboardModel, dashboard_id)
+                    if (
+                        dashboard is None
+                        or dashboard.owner_id != owner_id
+                        or dashboard.dataset_id != chat_model.dataset_id
+                    ):
+                        raise ValueError("Дашборд не относится к датасету чата")
                     return dashboard_service.refresh_dashboard(
                         db,
                         dataset_service,
@@ -813,9 +820,13 @@ def stream_chat_turn(
                     "refresh_dashboard",
                 ):
                     node_update = data if isinstance(data, dict) else {}
-                    if node in ("visualize", "compose", "clarify", "save_dashboard") and (
-                        "focus_result_ids" in node_update
-                    ):
+                    if node in (
+                        "visualize",
+                        "compose",
+                        "clarify",
+                        "save_dashboard",
+                        "refresh_dashboard",
+                    ) and ("focus_result_ids" in node_update):
                         stream_focus = list(node_update["focus_result_ids"] or [])
                     if "answer_blocks" in node_update:
                         answer_blocks = node_update["answer_blocks"] or []
@@ -885,6 +896,14 @@ def stream_chat_turn(
         known_result_ids = {
             result.result_id for result in [*history_results, *results] if result.status == "ok"
         }
+        # Refresh persists its results directly through DashboardService rather than
+        # execute. Resolve the final block references through the same ownership and
+        # provenance checks before allowing those new results into the saved focus.
+        for result_id in referenced_result_ids:
+            if result_id not in known_result_ids:
+                referenced = load_result(result_id)
+                if referenced is not None and referenced.status == "ok":
+                    known_result_ids.add(result_id)
         if stream_focus is not None:
             next_focus = [result_id for result_id in stream_focus if result_id in known_result_ids]
         elif result_ids:

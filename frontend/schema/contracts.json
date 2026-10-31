@@ -331,11 +331,18 @@
             "description": "Сортировка"
           },
           "limit": {
-            "default": 20,
-            "description": "Лимит отображаемых категорий/точек",
-            "minimum": 1,
-            "title": "Limit",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Лимит точек, только если пользователь просил ограничить; иначе весь ряд",
+            "title": "Limit"
           },
           "annotations": {
             "description": "Текстовые метки на точках",
@@ -465,11 +472,18 @@
             "description": "Сортировка"
           },
           "limit": {
-            "default": 20,
-            "description": "Лимит отображаемых категорий/точек",
-            "minimum": 1,
-            "title": "Limit",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Лимит точек, только если пользователь просил ограничить; иначе весь ряд",
+            "title": "Limit"
           },
           "annotations": {
             "description": "Текстовые метки на точках",
