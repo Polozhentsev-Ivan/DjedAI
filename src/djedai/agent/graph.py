@@ -1985,13 +1985,21 @@ def route_after_fast_compose(state: AgentState) -> str:
     return "cite_metrics" if path is not None and path.kind == "row_count" else "end"
 
 
+def _dashboard_in_chat(state: AgentState, dashboard_id: str) -> bool:
+    """Модель может придумать ID: обновлять можно только дашборд из блоков этого чата."""
+    return any(
+        block.type == "dashboard_link" and block.dashboard_id == dashboard_id
+        for block in state.get("previous_blocks", [])
+    )
+
+
 def route_after_understand(state: AgentState) -> str:
     """Уточнения — в clarify, существующий дашборд — в refresh, новый — в plan_dashboard."""
     understanding = state["understanding"]
     intent = understanding.intent
     if intent in CLARIFY_INTENTS:
         return "clarify"
-    if understanding.dashboard_id:
+    if understanding.dashboard_id and _dashboard_in_chat(state, understanding.dashboard_id):
         return "refresh_dashboard"
     if intent == "dashboard":
         return "plan_dashboard"
