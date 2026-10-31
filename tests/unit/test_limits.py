@@ -92,7 +92,7 @@ def test_blank_reasoning_value_uses_provider_default(monkeypatch):
 
 
 def test_default_upload_limits_fit_organizer_datasets():
-    # 9 файлов HK_Datasets (docs/pl3-hk-datasets-run.md): один запрос и размещение на диске.
+    # 9 файлов HK_Datasets (docs/archive/pl3-hk-datasets-run.md): один запрос и размещение на диске.
     limits = LimitSettings(_env_file=None)
     assert limits.max_upload_request_bytes >= 1_476_106_519
     assert limits.max_owner_storage_bytes >= 2 * 1_476_106_519

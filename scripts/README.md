@@ -71,7 +71,7 @@ Python-команды запускаем в среде проекта через
 
 ## Прогон данных организаторов HK_Datasets без LLM
 
-Протокол и результаты — в [отчёте PL-3](../docs/pl3-hk-datasets-run.md).
+Протокол и результаты — в [отчёте PL-3](../docs/archive/pl3-hk-datasets-run.md).
 `hk_datasets.py` скачивает девять CSV закреплённой ревизии по манифесту
 [`eval/hk_datasets_manifest.json`](../eval/hk_datasets_manifest.json): докачка по HTTP Range,
 повтор при обрыве соединения, проверка Git blob. Файлы кэшируются в `artifacts/hk-datasets/`.

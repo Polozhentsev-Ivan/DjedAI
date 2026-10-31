@@ -143,7 +143,7 @@ SQLAlchemy-модели — `backend/db/models.py`, Alembic revisions — `backe
 - Новая долгая операция учитывает `current_budget()` и cancel; permit освобождается по фактическому завершению.
 - Error/empty не превращаются в успешный ноль; truncated data не используется как полный источник зависимой агрегации.
 - Prompt — runtime-вход: его изменение требует соответствующих проверок, даже если файл Markdown.
-- Для новых переменных обновляются конфигурация, безопасный example и [справочник](../configuration.md).
+- Для новых переменных обновляются конфигурация, безопасный example и [справочник](../administrator/configuration.md).
 - Документируется результат изменения и его проверка; историческая метрика тестов не переносится на новый SHA.
 
 Процесс issue/PR, роли и CI — [project-workflow.md](project-workflow.md), обязательные соглашения — [CONTRIBUTING.md](../../CONTRIBUTING.md).

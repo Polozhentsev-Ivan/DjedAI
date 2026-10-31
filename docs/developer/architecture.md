@@ -126,7 +126,7 @@ UI держит токен в памяти/sessionStorage и передаёт Be
 
 Stop/disconnect/revoke/deadline закрывают SSE и текущий HTTP модели; DuckDB получает interrupt. Произвольный синхронный Python/C-код нельзя безопасно убить внутри потока. Permit удерживается до фактического выхода worker: закрывшийся HTTP не означает уже освобождённый CPU.
 
-Это модель одной backend-реплики с локальными файлами и SQLite. Несколько backend/хостов требуют общей стратегии storage, очередей, rate limits и диагностики. Defaults и область каждого ограничения — [конфигурация](../configuration.md), [решение о нагрузке](../decisions/172-concurrency-queues-upload.md).
+Это модель одной backend-реплики с локальными файлами и SQLite. Несколько backend/хостов требуют общей стратегии storage, очередей, rate limits и диагностики. Defaults и область каждого ограничения — [конфигурация](../administrator/configuration.md), [решение о нагрузке](../decisions/172-concurrency-queues-upload.md).
 
 ## Основные принятые решения
 

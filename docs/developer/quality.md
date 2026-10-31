@@ -126,11 +126,11 @@ uv run --locked python scripts/eval_runner.py --data-file ../data/08_Фонов�
 | Масштабирование | Один backend/локальные файлы; несколько реплик требуют отдельной архитектуры. |
 | Сеть | `ALLOWED_OUTBOUND_HOSTS` не заменяет реально настроенный egress filter. |
 
-Подробные условия — [данные](data-and-catalog.md), [аналитика](analytics.md), [агент](agent.md), [конфигурация](../configuration.md), [эксплуатация](../administrator/operations.md).
+Подробные условия — [данные](data-and-catalog.md), [аналитика](analytics.md), [агент](agent.md), [конфигурация](../administrator/configuration.md), [эксплуатация](../administrator/operations.md).
 
 ## Исторические доказательства и текущая готовность
 
-[CP1 smoke](../archive/cp1-smoke-run.md), [HK_Datasets](../pl3-hk-datasets-run.md), [reasoning benchmark](../decisions/159-benchmark-validation.md) и [runtime-тесты](../../tests/integration/README.md) имеют свои SHA/окружения. Их нельзя складывать в вымышленный полный прогон сегодняшней версии.
+[CP1 smoke](../archive/cp1-smoke-run.md), [HK_Datasets](../archive/pl3-hk-datasets-run.md), [reasoning benchmark](../decisions/159-benchmark-validation.md) и [runtime-тесты](../../tests/integration/README.md) имеют свои SHA/окружения. Их нельзя складывать в вымышленный полный прогон сегодняшней версии.
 
 Актуальный статус CI смотрится в [Actions](https://github.com/Polozhentsev-Ivan/DjedAI/actions). Docs-only workflow может законно пропустить application suites; это не новый полный релизный прогон. [Устройство CI](project-workflow.md).
 
