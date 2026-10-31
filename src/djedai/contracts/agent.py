@@ -144,6 +144,8 @@ class AgentState(TypedDict, total=False):
     previous_blocks: list[Block]
     charts: list[ChartSpec]
     answer_blocks: list[Block]
+    # Terminal model failure for this turn; reset before the next user message.
+    terminal_error: str | None
     retries: int
     compose_retries: int
     is_verified: bool
