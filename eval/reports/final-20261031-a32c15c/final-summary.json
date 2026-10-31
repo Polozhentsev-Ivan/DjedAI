@@ -1,0 +1,369 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "organizer": [
+    {
+      "question": 1,
+      "automated_passed": 3,
+      "semantic": {
+        "correct": 2,
+        "partial": 1
+      },
+      "times_seconds": [
+        89.36,
+        78.86,
+        95.73
+      ],
+      "within_120": true
+    },
+    {
+      "question": 2,
+      "automated_passed": 3,
+      "semantic": {
+        "correct": 3
+      },
+      "times_seconds": [
+        115.27,
+        103.67,
+        92.2
+      ],
+      "within_120": true
+    },
+    {
+      "question": 3,
+      "automated_passed": 2,
+      "semantic": {
+        "correct": 3
+      },
+      "times_seconds": [
+        46.67,
+        58.01,
+        30.61
+      ],
+      "within_120": true
+    },
+    {
+      "question": 4,
+      "automated_passed": 3,
+      "semantic": {
+        "correct": 3
+      },
+      "times_seconds": [
+        27.35,
+        27.02,
+        26.28
+      ],
+      "within_120": true
+    },
+    {
+      "question": 5,
+      "automated_passed": 3,
+      "semantic": {
+        "correct": 2,
+        "partial": 1
+      },
+      "times_seconds": [
+        38.28,
+        79.21,
+        68.47
+      ],
+      "within_120": true
+    },
+    {
+      "question": 6,
+      "automated_passed": 1,
+      "semantic": {
+        "incorrect": 1,
+        "correct": 1,
+        "not_evaluated": 1
+      },
+      "times_seconds": [
+        118.07,
+        105.79,
+        53.83
+      ],
+      "within_120": true
+    }
+  ],
+  "organizer_summary": {
+    "automated_passed": 15,
+    "semantic": {
+      "correct": 14,
+      "partial": 2,
+      "incorrect": 1,
+      "not_evaluated": 1
+    }
+  },
+  "golden": [
+    {
+      "scenario": "1",
+      "total": 5,
+      "automated_passed": 5,
+      "automated_failed": 0,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "partial": 3,
+        "correct": 2
+      },
+      "non_correct_ids": [
+        "s1_overview_01",
+        "s1_volume_01",
+        "s1_relations_01"
+      ],
+      "automated_failed_ids": []
+    },
+    {
+      "scenario": "2",
+      "total": 6,
+      "automated_passed": 6,
+      "automated_failed": 0,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "correct": 4,
+        "partial": 2
+      },
+      "non_correct_ids": [
+        "s2_error_codes_01",
+        "s2_chain_identity_01"
+      ],
+      "automated_failed_ids": []
+    },
+    {
+      "scenario": "edge",
+      "total": 10,
+      "automated_passed": 9,
+      "automated_failed": 0,
+      "skipped": 1,
+      "blocked": 0,
+      "semantic": {
+        "correct": 9,
+        "not_evaluated": 1
+      },
+      "non_correct_ids": [
+        "edge_empty_input_01"
+      ],
+      "automated_failed_ids": []
+    },
+    {
+      "scenario": "3",
+      "total": 5,
+      "automated_passed": 5,
+      "automated_failed": 0,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "correct": 3,
+        "partial": 2
+      },
+      "non_correct_ids": [
+        "s3_duplicates_chains_01",
+        "s3_duration_extremes_01"
+      ],
+      "automated_failed_ids": []
+    },
+    {
+      "scenario": "4",
+      "total": 5,
+      "automated_passed": 4,
+      "automated_failed": 1,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "correct": 4,
+        "partial": 1
+      },
+      "non_correct_ids": [
+        "s4_service_top5_bar_01"
+      ],
+      "automated_failed_ids": [
+        "s4_environment_pie_01"
+      ]
+    },
+    {
+      "scenario": "5",
+      "total": 5,
+      "automated_passed": 3,
+      "automated_failed": 2,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "correct": 2,
+        "partial": 2,
+        "not_evaluated": 1
+      },
+      "non_correct_ids": [
+        "s5_quarterly_dashboard_01",
+        "s5_production_dashboard_01",
+        "s5_services_errors_dashboard_01"
+      ],
+      "automated_failed_ids": [
+        "s5_production_dashboard_01",
+        "s5_duration_dashboard_01"
+      ]
+    },
+    {
+      "scenario": "6",
+      "total": 5,
+      "automated_passed": 2,
+      "automated_failed": 2,
+      "skipped": 0,
+      "blocked": 1,
+      "semantic": {
+        "correct": 1,
+        "partial": 2,
+        "incorrect": 1,
+        "not_evaluated": 1
+      },
+      "non_correct_ids": [
+        "s6_switch_monthly_chart_01",
+        "s6_second_ranked_service_01",
+        "s6_refresh_previous_dashboard_01",
+        "s6_previous_duration_units_01"
+      ],
+      "automated_failed_ids": [
+        "s6_switch_monthly_chart_01",
+        "s6_refresh_previous_dashboard_01"
+      ]
+    },
+    {
+      "scenario": "7",
+      "total": 3,
+      "automated_passed": 0,
+      "automated_failed": 3,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "not_evaluated": 3
+      },
+      "non_correct_ids": [
+        "s7_peak_calendar_month_01",
+        "s7_weekday_profile_01",
+        "s7_july_years_01"
+      ],
+      "automated_failed_ids": [
+        "s7_peak_calendar_month_01",
+        "s7_weekday_profile_01",
+        "s7_july_years_01"
+      ]
+    },
+    {
+      "scenario": "8",
+      "total": 3,
+      "automated_passed": 0,
+      "automated_failed": 3,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "not_evaluated": 3
+      },
+      "non_correct_ids": [
+        "s8_environment_status_segments_01",
+        "s8_environment_trigger_segments_01",
+        "s8_compare_environments_01"
+      ],
+      "automated_failed_ids": [
+        "s8_environment_status_segments_01",
+        "s8_environment_trigger_segments_01",
+        "s8_compare_environments_01"
+      ]
+    },
+    {
+      "scenario": "9",
+      "total": 3,
+      "automated_passed": 0,
+      "automated_failed": 3,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "not_evaluated": 3
+      },
+      "non_correct_ids": [
+        "s9_planned_processed_pearson_01",
+        "s9_daily_counts_errors_01",
+        "s9_daily_lag_search_01"
+      ],
+      "automated_failed_ids": [
+        "s9_planned_processed_pearson_01",
+        "s9_daily_counts_errors_01",
+        "s9_daily_lag_search_01"
+      ]
+    },
+    {
+      "scenario": "10",
+      "total": 3,
+      "automated_passed": 1,
+      "automated_failed": 2,
+      "skipped": 0,
+      "blocked": 0,
+      "semantic": {
+        "not_evaluated": 1,
+        "incorrect": 1,
+        "partial": 1
+      },
+      "non_correct_ids": [
+        "s10_seasonal_naive7_01",
+        "s10_growth10_01",
+        "s10_holdout_mae_01"
+      ],
+      "automated_failed_ids": [
+        "s10_seasonal_naive7_01",
+        "s10_growth10_01"
+      ]
+    }
+  ],
+  "golden_automated_summary": {
+    "total": 53,
+    "passed": 0,
+    "failed": 16,
+    "needs_review": 35,
+    "skipped": 1,
+    "blocked": 1,
+    "pending": 0,
+    "automated_passed": 35,
+    "automated_failed": 16,
+    "semantic_passed": 0,
+    "semantic_failed": 0,
+    "semantic_partial": 1,
+    "semantic_not_evaluated": 50,
+    "timed_out": 1,
+    "rubrics_passed": 1,
+    "rubrics_failed": 0,
+    "rubrics_not_evaluated": 208
+  },
+  "golden_semantic_summary": {
+    "partial": 13,
+    "correct": 25,
+    "not_evaluated": 13,
+    "incorrect": 2
+  },
+  "api_blank_input_check": {
+    "test": "tests/unit/backend/test_chats.py::test_send_message_rejects_blank_text",
+    "passed": 1,
+    "scope": "HTTP 422 for blank input, separate from skipped direct-graph golden case; no browser run"
+  },
+  "separate_recovery": {
+    "does_not_replace_original_outcomes": true,
+    "golden": {
+      "count": 11,
+      "formal": {
+        "failed": 7,
+        "needs_review": 3,
+        "blocked": 1
+      },
+      "automated_passed": 3,
+      "semantic": {
+        "correct": 2,
+        "partial": 3,
+        "incorrect": 2,
+        "not_evaluated": 4
+      }
+    },
+    "organizer_q6": {
+      "formal": "failed",
+      "duration_seconds": 120.06,
+      "publication": "Unfinished intermediate answer at timeout; no completed verification.",
+      "semantic_report": "organizer-recovery-semantic-review.json"
+    }
+  }
+}

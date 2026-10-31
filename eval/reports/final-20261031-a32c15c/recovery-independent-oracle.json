@@ -1,0 +1,107 @@
+{
+  "method": "Independent csv.DictReader aggregation of the full raw source; calendar denominators generated day by day; no model calls.",
+  "source_file": "08_Фоновые_задания.csv",
+  "sha256": "225d50485f10afdc427fb3c1d5c040e3661bfd052c64f7519245265c1a4ed56d",
+  "observed_dates": [
+    "2024-10-01",
+    "2026-09-30"
+  ],
+  "monthly": [
+    {
+      "month": 1,
+      "count": 42496,
+      "calendar_days": 62,
+      "mean": 685.4193548387096
+    },
+    {
+      "month": 2,
+      "count": 38215,
+      "calendar_days": 56,
+      "mean": 682.4107142857143
+    },
+    {
+      "month": 3,
+      "count": 42441,
+      "calendar_days": 62,
+      "mean": 684.5322580645161
+    },
+    {
+      "month": 4,
+      "count": 41097,
+      "calendar_days": 60,
+      "mean": 684.95
+    },
+    {
+      "month": 5,
+      "count": 42632,
+      "calendar_days": 62,
+      "mean": 687.6129032258065
+    },
+    {
+      "month": 6,
+      "count": 41157,
+      "calendar_days": 60,
+      "mean": 685.95
+    },
+    {
+      "month": 7,
+      "count": 42752,
+      "calendar_days": 62,
+      "mean": 689.5483870967741
+    },
+    {
+      "month": 8,
+      "count": 42364,
+      "calendar_days": 62,
+      "mean": 683.2903225806451
+    },
+    {
+      "month": 9,
+      "count": 40990,
+      "calendar_days": 60,
+      "mean": 683.1666666666666
+    },
+    {
+      "month": 10,
+      "count": 42485,
+      "calendar_days": 62,
+      "mean": 685.241935483871
+    },
+    {
+      "month": 11,
+      "count": 40835,
+      "calendar_days": 60,
+      "mean": 680.5833333333334
+    },
+    {
+      "month": 12,
+      "count": 42536,
+      "calendar_days": 62,
+      "mean": 686.0645161290323
+    }
+  ],
+  "winner": {
+    "month": 7,
+    "count": 42752,
+    "calendar_days": 62,
+    "mean": 689.5483870967741
+  },
+  "july_counts": [
+    [
+      2025,
+      21377
+    ],
+    [
+      2026,
+      21375
+    ]
+  ],
+  "july_change_percent": -0.009355849745053095,
+  "q6_totals": {
+    "chains": 469016,
+    "successful_retry_chains": 23003,
+    "attempts_in_successful_retry_chains": 53099,
+    "percent": 4.904523513057124,
+    "mean_attempts": 2.3083510846411337
+  }
+}

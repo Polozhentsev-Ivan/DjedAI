@@ -1,0 +1,523 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "source_report": "golden-recovery.json",
+  "source_report_status": "completed",
+  "source_sha_verified_by": "golden-provenance.json and immutable checkout; running report SHA may be annotated only on completion",
+  "original_report_unchanged": "golden.json and golden-semantic-review.json remain separate; recovery is not substituted into original totals",
+  "publication_boundary": "Only final completed answer blocks are assessed as delivered answers. SQL/tool outputs and verification drafts are diagnostic evidence,not proof of publication. Text present during timeout is an unfinished intermediate draft unless successful final publication is separately established.",
+  "classification_boundary": {
+    "correct": "No confirmed semantic defect within observed completed text,SQL,data and specifications;does not imply browser/API/restart acceptance.",
+    "partial": "Delivered useful answer with a confirmed omitted rubric,unsupported explanation or specification mismatch;correct arithmetic remains separately recorded.",
+    "incorrect": "Confirmed wrong computation,wrong requested action,unsupported refusal or production verification blocking an otherwise substantiated answer;problem class distinguishes the cause.",
+    "not_evaluated": "Infrastructure/model failure,timeout,blocked prerequisite or skipped scenario prevents substantive assessment;requested outcome is not counted as passed."
+  },
+  "updated_at": "2026-10-31T17:52:54.153783+00:00",
+  "scope": "Independent manual semantic assessment of saved text,SQL,tool results and chart/dashboard specifications. No new model calls; no browser/UI rendering,owner-isolation or restart validation is established here.",
+  "status_definitions": {
+    "correct": "Correct within observed scope: saved text,SQL,data,specifications and reported in-memory recomputation contain no confirmed semantic defect. Separate limitations/not_evaluated rubrics do not establish complete scenario acceptance.",
+    "partial": "Observed relevant result with an omission,unproven explanation or requested-specification mismatch.",
+    "incorrect": "Materially false/wrong-population or missing requested answer.",
+    "not_evaluated": "Pending,blocked/skipped or insufficient saved evidence."
+  },
+  "summary": {
+    "correct": 2,
+    "partial": 3,
+    "incorrect": 2,
+    "not_evaluated": 4
+  },
+  "by_scenario": {
+    "6": {
+      "correct": 0,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 1
+    },
+    "7": {
+      "correct": 0,
+      "partial": 1,
+      "incorrect": 2,
+      "not_evaluated": 0
+    },
+    "8": {
+      "correct": 2,
+      "partial": 1,
+      "incorrect": 0,
+      "not_evaluated": 0
+    },
+    "9": {
+      "correct": 0,
+      "partial": 1,
+      "incorrect": 0,
+      "not_evaluated": 2
+    },
+    "10": {
+      "correct": 0,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 1
+    }
+  },
+  "review_progress": {
+    "manual_assessments": 11,
+    "finished_source_cases": 11,
+    "pending_source_cases": 0,
+    "finished_unreviewed": []
+  },
+  "non_correct_by_problem_class": {
+    "prerequisite_execution_failure": [
+      "s6_previous_duration_units_01"
+    ],
+    "wrong_computation": [
+      "s7_peak_calendar_month_01"
+    ],
+    "explanation_omission": [
+      "s7_peak_calendar_month_01",
+      "s7_weekday_profile_01",
+      "s9_planned_processed_pearson_01"
+    ],
+    "verification_delivery_failure": [
+      "s7_july_years_01"
+    ],
+    "unsupported_explanation": [
+      "s8_environment_trigger_segments_01"
+    ],
+    "execution_failure": [
+      "s9_daily_counts_errors_01",
+      "s9_daily_lag_search_01",
+      "s10_seasonal_naive7_01"
+    ]
+  },
+  "cases": [
+    {
+      "id": "s6_previous_duration_units_01",
+      "scenario": 6,
+      "source_status": "blocked",
+      "automated_status": null,
+      "status": "not_evaluated",
+      "reasons": [
+        "Own recovery prerequisite duration turn failed at model stage with SERVER_ERROR and no tool results. Follow-up never executed;prior standalone success cannot substitute for this missing own context."
+      ],
+      "problem_classes": [
+        "prerequisite_execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Понятно, что речь о минимуме, максимуме и среднем из предыдущего хода; повторены те же значения в секундах.",
+          "assessment": "Not evaluated:blocked by failed own prerequisite."
+        },
+        {
+          "requirement": "Длительность — разность окончания и начала одной попытки; это не поле «Обработано записей».",
+          "assessment": "Not evaluated:blocked by failed own prerequisite."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Контекст заменён новым профилем количества записей.",
+          "assessment": "Not evaluated:follow-up neverexecuted."
+        },
+        {
+          "requirement": "Секунды названы миллисекундами или минутами без пересчёта.",
+          "assessment": "Not evaluated:follow-up neverexecuted."
+        }
+      ],
+      "evidence": [
+        "Recovery sourceblocked;own prerequisite genericerror/emptytools."
+      ]
+    },
+    {
+      "id": "s7_peak_calendar_month_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "incorrect",
+      "reasons": [
+        "SQL repeats the month length once per attempt in its denominator. February denominator becomes38215×28=1070020 instead of56 calendar days across2years,so average degenerates to1/28 and chooses shortest month. Delivered month2/0.04 is wrong;correct winner is month7 with42752/62=689.548387 attempts/day. Seasonality limitation also omitted."
+      ],
+      "problem_classes": [
+        "wrong_computation",
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Месяцы лет объединены по номеру; сумма нормирована на календарные дни, включая нулевые counts.",
+          "assessment": "Failed:month numbers grouped correctly,but day denominator is attempt-weighted sum of monthlengths,not actual calendar-day count."
+        },
+        {
+          "requirement": "Наблюдаемые два годовых цикла не доказывают устойчивость, причину или будущую сезонность.",
+          "assessment": "Missing:answer does not explain insufficiency of2annualcycles for stable seasonality/causality."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Победитель выбран по сумме без учёта длины месяца.",
+          "assessment": "Not a raw-total ranking,but normalization is mathematically wrong and selects shortestmonth regardless of observedvolume."
+        },
+        {
+          "requirement": "Максимум объявлен доказательством значимой сезонности.",
+          "assessment": "Not observed:no positive claim of significant seasonality;required caution nevertheless absent."
+        }
+      ],
+      "numerical_assessment": "incorrect winner2/mean0.035714;expected7/689.548387. Februaryactual38215/56≈682.410714.",
+      "sql_assessment": "COUNT(*)/SUM(monthlength perattempt) equals reciprocal monthlength;calendar denominator must count dates once,not once perlaunch.",
+      "evidence": [
+        "Recovery r_6a50804d7fb94e5b988a74c2021b8513 returns[2,38215,1070020,0.03571428571428571].",
+        "Current samefile monthly golden rows July2025=21377,July2026=21375,total42752 over62days."
+      ]
+    },
+    {
+      "id": "s7_weekday_profile_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "partial",
+      "reasons": [
+        "All7 weekday counts,Monday0 numbering and Friday4 winner are correct;SQL properly divides by104/105 observed calendar appearances covering730days. Answer omits the computed peak mean692.009615 and required caution about descriptive profile/causality/future stability."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Представлены все семь дней недели; сохранена МСК.",
+          "assessment": "Satisfied:all7days,correctMoscowstart-derivedcounts and Monday0numbering."
+        },
+        {
+          "requirement": "Победитель выбран по среднему на число календарных появлений, не только общей сумме.",
+          "assessment": "Satisfied inSQL:winner ranked by count/distinctdates,not rawtotal;answer fails to show the computedmean."
+        },
+        {
+          "requirement": "Это описательный недельный профиль без доказательства причинности и будущей стабильности.",
+          "assessment": "Missing:descriptive-profile/causality/futurestability caution."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Назначен одинаковый знаменатель без проверки календаря.",
+          "assessment": "Not observed:verified104/105actualdates denominators,not assumed equal."
+        },
+        {
+          "requirement": "Нумерация ISO понедельник=1 смешана с понедельник=0.",
+          "assessment": "Not observed:isodowminus1 produces correctMonday0 numbering."
+        }
+      ],
+      "numerical_assessment": "correct7counts,total500000,Friday4peak71969/104=692.009615;peakmeanmissingfromtext",
+      "sql_assessment": "COUNT(DISTINCT date) denominators sum730 and match fullcalendar;no missingdates on this source.",
+      "evidence": [
+        "r_ec0e19a0064740b38255ff91f0a7e64c contains7rows,correctcounts/means/maxmarker;automatedfailure onlymissingpublishedmean."
+      ]
+    },
+    {
+      "id": "s7_july_years_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "incorrect",
+      "reasons": [
+        "SQL correctly computes both July counts and negative0.00935585% change;verification trace contains correct counttable and rounded−0.01% draft. Production guard rejects July periods/formula100 and removes substantive answer;only an error is delivered. This is a delivery/verification failure,not wrong arithmetic."
+      ],
+      "problem_classes": [
+        "verification_delivery_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Сравниваются отдельно июль 2025 и июль 2026 по началу попытки.",
+          "assessment": "Correct underlyingSQL separatelyselectsJuly2025/2026;notdelivered in finalanswer."
+        },
+        {
+          "requirement": "Процент в шкале 0–100 использует прежний июль в знаменателе; знак сохранён.",
+          "assessment": "Correct underlyingoldJulydenominator/sign/100scale;guardrejectsperiod claims despiteSQLJulyfilter."
+        },
+        {
+          "requirement": "Два наблюдения не доказывают устойчивый тренд или причину.",
+          "assessment": "Finalanswercontainsnoexplanation;earliertracehasnon-guarantee language but also unsupportedminimum3–5period recommendation,which should not be treatedasvalidated."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Объединённая июльская сумма выдана за один год.",
+          "assessment": "Not observed inSQL/recordeddraft:separateyearcounts,not combinedsum."
+        },
+        {
+          "requirement": "Малое отрицательное изменение названо положительным ростом.",
+          "assessment": "Not observed inSQL/recordeddraft:negativechange describedasdecrease."
+        }
+      ],
+      "numerical_assessment": "SQLcorrect21377→21375,−0.009355849745053095%;finalanswerremoved",
+      "sql_assessment": "EXTRACTmonth=7,years2025/2026,countnonNULLunique-launchID;LAGoldcountdenominator correct.",
+      "evidence": [
+        "r_80f888221abe43459ace3712cef3f6cc returns[2025,21377,null],[2026,21375,−0.009355849745053095].",
+        "verification.statusfailed with period_mismatch on July2025/2026 and number_not_found onformula100;finalblockerroronly."
+      ]
+    },
+    {
+      "id": "s8_environment_status_segments_01",
+      "scenario": 8,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All9 environment/status paircounts are published with correct own-segment values,total500000 and attempt units. SQL jointlygroups bothfields over allrows,without chain deduplication or marginal-frequency substitution."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Показаны все девять наблюдаемых пар с собственными counts.",
+          "assessment": "Satisfied:all9observedpairswithowncounts."
+        },
+        {
+          "requirement": "Единица — попытка; повторные цепочки не дедуплицируются.",
+          "assessment": "Satisfied:COUNT(*)allattempts;labels sayattempts and no deduplication."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Маргинальные частоты подменяют число внутри конкретной пары.",
+          "assessment": "Not observed:joint GROUP BY bothfields,not separate marginal lists."
+        }
+      ],
+      "numerical_assessment": "correct9pairs,total500000",
+      "evidence": [
+        "r_659bb9dee059429ea86b300ff156d4e9 returns9untruncatedrows matchingpublishedtable."
+      ]
+    },
+    {
+      "id": "s8_environment_trigger_segments_01",
+      "scenario": 8,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "All9 environment/trigger counts and volume-versus-risk distinction are correct. Additional claim that provided data lack error statuses/codes and risk cannot be calculated confuses this selected aggregate with the underlying file,which has status/error-code fields per attempt. Local empirical error shares can be calculated by another grouping."
+      ],
+      "problem_classes": [
+        "unsupported_explanation"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Представлены все девять наблюдаемых сочетаний.",
+          "assessment": "Satisfied:all9observedcombinations,counts,total500000."
+        },
+        {
+          "requirement": "Count — объём; риск ошибки требует доли с локальным знаменателем, которой этот count сам по себе не является.",
+          "assessment": "Satisfied:defines local error-count/segment-count denominator and explains countaloneisnotrisk;incorrectlyassertssourcecannotprovidestatusinformation."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Большой сегмент автоматически назван самым ненадёжным.",
+          "assessment": "Not observed:largeproduction/scheduledsegmentnotdeclaredleast reliable."
+        },
+        {
+          "requirement": "Два признака заменены группировкой по одному.",
+          "assessment": "Not observed:SQLgroups bothenvironmentandtrigger."
+        }
+      ],
+      "numerical_assessment": "correct9paircounts,total500000",
+      "sql_assessment": "CorrectunfilteredjointGROUPBY;source'sstatusfieldswereomittedfromthisquery,notabsentfromdataset.",
+      "evidence": [
+        "r_dba4a35bcbec4fbf98309c3fb5cf01c3 contains9expectedrows.",
+        "Samepinnedsourcecatalogandpreviousstatusanalysesestablishstatus/kod_oshibki fields;answerincorrectlystatesriskcalculationimpossibleduemissinginformation."
+      ]
+    },
+    {
+      "id": "s8_compare_environments_01",
+      "scenario": 8,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "correct",
+      "reasons": [
+        "All9 jointcounts,environmenttotals and locally normalizedpercentages are correct;100% subtotal rows are valid derived shares despite automatedfailure. Stability wording is tied to observed rates and accompanied by an explicit risk-assessment limitation;more precise observed-error-share wording is optional,not a confirmed defect."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Все три окружения и девять пар статусов отражены; production KPI совпадает с production-строками этой таблицы.",
+          "assessment": "Satisfied:all3environments/9statuspairs,total500000,productiondetail agrees."
+        },
+        {
+          "requirement": "Production числитель — Ошибка, знаменатель — все его попытки, включая отменённые.",
+          "assessment": "Satisfied:productionerrors25873 dividedbyall407661productionattempts,cancelledincluded."
+        },
+        {
+          "requirement": "Объём не равен вероятности ошибки; дополнительные сравнения долей требуют знаменателя соответствующего окружения.",
+          "assessment": "Satisfied:numericalcount/share distinction and localdenominators;unadjustedlowerobservedshare does not by itself establish underlyingprocessstability."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Production процент рассчитан от всех окружений или только успешных и ошибочных.",
+          "assessment": "Not observed:allproductionattemptsdenominator,nototherenvironmentsorcancelledexcluded."
+        },
+        {
+          "requirement": "Максимальный count объявлен максимальной долей ошибок.",
+          "assessment": "Not observed:largestproductioncountcorrectlycontrastedwithsmallerproductionshare."
+        }
+      ],
+      "numerical_assessment": "correctcounts,production6.346694925→6.35%,otherlocalpercentagesand100%subtotals",
+      "sql_assessment": "COUNT(*)×100/SUM(COUNT(*))OVER(PARTITIONBYenvironment) usescorrectlocalallstatusdenominators.",
+      "evidence": [
+        "r_178cacafb5e448cd9a1582ba4ec75876 contains9correctcount/sharepairs;envcounts r_3cfd44787629490f9c91bbf94d65b4df.",
+        "Automatedissue onlyunbacked100.00;valid mathematicallyderivedsubtotals.",
+        "Publishedtextinfershigherprocessstabilityfromlowerunadjustederrorpercentage."
+      ]
+    },
+    {
+      "id": "s9_planned_processed_pearson_01",
+      "scenario": 9,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Pearson0.984979668→0.9850 usesall500000 complete attemptpairs includingzeros and no groupedaverages. Causalitycautionpresent,but requiredsame-attempt/dependence limitation is omitted;significanceclaimquotes nominal p=0 without discussing independence of repeated chain attempts."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Одна пара — одна попытка; использованы все 500000 полных пар без группировки и удаления нулей.",
+          "assessment": "Satisfied:unfilteredpaircolumns,n500000,zerosretained,noaggregationbeforecorrelation."
+        },
+        {
+          "requirement": "Сильная линейная связь не доказывает причинный эффект или независимость наблюдений; счётчики относятся к одной попытке.",
+          "assessment": "Partlysatisfied:causalityexplicitlydenied;missinglackofindependenceguaranteeandcoupledcounterswithinoneattempt."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "r рассчитан по сервисным средним вместо попыток.",
+          "assessment": "Not observed:no service-levelmeans;sourcequery rawpaircolumns."
+        },
+        {
+          "requirement": "Корреляция доказывает, что изменение плана вызовет заданное изменение факта.",
+          "assessment": "Not observed:explicitcausalityrejection."
+        }
+      ],
+      "numerical_assessment": "correctPearson0.9849796684170951,n500000,rounded0.9850",
+      "sql_assessment": "correlationtoolselectsbothrawcounters WHERE1=1;resultn500000confirmspaircoverage.",
+      "evidence": [
+        "r_772ad5dbe9db4e39867725d3a7d42526,metricr0.9849796684170951,p0.0,n500000;answerdoesnotstateindependence/sameattemptlimitation."
+      ]
+    },
+    {
+      "id": "s9_daily_counts_errors_01",
+      "scenario": 9,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Recovery again ended in terminal model SERVER_ERROR,with no tools or substantive answer. Requested outcome not delivered;no arithmetic/interpretation verdict possible."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Использована непрерывная сетка из 730 дней; каждая пара — дневные counts, не исходная попытка.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Ошибки являются частью общего count; положительная связь не доказывает влияние нагрузки на риск.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "r рассчитан по долям ошибок вместо числа ошибок.",
+          "assessment": "Not evaluated:no substantive claim."
+        },
+        {
+          "requirement": "Дни взвешены числом запусков или пропуски сдвинуты вместо заполнения нулями.",
+          "assessment": "Not evaluated:no substantive claim."
+        }
+      ],
+      "evidence": [
+        "Recovery sourcefailed;genericerrorblock;emptytool_results."
+      ]
+    },
+    {
+      "id": "s9_daily_lag_search_01",
+      "scenario": 9,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Recovery again ended in terminal model SERVER_ERROR,with no tools or substantive answer. Requested outcome not delivered;no arithmetic/interpretation verdict possible."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Положительный k означает, что attempts[t] предшествует errors[t+k]; при +5 остаётся 725 пар.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Сетка календарная с нулями counts; нет циклического сдвига или дополнения краёв.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Порядок выбора: |r| DESC, |k| ASC, k ASC; максимум при нуле не подтверждает опережение.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Корреляция и лаг не доказывают причинность.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Направление лага обращено.",
+          "assessment": "Not evaluated:no substantive claim."
+        },
+        {
+          "requirement": "Объявлена статистическая значимость сканирования лагов без проверки.",
+          "assessment": "Not evaluated:no substantive claim."
+        }
+      ],
+      "evidence": [
+        "Recovery sourcefailed;genericerrorblock;emptytool_results."
+      ]
+    },
+    {
+      "id": "s10_seasonal_naive7_01",
+      "scenario": 10,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Recovery again ended in terminal model SERVER_ERROR,with no tools or substantive answer. Requested outcome not delivered;no arithmetic/interpretation verdict possible."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Базис — 24–30 сентября 2026; горизонт — 1–7 октября 2026 относительно конца файла, не даты машины.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Seasonal-naive с периодом 7 повторяет семь отдельных counts, не среднее недели.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        },
+        {
+          "requirement": "Прогноз условный; истинные будущие counts и калиброванный интервал не известны.",
+          "assessment": "Not evaluated:terminalSERVER_ERROR,no substantive answer."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Прогноз объявлен наблюдаемым фактом или гарантией.",
+          "assessment": "Not evaluated:no substantive claim."
+        },
+        {
+          "requirement": "Будущие даты приняты за уже наблюдённые данные.",
+          "assessment": "Not evaluated:no substantive claim."
+        }
+      ],
+      "evidence": [
+        "Recovery sourcefailed;genericerrorblock;emptytool_results."
+      ]
+    }
+  ]
+}

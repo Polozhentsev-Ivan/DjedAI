@@ -1,0 +1,18 @@
+{
+  "suite": "golden",
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "wrapper_exit_code": 1,
+  "native_python_exit_code": "not independently captured; do not claim zero",
+  "shell_log": "golden-stdout.log",
+  "shell_log_encoding": "utf-16",
+  "shell_log_sha256": "814b46094a3371a33f4a2ce56e012f94487d764f58b8585250a3aeb745edee93",
+  "observed_stderr": "LangGraph checkpoint deserialization warnings for unregistered djedai Pydantic types, formatted by Windows PowerShell as NativeCommandError.",
+  "warning_example": "Deserializing unregistered type djedai.contracts.agent.Message from checkpoint. This will be blocked in a future version.",
+  "traceback_present": false,
+  "report_status": "completed",
+  "recorded_outcomes": 53,
+  "pending_outcomes": 0,
+  "report_finished_at": "2026-10-31T17:33:54.195939+00:00",
+  "report_sha256": "33c6e091c336b2de131bf92cd20d78aa94c02ce117de8a8ec3d9076233951ce7",
+  "interpretation": "The complete persisted report and process-wrapper status are distinct evidence. All53 outcomes and final SHA/finished_at were written; wrapper did not report success. The observed shell error record is a checkpoint warning, with no traceback. No stronger native-exit claim is made."
+}

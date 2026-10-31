@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-31T17:58:34.155455+00:00",
+  "application_sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "application_checkout_clean_before_and_after": true,
+  "transport": "direct production graph via canonical scripts/eval_runner.py; no browser",
+  "model_provider": "DeepInfra",
+  "model_api_base": "https://api.deepinfra.com/v1/openai",
+  "model_profile": {
+    "MODEL_NAME": "Qwen/Qwen3.6-27B",
+    "MODEL_TIMEOUT_SECONDS": "120",
+    "AGENT_TURN_TIMEOUT_SECONDS": "120",
+    "MODEL_MAX_RETRIES": "1",
+    "MODEL_MAX_OUTPUT_TOKENS": "2048",
+    "MODEL_CONTEXT_TOKENS": "8192",
+    "MODEL_REASONING_SUPPORTED": "true",
+    "MODEL_REASONING_UNDERSTAND": "none",
+    "MODEL_REASONING_PLAN": "provider_default",
+    "MODEL_REASONING_VISUALIZE": "none",
+    "MODEL_REASONING_COMPOSE": "none",
+    "MODEL_REASONING_VERIFY": "none"
+  },
+  "effective_limits": {
+    "model_context_tokens": 8192,
+    "model_max_output_tokens": 2048,
+    "dashboard_max_output_tokens": 4096,
+    "model_timeout_seconds": 120.0,
+    "agent_turn_timeout_seconds": 120.0,
+    "model_max_retries": 1
+  },
+  "dependency_environment": "environment.json",
+  "concurrency": {
+    "queues": 2,
+    "workers_per_queue": 1,
+    "queues_named": [
+      "organizer",
+      "golden"
+    ],
+    "fresh_case_graphs": true
+  },
+  "datasets_revision": "716fbbcdc3dfa2a63dba1cf835fcc780c5e91a1d",
+  "data_sources": [
+    {
+      "question": 1,
+      "file_name": "09_Лекарственные_препараты.csv",
+      "size_bytes": 98278281,
+      "sha256": "40081d8a1fadfbcb9dc35c45483182503a2eb75d5224ac7f363c9c43f7f4733c",
+      "git_blob_sha1": "e0355e1a08d1e15ea858468506c172bef975fa7b",
+      "origin": "Downloads",
+      "manifest": "eval/datasets/organizer/q1.json"
+    },
+    {
+      "question": 2,
+      "file_name": "01_Продажи.csv",
+      "size_bytes": 188324476,
+      "sha256": "24d4b5065fd4c3c0b3f218d87e1f920d334d5f311ee1b3a4ce6795eb80e7bbdd",
+      "git_blob_sha1": "d9173eebe2679edd67a164ca5c0baaf709fbd7cb",
+      "origin": "Downloads",
+      "manifest": "eval/datasets/organizer/q2.json"
+    },
+    {
+      "question": 3,
+      "file_name": "02_Техническая_поддержка.csv",
+      "size_bytes": 181721714,
+      "sha256": "637e65f0019d8962c2ee4a3f9b96dded13bc2a7b96cece768703daee82653a1c",
+      "git_blob_sha1": "9aa36cbea675f54ae3d1f4c7f815eb6feddfc48d",
+      "origin": "complete cached copy; Downloads contained only incomplete .crdownload",
+      "manifest": "eval/datasets/organizer/q3.json"
+    },
+    {
+      "question": 4,
+      "file_name": "04_Доставка.csv",
+      "size_bytes": 148423087,
+      "sha256": "4b7321033df27dddaf119c250ccb5032cf2f6e28104629ebd4133c653b18b4ba",
+      "git_blob_sha1": "b2308185e97c3899aeb752b92d791f145b7814ec",
+      "origin": "Downloads",
+      "manifest": "eval/datasets/organizer/q4.json"
+    },
+    {
+      "question": 5,
+      "file_name": "07_Заявки_на_закупку.csv",
+      "size_bytes": 190300753,
+      "sha256": "828eb441b00e6569cfc05013bdebda102532e97e3d3aa1b30271efd22eafba36",
+      "git_blob_sha1": "abab32f5e08fb423117083183a5af9968c4ee1a5",
+      "origin": "Downloads",
+      "manifest": "eval/datasets/organizer/q5.json"
+    },
+    {
+      "question": 6,
+      "file_name": "08_Фоновые_задания.csv",
+      "size_bytes": 122084672,
+      "sha256": "225d50485f10afdc427fb3c1d5c040e3661bfd052c64f7519245265c1a4ed56d",
+      "git_blob_sha1": "015d0caef35010d12184f8d2f8a6dd19dd955319",
+      "origin": "Downloads",
+      "manifest": "eval/datasets/organizer/q6.json"
+    }
+  ],
+  "golden_source": "organizer q6 source: full 08_Фоновые_задания.csv, 500000 rows",
+  "organizer_questions_match_downloaded_questions_txt": true,
+  "organizer_question_source": {
+    "file_name": "questions.txt",
+    "origin": "Downloads/Telegram Desktop",
+    "sha256": "9d34d246a1c17ea70a3400e54136906469decedc9d2f723761f7bf73a0ae4f6e"
+  },
+  "timing": "Per-case result.duration_seconds; excludes CSV ingest. No time-to-first-token/browser timing claimed.",
+  "execution": {
+    "organizer": {
+      "started_at": "2026-10-31T16:56:33.894425+00:00",
+      "finished_at": "2026-10-31T17:25:44.720063+00:00",
+      "status": "completed",
+      "source_report": "organizer.json",
+      "case_ids": null
+    },
+    "golden": {
+      "started_at": "2026-10-31T16:57:04.498665+00:00",
+      "finished_at": "2026-10-31T17:33:54.195939+00:00",
+      "status": "completed",
+      "source_report": "golden.json",
+      "case_ids": null
+    },
+    "organizer-recovery": {
+      "started_at": "2026-10-31T17:34:01.563089+00:00",
+      "finished_at": "2026-10-31T17:37:41.268991+00:00",
+      "status": "completed",
+      "source_report": "organizer-recovery.json",
+      "case_ids": [
+        "organizer_q6"
+      ]
+    },
+    "golden-recovery": {
+      "started_at": "2026-10-31T17:35:30.919725+00:00",
+      "finished_at": "2026-10-31T17:47:50.884075+00:00",
+      "status": "completed",
+      "source_report": "golden-recovery.json",
+      "case_ids": [
+        "s7_peak_calendar_month_01",
+        "s7_weekday_profile_01",
+        "s7_july_years_01",
+        "s8_environment_status_segments_01",
+        "s8_environment_trigger_segments_01",
+        "s8_compare_environments_01",
+        "s9_planned_processed_pearson_01",
+        "s9_daily_counts_errors_01",
+        "s9_daily_lag_search_01",
+        "s6_previous_duration_units_01",
+        "s10_seasonal_naive7_01"
+      ]
+    }
+  },
+  "recovery_policy": "One separate run of 11 golden cases and organizer Q6 affected by connection failures; seasonal-naive included with mixed original network/SQL/timeout cause. No replacement or pooling into original pass counts.",
+  "process_observations": [
+    "golden-process-observation.json",
+    "golden-recovery-process-observation.json"
+  ],
+  "process_log_location": "Raw local shell logs retained outside Git; their exact byte hashes and warning observations are in process-observation reports.",
+  "chart_check": "Actual frontend/src/charts/data.ts dataError invoked with original saved specifications and matching tool results. 19 checked, 3 compatibility errors. No browser render.",
+  "independent_recovery_oracle": "recovery-independent-oracle.json: separate csv.DictReader aggregation of full pinned source; calendar generated day by day.",
+  "supplementary_api_check": {
+    "test": "tests/unit/backend/test_chats.py::test_send_message_rejects_blank_text",
+    "result": "passed",
+    "assertion": "HTTP 422 for blank text",
+    "golden_empty_case_remains": "skipped",
+    "browser": false
+  },
+  "not_established": [
+    "three consecutive full successes for every organizer question",
+    "all golden cases semantically correct",
+    "browser rendering or videos",
+    "production restart/persistence and foreign-owner isolation",
+    "local model or organizer server",
+    "complete submission acceptance",
+    "CI success"
+  ],
+  "application_inputs_sha256": {
+    "scripts/eval_runner.py": "389aba08c0e898fbdedf760c73f5088d94e1be1c963a6f58d95b9e4ae99b824e",
+    "eval/questions.yaml": "bdd422748fda498619437e3a600655290eab27eedb61b911a08776f322ed9849",
+    "eval/organizer_questions.yaml": "dc4e8ad59dfd5de7cdde1bb735b89fb3a719414bafc2045d850e629feb1177ba",
+    "eval/datasets/hk_background_jobs.json": "7c32a227e83791f6a5a72afab0594e8b7301de5cda0951d46ec722163dac0365",
+    "frontend/src/charts/data.ts": "5e3553d3c6c2d5efa74176afa6acceaff5391ceec703c350cbf29de7801e6e9e",
+    "uv.lock": "66890cc6ea36f7e515fd51d7d9c1e1f290a403989407af6608aaeda00264cca6"
+  },
+  "local_harness_sha256": {
+    "run_final.py": "13ef0928df1ded23b35ad453d21963d9bb21aeb213978fac7e5c8b2863782bf5",
+    "run_recovery.py": "7a20af3812192fe131ec01caa0c18ade77017efc3a9b2790613ac273ea02059f",
+    "verify_recovery_oracle.py": "9ea8af8d9c7ecb5d443f6805affce699449953fd350b97975c38add0f63c22bb",
+    "check_charts.cjs": "f892d995bc7ccce3f50ed5b394f29fac930b95d293bfec8e56a59f71425de0be"
+  },
+  "publication_format": "JSON values preserved unchanged. CRLF line endings normalized to LF for Git; source and published byte hashes recorded separately. Hashes inside original reports refer to original source bytes.",
+  "source_artifact_sha256": {
+    "organizer.json": "b71de2f44e7a01749aaf5ca82d6d26d572a795a95533888efcefe2028392713e",
+    "organizer-semantic-review.json": "9679e3fe13a1831771172203aa97eab3c911232afb42cc4443da2f9273d6420a",
+    "golden.json": "33c6e091c336b2de131bf92cd20d78aa94c02ce117de8a8ec3d9076233951ce7",
+    "golden-semantic-review.json": "e1a2aa72bdd0e3ac7fd5c5eff716522697363a9e32053a381cc358e23c167dba",
+    "organizer-recovery.json": "ee6d8d38d70151702069fd05070d7d80126300bb5910c28f25bff83e757f5ce5",
+    "organizer-recovery-semantic-review.json": "51f31a5dfe55152021cf71b713cb4c4cbf4b3e9cd0ffaf7432c5bc9551ae4cd2",
+    "golden-recovery.json": "1fb58d6ca331808441e80524842bf8d29e28f01c26d268f71ab1dbebf38653c3",
+    "golden-recovery-semantic-review.json": "8dff4bfcd86400cfda9ab455f863842a98f4b6152ef6a6a3253ba68e6f38c665",
+    "golden-process-observation.json": "1e77e498053ccc02e6f7158afd75f831788a847180fbd53ce7f2859a60adf8a0",
+    "golden-recovery-process-observation.json": "ec85cb021031815184575deacb75ca88c4545fded17fbb3b23bc51d259551d34",
+    "chart-compatibility.json": "8874e76e607927834695795892853a8d6b953a39efe17454f5531d48477d5f8a",
+    "recovery-independent-oracle.json": "9bfadd62f2e1d2c26ecc08c455e080fd0df0fc077eb8356480291fce36784007",
+    "q3-independent-oracle.json": "7fdca4b0636ec3473e464a6d65c3a2f257cfc11726a49965cac926816b17d406",
+    "q4-independent-oracle.json": "11fcef533c5669cd1e045279e41206a8c40ef28e469c337d6e944103f85ecc8a",
+    "environment.json": "99ebeca75268ec0c07f49632a6b05ed431d66f58d6a6b2b1681672fc0263e25f",
+    "effective-limits.json": "4a5817f46bf37986c873dd9518ad5904d566d245b145edb8e5cc9ca4fe404e54",
+    "network-probe.json": "e8f32e59b7f8345b100a51abf5df7e44f295dc21a316378ffb4b69f191461173",
+    "model-health-probe.json": "1a717e900cc886f8c92879b058b2f18746b23ab9d1816c5a340d2249948c1e0a",
+    "final-summary.json": "a9b2b5d8f25f7fa9d79e36ec428059a4d920f9ef657ceb9a65f4a3daa49d3c98"
+  },
+  "artifact_sha256": {
+    "organizer.json": "600e81bff8b088b5e11cc1e1809b6885b42ae5bb38c17c5eaf651b6e8fe11354",
+    "organizer-semantic-review.json": "945f6fcdc1c7f6b8336271617e8c96c263c963c2c5426c8788ca24310a4afb05",
+    "golden.json": "caae9e3cbbb44ea09de31bac61ad4ecefff36d0f94e049dcd0395dc7a6444741",
+    "golden-semantic-review.json": "6be0260de11381a495eeac87966a052a81e2868c1927864d7cdef4c8e2793e05",
+    "organizer-recovery.json": "79bf4096bd6109ef5f6c9334f76722700f418d98866d73edf781a667cea4700a",
+    "organizer-recovery-semantic-review.json": "0b089dee54f4f3b969e9b3345ac45b51c47f5302e86a852bbc8613dc949bf2ab",
+    "golden-recovery.json": "4753cbc0873b4cb491df7be249effd9a62a52038e12e53b696706f7567126bad",
+    "golden-recovery-semantic-review.json": "28b7631e817a7240df7d366cb2decc46c89b2aa0f7cd1ceea883c723b5215f28",
+    "golden-process-observation.json": "02399f6a2bf25f704c30d0b7ef47bb733b03956eae765ee2a67154f2204ff543",
+    "golden-recovery-process-observation.json": "75b0d0a999c0fa32451303831a9ce908beeadf2f6d41a845cfacb35cd7178a16",
+    "chart-compatibility.json": "8874e76e607927834695795892853a8d6b953a39efe17454f5531d48477d5f8a",
+    "recovery-independent-oracle.json": "cad06b623ab4d12efa3d6106210b5c32255a6b0445e9a5bc6ecf894cabd474b7",
+    "q3-independent-oracle.json": "9039ea1bf703ad5b78adf3e6618b64afa0d586775f406585ce5427188d7e820c",
+    "q4-independent-oracle.json": "ca8f949bf296acfd661417cdff895a7012e311d026d1a0ca5adc2e4e9b16694a",
+    "environment.json": "371010a30797a57790e3af4b9b494700f65ff829c52e4953b911e01be6535440",
+    "effective-limits.json": "a4c06784a4a6e47ae65919193e9726fe45e1d47e86fea812e789a403ca1de8a4",
+    "network-probe.json": "e9ff3afee498c5bfeb1f35190fa8f2055714ceb5b29bc8dc72bfdee534f5520d",
+    "model-health-probe.json": "b773f5af272116c762f53dce230fd1722ea0db05bd4c84095f7f603ac27f4604",
+    "final-summary.json": "4e31fe038b3dc3edb56fed548550511a75ec5a4fbf10905a6977271a80475cb9"
+  }
+}

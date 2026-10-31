@@ -1,0 +1,28 @@
+{
+  "suite": "golden-recovery",
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "wrapper_exit_code": 0,
+  "native_python_exit_code": "not separately captured",
+  "shell_log": "golden-recovery-stdout.log",
+  "shell_log_encoding": "utf-16",
+  "shell_log_sha256": "38fd93d509e80b0d1ce75b342d6459ca5f181f0bd00bdf9fa61c6633b5860221",
+  "traceback_present": false,
+  "native_command_error_present": false,
+  "report_status": "completed",
+  "recorded_outcomes": 11,
+  "requested_ids": [
+    "s7_peak_calendar_month_01",
+    "s7_weekday_profile_01",
+    "s7_july_years_01",
+    "s8_environment_status_segments_01",
+    "s8_environment_trigger_segments_01",
+    "s8_compare_environments_01",
+    "s9_planned_processed_pearson_01",
+    "s9_daily_counts_errors_01",
+    "s9_daily_lag_search_01",
+    "s6_previous_duration_units_01",
+    "s10_seasonal_naive7_01"
+  ],
+  "finished_at": "2026-10-31T17:47:50.884075+00:00",
+  "report_sha256": "1fb58d6ca331808441e80524842bf8d29e28f01c26d268f71ab1dbebf38653c3"
+}

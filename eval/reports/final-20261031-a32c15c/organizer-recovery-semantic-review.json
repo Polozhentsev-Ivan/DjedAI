@@ -1,0 +1,51 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "scope": "separate_single_recovery_of_organizer_q6_after_infrastructure_failure; does_not_replace_any_original_run",
+  "source": "organizer-recovery.json",
+  "source_sha256": "ee6d8d38d70151702069fd05070d7d80126300bb5910c28f25bff83e757f5ce5",
+  "profile": {
+    "MODEL_NAME": "Qwen/Qwen3.6-27B",
+    "MODEL_TIMEOUT_SECONDS": "120",
+    "AGENT_TURN_TIMEOUT_SECONDS": "120",
+    "MODEL_MAX_RETRIES": "1",
+    "MODEL_MAX_OUTPUT_TOKENS": "2048",
+    "MODEL_CONTEXT_TOKENS": "8192",
+    "MODEL_REASONING_SUPPORTED": "true",
+    "MODEL_REASONING_UNDERSTAND": "none",
+    "MODEL_REASONING_PLAN": "provider_default",
+    "MODEL_REASONING_VISUALIZE": "none",
+    "MODEL_REASONING_COMPOSE": "none",
+    "MODEL_REASONING_VERIFY": "none"
+  },
+  "updated_at_utc": "2026-10-31T17:39:31.492703+00:00",
+  "model_calls_by_reviewer": 0,
+  "complete": true,
+  "cases": [
+    {
+      "id": "organizer_q6",
+      "formal_status": "failed",
+      "status": "incorrect",
+      "failure_category": "turn_timeout_with_incorrect_additional_totals_in_saved_answer",
+      "duration_seconds": 120.06,
+      "issues": [
+        "Graph execution failed: TurnTimeout: "
+      ],
+      "sql_review": "All 18 per-job groups, counts, shares and mean attempts match the independent raw-CSV oracle. Max attempt index agrees with actual chain attempt count on this source.",
+      "answer_review": "The saved answer contains all 18 correct requested table rows, but adds an incorrect overall 4.91 percent and 2.32 mean attempts. Additive totals 469016 / 23003 are correct. The claim that 4.91 percent is the ratio of those totals is false. Correct overall mean is weighted over the 23003 successful-retry chains, not an unweighted group mean or a selected group value.",
+      "publication_limit": "TurnTimeout at 120.06 seconds; verification absent. Treat answer field as preserved intermediate text, not a verified completed publication or successful recovery.",
+      "independent_numeric_checks": {
+        "matched_sql_job_rows": 18,
+        "matched_saved_answer_job_rows": 18,
+        "total_chains": 469016,
+        "successful_retry_chains": 23003,
+        "attempts_in_successful_retry_chains": 53099,
+        "overall_percent": 4.904523513057124,
+        "overall_percent_rounded_2dp": "4.90",
+        "overall_avg_attempts": 2.3083510846411337,
+        "overall_avg_attempts_rounded_2dp": "2.31",
+        "saved_overall_percent": "4.91",
+        "saved_overall_avg_attempts": "2.32"
+      }
+    }
+  ]
+}

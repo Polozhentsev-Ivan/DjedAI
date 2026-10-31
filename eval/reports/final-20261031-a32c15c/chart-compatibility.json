@@ -1,0 +1,139 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "scope": "Actual frontend dataError called on saved ChartSpec and matching result; no browser render",
+  "results": [
+    {
+      "case_id": "s4_monthly_line_01",
+      "chart_id": "chart_attempts_by_month",
+      "type": "line",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s4_status_bar_01",
+      "chart_id": "chart_status_counts",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s4_environment_pie_01",
+      "chart_id": "chart_pie_okruzhenie",
+      "type": "pie",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s4_environment_status_heatmap_01",
+      "chart_id": "heatmap_attempts_by_env_status",
+      "type": "heatmap",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s4_service_top5_bar_01",
+      "chart_id": "chart_top5_services_attempts",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_overview_dashboard_01",
+      "chart_id": "kpi_total_attempts",
+      "type": "kpi",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_overview_dashboard_01",
+      "chart_id": "bar_attempts_by_status",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_overview_dashboard_01",
+      "chart_id": "pie_attempts_by_env",
+      "type": "pie",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_quarterly_dashboard_01",
+      "chart_id": "kpi_total_attempts",
+      "type": "kpi",
+      "status": "checked",
+      "error": "Цветовая разбивка недоступна для этого типа. Покажите группы отдельными графиками."
+    },
+    {
+      "case_id": "s5_quarterly_dashboard_01",
+      "chart_id": "line_attempts_by_quarter",
+      "type": "line",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_quarterly_dashboard_01",
+      "chart_id": "bar_errors_by_quarter",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_services_errors_dashboard_01",
+      "chart_id": "kpi_total_attempts",
+      "type": "kpi",
+      "status": "checked",
+      "error": "Цветовая разбивка недоступна для этого типа. Покажите группы отдельными графиками."
+    },
+    {
+      "case_id": "s5_services_errors_dashboard_01",
+      "chart_id": "bar_top5_services",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_services_errors_dashboard_01",
+      "chart_id": "bar_top3_errors",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_duration_dashboard_01",
+      "chart_id": "min_duration_kpi",
+      "type": "kpi",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_duration_dashboard_01",
+      "chart_id": "max_duration_kpi",
+      "type": "kpi",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s5_duration_dashboard_01",
+      "chart_id": "avg_duration_kpi",
+      "type": "kpi",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s6_switch_monthly_chart_01",
+      "chart_id": "chart_attempts_by_month",
+      "type": "bar",
+      "status": "checked",
+      "error": null
+    },
+    {
+      "case_id": "s6_second_ranked_service_01",
+      "chart_id": "chart_2nd_service_detail",
+      "type": "kpi",
+      "status": "checked",
+      "error": "Для KPI нужен полный результат с одной строкой и одним показателем. Агрегат рассчитывается на сервере."
+    }
+  ]
+}
