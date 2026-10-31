@@ -6,7 +6,7 @@ import pytest
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.diagnostics import NODES, RunDiagnostics
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.graph import build_agent_graph, plan
 from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     Block,
@@ -381,3 +381,20 @@ def test_mismatched_catalog_does_not_enable_fast_path():
 
     assert result["fast_path"] is None
     assert result["results"] == []
+
+
+def test_empty_plan_for_a_data_overview_uses_describe_dataset():
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success", data=PlanResponse(plan=[])
+    )
+    state = {
+        "messages": [Message(role="user", content="Что передо мной?")],
+        "understanding": Understanding(intent="data_overview"),
+        "results": [],
+    }
+    assert [step.tool for step in plan(state, {"configurable": {"client": client}})["plan"]] == [
+        "describe_dataset"
+    ]
+    other = {**state, "understanding": Understanding(intent="data_question")}
+    assert plan(other, {"configurable": {"client": client}})["plan"] == []

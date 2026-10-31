@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from collections.abc import Callable, Collection
 from contextlib import nullcontext
@@ -485,7 +486,17 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, PlanResponse, stage="plan"
         )
         if response.status == "success" and response.data:
-            return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
+            steps = response.data.plan
+            understanding = state.get("understanding")
+            # Обзор данных не зависит от выбора модели: пустой план дал бы «нет данных».
+            if (
+                not steps
+                and not state.get("results")
+                and understanding is not None
+                and understanding.intent == "data_overview"
+            ):
+                steps = [PlannedCall(tool="describe_dataset", args={})]
+            return {"plan": steps, "retries": state.get("retries", 0) + 1}
         message = (
             RESTRICTED_CONTEXT_MESSAGE
             if response.error_type == "POLICY_RESTRICTED"
@@ -1172,6 +1183,23 @@ def _fill_missing_axes(
     return chart.model_copy(update=update) if update else chart
 
 
+# Подпись оси time показывает только дату: почасовые значения остаются категориями.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]00:00:00(?:\.0+)?)?")
+
+
+def _time_axis_for_date_line(chart: ChartSpec, result: ToolResult, columns: dict) -> ChartSpec:
+    """Линия по датам — временной ряд, даже если модель назвала ось категорией."""
+    column = columns.get(chart.x.field) if chart.x else None
+    if chart.type != "line" or column is None or chart.x.kind != "category":
+        return chart
+    rows = result.data.rows or []
+    if rows and all(
+        _DATE_ONLY_RE.fullmatch(str(row[column[0]])) for row in rows if column[0] < len(row)
+    ):
+        return chart.model_copy(update={"x": chart.x.model_copy(update={"kind": "time"})})
+    return chart
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
     """Оставляет только графики, совместимые с сохранённым результатом.
 
@@ -1195,6 +1223,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
                 columns[name] = (index, column_type)
 
         chart = _fill_missing_axes(chart, res, columns)
+        chart = _time_axis_for_date_line(chart, res, columns)
         is_valid = True
 
         # Проверка оси X (наличие и совместимость типа)
@@ -1309,6 +1338,22 @@ def _verification_feedback(report: VerificationReport, policy: DataTransferPolic
     )
 
 
+_CHART_CODE_RE = re.compile(r"```\s*(?:mermaid|vega\S*|chart)\b.*?(?:```|$)\s*", re.I | re.S)
+
+
+def _without_chart_code(blocks: list[Block]) -> list[Block]:
+    """График рисует visualize: код диаграммы в тексте пользователю не нужен."""
+    cleaned = []
+    for block in blocks:
+        if block.type == "text" and block.markdown and _CHART_CODE_RE.search(block.markdown):
+            markdown = _CHART_CODE_RE.sub("", block.markdown).strip()
+            if not markdown:
+                continue
+            block = block.model_copy(update={"markdown": markdown})
+        cleaned.append(block)
+    return cleaned
+
+
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
     focus = updated_focus_result_ids(state)
@@ -1363,7 +1408,16 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, ComposeResponse, stage="compose"
         )
         if response.status == "success" and response.data:
-            blocks = response.data.answer_blocks
+            blocks = _without_chart_code(response.data.answer_blocks)
+            had_text = any(block.type == "text" for block in response.data.answer_blocks)
+            if had_text and not any(block.type == "text" for block in blocks):
+                # От текста остался только код диаграммы: пустой ответ пользователю не отдаём.
+                markdown = (
+                    "Результат показан на графике."
+                    if state.get("charts")
+                    else "Расчёт выполнен, но текст ответа не сформирован. Повторите запрос."
+                )
+                blocks.append(Block(type="text", markdown=markdown))
         else:
             message = (
                 RESTRICTED_CONTEXT_MESSAGE
@@ -1466,6 +1520,18 @@ def _verification_failure(
     return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
 
+def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, dict[str, str]]:
+    """Текст пользователя и SQL каждого результата: переформулировка модели сюда не входит."""
+    messages = state.get("messages", [])
+    question = messages[-1].content if messages and messages[-1].role == "user" else ""
+    queries = {
+        str(entry["result_id"]): str(entry["query"])
+        for entry in entries
+        if entry.get("query") and entry.get("result_id")
+    }
+    return question or "", queries
+
+
 def verify(state: AgentState, config: RunnableConfig) -> dict:
     """Проверяет числа детерминированно, затем независимо уточняет у модели.
 
@@ -1515,7 +1581,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     evidence = build_evidence(results, facts_and_data)
-    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    question, queries = _verification_query(state, facts_and_data)
+    deterministic = verify_numeric_text(
+        draft, evidence, result_ids=result_ids, question=question, sql=queries
+    )
     deterministic_ok = deterministic.status != "failed"
     unsupported = unsupported_numbers(draft, facts_and_data)
     budget = current_budget()
@@ -1554,6 +1623,28 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         stage="verify",
     )
 
+    # Код уже подтвердил все числа: длинный ответ проверяющей модели не повод их удалять.
+    if response.error_type == "OUTPUT_LIMIT" and deterministic.status == "verified":
+        return {
+            "is_verified": True,
+            "verification": _finished_verification(
+                deterministic, status="verified", rejected=_previous_rejected(state)
+            ),
+        }
+
+    # Код уже отклонил черновик: повторный compose полезнее, чем ответ об ошибке.
+    if (
+        response.error_type == "OUTPUT_LIMIT"
+        and state.get("compose_retries", 0) < 2
+        and enough_time
+    ):
+        return {
+            "is_verified": False,
+            "verification": _finished_verification(
+                deterministic, status="failed", rejected=_previous_rejected(state)
+            ),
+        }
+
     if response.status != "success" or not response.data:
         message = (
             RESTRICTED_CONTEXT_MESSAGE
@@ -1589,21 +1680,11 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     llm_rejected = not v_data.is_valid
     at_last_attempt = state.get("compose_retries", 0) >= 2
-    if not at_last_attempt:
-        report = _finished_verification(
-            deterministic,
-            status="failed",
-            rejected=_previous_rejected(state),
-            issues=[
-                *deterministic.issues,
-                *([_verification_issue("llm_reported")] if llm_rejected else []),
-            ],
-        )
-        return {"is_verified": False, "verification": report}
-
     corrected = (v_data.corrected_markdown or "").strip()
     if corrected and corrected != draft:
-        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        corrected_report = verify_numeric_text(
+            corrected, evidence, result_ids=result_ids, question=question, sql=queries
+        )
         if corrected_report.status != "failed":
             new_blocks = _publish_corrected(blocks, corrected)
             issues = [
@@ -1623,13 +1704,26 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                     issues=issues,
                 ),
             }
-        return _verification_failure(
-            state,
-            blocks,
-            corrected_report,
-            extra_rejected=[*deterministic.rejected_assertions],
-            extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+        if at_last_attempt:
+            return _verification_failure(
+                state,
+                blocks,
+                corrected_report,
+                extra_rejected=[*deterministic.rejected_assertions],
+                extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+            )
+
+    if not at_last_attempt:
+        report = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[
+                *deterministic.issues,
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+            ],
         )
+        return {"is_verified": False, "verification": report}
 
     return _verification_failure(
         state,
@@ -1945,13 +2039,21 @@ def route_after_fast_compose(state: AgentState) -> str:
     return "cite_metrics" if path is not None and path.kind == "row_count" else "end"
 
 
+def _dashboard_in_chat(state: AgentState, dashboard_id: str) -> bool:
+    """Модель может придумать ID: обновлять можно только дашборд из блоков этого чата."""
+    return any(
+        block.type == "dashboard_link" and block.dashboard_id == dashboard_id
+        for block in state.get("previous_blocks", [])
+    )
+
+
 def route_after_understand(state: AgentState) -> str:
     """Уточнения — в clarify, существующий дашборд — в refresh, новый — в plan_dashboard."""
     understanding = state["understanding"]
     intent = understanding.intent
     if intent in CLARIFY_INTENTS:
         return "clarify"
-    if understanding.dashboard_id:
+    if understanding.dashboard_id and _dashboard_in_chat(state, understanding.dashboard_id):
         return "refresh_dashboard"
     if intent == "dashboard":
         return "plan_dashboard"

@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -73,6 +75,9 @@ _VERSION_RE = re.compile(
     r"(?<![\w])(?P<raw>(?:v|версия|version)\s*\d+(?:\.\d+)*)(?![\w])", re.IGNORECASE
 )
 _CODE_RE = re.compile(r"`[^`\n]*`")
+_FENCE_RE = re.compile(r"```.*?(?:```|$)", re.S)
+# «Топ-5»: дефис в названии, а не отрицательное число.
+_NAME_NUMBER_RE = re.compile(r"(?<=[^\W\d_])-\d+(?![\d.,]*\d)")
 _URL_RE = re.compile(r"https?://\S+")
 _TIME_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)")
 _ORDINAL_RE = re.compile(r"(?<!\d)\d{1,2}-(?:й|я|е|го|му|м|х)(?![а-яё])", re.IGNORECASE)
@@ -361,6 +366,7 @@ class _FormulaSpec:
     start: int
     end: int
     percent_result: bool = False
+    tree: ast.Expression | None = None
 
 
 class _FormulaError(Exception):
@@ -1497,6 +1503,46 @@ def _counts_distinct_rows(select: exp.Select) -> bool:
     )
 
 
+def _inner_select(select: exp.Select) -> exp.Select | None:
+    """Единственный источник SELECT: подзапрос или CTE."""
+    source = select.args.get("from_") or select.args.get("from")
+    if source is None or select.args.get("joins"):
+        return None
+    table = source.this
+    if isinstance(table, exp.Subquery):
+        return table.this if isinstance(table.this, exp.Select) else None
+    with_ = select.args.get("with_") or select.args.get("with")
+    if isinstance(table, exp.Table) and with_:
+        for cte in with_.expressions:
+            if cte.alias == table.name and isinstance(cte.this, exp.Select):
+                return cte.this
+    return None
+
+
+def _with_source_markers(label: str, projection: exp.Expression, select: exp.Select) -> str:
+    """Смысл колонки берётся из её выражения: через CTE, а не из алиаса или значений строки."""
+    inner = projection.this if isinstance(projection, exp.Alias) else projection
+    owner = select
+    # Внешний SELECT по CTE лишь переносит колонку: смотрим её исходное выражение.
+    while isinstance(inner, exp.Column) and (nested := _inner_select(owner)) is not None:
+        found = next(
+            (item for item in nested.expressions if item.alias_or_name == inner.name), None
+        )
+        if found is None:
+            break
+        inner = found.this if isinstance(found, exp.Alias) else found
+        owner = nested
+    markers = []
+    if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Star | exp.Literal):
+        if owner.args.get("where") or owner.args.get("group"):
+            markers.append(_FILTERED_COUNT)
+    # COUNT(amount_rub) считает строки: его результат не денежная сумма.
+    columns = () if isinstance(inner, exp.Count) else inner.find_all(exp.Column)
+    if any(re.search(r"(?:^|_)(?:rub|руб)$", column.name, re.I) for column in columns):
+        markers.append(_RUB_SOURCE)
+    return " ".join([label, *markers]).strip()
+
+
 def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
     """Сопоставляет выходные колонки run_sql с их агрегатной семантикой."""
     if result is None or result.tool != "run_sql":
@@ -1520,6 +1566,7 @@ def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
         if not alias:
             continue
         label = _sql_projection_label(projection)
+        label = _with_source_markers(label, projection, select)
         if label:
             if "__rows__" in _label_keys(label) and _counts_distinct_rows(select):
                 label = f"{label} count distinct уникальные значения"
@@ -1703,6 +1750,22 @@ def _evidence_key(item: VerificationEvidence) -> tuple[Any, ...]:
     )
 
 
+def _with_total_currency(evidence: list[VerificationEvidence]) -> list[VerificationEvidence]:
+    """Итог колонки наследует рубли от исходной колонки её ячеек."""
+    rub_columns = {
+        (item.result_id, item.cell_address.rsplit(".", 1)[-1])
+        for item in evidence
+        if item.cell_address and _RUB_SOURCE in (item.label or "")
+    }
+    updated = []
+    for item in evidence:
+        match = re.search(r"column_totals\.(\S+)", item.label or "")
+        if match and (item.result_id, match.group(1)) in rub_columns:
+            item = item.model_copy(update={"label": f"{item.label} {_RUB_SOURCE}"})
+        updated.append(item)
+    return updated
+
+
 def build_evidence(
     results: Sequence[ToolResult], payload: Sequence[Mapping[str, Any]]
 ) -> list[VerificationEvidence]:
@@ -1751,7 +1814,7 @@ def build_evidence(
     unique: dict[tuple[Any, ...], VerificationEvidence] = {}
     for item in evidence:
         unique.setdefault(_evidence_key(item), item)
-    return list(unique.values())
+    return _with_total_currency(list(unique.values()))
 
 
 # --- Разбор утверждений ---
@@ -1773,6 +1836,10 @@ _DENOMINATOR_BEFORE_RE = re.compile(
 
 def _suppressed_spans(text: str) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
+    for match in _FENCE_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
+    for match in _NAME_NUMBER_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
     for match in _CODE_RE.finditer(text):
         spans.append((match.start(), match.end(), "constant"))
     for match in _URL_RE.finditer(text):
@@ -1824,26 +1891,30 @@ def _formula_specs(text: str, tokens: Sequence[_NumberToken]) -> list[_FormulaSp
         if len(right_tokens) != 1 or len(left_tokens) < 2:
             continue
         result = right_tokens[0]
-        operators: list[str] = []
-        valid = True
-        for before, after in zip(left_tokens, left_tokens[1:], strict=False):
-            gap = text[before.end : after.start].strip()
-            operator = _operator(gap)
-            if operator is None:
-                valid = False
+        # A caption can contain a separately checked calendar count before the
+        # formula: ``February (28 days): 1732 / (28 * 40) = 1.55``.
+        # Leave that prefix outside the formula instead of consuming its number.
+        for first in range(max(0, len(left_tokens) - 32), len(left_tokens) - 1):
+            operands = left_tokens[first:]
+            expression_start = operands[0].start
+            while expression_start > left and text[expression_start - 1] in "( \t":
+                expression_start -= 1
+            tree = _formula_tree(text, operands, expression_start, equal.start())
+            if tree is not None:
+                left_tokens = operands
                 break
-            operators.append(operator)
-        if not valid or len(operators) != len(left_tokens) - 1:
+        else:
             continue
-        expression = text[left_tokens[0].start : left_tokens[-1].end]
+        expression = text[expression_start : equal.start()].strip()
         spec = _FormulaSpec(
             left=tuple(left_tokens),
             result=result,
             expression=expression,
-            raw=text[left_tokens[0].start : result.end],
-            start=left_tokens[0].start,
+            raw=text[expression_start : result.end].strip(),
+            start=expression_start,
             end=result.end,
             percent_result=result.unit == "percent",
+            tree=tree,
         )
         specs.append(spec)
     chosen: list[_FormulaSpec] = []
@@ -1852,6 +1923,35 @@ def _formula_specs(text: str, tokens: Sequence[_NumberToken]) -> list[_FormulaSp
             continue
         chosen.append(spec)
     return chosen
+
+
+def _formula_tree(
+    text: str, tokens: Sequence[_NumberToken], start: int, end: int
+) -> ast.Expression | None:
+    """Parse only bounded arithmetic over the already extracted operands."""
+    parts = []
+    position = start
+    for index, token in enumerate(tokens):
+        gap = text[position : token.start]
+        if not re.fullmatch(r"[\s()+*/×÷:−-]*", gap):
+            return None
+        parts.extend((gap, f"n{index}"))
+        position = token.end
+    tail = text[position:end]
+    if not re.fullmatch(r"[\s)]*", tail):
+        return None
+    parts.append(tail)
+    expression = "".join(parts).translate(str.maketrans({"×": "*", "÷": "/", ":": "/", "−": "-"}))
+    try:
+        tree = ast.parse(expression.strip(), mode="eval")
+    except (SyntaxError, RecursionError):
+        return None
+    allowed = (ast.Expression, ast.BinOp, ast.Name, ast.Load, ast.Add, ast.Sub, ast.Mult, ast.Div)
+    if any(not isinstance(node, allowed) for node in ast.walk(tree)):
+        return None
+    if sum(1 for _ in ast.walk(tree)) > 128:
+        return None
+    return tree
 
 
 def _claim_label(
@@ -2072,7 +2172,10 @@ def _value_matches(draft: _Draft, evidence: VerificationEvidence) -> bool:
     if draft.unit == "ratio" and evidence.unit == "percent":
         return _values_equal(claimed * 100, actual, _draft_decimals(draft))
     if draft.unit == "money" or evidence.unit == "money":
-        if draft.unit not in ("money", "unknown") or evidence.unit not in ("money", "unknown"):
+        rub_column = draft.currency == "RUB" and _RUB_SOURCE in (evidence.label or "")
+        if draft.unit not in ("money", "unknown") or (
+            evidence.unit not in ("money", "unknown") and not rub_column
+        ):
             return False
     if draft.unit == "count" and evidence.unit not in ("count", "number", "unknown"):
         return False
@@ -2159,10 +2262,304 @@ def _denominator_reason(draft: _Draft, evidence: VerificationEvidence) -> str | 
     return None
 
 
+# Порог, прямо стоящий перед числом: «не менее чем 100», «порог 100».
+_THRESHOLD_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:(?:не\s+)?(?:менее|более|меньше|больше)(?:\s+чем)?|порог\w*|минимум)\s*$",
+    re.IGNORECASE,
+)
+_DAY_BEFORE_MONTH_RE = re.compile(
+    r"^\s*(?:январ|феврал|март|апрел|ма[яйе]|июн|июл|август|сентябр|октябр|ноябр|декабр)",
+    re.IGNORECASE,
+)
+_DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
+_PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
+_POPULATION_SKIP = {"среди", "без", "из", "кроме", "не"}
+_GENERIC_MEASURE_COLUMNS = {"value", "cnt", "count", "n", "total", "yhat"}
+_RUB_SOURCE = "source_rub"
+_FILTERED_COUNT = "filtered_count"
+
+
+@dataclass(frozen=True)
+class _ResultConditions:
+    """Условия одного запроса: чужой фильтр или делитель этот результат не подтверждают."""
+
+    start: date | None = None
+    end: date | None = None
+    divisors: frozenset[Decimal] = frozenset()
+    cutoffs: frozenset[tuple[str, str, date]] = frozenset()
+    percent_scaling: bool = False
+
+    def covers(self, period: VerificationPeriod) -> bool:
+        first, last = _date(period.start), _date(period.end)
+        if not (self.start and self.end and first and last):
+            return False
+        return self.start <= first and last <= self.end
+
+
+@dataclass(frozen=True)
+class _QueryContext:
+    """Что написал пользователь и чем SQL ограничил свой результат.
+
+    Контекст подтверждает только условия расчёта: порог и период. Значения
+    результата он подтвердить не может, а переформулировка модели в него не входит.
+    """
+
+    thresholds: frozenset[Decimal] = frozenset()
+    question: str = ""
+    results: Mapping[str, _ResultConditions] = field(default_factory=dict)
+    active: bool = False
+
+    def names_population(self, population: str | None) -> bool:
+        # Граница популяции в тексте размыта: сверяем её предлог и первое слово.
+        words = _words(population or "")
+        if not words:
+            return False
+        if words[0] in _POPULATION_SKIP and words[0] not in _words(self.question):
+            return False
+        named = next((word for word in words if word not in _POPULATION_SKIP), None)
+        keys = _label_keys(named)
+        return bool(keys) and keys <= _label_keys(self.question)
+
+    def covers(
+        self, period: VerificationPeriod | None, result_ids: Iterable[str] | None = None
+    ) -> bool:
+        if period is None:
+            return False
+        ids = self.results if result_ids is None else result_ids
+        return any(
+            conditions.covers(period)
+            for result_id in ids
+            if (conditions := self.results.get(result_id)) is not None
+        )
+
+    def divisors(self, result_ids: Iterable[str] | None = None) -> set[Decimal]:
+        ids = self.results if result_ids is None else result_ids
+        found: set[Decimal] = set()
+        for result_id in ids:
+            if (conditions := self.results.get(result_id)) is not None:
+                found |= conditions.divisors
+        return found
+
+    def has_dates(self) -> bool:
+        return any(conditions.start is not None for conditions in self.results.values())
+
+    def as_of(self, draft: _Draft, result_ids: Iterable[str] | None = None) -> bool:
+        requested = _as_of_day(self.question)
+        if requested is None:
+            return False
+        cutoff = requested + timedelta(days=1)
+        ids = self.results if result_ids is None else result_ids
+        conditions = [self.results[result_id] for result_id in ids if result_id in self.results]
+        if not any(
+            any(operator == "lt" and value == cutoff for _, operator, value in condition.cutoffs)
+            for condition in conditions
+        ):
+            return False
+        stated = _as_of_day(draft.text)
+        if stated is not None:
+            return stated == requested
+        # A separate explanation can repeat the exclusive SQL boundary, but
+        # cannot turn that boundary into an analytical measurement period.
+        if draft.raw_text != cutoff.isoformat():
+            return False
+        captions = re.findall(
+            rf"(ранее|позже|до|после)\s+{re.escape(draft.raw_text)}(?!\d)",
+            draft.text,
+            re.I,
+        )
+        required = {"lt" if caption.lower() in ("ранее", "до") else "gte" for caption in captions}
+        return bool(required) and any(
+            required <= {operator for _, operator, value in condition.cutoffs if value == cutoff}
+            for condition in conditions
+        )
+
+
+def _direct_divisors(expression: exp.Expression) -> set[Decimal]:
+    """Литералы, на которые действительно делят: `x / 28.0`, `x / (28.0 * n)`, но не `(2 + 5)`."""
+    while isinstance(expression, exp.Paren):
+        expression = expression.this
+    if isinstance(expression, exp.Mul):
+        return _direct_divisors(expression.left) | _direct_divisors(expression.right)
+    if isinstance(expression, exp.Literal) and not expression.is_string:
+        with suppress(InvalidOperation):
+            return {Decimal(expression.this)}
+    return set()
+
+
+def _sql_conditions(sql: str) -> _ResultConditions:
+    """Даты из сравнений условий и делители расчёта: комментарии и LIMIT сюда не входят."""
+    try:
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        return _ResultConditions()
+    bounds: list[date] = []
+    cutoffs: set[tuple[str, str, date]] = set()
+    for scope in parsed.find_all(exp.Where, exp.Having, exp.If):
+        for comparison in scope.find_all(exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.Between):
+            if isinstance(comparison, (exp.LT, exp.GTE)) and isinstance(
+                comparison.this, exp.Column
+            ):
+                literal = comparison.expression
+                if (
+                    isinstance(literal, exp.Literal)
+                    and literal.is_string
+                    and re.fullmatch(r"\d{4}-\d{2}-\d{2}", literal.this)
+                    and (cutoff := _date(literal.this))
+                ):
+                    cutoffs.add((comparison.this.name.lower(), comparison.key, cutoff))
+            for literal in comparison.find_all(exp.Literal):
+                if literal.is_string and (parsed_date := _date(literal.this[:10])):
+                    bounds.append(parsed_date)
+    divisors: set[Decimal] = set()
+    for division in parsed.find_all(exp.Div):
+        divisors |= _direct_divisors(division.expression)
+    return _ResultConditions(
+        min(bounds, default=None),
+        max(bounds, default=None),
+        frozenset(divisors),
+        frozenset(cutoffs),
+        any(
+            isinstance(product.expression, exp.Literal)
+            and not product.expression.is_string
+            and product.expression.this in ("100", "100.0")
+            and isinstance(product.this.unnest(), (exp.Div, exp.Sub))
+            for product in parsed.find_all(exp.Mul)
+        ),
+    )
+
+
+def _query_context(question: str | None, sql: Mapping[str, str] | None = None) -> _QueryContext:
+    question_text = question or ""
+    spans = [(claim.start, claim.end) for claim in _date_claims(question_text)]
+    thresholds: set[Decimal] = set()
+    for token in _tokens(question_text):
+        inside_date = any(token.start >= start and token.end <= end for start, end in spans)
+        if not inside_date and _year_value(token.value) is None:
+            thresholds.add(token.value * token.scale)
+    return _QueryContext(
+        frozenset(thresholds),
+        question_text,
+        {result_id: _sql_conditions(text) for result_id, text in (sql or {}).items()},
+        active=True,
+    )
+
+
+def _label_only_rejection(
+    draft: _Draft, evidence: Sequence[VerificationEvidence], context: _QueryContext
+) -> bool:
+    """Спорна только подпись: без неё проходят валюта, период, популяция и знаменатель."""
+    if draft.status != "rejected" or draft.kind != "quantity":
+        return False
+    if draft.reason_code not in ("unrelated_result", "ambiguous_number"):
+        return False
+    requested = _aggregate_keys(draft.label)
+    matching = [item for item in evidence if _value_matches(draft, item)]
+    # Подпись называет агрегат: подтвердить её может только значение этого агрегата.
+    if requested and not any(requested & _aggregate_keys(item.label) for item in matching):
+        return False
+    _, reason = _match_quantity(replace(draft, label=None), matching, context)
+    return reason in (None, "ambiguous_number")
+
+
+_MONTH_DAYS = (
+    ("январ", 31),
+    ("феврал", 28),
+    ("март", 31),
+    ("апрел", 30),
+    ("ма[яйе]", 31),
+    ("июн", 30),
+    ("июл", 31),
+    ("август", 31),
+    ("сентябр", 30),
+    ("октябр", 31),
+    ("ноябр", 30),
+    ("декабр", 31),
+)
+
+
+def _as_of_day(text: str) -> date | None:
+    for month, (pattern, _) in enumerate(_MONTH_DAYS, 1):
+        match = re.search(rf"на\s+конец\s+(\d{{1,2}})\s+{pattern}\w*\s+(\d{{4}})", text, re.I)
+        if match:
+            with suppress(ValueError):
+                return date(int(match[2]), month, int(match[1]))
+    return None
+
+
+def is_calendar_days(text: str, start: int, end: int, value: Decimal) -> bool:
+    """«в феврале 2025 (28 дней)»: длина названного месяца, а не измеренная длительность."""
+    if not _DAYS_AFTER_RE.match(text[end:]) or re.search(
+        r"длительн|средн|срок|duration", text[max(0, start - 60) : start], re.I
+    ):
+        return False
+    # Each calendar caption belongs to its own clause. In particular, February
+    # must not capture the following March caption after a semicolon.
+    left = max(text.rfind(";", 0, start), text.rfind("\n", 0, start)) + 1
+    right = min(
+        (position for separator in (";", "\n") if (position := text.find(separator, end)) >= 0),
+        default=len(text),
+    )
+    window_start = max(left, start - 40)
+    window = text[window_start:start] + " " + text[end : min(right, end + 25)]
+    months = []
+    for pattern, days in _MONTH_DAYS:
+        for match in re.finditer(rf"(?<!\w){pattern}", window, re.I):
+            distance = min(
+                abs(match.start() - (start - window_start)),
+                abs(match.end() - (start - window_start)),
+            )
+            months.append((distance, days))
+    if months:
+        days = min(months)[1]
+        return value == days or (days == 28 and value == 29)
+    return False
+
+
+def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
+    """Число ответа пересказывает условие вопроса, а не результат расчёта."""
+    if draft.value is None or draft.currency:
+        return False
+    start = draft.text.find(draft.raw_text)
+    if start < 0:
+        return False
+    before, after = draft.text[:start], draft.text[start + len(draft.raw_text) :]
+    value = _canonical(draft.value, draft.scale)
+    # «(28 дней)» и «… * 100 =»: постоянные расчёта, а не его результат.
+    if value is not None and is_calendar_days(
+        draft.text, start, start + len(draft.raw_text), value
+    ):
+        return True
+    if draft.unit not in ("unknown", "number"):
+        return False
+    if value in context.thresholds and _THRESHOLD_BEFORE_RE.search(before):
+        return True
+    if value == 100 and _PERCENT_FACTOR_BEFORE_RE.search(before):
+        return True
+    if (
+        value == 100
+        and re.search(r"умноженн\w*\s+на\s*$", before, re.I)
+        and (
+            re.search(r"(?:рост|изменени\w*|дол\w*)\s+в\s+процент", draft.text, re.I)
+            or re.search(r"(?:рост|изменени\w*).*разниц\w*.*дел[её]нн\w*\s+на", draft.text, re.I)
+        )
+        and any(result.percent_scaling for result in context.results.values())
+    ):
+        return True
+    # «31 марта 2025»: день даты, а период проверяется отдельным утверждением.
+    return (
+        draft.value == draft.value.to_integral_value()
+        and 1 <= draft.value <= 31
+        and context.has_dates()
+        and bool(_DAY_BEFORE_MONTH_RE.match(after))
+    )
+
+
 def _match_quantity(
     draft: _Draft,
     evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
 ) -> tuple[list[VerificationEvidence], str | None]:
+    context = context or _QueryContext()
     candidates = [item for item in evidence if _value_matches(draft, item)]
     if not candidates:
         reason = _unit_reason(draft, evidence)
@@ -2184,6 +2581,12 @@ def _match_quantity(
         labelled = [item for item in candidates if _same_label(draft.label, item.label)]
         if labelled:
             candidates = labelled
+        elif context.active and _exact_fractional_cell(draft, candidates):
+            # Имя колонки модели (p90_hours) не обязано совпасть с подписью в ответе.
+            # Дробное значение ячейки одного результата случайно не совпадает.
+            candidates = _exact_fractional_cell(draft, candidates)
+        elif context.active and _filtered_count_cell(draft, candidates):
+            candidates = _filtered_count_cell(draft, candidates)
         elif any(_same_label(draft.label, item.label) for item in evidence):
             return [], "unrelated_result"
         elif len({item.result_id for item in candidates}) > 1:
@@ -2194,7 +2597,16 @@ def _match_quantity(
             return [], "unrelated_result"
 
     if draft.currency:
-        with_currency = [item for item in candidates if item.currency == draft.currency]
+        with_currency = [
+            item
+            for item in candidates
+            if item.currency == draft.currency
+            or (
+                item.currency is None
+                and draft.currency == "RUB"
+                and _RUB_SOURCE in (item.label or "")
+            )
+        ]
         if not with_currency:
             return [], "currency_mismatch"
         candidates = with_currency
@@ -2203,9 +2615,12 @@ def _match_quantity(
         compatible = [
             item for item in candidates if _population_compatible(draft.population, item.population)
         ]
-        if not compatible:
+        if compatible:
+            candidates = compatible
+        elif not context.names_population(draft.population) or any(
+            item.population for item in candidates
+        ):
             return [], "population_mismatch"
-        candidates = compatible
 
     if draft.period:
         covered = [
@@ -2214,8 +2629,24 @@ def _match_quantity(
             if item.period is not None and _period_covered(draft.period, [item.period])
         ]
         if not covered:
+            # Подпись могла сузить выбор до «Минимум» без бакета: пара значение–период
+            # подтверждается и другой ячейкой того же результата.
+            covered = [
+                item
+                for item in evidence
+                if _value_matches(draft, item)
+                and _same_measure(draft, item)
+                and item.period is not None
+                and _period_covered(draft.period, [item.period])
+            ]
+        if covered:
+            candidates = covered
+        elif not (
+            context.covers(draft.period, {item.result_id for item in candidates})
+            or _spans_whole_result(draft.period, candidates, evidence)
+            or context.as_of(draft, {item.result_id for item in candidates})
+        ) or any(item.period for item in evidence if _value_matches(draft, item)):
             return [], "period_mismatch"
-        candidates = covered
 
     denominator_reason = next(
         (reason for item in candidates if (reason := _denominator_reason(draft, item))),
@@ -2225,13 +2656,83 @@ def _match_quantity(
         return [], denominator_reason
 
     result_ids = {item.result_id for item in candidates}
-    if len(result_ids) > 1:
+    # Одно и то же дробное значение в запросах одного хода — один показатель.
+    if len(result_ids) > 1 and not (context.active and _exact_fractional_cell(draft, candidates)):
         return [], "ambiguous_number"
     return candidates, None
 
 
+def _spans_whole_result(
+    period: VerificationPeriod | None,
+    candidates: Sequence[VerificationEvidence],
+    evidence: Sequence[VerificationEvidence],
+) -> bool:
+    """«За весь период»: утверждение охватывает все даты результата, откуда взято число."""
+    if period is None:
+        return False
+    start, end = _date(period.start), _date(period.end)
+    result_ids = {item.result_id for item in candidates}
+    bounds = [
+        day
+        for item in evidence
+        if item.period is not None and item.result_id in result_ids
+        for day in (_date(item.period.start), _date(item.period.end))
+        if day
+    ]
+    return bool(start and end and bounds) and start <= min(bounds) and max(bounds) <= end
+
+
+def _same_measure(draft: _Draft, item: VerificationEvidence) -> bool:
+    """Колонка без названия показателя не спорит с подписью, а Profit не подтверждает Revenue."""
+    column = (item.cell_address or "").rsplit(".", 1)[-1].lower()
+    return column in _GENERIC_MEASURE_COLUMNS or _same_label(draft.label, item.label)
+
+
+def _exact_fractional_cell(
+    draft: _Draft, candidates: Sequence[VerificationEvidence]
+) -> list[VerificationEvidence]:
+    value = _canonical(draft.value, draft.scale)
+    if value is None or value == value.to_integral_value():
+        return []
+    return [
+        item
+        for item in candidates
+        if not (_aggregate_keys(draft.label) and not _aggregates_agree(draft.label, item.label))
+    ]
+
+
+def _filtered_count_cell(
+    draft: _Draft, candidates: Sequence[VerificationEvidence]
+) -> list[VerificationEvidence]:
+    """COUNT(*) с собственным WHERE или GROUP BY считает отобранные сущности, а не таблицу."""
+    if draft.currency or draft.unit == "percent":
+        return []
+    return [
+        item for item in candidates if item.cell_address and _FILTERED_COUNT in (item.label or "")
+    ]
+
+
+def _aggregate_keys(label: str | None) -> set[str]:
+    return _label_keys(label) & {
+        "__average__",
+        "__min__",
+        "__max__",
+        "__median__",
+        "__std__",
+        "__variance__",
+        "__total__",
+    }
+
+
+def _aggregates_agree(left: str | None, right: str | None) -> bool:
+    actual = _aggregate_keys(right)
+    return not actual or not _aggregate_keys(left).isdisjoint(actual)
+
+
 def _match_date(
-    draft: _Draft, evidence: Sequence[VerificationEvidence]
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
 ) -> tuple[list[VerificationEvidence], str | None]:
     if draft.period is None:
         return [], "period_mismatch"
@@ -2241,6 +2742,12 @@ def _match_date(
         if item.period is not None and _period_covered(draft.period, [item.period])
     ]
     if not candidates:
+        if context is not None and context.as_of(draft):
+            return [], None
+        if context is not None and (
+            context.covers(draft.period) or _spans_whole_result(draft.period, evidence, evidence)
+        ):
+            return [], None
         return [], "period_mismatch"
     return candidates, None
 
@@ -2258,20 +2765,30 @@ def _accept(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
     draft.evidence = list(evidence)
 
 
-def _resolve_draft(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_draft(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
+) -> None:
     if draft.status == "ignored":
         return
     if draft.kind == "formula":
-        _resolve_formula(draft, evidence)
+        _resolve_formula(draft, evidence, context)
         return
     if draft.kind in ("date", "period"):
-        matched, reason = _match_date(draft, evidence)
+        matched, reason = _match_date(draft, evidence, context)
         if reason:
             _reject(draft, reason)
         else:
             _accept(draft, matched)
         return
-    matched, reason = _match_quantity(draft, evidence)
+    if context is not None and _is_query_condition(draft, context):
+        draft.kind = "constant"
+        draft.status = "ignored"
+        draft.reason_code = "non_analytical"
+        draft.reason = _REASON_TEXT["non_analytical"]
+        return
+    matched, reason = _match_quantity(draft, evidence, context)
     if reason:
         if (
             reason == "number_not_found"
@@ -2334,7 +2851,7 @@ def _apply_formula(left: Decimal, operator: str, right: Decimal) -> Decimal:
 
 
 def _evaluate_formula(
-    tokens: Sequence[_NumberToken], operators: Sequence[str]
+    tokens: Sequence[_NumberToken], operators: Sequence[str], tree: ast.Expression | None = None
 ) -> tuple[Decimal, str]:
     values = [_formula_operand_value(tokens[0])]
     units = [_formula_unit(tokens[0].unit)]
@@ -2376,6 +2893,29 @@ def _evaluate_formula(
         units.append(unit)
         currencies.append(currency)
 
+    if tree is not None:
+        values.clear()
+        units.clear()
+        currencies.clear()
+
+        def visit(node: ast.AST) -> None:
+            if isinstance(node, ast.Name):
+                token = tokens[int(node.id[1:])]
+                values.append(_formula_operand_value(token))
+                units.append(_formula_unit(token.unit))
+                currencies.append(token.currency)
+            elif isinstance(node, ast.BinOp):
+                visit(node.left)
+                visit(node.right)
+                operator = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}[type(node.op)]
+                pending.append((operator, 0))
+                apply()
+            else:
+                raise _FormulaError("invalid_formula")
+
+        visit(tree.body)
+        return values[0], units[0]
+
     for index, operator in enumerate(operators):
         while pending and precedence[pending[-1][0]] >= precedence[operator]:
             apply()
@@ -2411,7 +2951,11 @@ def _formula_result_matches(
     return _values_equal(claimed, calculated, _draft_decimals(draft))
 
 
-def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_formula(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    context: _QueryContext | None = None,
+) -> None:
     spec = _formula_specs(draft.text, _tokens(draft.text))
     raw_spec = next(
         (item for item in spec if item.raw == draft.raw_text or item.expression == draft.formula),
@@ -2424,9 +2968,10 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
     matched_evidence: list[VerificationEvidence] = []
     resolved_tokens: list[_NumberToken] = []
     shared_result_ids: set[str] | None = None
+    sql_divisors: set[Decimal] = set()
     operators: list[str] = []
     for before, after in zip(raw_spec.left, raw_spec.left[1:], strict=False):
-        gap = draft.text[before.end : after.start].strip()
+        gap = draft.text[before.end : after.start].strip().replace("(", "").replace(")", "").strip()
         operator = _operator(gap)
         if operator is None:
             _reject(draft, "invalid_formula")
@@ -2450,9 +2995,14 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         if reason:
             if (
                 reason == "number_not_found"
-                and token.value * token.scale in _FORMULA_CONSTANTS
+                and (
+                    token.value * token.scale in _FORMULA_CONSTANTS
+                    or (context and token.value * token.scale in context.divisors())
+                )
                 and token.unit in ("unknown", "number")
             ):
+                if token.value * token.scale not in _FORMULA_CONSTANTS:
+                    sql_divisors.add(token.value * token.scale)
                 # Постоянные коэффициенты (0, 1, 100, 1000) не требуют
                 # происхождения; совпавшее значение всё равно сохраняем.
                 matched, reason = [], None
@@ -2493,11 +3043,28 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
                 evidence=matched,
             )
         )
+    # Делитель должен принадлежать тому же запросу, что и остальные числа формулы.
+    if sql_divisors and not (
+        context and shared_result_ids and sql_divisors <= context.divisors(shared_result_ids)
+    ):
+        _reject(draft, "number_not_found")
+        return
     try:
-        calculated, unit = _evaluate_formula(resolved_tokens, operators)
+        calculated, unit = _evaluate_formula(resolved_tokens, operators, raw_spec.tree)
     except _FormulaError as error:
         _reject(draft, error.code)
         return
+    # An explicit final ``* 100`` already expresses a ratio as percentage points.
+    body = raw_spec.tree.body if raw_spec.tree else None
+    if (
+        draft.unit == "percent"
+        and unit in ("number", "ratio", "unknown", "percent")
+        and isinstance(body, ast.BinOp)
+        and isinstance(body.op, ast.Mult)
+        and isinstance(body.right, ast.Name)
+        and resolved_tokens[int(body.right.id[1:])].value == 100
+    ):
+        calculated /= 100
     if not _formula_result_matches(
         draft,
         calculated,
@@ -2542,6 +3109,8 @@ def verify_numeric_text(
     evidence: Sequence[VerificationEvidence],
     *,
     result_ids: Sequence[str] | None = None,
+    question: str | None = None,
+    sql: Mapping[str, str] | None = None,
 ) -> VerificationReport:
     """Проверяет числа текста по заранее собранному происхождению.
 
@@ -2559,8 +3128,13 @@ def verify_numeric_text(
     assertions: list[NumericAssertion] = []
     rejected: list[NumericAssertion] = []
     issues: list[VerificationIssue] = []
+    context = _query_context(question, sql) if question or sql else None
     for draft in drafts:
-        _resolve_draft(draft, scoped)
+        _resolve_draft(draft, scoped, context)
+        if context is not None and _label_only_rejection(draft, scoped, context):
+            # Число есть в результате, спорна только подпись: ответ не блокируем,
+            # причина остаётся в отчёте у этого утверждения.
+            draft.status = "ignored"
         assertion = _assertion(draft, len(assertions))
         assertions.append(assertion)
         if draft.status == "rejected":

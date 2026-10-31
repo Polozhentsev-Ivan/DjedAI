@@ -1,7 +1,13 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph, compose, verify
+from djedai.agent.graph import (
+    _without_chart_code,
+    build_agent_graph,
+    compose,
+    sanitize_charts,
+    verify,
+)
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -11,18 +17,16 @@ from djedai.contracts.agent import (
     Understanding,
     VerifyResponse,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.chart import ChartSpec
+from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 
 def test_compose_verify_loop_and_strip():
-    """Проверяет цикл верификации:
-    генерация -> ошибка -> 1 ретрай -> вырезание недостоверных чисел."""
+    """Безопасное исправление верификатора публикуется без повторного compose."""
     graph = build_agent_graph()
     mock_client = MagicMock()
 
-    # Имитируем последовательность из 6 вызовов API за один прогон:
-    # 1. understand -> 2. plan -> 3. compose (fail) ->
-    # 4. verify (fail) -> 5. compose retry -> 6. verify (strip)
+    # Четырёх ответов достаточно: повторный compose не вызывается.
     mock_client.generate_typed_response.side_effect = [
         ModelResponse(status="success", data=Understanding(intent="data_question")),
         ModelResponse(
@@ -41,18 +45,6 @@ def test_compose_verify_loop_and_strip():
                 is_valid=False,
                 issues=["1000 is not in facts"],
                 corrected_markdown="Revenue: Unknown",
-            ),
-        ),
-        ModelResponse(
-            status="success",
-            data=ComposeResponse(answer_blocks=[Block(type="text", markdown="Revenue: 1000 RUB")]),
-        ),
-        ModelResponse(
-            status="success",
-            data=VerifyResponse(
-                is_valid=False,
-                issues=["1000 is not in facts"],
-                corrected_markdown="Revenue is strictly unknown.",
             ),
         ),
     ]
@@ -83,13 +75,41 @@ def test_compose_verify_loop_and_strip():
 
     result = graph.invoke(initial_state, config=config)
 
-    # Проверяем, что граф сделал ровно 1 ретрай (2 попытки генерации compose)
-    assert result["compose_retries"] == 2
+    # Безопасное исправление не надо выбрасывать ради нового compose.
+    assert result["compose_retries"] == 1
     # Проверяем, что ответ в итоге был заменен на исправленный (вырезанный) верификатором
     assert result["is_verified"] is True
     assert len(result["answer_blocks"]) == 1
-    assert result["answer_blocks"][0].markdown == "Revenue is strictly unknown."
+    assert result["answer_blocks"][0].markdown == "Revenue: Unknown"
     assert result["verification"].status == "corrected"
+    assert mock_client.generate_typed_response.call_count == 4
+
+
+def test_first_invalid_draft_uses_a_verified_correction_without_recompose():
+    config = _verification_config(
+        [
+            *_understand_and_plan(),
+            ModelResponse(
+                status="success",
+                data=ComposeResponse(
+                    answer_blocks=[Block(type="text", markdown="Revenue: 1000 USD")]
+                ),
+            ),
+            ModelResponse(
+                status="success",
+                data=VerifyResponse(is_valid=False, corrected_markdown="Revenue: 1000 RUB"),
+            ),
+        ],
+        thread_id="first_verified_correction",
+    )
+    result = build_agent_graph().invoke(
+        {"chat_id": "c1", "messages": [Message(role="user", content="Show revenue")]},
+        config=config,
+    )
+    assert result["compose_retries"] == 1
+    assert result["verification"].status == "corrected"
+    assert [block.markdown for block in result["answer_blocks"]] == ["Revenue: 1000 RUB"]
+    assert config["configurable"]["client"].generate_typed_response.call_count == 4
 
 
 def _verification_config(responses, *, thread_id: str):
@@ -209,7 +229,7 @@ def test_invalid_final_correction_is_replaced_by_an_explicit_error():
 
 
 def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
-    draft = "Всего в данных 500 000 запусков."
+    draft = "Всего в данных 500 001 запусков."
     corrected = "Всего 500 000 строк."
     state = {
         "messages": [Message(role="user", content="Что передо мной?")],
@@ -226,12 +246,11 @@ def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
     }
     rejected = verify(state, {"configurable": {}})["verification"]
     assert rejected.status == "failed"
-    assert rejected.rejected_assertions[0].reason_code == "unrelated_result"
+    assert rejected.rejected_assertions[0].reason_code == "number_not_found"
     client = MagicMock()
 
     def respond(system_prompt, user_prompt, schema, **kwargs):
-        assert "Всего в данных 500 000 запусков" in user_prompt
-        assert "Подпись числа относится к другому результату" in user_prompt
+        assert "Всего в данных 500 001 запусков" in user_prompt
         if schema is ComposeResponse:
             data = ComposeResponse(answer_blocks=[Block(type="text", markdown=corrected)])
         else:
@@ -245,4 +264,93 @@ def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
     final = verify(state, config)
     assert final["verification"].status == "corrected"
     assert final["answer_blocks"][0].markdown == corrected
-    assert final["verification"].rejected_assertions[0].reason_code == "unrelated_result"
+    assert final["verification"].rejected_assertions[0].reason_code == "number_not_found"
+
+
+def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_one():
+    results = [
+        ToolResult(
+            result_id="r_rows",
+            tool="describe_dataset",
+            status="ok",
+            facts=[{"text": "Таблица jobs: 500000 строк", "values": {"row_count": 500000}}],
+        )
+    ]
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type="OUTPUT_LIMIT"
+    )
+    config = {"configurable": {"client": client}}
+
+    def state(text):
+        return {
+            "messages": [Message(role="user", content="Сколько строк?")],
+            "results": results,
+            "answer_blocks": [Block(type="text", markdown=text)],
+            "compose_retries": 2,
+        }
+
+    kept = verify(state("Всего 500 000 строк."), config)
+    assert kept["verification"].status == "verified"
+    assert "answer_blocks" not in kept
+    retried = verify({**state("Всего 500 001 запусков."), "compose_retries": 1}, config)
+    assert retried["is_verified"] is False
+    assert "terminal_error" not in retried
+    dropped = verify(state("Всего 500 001 запусков."), config)
+    assert dropped["verification"].status == "failed"
+    assert dropped["terminal_error"] == "OUTPUT_LIMIT"
+
+
+def test_chart_code_is_removed_from_the_answer_text():
+    blocks = _without_chart_code(
+        [
+            Block(type="text", markdown="Итог.\n```mermaid\nxychart\n```"),
+            Block(type="text", markdown="```mermaid\nxychart\n```"),
+            Block(type="text", markdown="```sql\nSELECT 1\n```"),
+        ]
+    )
+    assert [block.markdown for block in blocks] == ["Итог.", "```sql\nSELECT 1\n```"]
+
+
+def test_line_over_dates_gets_a_time_axis_but_other_lines_do_not():
+    def chart_for(value):
+        result = ToolResult(
+            result_id="r1",
+            tool="run_sql",
+            status="ok",
+            data=ToolResultData(columns=["x", "y"], rows=[[value, 1]], row_count=1),
+        )
+        spec = ChartSpec(
+            chart_id="c",
+            type="line",
+            title="t",
+            x={"field": "x"},
+            y=[{"field": "y"}],
+            result_id="r1",
+        )
+        return sanitize_charts([spec], [result])[0]
+
+    assert chart_for("2025-02-01T00:00:00").x.kind == "time"
+    assert chart_for("Север").x.kind == "category"
+
+
+def test_hourly_line_keeps_categories_and_chart_code_alone_never_gives_an_empty_answer():
+    result = ToolResult(
+        result_id="r1",
+        tool="run_sql",
+        status="ok",
+        data=ToolResultData(columns=["x", "y"], rows=[["2024-01-15 10:00:00", 1]], row_count=1),
+    )
+    spec = ChartSpec(
+        chart_id="c", type="line", title="t", x={"field": "x"}, y=[{"field": "y"}], result_id="r1"
+    )
+    assert sanitize_charts([spec], [result])[0].x.kind == "category"
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success",
+        data=ComposeResponse(answer_blocks=[Block(type="text", markdown="```mermaid\nx\n```")]),
+    )
+    state = {"messages": [Message(role="user", content="Покажи")], "results": [result]}
+    blocks = compose(state, {"configurable": {"client": client}})["answer_blocks"]
+    assert [block.type for block in blocks] == ["text"]
+    assert blocks[0].markdown

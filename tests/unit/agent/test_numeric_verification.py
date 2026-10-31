@@ -7,10 +7,11 @@ from decimal import Decimal
 import duckdb
 
 from djedai.agent.data_policy import DataTransferPolicy
-from djedai.agent.graph import _answer_payload
+from djedai.agent.graph import _answer_payload, verify
 from djedai.agent.verification import build_evidence, verify_numeric_text
 from djedai.analytics.metrics import MetricContext, compute_metric
 from djedai.analytics.tools import run_sql
+from djedai.contracts.agent import Block, Message, Understanding
 from djedai.contracts.metrics import MetricDefinition, MetricFilter, MetricGrain, MetricProvenance
 from djedai.contracts.tool_result import Fact, ToolResult, ToolResultData
 
@@ -739,3 +740,372 @@ def test_real_sql_aggregates_preserve_their_meaning() -> None:
             evidence = _evidence(results)
             assert _report(wrong, evidence, results).status == "failed"
             assert _report(correct, evidence, results).status == "verified"
+
+
+def _query_result(
+    sql: str, columns: list[str], rows: list[list], result_id: str = "r_query"
+) -> list[ToolResult]:
+    return [
+        ToolResult(
+            result_id=result_id,
+            status="ok",
+            tool="run_sql",
+            sql=sql,
+            data=ToolResultData(columns=columns, rows=rows, row_count=len(rows)),
+        )
+    ]
+
+
+def _checked(text: str, results: list[ToolResult], question: str):
+    return verify_numeric_text(
+        text,
+        _evidence(results),
+        result_ids=[item.result_id for item in results],
+        question=question,
+        sql={item.result_id: item.sql for item in results if item.sql},
+    )
+
+
+P90_SQL = (
+    "SELECT team, COUNT(*) AS cnt, quantile_cont(hours, 0.9) AS p90_hours FROM tickets "
+    "WHERE closed >= '2025-03-01' AND closed < '2025-04-01' GROUP BY team HAVING COUNT(*) >= 100"
+)
+P90_RESULTS = _query_result(P90_SQL, ["team", "cnt", "p90_hours"], [["Склад", 4515, 72.49]])
+P90_QUESTION = "У какой группы максимальный перцентиль в марте 2025? Исключи группы менее 100."
+
+
+def test_fractional_cell_period_and_threshold_from_the_query_are_accepted() -> None:
+    text = "Не менее чем 100 в марте 2025: значение составляет 72,49 часа."
+    assert _checked(text, P90_RESULTS, P90_QUESTION).status == "verified"
+
+
+def test_query_context_does_not_confirm_result_values() -> None:
+    assert _checked("Значение составляет 71,49.", P90_RESULTS, P90_QUESTION).status == "failed"
+    # Порог из вопроса не становится результатом, если не назван условием.
+    assert _checked("Заявок 100.", P90_RESULTS, P90_QUESTION).status == "failed"
+    # Период вне условий запроса не подтверждается.
+    text = "В мае 2025 значение составляет 72,49."
+    assert _checked(text, P90_RESULTS, P90_QUESTION).status == "failed"
+
+
+def test_fractional_cell_keeps_a_conflicting_aggregate_rejected() -> None:
+    results = _query_result("SELECT MAX(x) AS m FROM t WHERE d >= '2025-03-01'", ["m"], [[72.49]])
+    assert _checked("Среднее 72,49.", results, "Какой максимум?").status == "failed"
+    assert _checked("Максимум 72,49.", results, "Какой максимум?").status == "verified"
+
+
+def test_filtered_count_names_its_entity_and_other_integers_stay_disputed() -> None:
+    assert _checked("Всего 4 515 обращений.", P90_RESULTS, P90_QUESTION).status == "verified"
+    results = _query_result(
+        "SELECT team, SUM(qty) AS qty FROM t WHERE d >= '2025-03-01' GROUP BY team",
+        ["team", "qty"],
+        [["Склад", 4515]],
+    )
+    # Спорная подпись остаётся в отчёте, но ответ не блокирует.
+    disputed = _checked("Всего 4 515 заказов.", results, P90_QUESTION)
+    assert disputed.assertions[0].reason_code == "unrelated_result"
+    assert disputed.rejected_assertions == []
+
+
+def test_rub_source_column_confirms_rubles_only() -> None:
+    results = _query_result(
+        "SELECT SUM(amount_rub) AS total FROM t WHERE d <= '2025-03-31'", ["total"], [[1234.5]]
+    )
+    assert _checked("Сумма 1 234,50 руб.", results, "Сколько?").status == "verified"
+    assert _checked("Сумма 1 234,50 USD.", results, "Сколько?").status == "failed"
+
+
+def test_sql_constants_confirm_a_formula_and_day_counts_but_not_results() -> None:
+    results = _query_result(
+        "SELECT feb, feb / 28.0 AS daily FROM t WHERE d >= '2025-02-01'",
+        ["feb", "daily"],
+        [[1732, 61.857142857142854]],
+    )
+    assert _checked("Итого: 1 732 / 28 = 61,86", results, "Сколько?").status == "verified"
+    assert _checked("За февраль (28 дней)", results, "Сколько?").status != "failed"
+    assert _checked("Итого: 1 732 / 28 = 70,00", results, "Сколько?").status == "failed"
+    assert _checked("Продаж 28.", results, "Сколько?").status == "failed"
+
+
+def test_column_total_inherits_rubles_from_its_source_column() -> None:
+    results = _query_result(
+        "SELECT dept, SUM(amount_rub) AS total FROM t WHERE d <= '2025-03-31' GROUP BY dept",
+        ["dept", "total"],
+        [["A", "10.50"], ["B", "20.25"]],
+    )
+    results[0].facts.append(
+        Fact(
+            text="Суммы числовых колонок по всем строкам результата",
+            kind="summary",
+            values={"column_totals": {"total": 30.75}},
+        )
+    )
+    assert _checked("Итого на сумму 30,75 руб.", results, "Сколько?").status == "verified"
+    assert _checked("Итого на сумму 30,75 USD.", results, "Сколько?").status == "failed"
+
+
+def test_equal_fractional_value_in_two_queries_of_a_turn_is_one_measure() -> None:
+    results = _query_result("SELECT 1 AS x, 2.32 AS v", ["x", "v"], [[1, 2.32]])
+    results.append(results[0].model_copy(update={"result_id": "r_second"}))
+    assert _checked("Значение 2,32.", results, "Сколько?").status == "verified"
+    assert _checked("Значение 2,33.", results, "Сколько?").status == "failed"
+
+
+def test_count_alias_through_a_cte_names_its_entity() -> None:
+    results = _query_result(
+        "WITH g AS (SELECT team, COUNT(*) AS cnt FROM t WHERE d >= '2025-03-01' GROUP BY team) "
+        "SELECT team, cnt FROM g",
+        ["team", "cnt"],
+        [["Склад", 4515]],
+    )
+    assert _checked("Вошло 4 515 обращений.", results, P90_QUESTION).status == "verified"
+
+
+def test_number_with_a_disputed_caption_is_reported_but_does_not_block() -> None:
+    results = _query_result("SELECT SUM(qty) AS qty FROM t", ["qty"], [[4515]])
+    report = _checked("Всего 4 515 заказов.", results, "Сколько?")
+    assert report.status != "failed"
+    assert report.assertions[0].status == "ignored"
+    assert report.assertions[0].reason_code == "unrelated_result"
+    assert report.rejected_assertions == []
+
+
+def test_absent_number_and_conflicting_aggregate_still_block() -> None:
+    results = _query_result("SELECT MAX(qty) AS m FROM t", ["m"], [[4515]])
+    assert _checked("Всего 4 516 заказов.", results, "Сколько?").status == "failed"
+    assert _checked("Среднее 4 515.", results, "Сколько?").status == "failed"
+    assert _checked("Сумма 4 515 USD.", results, "Сколько?").status == "failed"
+
+
+def test_chart_code_and_names_with_numbers_are_not_claims() -> None:
+    results = _query_result("SELECT s, COUNT(*) AS n FROM t GROUP BY s", ["s", "n"], [["A", 71655]])
+    text = "Топ-5 сервисов: A — 71 655.\n```mermaid\nxychart\n y-axis 0 --> 72000\n```"
+    assert _checked(text, results, "Покажи топ").status != "failed"
+    assert _checked("Топ-5: A — 71 656.", results, "Покажи топ").status == "failed"
+
+
+def test_value_and_period_pair_is_confirmed_by_a_bucket_of_the_result() -> None:
+    results = [
+        ToolResult(
+            result_id="r_series",
+            tool="time_aggregate",
+            status="ok",
+            params={"freq": "month"},
+            facts=[Fact(text="Минимум: 19094", values={"min": 19094})],
+            data=ToolResultData(
+                columns=["time_bucket", "value"],
+                rows=[["2025-02-01T00:00:00", 19094], ["2025-03-01T00:00:00", 21458]],
+                row_count=2,
+            ),
+        )
+    ]
+    assert _checked("Минимум: 19 094 (февраль 2025)", results, "Покажи").status != "failed"
+    assert _checked("Минимум: 19 094 (март 2025)", results, "Покажи").status == "failed"
+    assert _checked("Минимум: 19 094 (май 2025)", results, "Покажи").status == "failed"
+
+
+def test_review_bypasses_stay_rejected() -> None:
+    # Алиас cnt не делает MAX подсчётом.
+    results = _query_result(
+        "SELECT MAX(amount) AS cnt FROM orders WHERE amount > 0", ["cnt"], [[100]]
+    )
+    assert _checked("Среднее 100", results, "Сколько?").status == "failed"
+    # LIMIT не делитель, а фильтр по ID не длительность.
+    results = _query_result("SELECT 77 AS value LIMIT 5", ["value"], [[77]])
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT COUNT(*) AS n, AVG(days) AS d FROM t WHERE id > 28", ["n", "d"], [[3, 2]]
+    )
+    assert _checked("Средняя длительность 28 дней; строк 3", results, "Сколько?").status == "failed"
+    # Дата из комментария не условие запроса.
+    results = _query_result("SELECT COUNT(*) AS n FROM orders -- 2024-01-01", ["n"], [[2]])
+    assert _checked("2024-01-01: строк 2", results, "Сколько?").status == "failed"
+    # Условие отбора, которого нет в вопросе.
+    results = _query_result("SELECT SUM(amount) AS revenue FROM orders", ["revenue"], [[110]])
+    text = "Выручка 110 без тестовых клиентов"
+    assert _checked(text, results, "Выручка без отменённых заказов?").status == "failed"
+    # Значение группы rub не валюта колонки.
+    results = _query_result(
+        "SELECT dept, SUM(qty) AS total FROM q GROUP BY dept", ["dept", "total"], [["rub", 10]]
+    )
+    assert _checked("Сумма 10 RUB", results, "Сколько?").status == "failed"
+
+
+def test_disputed_caption_does_not_bypass_currency_period_or_aggregate() -> None:
+    results = _query_result("SELECT SUM(revenue_usd) AS revenue FROM t", ["revenue"], [[1000]])
+    assert _checked("Profit 1000 EUR", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT m, profit FROM t", ["m", "profit"], [["2023-01-01", 1000], ["2024-01-01", 2000]]
+    )
+    assert _checked("2024-01-01: Profit 1000", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT MAX(amount / 1000.0) AS m, COUNT(*) AS n FROM orders", ["m", "n"], [[2.0, 2]]
+    )
+    assert _checked("Average 2.", results, "Сколько?").status == "failed"
+
+
+def test_second_review_bypasses_stay_rejected() -> None:
+    # Делитель соседнего запроса и слагаемое знаменателя не подтверждают формулу.
+    results = _query_result("SELECT 77 AS value", ["value"], [[77]])
+    results += _query_result("SELECT 10.0/5 AS other", ["other"], [[2.0]], "r_other")
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT 77 AS value, 10.0/(2+5) AS o", ["value", "o"], [[77, 1.4]])
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT 77 AS value, 10.0/28 AS o", ["value", "o"], [[77, 0.36]])
+    text = "Средняя длительность 28 дней; значение 77"
+    assert _checked(text, results, "Сколько?").status == "failed"
+    # Фильтр соседнего запроса и неравенство не подтверждают период.
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[110]])
+    results += _query_result(
+        "SELECT COUNT(*) AS n FROM t WHERE d >= '2025-03-01' AND d < '2025-04-01'",
+        ["n"],
+        [[1]],
+        "r_march",
+    )
+    assert _checked("В марте 2025 выручка 110", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT SUM(a) AS revenue FROM t WHERE dept <> '2025-03-01' AND dept <> '2025-04-01'",
+        ["revenue"],
+        [[110]],
+    )
+    assert _checked("В марте 2025 выручка 110", results, "Сколько?").status == "failed"
+    # Направление условия отбора.
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[110]])
+    text = "Выручка 110 среди отменённых заказов"
+    assert _checked(text, results, "Выручка без отменённых заказов?").status == "failed"
+    # COUNT по денежной колонке считает строки.
+    results = _query_result("SELECT COUNT(amount_rub) AS n FROM t", ["n"], [[2]])
+    assert _checked("Сумма 2 RUB", results, "Сколько?").status == "failed"
+
+
+def test_model_rephrasing_does_not_confirm_constants() -> None:
+    results = _query_result("SELECT 3 AS value", ["value"], [[3]])
+    state = {
+        "messages": [Message(role="user", content="Сколько?")],
+        "understanding": Understanding(intent="data_question", resolved_question="порог 9999"),
+        "results": results,
+        "answer_blocks": [Block(type="text", markdown="Порог 9999; значение 3")],
+        "compose_retries": 2,
+    }
+    assert verify(state, {"configurable": {}})["verification"].status == "failed"
+
+
+def test_bucket_keeps_its_measure_and_range_does_not_confirm_a_month() -> None:
+    results = _query_result("SELECT m, revenue FROM t", ["m", "revenue"], [["2023-01-01", 100]])
+    results += _query_result(
+        "SELECT m, profit FROM p", ["m", "profit"], [["2024-01-01", 100]], "r2"
+    )
+    assert _checked("2024-01-01: Revenue 100.", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[300]])
+    results += _query_result(
+        "SELECT m, a FROM t", ["m", "a"], [["2023-01-01", 100], ["2024-01-01", 200]], "r2"
+    )
+    assert _checked("В июне 2023 Revenue 300.", results, "Сколько?").status == "failed"
+
+
+def test_as_of_caption_requires_its_own_sql_cutoffs() -> None:
+    sql = (
+        "SELECT COUNT(*) AS cnt FROM t WHERE soglasovana_msk < '2025-04-01' "
+        "AND (oplachena_msk IS NULL OR oplachena_msk >= '2025-04-01') "
+        "AND (otmenena_msk IS NULL OR otmenena_msk >= '2025-04-01') "
+        "AND (otklonena_msk IS NULL OR otklonena_msk >= '2025-04-01')"
+    )
+    caption = (
+        "Результаты запроса по подразделениям (сумма согласованных заявок, "
+        "где дата согласования ранее 2025-04-01, а даты оплаты, отмены "
+        "или отклонения отсутствуют или позже 2025-04-01):"
+    )
+    results = _query_result(sql, ["cnt"], [[3]])
+    question = "Сколько согласовано, но не оплачено на конец 31 марта 2025 года?"
+    assert _checked(caption, results, question).status == "verified"
+    assert _checked("На конец 31 марта 2025 года: строк 3", results, question).status == "verified"
+    assert _checked("На конец 30 марта 2025 года: строк 3", results, question).status == "failed"
+    renamed = _query_result(
+        sql.replace("soglasovana_msk", "created_at").replace("oplachena_msk", "paid_at"),
+        ["cnt"],
+        [[3]],
+    )
+    assert _checked("На конец 31 марта 2025 года: строк 3", renamed, question).status == "verified"
+    assert (
+        _checked(caption.replace("2025-04-01", "2025-04-02"), results, question).status == "failed"
+    )
+    # The caption cannot borrow only a repeated date or a partial filter.
+    partial = _query_result("SELECT 3 AS cnt WHERE TRUE -- 2025-04-01", ["cnt"], [[3]])
+    assert _checked(caption, partial, question).status == "failed"
+    wrong_operator = _query_result(
+        sql.replace("soglasovana_msk <", "soglasovana_msk >="), ["cnt"], [[3]]
+    )
+    assert _checked(caption, wrong_operator, question).status == "failed"
+    assert _checked("В апреле 2025 строк 3", results, "Сколько?").status == "failed"
+    # An as-of caption on an analytical value cannot borrow a second result's filter.
+    foreign = _query_result("SELECT 77 AS value", ["value"], [[77]], "r_foreign")
+    assert (
+        _checked("На конец 31 марта 2025 года: значение 77", foreign + results, question).status
+        == "failed"
+    )
+
+
+def test_calendar_day_counts_bind_to_the_nearest_month_clause() -> None:
+    results = _query_result(
+        "SELECT 7 AS value WHERE d >= '2025-02-01' AND d < '2025-04-01'", ["value"], [[7]]
+    )
+    assert (
+        _checked("Февраль 2025: 28 дней; март 2025: 31 день", results, "Сколько?").status
+        != "failed"
+    )
+    assert (
+        _checked("Февраль 2025: 31 день; март 2025: 28 дней", results, "Сколько?").status
+        == "failed"
+    )
+
+
+def test_parenthesized_per_day_per_entity_calculation_uses_sql_operands() -> None:
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT 1732 AS feb_sales, 2499 AS mar_sales, 40 AS pharmacies, "
+            "1732.0 / (40 * 28.0) AS feb_avg, 2499.0 / (40 * 31.0) AS mar_avg, "
+            "((2499.0 / (40 * 31.0)) / (1732.0 / (40 * 28.0)) - 1) * 100 AS growth",
+            connection=connection,
+        )
+    assert result.status == "ok"
+    results = [result]
+    for text in (
+        "1 732 / (40 * 28) = 1,55",
+        "2 499 / (40 * 31) = 2,02",
+        "(2,02 - 1,55) / 1,55 * 100 = 30,32 %",
+    ):
+        report = _checked(text, results, "Покажи расчёт")
+        assert report.status == "verified"
+        assertion = report.assertions[0]
+        assert assertion.kind == "formula"
+        assert assertion.operands
+        assert {item.result_id for item in assertion.evidence} == {result.result_id}
+    annotated = _checked("Для февраля (28 дней): 1 732 / (28 × 40) = 1,55", results, "Расчёт")
+    assert annotated.status == "verified"
+    assert any(item.kind == "formula" for item in annotated.assertions)
+    for text in (
+        "1 732 / (40 * 28) = 61,86",  # Missing entity normalization.
+        "1 732 / 40 * 28 = 1,55",  # Parentheses change the calculation.
+        "1 732 / (40 * 29) = 1,49",  # Unknown SQL divisor.
+        "(2,02 - 1,55) / 1,55 * 100 = 3032 %",  # No double percent scaling.
+        "1 732 / (40 * 0) = 0",
+    ):
+        assert _checked(text, results, "Покажи расчёт").status == "failed"
+    prose = "Рост в процентах — разница, делённая на исходное значение, умноженная на 100."
+    assert _checked(prose, results, "Покажи расчёт").status == "not_applicable"
+    revenue_prose = (
+        "Рост рассчитан как разница между выручкой марта и февраля, "
+        "делённая на выручку февраля и умноженная на 100"
+    )
+    assert _checked(revenue_prose, results, "Покажи расчёт").status == "not_applicable"
+    assert _checked("Всего 100 заказов", results, "Покажи расчёт").status == "failed"
+    no_scaling = _query_result("SELECT 1732 AS sales", ["sales"], [[1732]])
+    assert _checked(prose, no_scaling, "Покажи расчёт").status == "failed"
+
+
+def test_parenthesized_formula_cannot_borrow_a_foreign_divisor() -> None:
+    results = _query_result(
+        "SELECT 1732 AS sales, 40 AS pharmacies", ["sales", "pharmacies"], [[1732, 40]]
+    )
+    results += _query_result("SELECT 7.0 / 28 AS other", ["other"], [[0.25]], "r_other")
+    assert _checked("1732 / (40 * 28) = 1,55", results, "Расчёт").status == "failed"
