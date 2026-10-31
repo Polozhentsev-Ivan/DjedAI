@@ -1,0 +1,827 @@
+{
+  "application_sha": "f392bc3d5a1cf5cc809f3443acfea71ea21927c2",
+  "dirty_worktree": false,
+  "started_at": "2026-10-31T13:46:26.425Z",
+  "scope": "production_transport_with_controlled_model_not_live_model_quality",
+  "status": "passed",
+  "checks": [
+    {
+      "name": "csv: source UI, independent January totals, SQL and provenance",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "csv: follow-up retains January and groups by region",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "csv: chart reuse, two saved recipes, direct URL and reload",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "postgres: source UI, independent January totals, SQL and provenance",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "postgres: follow-up retains January and groups by region",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "postgres: chart reuse, two saved recipes, direct URL and reload",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "SSE interruption persists, reload does not replay POST, next turn succeeds",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "UI account switch clears state; foreign IDs/refresh denied; own calculation isolated",
+      "phase": "prepare",
+      "passed": true
+    },
+    {
+      "name": "csv: restart preserves definitions and refresh creates fresh correct results",
+      "phase": "verify",
+      "passed": true
+    },
+    {
+      "name": "postgres: restart preserves definitions and refresh creates fresh correct results",
+      "phase": "verify",
+      "passed": true
+    },
+    {
+      "name": "Real PostgreSQL view failure affects one widget, stale chart hidden, neighbour fresh",
+      "phase": "partial",
+      "passed": true
+    }
+  ],
+  "sources": [
+    {
+      "kind": "csv",
+      "dataset_id": "eb2515a0-d4f7-4064-9131-8dff1ba39265",
+      "chat_id": "c_357f0ddf8874",
+      "dashboard": {
+        "dashboard_id": "d_6f15819eaf0344c1",
+        "dataset_id": "eb2515a0-d4f7-4064-9131-8dff1ba39265",
+        "title": "Сумма по группам",
+        "description": null,
+        "source_chat_id": "c_357f0ddf8874",
+        "widgets": [
+          {
+            "widget_id": "w_b75fed4a849f",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(amount) AS total FROM \"orders\" WHERE ordered_at >= DATE '2025-01-01' AND ordered_at < DATE '2025-02-01' GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "line",
+              "title": "Сумма по группам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_481280ae8f9f4981acc5ab29574c3561"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_481280ae8f9f4981acc5ab29574c3561",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:46:29.398653Z",
+            "read_finished_at": "2026-10-31T13:46:29.407518Z"
+          },
+          {
+            "widget_id": "w_2ac1d9ef3643",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(target) AS total FROM \"targets\" GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "bar",
+              "title": "План по регионам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_d64e500a3d064ca494b6eae6aa2120d8"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_d64e500a3d064ca494b6eae6aa2120d8",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:46:31.345751Z",
+            "read_finished_at": "2026-10-31T13:46:31.354461Z"
+          }
+        ],
+        "created_at": "2026-10-31T13:46:30.989465Z",
+        "refreshed_at": null,
+        "consistency": "independent"
+      },
+      "refreshed": {
+        "dashboard_id": "d_6f15819eaf0344c1",
+        "dataset_id": "eb2515a0-d4f7-4064-9131-8dff1ba39265",
+        "title": "Сумма по группам",
+        "description": null,
+        "source_chat_id": "c_357f0ddf8874",
+        "widgets": [
+          {
+            "widget_id": "w_b75fed4a849f",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(amount) AS total FROM \"orders\" WHERE ordered_at >= DATE '2025-01-01' AND ordered_at < DATE '2025-02-01' GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "line",
+              "title": "Сумма по группам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_3c4b7857a9624def"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_3c4b7857a9624def",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:47:06.934062Z",
+            "read_finished_at": "2026-10-31T13:47:06.981988Z"
+          },
+          {
+            "widget_id": "w_2ac1d9ef3643",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(target) AS total FROM \"targets\" GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "bar",
+              "title": "План по регионам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_caa3023009d84450"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_caa3023009d84450",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:47:07.009867Z",
+            "read_finished_at": "2026-10-31T13:47:07.015186Z"
+          }
+        ],
+        "created_at": "2026-10-31T13:46:30.989465Z",
+        "refreshed_at": "2026-10-31T13:47:07.041521Z",
+        "consistency": "immutable"
+      }
+    },
+    {
+      "kind": "postgres",
+      "dataset_id": "66816ae7-20ee-4f3c-a89c-c8131416ba68",
+      "chat_id": "c_fff489837922",
+      "dashboard": {
+        "dashboard_id": "d_ceb5bcaef9814b3f",
+        "dataset_id": "66816ae7-20ee-4f3c-a89c-c8131416ba68",
+        "title": "Сумма по группам",
+        "description": null,
+        "source_chat_id": "c_fff489837922",
+        "widgets": [
+          {
+            "widget_id": "w_828108fc9f72",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(amount) AS total FROM \"orders\" WHERE ordered_at >= DATE '2025-01-01' AND ordered_at < DATE '2025-02-01' GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "line",
+              "title": "Сумма по группам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_4022107aef284a948165466729c3f2bc"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_4022107aef284a948165466729c3f2bc",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:46:36.592651Z",
+            "read_finished_at": "2026-10-31T13:46:36.602997Z"
+          },
+          {
+            "widget_id": "w_7fde451c16e5",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(target) AS total FROM \"targets\" GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "bar",
+              "title": "План по регионам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_f90ad6b2dbfd4aebace9d1d2d67162a9"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_f90ad6b2dbfd4aebace9d1d2d67162a9",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:46:38.433004Z",
+            "read_finished_at": "2026-10-31T13:46:38.447356Z"
+          }
+        ],
+        "created_at": "2026-10-31T13:46:38.034489Z",
+        "refreshed_at": null,
+        "consistency": "independent"
+      },
+      "refreshed": {
+        "dashboard_id": "d_ceb5bcaef9814b3f",
+        "dataset_id": "66816ae7-20ee-4f3c-a89c-c8131416ba68",
+        "title": "Сумма по группам",
+        "description": null,
+        "source_chat_id": "c_fff489837922",
+        "widgets": [
+          {
+            "widget_id": "w_828108fc9f72",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(amount) AS total FROM \"orders\" WHERE ordered_at >= DATE '2025-01-01' AND ordered_at < DATE '2025-02-01' GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "line",
+              "title": "Сумма по группам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_c29d9eaf67224133"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_c29d9eaf67224133",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:47:07.395513Z",
+            "read_finished_at": "2026-10-31T13:47:07.401288Z"
+          },
+          {
+            "widget_id": "w_7fde451c16e5",
+            "tool_call": {
+              "tool": "run_sql",
+              "params": {
+                "sql": "SELECT region, SUM(target) AS total FROM \"targets\" GROUP BY region ORDER BY region"
+              }
+            },
+            "recipe": null,
+            "chart": {
+              "chart_id": "journey-chart",
+              "type": "bar",
+              "title": "План по регионам",
+              "subtitle": null,
+              "x": {
+                "field": "region",
+                "label": null,
+                "kind": "category"
+              },
+              "y": [
+                {
+                  "field": "total",
+                  "label": null,
+                  "format": "number"
+                }
+              ],
+              "color": null,
+              "orientation": "vertical",
+              "stacked": false,
+              "sort": null,
+              "limit": null,
+              "annotations": [],
+              "result_id": "r_3b713df3bd844428"
+            },
+            "caption": null,
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "w": 6,
+              "h": 4
+            },
+            "result_id": "r_3b713df3bd844428",
+            "status": "ok",
+            "error": null,
+            "read_started_at": "2026-10-31T13:47:07.425800Z",
+            "read_finished_at": "2026-10-31T13:47:07.429727Z"
+          }
+        ],
+        "created_at": "2026-10-31T13:46:38.034489Z",
+        "refreshed_at": "2026-10-31T13:47:07.452847Z",
+        "consistency": "turn_snapshot"
+      }
+    }
+  ],
+  "username": "journey-1793454386427",
+  "model_stages": [
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 0
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 0
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    },
+    {
+      "stage": "Understanding",
+      "finished": true
+    },
+    {
+      "stage": "PlanResponse",
+      "finished": true,
+      "tool_calls": 1
+    },
+    {
+      "stage": "VisualizeResponse",
+      "finished": true
+    },
+    {
+      "stage": "ComposeResponse",
+      "finished": true
+    },
+    {
+      "stage": "VerifyResponse",
+      "finished": true
+    }
+  ],
+  "updated_at": "2026-10-31T13:47:08.643Z",
+  "partial_refresh": {
+    "dashboard_id": "d_ceb5bcaef9814b3f",
+    "dataset_id": "66816ae7-20ee-4f3c-a89c-c8131416ba68",
+    "title": "Сумма по группам",
+    "description": null,
+    "source_chat_id": "c_fff489837922",
+    "widgets": [
+      {
+        "widget_id": "w_828108fc9f72",
+        "tool_call": {
+          "tool": "run_sql",
+          "params": {
+            "sql": "SELECT region, SUM(amount) AS total FROM \"orders\" WHERE ordered_at >= DATE '2025-01-01' AND ordered_at < DATE '2025-02-01' GROUP BY region ORDER BY region"
+          }
+        },
+        "recipe": null,
+        "chart": {
+          "chart_id": "journey-chart",
+          "type": "line",
+          "title": "Сумма по группам",
+          "subtitle": null,
+          "x": {
+            "field": "region",
+            "label": null,
+            "kind": "category"
+          },
+          "y": [
+            {
+              "field": "total",
+              "label": null,
+              "format": "number"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": null,
+          "annotations": []
+        },
+        "caption": null,
+        "layout": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "result_id": null,
+        "status": "error",
+        "error": {
+          "code": "database_error",
+          "message": "Не удалось выполнить запрос к выбранному датасету.",
+          "suggestion": "Проверьте поля и запрос по каталогу датасета."
+        },
+        "read_started_at": "2026-10-31T13:47:08.464006Z",
+        "read_finished_at": "2026-10-31T13:47:08.479752Z"
+      },
+      {
+        "widget_id": "w_7fde451c16e5",
+        "tool_call": {
+          "tool": "run_sql",
+          "params": {
+            "sql": "SELECT region, SUM(target) AS total FROM \"targets\" GROUP BY region ORDER BY region"
+          }
+        },
+        "recipe": null,
+        "chart": {
+          "chart_id": "journey-chart",
+          "type": "bar",
+          "title": "План по регионам",
+          "subtitle": null,
+          "x": {
+            "field": "region",
+            "label": null,
+            "kind": "category"
+          },
+          "y": [
+            {
+              "field": "total",
+              "label": null,
+              "format": "number"
+            }
+          ],
+          "color": null,
+          "orientation": "vertical",
+          "stacked": false,
+          "sort": null,
+          "limit": null,
+          "annotations": [],
+          "result_id": "r_1423b5e24ef6477c"
+        },
+        "caption": null,
+        "layout": {
+          "x": 0,
+          "y": 4,
+          "w": 6,
+          "h": 4
+        },
+        "result_id": "r_1423b5e24ef6477c",
+        "status": "ok",
+        "error": null,
+        "read_started_at": "2026-10-31T13:47:08.499653Z",
+        "read_finished_at": "2026-10-31T13:47:08.508221Z"
+      }
+    ],
+    "created_at": "2026-10-31T13:46:38.034489Z",
+    "refreshed_at": "2026-10-31T13:47:08.539030Z",
+    "consistency": "independent"
+  }
+}
