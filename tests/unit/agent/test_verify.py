@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph, compose, verify
+from djedai.agent.graph import _without_chart_code, build_agent_graph, compose, verify
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -279,3 +279,14 @@ def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_
     dropped = verify(state("Всего 500 001 запусков."), config)
     assert dropped["verification"].status == "failed"
     assert dropped["terminal_error"] == "OUTPUT_LIMIT"
+
+
+def test_chart_code_is_removed_from_the_answer_text():
+    blocks = _without_chart_code(
+        [
+            Block(type="text", markdown="Итог.\n```mermaid\nxychart\n```"),
+            Block(type="text", markdown="```mermaid\nxychart\n```"),
+            Block(type="text", markdown="```sql\nSELECT 1\n```"),
+        ]
+    )
+    assert [block.markdown for block in blocks] == ["Итог.", "```sql\nSELECT 1\n```"]

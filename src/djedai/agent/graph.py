@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from collections.abc import Callable, Collection
 from contextlib import nullcontext
@@ -485,7 +486,17 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, PlanResponse, stage="plan"
         )
         if response.status == "success" and response.data:
-            return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
+            steps = response.data.plan
+            understanding = state.get("understanding")
+            # Обзор данных не зависит от выбора модели: пустой план дал бы «нет данных».
+            if (
+                not steps
+                and not state.get("results")
+                and understanding is not None
+                and understanding.intent == "data_overview"
+            ):
+                steps = [PlannedCall(tool="describe_dataset", args={})]
+            return {"plan": steps, "retries": state.get("retries", 0) + 1}
         message = (
             RESTRICTED_CONTEXT_MESSAGE
             if response.error_type == "POLICY_RESTRICTED"
@@ -1309,6 +1320,22 @@ def _verification_feedback(report: VerificationReport, policy: DataTransferPolic
     )
 
 
+_CHART_CODE_RE = re.compile(r"```\s*(?:mermaid|vega\S*|chart)\b.*?(?:```|$)\s*", re.I | re.S)
+
+
+def _without_chart_code(blocks: list[Block]) -> list[Block]:
+    """График рисует visualize: код диаграммы в тексте пользователю не нужен."""
+    cleaned = []
+    for block in blocks:
+        if block.type == "text" and block.markdown and _CHART_CODE_RE.search(block.markdown):
+            markdown = _CHART_CODE_RE.sub("", block.markdown).strip()
+            if not markdown:
+                continue
+            block = block.model_copy(update={"markdown": markdown})
+        cleaned.append(block)
+    return cleaned
+
+
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
     focus = updated_focus_result_ids(state)
@@ -1363,7 +1390,7 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, ComposeResponse, stage="compose"
         )
         if response.status == "success" and response.data:
-            blocks = response.data.answer_blocks
+            blocks = _without_chart_code(response.data.answer_blocks)
         else:
             message = (
                 RESTRICTED_CONTEXT_MESSAGE

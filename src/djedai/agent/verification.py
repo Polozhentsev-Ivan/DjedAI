@@ -73,6 +73,9 @@ _VERSION_RE = re.compile(
     r"(?<![\w])(?P<raw>(?:v|версия|version)\s*\d+(?:\.\d+)*)(?![\w])", re.IGNORECASE
 )
 _CODE_RE = re.compile(r"`[^`\n]*`")
+_FENCE_RE = re.compile(r"```.*?(?:```|$)", re.S)
+# «Топ-5»: дефис в названии, а не отрицательное число.
+_NAME_NUMBER_RE = re.compile(r"(?<=[^\W\d_])-\d+(?![\d.,]*\d)")
 _URL_RE = re.compile(r"https?://\S+")
 _TIME_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)")
 _ORDINAL_RE = re.compile(r"(?<!\d)\d{1,2}-(?:й|я|е|го|му|м|х)(?![а-яё])", re.IGNORECASE)
@@ -1789,6 +1792,10 @@ _DENOMINATOR_BEFORE_RE = re.compile(
 
 def _suppressed_spans(text: str) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
+    for match in _FENCE_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
+    for match in _NAME_NUMBER_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
     for match in _CODE_RE.finditer(text):
         spans.append((match.start(), match.end(), "constant"))
     for match in _URL_RE.finditer(text):
@@ -2366,9 +2373,21 @@ def _match_quantity(
             for item in candidates
             if item.period is not None and _period_covered(draft.period, [item.period])
         ]
+        if not covered:
+            # Подпись могла сузить выбор до «Минимум» без бакета: пара значение–период
+            # подтверждается и другой ячейкой того же результата.
+            covered = [
+                item
+                for item in evidence
+                if _value_matches(draft, item)
+                and item.period is not None
+                and _period_covered(draft.period, [item.period])
+            ]
         if covered:
             candidates = covered
-        elif not context.covers(draft.period) or any(item.period for item in candidates):
+        elif not (
+            context.covers(draft.period) or _within_result_span(draft.period, evidence)
+        ) or any(item.period for item in evidence if _value_matches(draft, item)):
             return [], "period_mismatch"
 
     denominator_reason = next(
@@ -2383,6 +2402,26 @@ def _match_quantity(
     if len(result_ids) > 1 and not (context.active and _exact_fractional_cell(draft, candidates)):
         return [], "ambiguous_number"
     return candidates, None
+
+
+def _within_result_span(
+    period: VerificationPeriod | None, evidence: Sequence[VerificationEvidence]
+) -> bool:
+    """Период внутри диапазона дат результата или назван «весь период» этого диапазона."""
+    if period is None:
+        return False
+    start, end = _date(period.start), _date(period.end)
+    bounds = [
+        day
+        for item in evidence
+        if item.period is not None
+        for day in (_date(item.period.start), _date(item.period.end))
+        if day
+    ]
+    if not (start and end and bounds):
+        return False
+    first, last = min(bounds), max(bounds)
+    return first <= start and end <= last or start <= first and last <= end
 
 
 def _exact_fractional_cell(
@@ -2442,7 +2481,9 @@ def _match_date(
         if item.period is not None and _period_covered(draft.period, [item.period])
     ]
     if not candidates:
-        if context is not None and context.covers(draft.period):
+        if context is not None and (
+            context.covers(draft.period) or _within_result_span(draft.period, evidence)
+        ):
             return [], None
         return [], "period_mismatch"
     return candidates, None
