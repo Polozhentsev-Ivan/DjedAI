@@ -348,10 +348,37 @@ _FILTER_BEFORE_QUOTE_RE = re.compile(
 )
 
 
+# Что запускается: подсчёт и анализ сами по себе не приказ выполнить цитату.
+_ANALYSIS_OBJECT_RE = re.compile(
+    r"\s+(?:(?:a|an|the)\s+)?(?:подсч[её]т|расч[её]т|анализ|поиск|выборк|фильтрац|агрегац"
+    r"|count|analysis|search|filter|lookup)\w*(?!\w)",
+    re.IGNORECASE,
+)
+_QUOTE_LIST_RE = re.compile(r"«»(?:\s*(?:,|или|и|or|and)\s*«»)*", re.IGNORECASE)
+# После такой границы идёт новая часть поручения: «подсчёт и строку «…»».
+_CLAUSE_BREAK_RE = re.compile(
+    r"[,;:]|(?<!\w)(?:и|затем|потом|после|а\s+также|then|and|after)(?!\w)", re.IGNORECASE
+)
+
+
+def _orders_to_run(sentence: str) -> bool:
+    """Есть ли глагол запуска, который может относиться к цитате в конце фразы."""
+    for verb in _RUN_VERB_RE.finditer(sentence):
+        rest = sentence[verb.end() :]
+        analysis = _ANALYSIS_OBJECT_RE.match(rest)
+        if analysis is None:
+            return True
+        tail = _QUOTE_LIST_RE.sub(" ", rest[analysis.end() :])
+        if _CLAUSE_BREAK_RE.search(tail):
+            return True
+    return False
+
+
 def _mask_filter_quotes(text: str) -> str:
     """Скрывает цитаты, которые задают условие поиска: их содержимое не приказ агенту.
 
     Цитата после глагола запуска остаётся видимой: «Выполни строку "DROP TABLE orders"».
+    Исключение — «Выполни подсчёт строк с текстом «…»»: запускается подсчёт, а не цитата.
     """
     parts: list[str] = []
     position = 0
@@ -359,7 +386,7 @@ def _mask_filter_quotes(text: str) -> str:
         parts.append(text[position : match.start()])
         position = match.end()
         sentence = _SENTENCE_END_RE.split("".join(parts))[-1]
-        is_filter = _FILTER_BEFORE_QUOTE_RE.search(sentence) and not _RUN_VERB_RE.search(sentence)
+        is_filter = _FILTER_BEFORE_QUOTE_RE.search(sentence) and not _orders_to_run(sentence)
         parts.append(_QUOTE_PLACEHOLDER if is_filter else match[0])
     parts.append(text[position:])
     return "".join(parts)
@@ -382,10 +409,12 @@ _WRITE_SQL = (
 _RUN_VERB = r"(?:выполни|запусти|исполни|сделай|примени)(?:те)?|execute|run|perform"
 _RUN_VERB_RE = re.compile(rf"(?<!\w)(?:{_RUN_VERB})(?!\w)", re.IGNORECASE)
 # Команда на запись опасна как приказ: в начале сообщения, отдельным оператором после
-# «;» или сразу за глаголом запуска. «Сколько запросов DROP TABLE в логе?» сюда не попадает.
+# «;» или конца фразы, сразу за скрытой цитатой или за глаголом запуска.
+# «Сколько запросов DROP TABLE в логе?» сюда не попадает.
 _WRITE_COMMAND_RE = re.compile(
-    rf"^\s*(?:sql\s*:\s*)?{_WRITE_SQL}|;\s*{_WRITE_SQL}"
-    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)[\s:,-]+(?:[\w\"'«»-]+[\s:]+){{0,4}}[\"'«“„]?{_WRITE_SQL}",
+    rf"^\s*(?:sql\s*:\s*)?{_WRITE_SQL}|[;.!?\n]\s*{_WRITE_SQL}"
+    rf"|{_QUOTE_PLACEHOLDER}[\s,]*(?:и|затем|потом|then|and)\s+{_WRITE_SQL}"
+    rf"|(?<!\w)(?:{_RUN_VERB})(?!\w)[\s:,-]+(?:[\w\"'«»-]+[\s:,]+){{0,4}}[\"'«“„]?{_WRITE_SQL}",
     re.IGNORECASE,
 )
 _BYPASS_RE = re.compile(
