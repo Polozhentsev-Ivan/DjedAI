@@ -1475,6 +1475,28 @@ def _metric_value_caption(caption: str | None, metric: Any) -> str | None:
     return f"{_sql_compatible_caption(caption or '', semantics)} {semantics}".strip()
 
 
+def _counts_distinct_rows(select: exp.Select) -> bool:
+    """COUNT(*) по подзапросу или CTE с DISTINCT/GROUP BY считает уникальные значения."""
+    source = select.args.get("from_") or select.args.get("from")
+    if source is None or select.args.get("joins"):
+        return False
+    table = source.this
+    if isinstance(table, exp.Subquery):
+        inner = table.this
+    elif isinstance(table, exp.Table) and not table.db:
+        with_ = select.args.get("with_") or select.args.get("with")
+        cte = next(
+            (item for item in (with_.expressions if with_ else []) if item.alias == table.name),
+            None,
+        )
+        inner = cte.this if cte is not None else None
+    else:
+        return False
+    return isinstance(inner, exp.Select) and bool(
+        inner.args.get("distinct") or inner.args.get("group")
+    )
+
+
 def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
     """Сопоставляет выходные колонки run_sql с их агрегатной семантикой."""
     if result is None or result.tool != "run_sql":
@@ -1499,6 +1521,8 @@ def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
             continue
         label = _sql_projection_label(projection)
         if label:
+            if "__rows__" in _label_keys(label) and _counts_distinct_rows(select):
+                label = f"{label} count distinct уникальные значения"
             semantics[alias.lower()] = label
     return semantics
 

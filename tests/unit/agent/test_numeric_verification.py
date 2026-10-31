@@ -565,6 +565,28 @@ def test_distinct_alias_does_not_turn_an_ordinary_count_into_unique_values() -> 
         assert _report("Всего 5 строк.", evidence, results).status == "verified"
 
 
+def test_count_over_distinct_rows_confirms_unique_values() -> None:
+    for sql in (
+        "SELECT COUNT(*) AS n FROM (SELECT DISTINCT job FROM jobs) s",
+        "SELECT COUNT(*) AS n FROM (SELECT job FROM jobs GROUP BY job) s",
+        "WITH g AS (SELECT job FROM jobs GROUP BY job) SELECT COUNT(*) AS n FROM g",
+    ):
+        results, evidence = _sql_evidence(sql, "n", 18)
+        assert _report("Всего 18 уникальных заданий.", evidence, results).status == "verified"
+        assert _report("Всего 18 строк.", evidence, results).status == "verified"
+
+
+def test_count_over_plain_rows_does_not_confirm_unique_values() -> None:
+    for sql in (
+        "SELECT COUNT(*) AS n FROM (SELECT job FROM jobs) s",
+        "WITH g AS (SELECT job FROM jobs) SELECT COUNT(*) AS n FROM g",
+        "SELECT COUNT(*) AS n FROM (SELECT DISTINCT job FROM jobs) s JOIN runs r ON TRUE",
+        "WITH g AS (SELECT DISTINCT job FROM jobs) SELECT COUNT(*) AS n FROM jobs",
+    ):
+        results, evidence = _sql_evidence(sql, "n", 18)
+        assert _report("Всего 18 уникальных заданий.", evidence, results).status == "failed"
+
+
 def test_two_unrelated_distinct_counts_remain_ambiguous() -> None:
     results, _ = _sql_evidence("SELECT COUNT(DISTINCT id) AS n FROM jobs", "n", 5)
     results.append(
