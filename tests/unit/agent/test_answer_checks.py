@@ -31,7 +31,7 @@ def test_query_constant_is_not_reported_as_an_invented_number():
     )
     assert (
         unsupported_numbers(
-            draft, ENTRIES, query="SELECT COUNT(*) FROM orders WHERE duration > 3600"
+            draft, ENTRIES, query="SELECT COUNT(*) FROM orders WHERE duration_sec > 3600"
         )
         == []
     )

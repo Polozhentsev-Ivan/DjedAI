@@ -223,6 +223,92 @@ def test_query_threshold_reaches_deterministic_verification():
     assert threshold.status == "ignored"
 
 
+def _parameter_verification_state(question: str, draft: str):
+    return {
+        "chat_id": "c_parameters",
+        "messages": [Message(role="user", content=question)],
+        "understanding": Understanding(
+            intent="data_question", resolved_question="Сколько заказов при пороге 9999?"
+        ),
+        "history_results": [],
+        "results": [
+            ToolResult(
+                result_id="r_count",
+                status="ok",
+                tool="run_sql",
+                sql="SELECT COUNT(*) AS n FROM orders WHERE qty > 150",
+                data=ToolResultData(columns=["n"], rows=[[3]], row_count=1),
+            )
+        ],
+        "answer_blocks": [Block(type="text", markdown=draft)],
+        "compose_retries": 2,
+    }
+
+
+def test_model_resolved_question_cannot_authorize_a_new_constant():
+    state = _parameter_verification_state("Сколько заказов?", "Порог 9999; строк 3")
+    result = verify(state, {"configurable": {}})
+    assert result["verification"].status == "failed"
+    assert result["answer_blocks"][-1].type == "error"
+    invented = next(a for a in result["verification"].assertions if a.raw_text == "9999")
+    assert invented.reason_code == "number_not_found"
+
+
+def test_original_user_count_threshold_is_accepted_with_its_unit():
+    state = _parameter_verification_state(
+        "Сколько групп содержит более 150 заказов?", "Порог 150 заказов; строк 3"
+    )
+    result = verify(state, {"configurable": {}})
+    assert result["verification"].status == "verified"
+    threshold = next(a for a in result["verification"].assertions if a.raw_text == "150")
+    assert threshold.kind == "constant" and threshold.unit == "count"
+    assert "user question" in threshold.reason
+
+
+def test_corrected_text_uses_the_same_original_parameter_sources():
+    for corrected, expected in (
+        ("Порог 150 заказов; строк 3", "corrected"),
+        ("Порог 9999; строк 3", "failed"),
+    ):
+        state = _parameter_verification_state(
+            "Сколько групп содержит более 150 заказов?", "Выручка 8888"
+        )
+        client = MagicMock()
+        client.generate_typed_response.return_value = ModelResponse(
+            status="success", data=VerifyResponse(is_valid=False, corrected_markdown=corrected)
+        )
+        result = verify(state, {"configurable": {"client": client}})
+        assert result["verification"].status == expected
+        if expected == "failed":
+            assert result["answer_blocks"][-1].type == "error"
+            assert "invalid_correction" in {issue.code for issue in result["verification"].issues}
+        else:
+            assert result["answer_blocks"][-1].markdown == corrected
+
+
+def test_supported_user_arithmetic_does_not_trigger_an_unnecessary_compose_retry():
+    state = _parameter_verification_state("Раздели 7200 секунд на 3600", "7200 / 3600 = 2")
+    state["compose_retries"] = 1
+    state["results"] = [
+        ToolResult(
+            result_id="r_seconds",
+            status="ok",
+            tool="run_sql",
+            sql="SELECT duration_sec FROM orders",
+            data=ToolResultData(columns=["duration_sec"], rows=[[7200]], row_count=1),
+        )
+    ]
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")
+    )
+    result = verify(state, {"configurable": {"client": client}})
+    assert result["is_verified"] is True
+    assert result["verification"].status == "verified"
+    client.generate_typed_response.assert_called_once()
+    assert "Not found in the data" not in client.generate_typed_response.call_args.args[1]
+
+
 def test_invalid_final_correction_is_replaced_by_an_explicit_error():
     """Исправление модели проходит ту же проверку; иначе ответ не публикуется."""
     graph = build_agent_graph()

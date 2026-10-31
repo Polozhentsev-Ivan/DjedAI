@@ -376,7 +376,9 @@ def test_formula_operand_can_be_a_query_constant() -> None:
     ]
     for query in (
         "Раздели 7200 секунд на 3600",
-        "SELECT 7200 AS duration FROM orders WHERE duration_sec > 3600",
+        "7200 / 3600",
+        "Раздели результат на 3600",
+        "Divide the result by 3600",
     ):
         report = _report("7200 / 3600 = 2", _evidence(results), results, query=query)
         assert report.status == "verified"
@@ -384,6 +386,99 @@ def test_formula_operand_can_be_a_query_constant() -> None:
         assert assertion.kind == "formula"
         assert assertion.operands[0].evidence
         assert assertion.operands[1].evidence == []
+
+
+def test_constant_caption_is_bound_to_one_number_and_preserves_units() -> None:
+    results = [_threshold_result()]
+    evidence = _evidence(results)
+    for text, query in (
+        ("Собственная доставка: 5000", "SELECT n FROM orders WHERE qty > 5000"),
+        ("Заявок более 150", "SELECT n FROM orders WHERE qty > 150"),
+        ("Срок оплаты: 30", "За 30 дней"),
+        ("Порог 3600, выручка 3600", "Порог 3600 секунд"),
+        ("Порог 3600 и выручка 5000", "Порог 3600; SELECT n FROM orders LIMIT 5000"),
+        ("Порог 3600 часов; строк 3", "Порог 3600 секунд"),
+        ("Порог 150 клиентов; строк 3", "Порог 150 заказов"),
+        ("Порог 30; строк 3", "Порог 30 %"),
+        ("Порог 150; строк 3", "Порог 150 USD"),
+    ):
+        report = _report(text, evidence, results, query=query)
+        assert report.status == "failed", (text, report)
+    good = _report(
+        "Порог 150 заказов; строк 3",
+        evidence,
+        results,
+        query="Сколько групп содержит более 150 заказов?",
+    )
+    assert good.status == "verified"
+    parameter = _assertion_by_raw(good, "150")
+    assert parameter.kind == "constant" and parameter.unit == "count"
+    assert "user question" in parameter.reason
+
+
+def test_sql_parameters_use_ast_literals_and_their_actual_role() -> None:
+    results = [_threshold_result()]
+    for sql in (
+        "SELECT n FROM orders -- WHERE qty > 150",
+        "SELECT n FROM orders WHERE status = '150'",
+        'SELECT "150" AS n FROM orders',
+        "WITH unused AS (SELECT n FROM orders WHERE qty > 150) SELECT n FROM orders",
+        "SELECT n FROM orders OFFSET 150",
+        "SELECT n FROM orders LIMIT 150",
+        "SELECT n FROM orders WHERE qty > 150 + 50",
+        "SELECT n FROM orders LIMIT 150 + 50",
+    ):
+        report = _report("Порог 150; строк 3", _evidence(results), results, query=sql)
+        assert report.status == "failed", sql
+    report = _report(
+        "Лимит 150 строк; строк 3",
+        _evidence(results),
+        results,
+        query="SELECT n FROM orders LIMIT 150",
+    )
+    assert report.status == "verified"
+
+
+def test_sql_numbers_are_not_global_formula_operands() -> None:
+    results = [
+        ToolResult(
+            result_id="r_value",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["value"], rows=[[77]], row_count=1),
+        )
+    ]
+    for query in (
+        "SELECT value FROM orders LIMIT 5",
+        "SELECT value FROM orders WHERE qty > 5",
+        "SELECT 1.0 / 5 AS unused FROM orders",
+        "WITH unused AS (SELECT 1.0 / 5 AS x) SELECT value FROM orders",
+        "Посчитай результат для последних 5 заказов",
+    ):
+        report = _report("77 / 5 = 15,4", _evidence(results), results, query=query)
+        assert report.status == "failed", query
+    report = _report("77 / 5 = 15,4", _evidence(results), results, query="Раздели 77 на 5")
+    assert report.status == "verified"
+
+
+def test_dates_urls_and_code_in_the_question_are_not_arithmetic_operands() -> None:
+    results = [
+        ToolResult(
+            result_id="r_value",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["value"], rows=[[77]], row_count=1),
+        )
+    ]
+    for query in (
+        "Вопрос от 31/10/2024",
+        "Проверь https://example.org/31/5",
+        "См. `31/5`",
+        "Прочитай example.org/31/5",
+        "Прочитай /31/5",
+    ):
+        report = _report("77 / 31 = 2,48", _evidence(results), results, query=query)
+        assert report.status == "failed", query
 
 
 def _table_result() -> ToolResult:

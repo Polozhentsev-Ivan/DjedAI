@@ -1394,14 +1394,11 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
 def _verification_queries(state: AgentState, entries: list[dict]) -> list[str]:
     """Вопрос и SQL текущего хода — источник явно названных констант.
 
-    Вопрос берётся в разрешённой форме, исходное сообщение — как страховка от
-    потери числа при переформулировке, SQL — уже очищенный политикой из
-    ``_answer_payload``. Даты в этих текстах не становятся константами.
+    Используется последнее исходное сообщение пользователя. Переформулировка
+    модели не может добавлять доверенные числа. SQL уже очищен политикой в
+    ``_answer_payload``; его параметры разбираются по AST отдельно от вопроса.
     """
     queries: list[str] = []
-    understanding = state.get("understanding")
-    if understanding is not None and understanding.resolved_question:
-        queries.append(understanding.resolved_question)
     for message in reversed(state.get("messages", [])):
         if message.role == "user" and message.content:
             queries.append(message.content)
@@ -1540,7 +1537,9 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
     queries = _verification_queries(state, facts_and_data)
     deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids, query=queries)
     deterministic_ok = deterministic.status != "failed"
-    unsupported = unsupported_numbers(draft, facts_and_data, query=queries)
+    unsupported = (
+        [] if deterministic_ok else unsupported_numbers(draft, facts_and_data, query=queries)
+    )
     budget = current_budget()
     enough_time = budget is None or budget.remaining > COMPOSE_RETRY_MIN_SECONDS
     if unsupported and state.get("compose_retries", 0) < 2 and enough_time and client:

@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal, InvalidOperation
 
-from djedai.agent.verification import has_constant_caption, query_constant_values
+from djedai.agent.verification import query_parameter_spans
 
 _SECONDS_COLUMN_RE = re.compile(r"(?:^|_)(?:secs?|seconds?|sekund\w*)$", re.IGNORECASE)
 _MIN_SECONDS_TO_CONVERT = 3600
@@ -129,15 +129,6 @@ def _matches(shown: Decimal, known: Decimal) -> bool:
     return any(abs(abs(shown) - abs(candidate)) <= step / 2 for candidate in (known, known * 100))
 
 
-def _clause_around(text: str, start: int, end: int) -> str:
-    left = max((text.rfind(separator, 0, start) for separator in ";,\n"), default=-1) + 1
-    right = min(
-        (position for separator in ";,\n" if (position := text.find(separator, end)) >= 0),
-        default=len(text),
-    )
-    return text[left:right]
-
-
 def unsupported_numbers(
     draft: str,
     entries: list[dict],
@@ -152,8 +143,8 @@ def unsupported_numbers(
     known = _known_values(entries)
     if not known:
         return []
-    query_constants = query_constant_values(query)
     text = _DATE_RE.sub(" ", _CODE_RE.sub(" ", draft))
+    parameter_spans = query_parameter_spans(text, query)
     unsupported = []
     for match in _NUMBER_RE.finditer(text):
         shown = _parse(match[0])
@@ -161,9 +152,7 @@ def unsupported_numbers(
             continue
         if any(_matches(shown, value) for value in known):
             continue
-        if any(_matches(shown, value) for value in query_constants) and has_constant_caption(
-            _clause_around(text, match.start(), match.end())
-        ):
+        if match.start() in parameter_spans:
             continue
         unsupported.append(match[0])
     return list(dict.fromkeys(unsupported))

@@ -343,6 +343,7 @@ class _Draft:
     population: str | None = None
     denominator: VerificationDenominator | None = None
     label: str | None = None
+    query_constant_source: str | None = None
     formula: str | None = None
     operands: list[VerificationOperand] = field(default_factory=list)
     allow_bare_year_period: bool = False
@@ -1763,16 +1764,9 @@ _CONSTANT_PREFIX_RE = re.compile(
 # Число из вопроса или SQL — это параметр/порог/коэффициент, а не результат
 # расчёта, только если подпись в ответе прямо называет его константой.
 _QUERY_CONSTANT_RE = re.compile(
-    r"(?:"
-    r"порог|коэффициент|множител|констант|параметр|лимит|допуск|"
-    r"услови|критери|фильтр|настройк|ставк|тариф|"
-    r"больше|меньше|более|менее|дольше|быстрее|старше|младше|"
-    r"превыша|в течение|за последн|на период|срок|"
-    r"дели|раздели|из расчета|исходя из|"
-    r"(?<![a-z])(?:threshold|cutoff|cut-off|coefficient|multiplier|factor|"
-    r"constant|parameter|limit|tolerance|condition|criteria|filter|"
-    r"setting|rate|step|top|first|divide)(?![a-z])"
-    r")",
+    r"(?<!\w)(?P<caption>порог(?:а|е|ом)?|коэффициент|множитель|константа|параметр|лимит|допуск|"
+    r"threshold|cutoff|cut-off|coefficient|multiplier|constant|parameter|limit|tolerance)"
+    r"\s*(?:[:=—-]\s*)?$",
     re.IGNORECASE,
 )
 _DENOMINATOR_AFTER_RE = re.compile(
@@ -1957,26 +1951,205 @@ def _query_texts(query: str | Sequence[str] | None) -> list[str]:
     return [text for text in query if text and text.strip()]
 
 
-def query_constant_values(query: str | Sequence[str] | None) -> frozenset[Decimal]:
-    """Числа вопроса и SQL, которые могут быть параметром, а не результатом.
+@dataclass(frozen=True)
+class _QueryParameter:
+    value: Decimal
+    source: str
+    unit: str | None
 
-    Даты и годы исключаются: ``2024`` в вопросе — календарный период, а не
-    количество, которым можно подтвердить произвольное число ответа.
+
+_PARAMETER_UNITS = (
+    ("seconds", r"секунд\w*|сек|seconds?|secs?"),
+    ("hours", r"час\w*|hours?|hrs?"),
+    ("days", r"день|дня|дней|дн\w*|days?"),
+    ("orders", r"заказ\w*|orders?"),
+    ("rows", r"строк\w*|запис\w*|rows?|records?"),
+    ("customers", r"клиент\w*|customers?|clients?"),
+    ("items", r"штук\w*|шт|items?"),
+)
+
+
+def _parameter_unit(text: str) -> str | None:
+    match = re.match(r"\s*([a-zа-яё]+)\b", text, re.IGNORECASE)
+    if not match:
+        return None
+    word = match[1].lower().replace("ё", "е")
+    for unit, pattern in _PARAMETER_UNITS:
+        if re.fullmatch(pattern, word):
+            return unit
+    return None if word in _STOPWORDS else word
+
+
+def _query_number_tokens(text: str) -> list[_NumberToken]:
+    excluded = [
+        *((claim.start, claim.end) for claim in _date_claims(text)),
+        *((start, end) for start, end, _ in _suppressed_spans(text)),
+        *((match.start("num"), match.end("num")) for match in _LIST_MARKER_RE.finditer(text)),
+    ]
+    return [
+        token
+        for token in _tokens(text)
+        if not any(token.start >= start and token.end <= end for start, end in excluded)
+    ]
+
+
+def _query_parameters(query: str | Sequence[str] | None) -> list[_QueryParameter]:
+    parameters: list[_QueryParameter] = []
+    for text in _query_texts(query):
+        try:
+            sql = sqlglot.parse_one(text, read="duckdb")
+        except Exception:
+            sql = None
+        if isinstance(sql, exp.Query):
+            if not isinstance(sql, exp.Select):
+                continue
+            for literal in sql.find_all(exp.Literal):
+                if literal.is_string or literal.find_ancestor(exp.Select) is not sql:
+                    continue
+                predicate = literal.find_ancestor(exp.Predicate)
+                limit = literal.find_ancestor(exp.Limit)
+                if predicate is None and limit is None:
+                    continue
+                operand = literal.parent if isinstance(literal.parent, exp.Neg) else literal
+                if operand.parent is not predicate and operand.parent is not limit:
+                    # A literal inside qty > (150 + 50) is not the threshold 200.
+                    continue
+                value = Decimal(literal.this)
+                if isinstance(literal.parent, exp.Neg):
+                    value = -value
+                if _year_value(value) is not None:
+                    continue
+                columns = list(predicate.find_all(exp.Column)) if predicate is not None else []
+                unit = (
+                    "rows"
+                    if limit is not None
+                    else (
+                        _parameter_unit(columns[0].name.replace("_", " ").split()[-1])
+                        if len(columns) == 1
+                        else None
+                    )
+                )
+                parameters.append(
+                    _QueryParameter(value, "SQL predicate" if predicate else "SQL LIMIT", unit)
+                )
+            continue
+        for token in _query_number_tokens(text):
+            if _year_value(token.value) is not None and token.scale == 1:
+                continue
+            if (
+                token.currency
+                or token.unit not in ("unknown", "number", "count")
+                or token.scale != 1
+            ):
+                continue
+            parameters.append(
+                _QueryParameter(token.value, "user question", _parameter_unit(text[token.end :]))
+            )
+    return parameters
+
+
+def query_parameter_spans(text: str, query: str | Sequence[str] | None) -> dict[int, str]:
+    """Only a named parameter directly before this number can exempt it."""
+    parameters = _query_parameters(query)
+    spans: dict[int, str] = {}
+    for token in _tokens(text):
+        if token.currency or token.unit not in ("unknown", "number", "count") or token.scale != 1:
+            continue
+        caption = _QUERY_CONSTANT_RE.search(text[: token.start])
+        if caption is None:
+            continue
+        unit = _parameter_unit(text[token.end :])
+        name = caption["caption"].lower()
+        sources = []
+        for item in parameters:
+            if item.value != token.value or (unit is not None and item.unit != unit):
+                continue
+            if item.source == "SQL LIMIT" and name not in ("лимит", "limit"):
+                continue
+            if item.source == "SQL predicate" and name not in (
+                "порог",
+                "порога",
+                "пороге",
+                "порогом",
+                "параметр",
+                "допуск",
+                "threshold",
+                "cutoff",
+                "cut-off",
+                "parameter",
+                "tolerance",
+            ):
+                continue
+            sources.append(item.source)
+        if sources:
+            spans[token.start] = sources[0]
+    return spans
+
+
+def _query_arithmetic_values(query: str | Sequence[str] | None) -> frozenset[Decimal]:
+    """Only an explicit user arithmetic instruction authorizes a scalar operand.
+
+    SQL constants are never global formula coefficients: a literal may belong
+    to another result, projection, filter or LIMIT.
     """
     values: set[Decimal] = set()
     for text in _query_texts(query):
-        date_spans = [(claim.start, claim.end) for claim in _date_claims(text)]
-        for token in _tokens(text):
-            if any(token.start >= start and token.end <= end for start, end in date_spans):
+        try:
+            if isinstance(sqlglot.parse_one(text, read="duckdb"), exp.Query):
                 continue
-            if _year_value(token.value) is not None and token.scale == 1:
+        except Exception:
+            pass
+        tokens = _query_number_tokens(text)
+        whole_expression = re.fullmatch(r"[-+\d.,\s*/×÷]+[?!]?", text.strip()) is not None
+        for token in tokens:
+            instruction = re.search(
+                r"(?<!\w)(?:раздели(?:те)?|дели(?:те)?|умножь(?:те)?|divide|multiply)"
+                r"\s+(?:(?:результат|значение|его|the result|result|it)\s+)?(?:на|by)\s*$",
+                text[: token.start],
+                re.IGNORECASE,
+            )
+            if (
+                instruction
+                and token.unit in ("unknown", "number")
+                and not token.currency
+                and token.scale == 1
+                and _parameter_unit(text[token.end :]) is None
+                and _year_value(token.value) is None
+            ):
+                values.add(token.value)
+        for left, right in zip(tokens, tokens[1:], strict=False):
+            gap = text[left.end : right.start]
+            expression_instruction = re.search(
+                r"(?<!\w)(?:вычисли(?:те)?|посчитай(?:те)?|calculate|compute|формула|"
+                r"сколько будет|чему равно)\s*[:=]?\s*$",
+                text[: left.start],
+                re.IGNORECASE,
+            )
+            symbols = (whole_expression or expression_instruction) and re.fullmatch(
+                r"\s*[+*/×÷]\s*", gap
+            )
+            instruction = re.search(
+                r"(?<!\w)(?:раздели(?:те)?|дели(?:те)?|умножь(?:те)?|divide|multiply)\s*$",
+                text[: left.start],
+                re.IGNORECASE,
+            ) and re.fullmatch(r"\s*(?:секунд\w*|seconds?)?\s*(?:на|by)\s*", gap, re.IGNORECASE)
+            if not (symbols or instruction):
                 continue
-            values.add(token.value * token.scale)
+            for token in (left, right):
+                if token.unit not in ("unknown", "number") or token.currency or token.scale != 1:
+                    continue
+                if (
+                    _parameter_unit(text[token.end :]) is not None
+                    or _year_value(token.value) is not None
+                ):
+                    continue
+                values.add(token.value)
     return frozenset(values)
 
 
-def _extract_drafts(text: str) -> list[_Draft]:
+def _extract_drafts(text: str, query: str | Sequence[str] | None = None) -> list[_Draft]:
     tokens = _tokens(text)
+    parameter_spans = query_parameter_spans(text, query)
     date_claims = _date_claims(text)
     date_spans = [(claim.start, claim.end) for claim in date_claims]
     formula_specs = _formula_specs(text, tokens)
@@ -2039,7 +2212,9 @@ def _extract_drafts(text: str) -> list[_Draft]:
                 )
             )
             continue
-        drafts.append(_draft_from_token(text, token, date_claims, suppress))
+        draft = _draft_from_token(text, token, date_claims, suppress)
+        draft.query_constant_source = parameter_spans.get(token.start)
+        drafts.append(draft)
     for claim in date_claims:
         kind = "date" if claim.period.grain == "day" else "period"
         drafts.append(
@@ -2094,25 +2269,14 @@ def _canonical(value: Decimal | None, scale: Decimal) -> Decimal | None:
     return value * scale if value is not None else None
 
 
-def has_constant_caption(text: str) -> bool:
-    """Подпись называет число параметром, а не результатом расчёта."""
-    return bool(_QUERY_CONSTANT_RE.search(text))
-
-
-def _is_query_constant(draft: _Draft, query_constants: frozenset[Decimal]) -> bool:
+def _is_query_constant(draft: _Draft) -> bool:
     """Число ответа — явно названная константа вопроса или SQL.
 
     Совпадения значения недостаточно: подпись должна называть его порогом,
     коэффициентом, лимитом или другим параметром. Иначе «Выручка: 3600» при
     упоминании 3600 в условии остаётся аналитическим утверждением.
     """
-    if not query_constants or draft.value is None:
-        return False
-    if draft.unit not in ("unknown", "number") or draft.currency:
-        return False
-    if _canonical(draft.value, draft.scale) not in query_constants:
-        return False
-    return bool(draft.label and has_constant_caption(draft.label))
+    return draft.query_constant_source is not None
 
 
 def _values_equal(left: Decimal, right: Decimal, decimals: int = 0) -> bool:
@@ -2337,11 +2501,11 @@ def _resolve_draft(
         else:
             _accept(draft, matched)
         return
-    if _is_query_constant(draft, query_constants):
+    if _is_query_constant(draft):
         draft.kind = "constant"
         draft.status = "ignored"
         draft.reason_code = "non_analytical"
-        draft.reason = _REASON_TEXT["non_analytical"]
+        draft.reason = f"{_REASON_TEXT['non_analytical']} Source: {draft.query_constant_source}."
         return
     matched, reason = _match_quantity(draft, evidence)
     if reason:
@@ -2637,8 +2801,8 @@ def verify_numeric_text(
         else list(dict.fromkeys(item.result_id for item in evidence))
     )
     scoped = [item for item in evidence if item.result_id in scope]
-    query_constants = query_constant_values(query)
-    drafts = _extract_drafts(text)
+    query_constants = _query_arithmetic_values(query)
+    drafts = _extract_drafts(text, query)
     assertions: list[NumericAssertion] = []
     rejected: list[NumericAssertion] = []
     issues: list[VerificationIssue] = []
