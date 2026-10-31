@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -249,10 +249,6 @@ _LABEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "количество",
             "кол-во",
             "count",
-            "row",
-            "rows",
-            "строк",
-            "запис",
             "дат",
             "дней",
             "групп",
@@ -262,6 +258,7 @@ _LABEL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "штук",
         ),
     ),
+    ("__rows__", ("row", "rows", "строк", "запис")),
     ("__percent__", ("процент", "pct", "percent", "share", "ratio", "доля", "дол")),
     ("__average__", ("средн", "average", "avg", "mean")),
     ("__min__", ("мин", "min", "минимум")),
@@ -1350,9 +1347,15 @@ def _sql_projection_label(projection: exp.Expression) -> str:
     parts: list[str] = []
     for node_type, label in _SQL_AGGREGATE_LABELS:
         if isinstance(inner, node_type):
-            if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Distinct):
-                # COUNT(DISTINCT ...) — число уникальных значений, а не строк.
-                parts.append("count distinct уникальные")
+            if isinstance(inner, exp.Count):
+                if isinstance(inner.this, exp.Distinct):
+                    parts.append("count distinct уникальные значения")
+                elif isinstance(inner.this, exp.Star):
+                    parts.append(label)
+                else:
+                    # COUNT(column/expression) исключает NULL и не доказывает
+                    # число строк исходной таблицы.
+                    parts.append("count nonnull непустые значения")
             else:
                 parts.append(label)
             break
@@ -1504,8 +1507,7 @@ def _data_evidence(
                         " ".join(
                             part
                             for part in (
-                                metric_title or label or name,
-                                sql_labels.get(name.lower(), ""),
+                                metric_title or sql_labels.get(name.lower()) or label or name,
                                 row_label,
                             )
                             if part
@@ -2272,6 +2274,8 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         return
     operands: list[VerificationOperand] = []
     matched_evidence: list[VerificationEvidence] = []
+    resolved_tokens: list[_NumberToken] = []
+    shared_result_ids: set[str] | None = None
     operators: list[str] = []
     for before, after in zip(raw_spec.left, raw_spec.left[1:], strict=False):
         gap = draft.text[before.end : after.start].strip()
@@ -2296,9 +2300,10 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         reason = None
         matched, reason = _match_quantity(operand_draft, evidence)
         if reason:
-            if token.value * token.scale in _FORMULA_CONSTANTS and token.unit in (
-                "unknown",
-                "number",
+            if (
+                reason == "number_not_found"
+                and token.value * token.scale in _FORMULA_CONSTANTS
+                and token.unit in ("unknown", "number")
             ):
                 # Постоянные коэффициенты (0, 1, 100, 1000) не требуют
                 # происхождения; совпавшее значение всё равно сохраняем.
@@ -2306,6 +2311,29 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
             else:
                 _reject(draft, reason)
                 return
+        if matched:
+            result_ids = {item.result_id for item in matched}
+            shared_result_ids = (
+                result_ids if shared_result_ids is None else shared_result_ids & result_ids
+            )
+            if not shared_result_ids:
+                _reject(draft, "unrelated_result")
+                return
+            units = {item.unit for item in matched} - {"unknown", "number"}
+            currencies = {item.currency for item in matched if item.currency}
+            if len(units) > 1 or len(currencies) > 1:
+                _reject(draft, "ambiguous_number")
+                return
+            token = replace(
+                token,
+                unit=(
+                    next(iter(units), token.unit)
+                    if token.unit in ("unknown", "number")
+                    else token.unit
+                ),
+                currency=next(iter(currencies), token.currency),
+            )
+        resolved_tokens.append(token)
         matched_evidence.extend(matched)
         operands.append(
             VerificationOperand(
@@ -2318,7 +2346,7 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
             )
         )
     try:
-        calculated, unit = _evaluate_formula(raw_spec.left, operators)
+        calculated, unit = _evaluate_formula(resolved_tokens, operators)
     except _FormulaError as error:
         _reject(draft, error.code)
         return
@@ -2326,7 +2354,7 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         draft,
         calculated,
         unit,
-        next((token.currency for token in raw_spec.left if token.currency), None),
+        next((token.currency for token in resolved_tokens if token.currency), None),
     ):
         _reject(draft, "rounding_mismatch")
         return

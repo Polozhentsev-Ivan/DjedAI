@@ -442,3 +442,66 @@ def test_sanitized_payload_is_the_only_evidence_scope() -> None:
     # Факт тоже очищен политикой: число, которого модель не видела, не
     # может быть подтверждено даже ссылкой на исходный результат.
     assert _report("12345", evidence, [result]).status == "failed"
+
+
+def _sql_evidence(sql: str, name: str, value: int):
+    result = ToolResult(
+        result_id="r_sql_semantics",
+        status="ok",
+        tool="run_sql",
+        sql=sql,
+        data=ToolResultData(columns=[name], rows=[[value]], row_count=1),
+    )
+    return [result], _evidence([result])
+
+
+def test_sql_aggregate_alias_cannot_supply_a_conflicting_caption() -> None:
+    for alias, wrong in (("mean", "Среднее"), ("min", "Минимум")):
+        results, evidence = _sql_evidence(f"SELECT MAX(amount) AS {alias} FROM orders", alias, 100)
+        assert _report("Максимум 100", evidence, results).status == "verified"
+        assert _report(f"{wrong} 100", evidence, results).status == "failed"
+        cell = next(item for item in evidence if item.source == "data_cell")
+        assert alias not in (cell.label or "").split()
+
+
+def test_count_nullable_column_does_not_confirm_all_rows() -> None:
+    for expression in ("amount", "DISTINCT amount", "CASE WHEN amount > 0 THEN 1 END"):
+        results, evidence = _sql_evidence(f"SELECT COUNT({expression}) AS n FROM orders", "n", 2)
+        assert _report("В таблице 2 строки.", evidence, results).status == "failed"
+        assert _report("Rows: 2.", evidence, results).status == "failed"
+        assert _report("Количество: 2.", evidence, results).status == "verified"
+    results, evidence = _sql_evidence("SELECT COUNT(*) AS n FROM orders", "n", 3)
+    assert _report("В таблице 3 строки.", evidence, results).status == "verified"
+
+
+def test_formula_cannot_combine_operands_from_unrelated_results() -> None:
+    results = [
+        ToolResult(
+            result_id=f"r_{value}",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["value"], rows=[[value]], row_count=1),
+        )
+        for value in (20, 30)
+    ]
+    assert _report("20 + 30 = 50", _evidence(results), results).status == "failed"
+
+
+def test_formula_uses_units_and_currencies_from_operand_evidence() -> None:
+    for second_caption in ("Расходы: 30 USD", "Заказов: 30 штук"):
+        results = [
+            ToolResult(
+                result_id="r_units",
+                status="ok",
+                tool="run_sql",
+                facts=[Fact(text="Выручка: 20 RUB"), Fact(text=second_caption)],
+            )
+        ]
+        assert _report("20 + 30 = 50", _evidence(results), results).status == "failed"
+
+
+def test_formula_constant_cannot_override_an_operand_period_mismatch() -> None:
+    results = [_month_bucket(freq_in_fact=False)]
+    results[0].data.rows[0][1] = 1000
+    report = _report("2024-11: 1000 / 1000 = 1", _evidence(results), results)
+    assert report.status == "failed"
