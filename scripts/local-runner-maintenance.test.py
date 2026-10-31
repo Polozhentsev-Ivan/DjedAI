@@ -22,12 +22,22 @@ if name == 'docker':
     if args[:2] == ['ps', '-aq']:
         if 'label=org.djedai.postgres-acceptance' in args:
             print('a' * 12)
-        elif 'label=com.docker.compose.project=djedai' in args:
+        elif 'label=org.djedai.compose-acceptance=true' in args:
             print('b' * 12)
+        elif 'label=com.docker.compose.project=djedai' in args:
+            print('f' * 12)  # The working application must survive cleanup.
         elif not any(arg.startswith('label=') for arg in args):
             print('f' * 12)  # An unrelated container must never be selected.
     elif args[:3] == ['volume', 'ls', '-q']:
-        print('djedai_app-data')
+        if 'label=org.djedai.compose-acceptance=true' in args:
+            print('djedai-ci-123-2_app-data')
+        else:
+            print('djedai_app-data')
+    elif args[:3] == ['network', 'ls', '-q']:
+        if 'label=org.djedai.compose-acceptance=true' in args:
+            print('djedai-ci-123-2_default')
+        else:
+            print('djedai_default')
 elif name == 'ps':
     print(os.environ.get('WORKER_AGES', ''))
 elif name == 'systemctl' and args[0] == 'is-active':
@@ -72,12 +82,16 @@ class RunnerMaintenanceTests(unittest.TestCase):
                 ["docker", "rm", "--force", "--volumes", "b" * 12],
             ],
         )
-        self.assertIn(["docker", "volume", "rm", "djedai_app-data"], calls)
+        self.assertIn(["docker", "volume", "rm", "djedai-ci-123-2_app-data"], calls)
+        self.assertIn(["docker", "network", "rm", "djedai-ci-123-2_default"], calls)
+        self.assertNotIn(["docker", "volume", "rm", "djedai_app-data"], calls)
+        self.assertNotIn(["docker", "network", "rm", "djedai_default"], calls)
         for call in calls:
             if call[:3] == ["docker", "ps", "-aq"]:
                 self.assertIn("--filter", call)
             if call[:4] == ["docker", "volume", "ls", "-q"]:
                 self.assertIn("label=com.docker.compose.volume=app-data", call)
+                self.assertIn("label=org.djedai.compose-acceptance=true", call)
 
     def test_cleanup_does_not_hide_a_dead_docker_daemon(self):
         result, calls = self.execute("cleanup", DOCKER_FAIL="1")
