@@ -57,10 +57,13 @@ async function model(pathname, data) {
 async function login(username, register = false) {
   await page.goto('/login');
   if (register) await page.getByRole('link', { name: 'Зарегистрироваться', exact: true }).click();
+  await expect(page).toHaveURL(register ? /\/register$/ : /\/login$/);
+  const submit = page.getByRole('button', { name: register ? 'Зарегистрироваться' : 'Войти в систему', exact: true });
+  await expect(submit).toBeVisible();
   await page.getByLabel('Имя пользователя', { exact: true }).fill(username);
   await page.getByLabel('Пароль', { exact: true }).fill(password);
   const response = page.waitForResponse((r) => r.url().endsWith('/api/auth/login'));
-  await page.getByRole('button', { name: register ? 'Зарегистрироваться' : 'Войти', exact: true }).click();
+  await submit.click();
   const received = await response;
   assert.equal(received.status(), 200);
   token = (await received.json()).access_token;
