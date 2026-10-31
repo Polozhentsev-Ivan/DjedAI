@@ -1,0 +1,3896 @@
+{
+ "schema_version": 2,
+ "dataset": "hk_background_jobs_v1",
+ "capabilities": {
+  "tools": [
+   "compare_segments",
+   "compute_metric",
+   "correlation",
+   "describe_column",
+   "describe_dataset",
+   "detect_anomalies",
+   "find_duplicates",
+   "forecast",
+   "lagged_correlation",
+   "run_sql",
+   "seasonality",
+   "segment_profile",
+   "time_aggregate",
+   "value_counts"
+  ],
+  "requirements": [
+   "charts",
+   "correlation",
+   "dashboards",
+   "forecast",
+   "memory",
+   "seasonality",
+   "segments"
+  ]
+ },
+ "evaluation_scope": {
+  "semantic_rubrics": "code_checks_only_rest_not_evaluated",
+  "transport": "direct_graph",
+  "turn_timeout_seconds": 120.0
+ },
+ "status": "completed",
+ "started_at": "2026-10-31T11:28:35.968529+00:00",
+ "summary": {
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "needs_review": 0,
+  "skipped": 0,
+  "blocked": 0,
+  "pending": 0,
+  "automated_passed": 1,
+  "automated_failed": 0,
+  "semantic_passed": 1,
+  "semantic_failed": 0,
+  "semantic_partial": 0,
+  "semantic_not_evaluated": 0,
+  "timed_out": 0,
+  "rubrics_passed": 0,
+  "rubrics_failed": 0,
+  "rubrics_not_evaluated": 0
+ },
+ "cases": [
+  {
+   "answer": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Доля цепочек с успешным повтором | Ср. число попыток |\n|---|---|---|\n| Очистка временных файлов | 5,24 % | 2,32 |\n| Проверка сроков действия сертификатов | 5,17 % | 2,25 |\n| Загрузка событий приложения | 5,03 % | 2,31 |\n| Пересчёт доступности товаров | 5,02 % | 2,32 |\n| Резервное копирование справочников | 4,96 % | 2,32 |\n| Обновление статусов доставки | 4,93 % | 2,30 |\n| Расчёт бонусов за покупки | 4,92 % | 2,32 |\n| Обновление поискового индекса | 4,92 % | 2,30 |\n| Отправка уведомлений о заказах | 4,92 % | 2,32 |\n| Выгрузка документов в ЭДО | 4,89 % | 2,32 |\n| Проверка качества данных | 4,87 % | 2,32 |\n| Обработка заявок на возврат | 4,85 % | 2,31 |\n| Загрузка цен поставщиков | 4,84 % | 2,29 |\n| Обновление остатков | 4,83 % | 2,31 |\n| Формирование электронных чеков | 4,78 % | 2,31 |\n| Сверка платёжных операций | 4,77 % | 2,29 |\n| Подготовка отчёта по продажам | 4,71 % | 2,28 |\n| Архивирование журналов | 4,65 % | 2,28 |\n\n**Итого по всем заданиям:**\n- Сумма долей: 88,31 %\n- Среднее число попыток (взвешенное по строкам): 41,47",
+   "used_tools": [
+    "value_counts",
+    "run_sql"
+   ],
+   "fact_checks": [
+    {
+     "key": "cleanup.avg_attempts",
+     "comparison": "approx",
+     "expected": 2.3201,
+     "result": true,
+     "passed": true,
+     "source": "current"
+    },
+    {
+     "key": "archive.avg_attempts",
+     "comparison": "approx",
+     "expected": 2.279,
+     "result": true,
+     "passed": true,
+     "source": "current"
+    }
+   ],
+   "plan": [
+    {
+     "tool": "run_sql",
+     "args": {
+      "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) AS first_success_attempt,\n        COUNT(*) AS total_attempts_in_chain\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nchain_flags AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        total_attempts_in_chain,\n        CASE WHEN has_success = 1 AND first_success_attempt > 1 THEN 1 ELSE 0 END AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    SUM(is_retry_success) * 1.0 / COUNT(*) AS share_retry_success_chains,\n    AVG(CASE WHEN is_retry_success = 1 THEN total_attempts_in_chain ELSE NULL END) AS avg_attempts_in_retry_success_chains\nFROM chain_flags\nGROUP BY zadanie\nORDER BY share_retry_success_chains DESC"
+     }
+    }
+   ],
+   "tool_results": [
+    {
+     "result_id": "r_aed3a5db51de4bb6b1703a5dfbd9b43d",
+     "status": "ok",
+     "data": {
+      "columns": [
+       "status",
+       "count"
+      ],
+      "rows": [
+       [
+        "Успешно",
+        454882
+       ],
+       [
+        "Ошибка",
+        40414
+       ],
+       [
+        "Отменено",
+        4704
+       ]
+      ],
+      "row_count": 3,
+      "truncated": false
+     },
+     "data_ref": null,
+     "facts": [
+      {
+       "text": "Значение 'Успешно' встречается 454882 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Успешно",
+        "count": 454882
+       }
+      },
+      {
+       "text": "Значение 'Ошибка' встречается 40414 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Ошибка",
+        "count": 40414
+       }
+      },
+      {
+       "text": "Значение 'Отменено' встречается 4704 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Отменено",
+        "count": 4704
+       }
+      },
+      {
+       "text": "Суммы числовых колонок по всем строкам результата",
+       "kind": "summary",
+       "values": {
+        "column_totals": {
+         "count": 500000
+        }
+       }
+      }
+     ],
+     "chart_hint": {
+      "type": "bar",
+      "x": "status",
+      "y": [
+       "count"
+      ],
+      "color": null
+     },
+     "error": null,
+     "tool": "value_counts",
+     "params": {
+      "table": "08_fonovye_zadaniya",
+      "column": "status",
+      "top_n": 10
+     },
+     "sql": null,
+     "source_result_id": null,
+     "sensitive_columns": [],
+     "duration_ms": null,
+     "metric": null,
+     "quality": null,
+     "read": null
+    },
+    {
+     "result_id": "r_22c08693011e437a9b100d341e147462",
+     "status": "ok",
+     "data": {
+      "columns": [
+       "zadanie",
+       "share_retry_success_chains",
+       "avg_attempts_in_retry_success_chains"
+      ],
+      "rows": [
+       [
+        "Очистка временных файлов",
+        0.05242262925200758,
+        2.3201376936316693
+       ],
+       [
+        "Проверка сроков действия сертификатов",
+        0.051714752313554706,
+        2.2526315789473683
+       ],
+       [
+        "Загрузка событий приложения",
+        0.05034546395696892,
+        2.3124720607957086
+       ],
+       [
+        "Пересчёт доступности товаров",
+        0.05019072475406545,
+        2.320888888888889
+       ],
+       [
+        "Резервное копирование справочников",
+        0.04962243797195254,
+        2.3206521739130435
+       ],
+       [
+        "Обновление статусов доставки",
+        0.049317265497961824,
+        2.303974706413731
+       ],
+       [
+        "Расчёт бонусов за покупки",
+        0.04923472118163331,
+        2.3163043478260867
+       ],
+       [
+        "Обновление поискового индекса",
+        0.049210023145818654,
+        2.3006134969325154
+       ],
+       [
+        "Отправка уведомлений о заказах",
+        0.049174716099361505,
+        2.317493946731235
+       ],
+       [
+        "Выгрузка документов в ЭДО",
+        0.048856479946967186,
+        2.320217096336499
+       ],
+       [
+        "Проверка качества данных",
+        0.048684092338093954,
+        2.3154981549815496
+       ],
+       [
+        "Обработка заявок на возврат",
+        0.04846312155613092,
+        2.3123287671232875
+       ],
+       [
+        "Загрузка цен поставщиков",
+        0.0483646641841267,
+        2.292207792207792
+       ],
+       [
+        "Обновление остатков",
+        0.04830170921497118,
+        2.3072372999304105
+       ],
+       [
+        "Формирование электронных чеков",
+        0.047839971079110685,
+        2.3079345088161207
+       ],
+       [
+        "Сверка платёжных операций",
+        0.04769091457893148,
+        2.289029535864979
+       ],
+       [
+        "Подготовка отчёта по продажам",
+        0.04710341093665403,
+        2.281609195402299
+       ],
+       [
+        "Архивирование журналов",
+        0.04654696132596685,
+        2.27893175074184
+       ]
+      ],
+      "row_count": 18,
+      "truncated": false
+     },
+     "data_ref": null,
+     "facts": [
+      {
+       "text": "Запрос выполнен успешно, получено строк: 18",
+       "kind": "summary",
+       "values": {
+        "row_count": 18
+       }
+      },
+      {
+       "text": "Суммы числовых колонок по всем строкам результата",
+       "kind": "summary",
+       "values": {
+        "column_totals": {
+         "share_retry_success_chains": 0.8830840593342775,
+         "avg_attempts_in_retry_success_chains": 41.470162995485026
+        }
+       }
+      }
+     ],
+     "chart_hint": null,
+     "error": null,
+     "tool": "run_sql",
+     "params": {
+      "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) AS first_success_attempt,\n        COUNT(*) AS total_attempts_in_chain\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nchain_flags AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        total_attempts_in_chain,\n        CASE WHEN has_success = 1 AND first_success_attempt > 1 THEN 1 ELSE 0 END AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    SUM(is_retry_success) * 1.0 / COUNT(*) AS share_retry_success_chains,\n    AVG(CASE WHEN is_retry_success = 1 THEN total_attempts_in_chain ELSE NULL END) AS avg_attempts_in_retry_success_chains\nFROM chain_flags\nGROUP BY zadanie\nORDER BY share_retry_success_chains DESC"
+     },
+     "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) AS first_success_attempt,\n        COUNT(*) AS total_attempts_in_chain\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nchain_flags AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        total_attempts_in_chain,\n        CASE WHEN has_success = 1 AND first_success_attempt > 1 THEN 1 ELSE 0 END AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    SUM(is_retry_success) * 1.0 / COUNT(*) AS share_retry_success_chains,\n    AVG(CASE WHEN is_retry_success = 1 THEN total_attempts_in_chain ELSE NULL END) AS avg_attempts_in_retry_success_chains\nFROM chain_flags\nGROUP BY zadanie\nORDER BY share_retry_success_chains DESC",
+     "source_result_id": null,
+     "sensitive_columns": [],
+     "duration_ms": null,
+     "metric": null,
+     "quality": null,
+     "read": null
+    }
+   ],
+   "answer_blocks": [
+    {
+     "type": "text",
+     "markdown": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Доля цепочек с успешным повтором | Ср. число попыток |\n|---|---|---|\n| Очистка временных файлов | 5,24 % | 2,32 |\n| Проверка сроков действия сертификатов | 5,17 % | 2,25 |\n| Загрузка событий приложения | 5,03 % | 2,31 |\n| Пересчёт доступности товаров | 5,02 % | 2,32 |\n| Резервное копирование справочников | 4,96 % | 2,32 |\n| Обновление статусов доставки | 4,93 % | 2,30 |\n| Расчёт бонусов за покупки | 4,92 % | 2,32 |\n| Обновление поискового индекса | 4,92 % | 2,30 |\n| Отправка уведомлений о заказах | 4,92 % | 2,32 |\n| Выгрузка документов в ЭДО | 4,89 % | 2,32 |\n| Проверка качества данных | 4,87 % | 2,32 |\n| Обработка заявок на возврат | 4,85 % | 2,31 |\n| Загрузка цен поставщиков | 4,84 % | 2,29 |\n| Обновление остатков | 4,83 % | 2,31 |\n| Формирование электронных чеков | 4,78 % | 2,31 |\n| Сверка платёжных операций | 4,77 % | 2,29 |\n| Подготовка отчёта по продажам | 4,71 % | 2,28 |\n| Архивирование журналов | 4,65 % | 2,28 |\n\n**Итого по всем заданиям:**\n- Сумма долей: 88,31 %\n- Среднее число попыток (взвешенное по строкам): 41,47",
+     "result_id": null,
+     "columns": [],
+     "limit": 20,
+     "chart": null,
+     "options": [],
+     "dashboard_id": null,
+     "title": null,
+     "items": [],
+     "metric_candidates": []
+    }
+   ],
+   "intent": "data_question",
+   "understanding": {
+    "intent": "data_question",
+    "resolved_question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+    "entities": {
+     "tables": [],
+     "columns": []
+    },
+    "references": [],
+    "dashboard_id": null,
+    "clarification": null
+   },
+   "verification": {
+    "status": "verified",
+    "assertions": [
+     {
+      "assertion_id": "a1",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Очистка временных файлов | 5,24 % | 2,32 |",
+      "raw_text": "5,24",
+      "value": "5.24",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Очистка временных файлов | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].share_retry_success_chains",
+        "value": "0.05242262925200758",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a2",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Очистка временных файлов | 5,24 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a3",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Пересчёт доступности товаров | 5,02 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a4",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Резервное копирование справочников | 4,96 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a5",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Расчёт бонусов за покупки | 4,92 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a6",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Отправка уведомлений о заказах | 4,92 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a7",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Выгрузка документов в ЭДО | 4,89 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a8",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка качества данных | 4,87 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_in_retry_success_chains",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_in_retry_success_chains",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_in_retry_success_chains",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_in_retry_success_chains",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_in_retry_success_chains",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_in_retry_success_chains",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_in_retry_success_chains",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a9",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка сроков действия сертификатов | 5,17 % | 2,25 |",
+      "raw_text": "5,17",
+      "value": "5.17",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Проверка сроков действия сертификатов | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[1].share_retry_success_chains",
+        "value": "0.051714752313554706",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Проверка сроков действия сертификатов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a10",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка сроков действия сертификатов | 5,17 % | 2,25 |",
+      "raw_text": "2,25",
+      "value": "2.25",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_in_retry_success_chains",
+        "value": "2.2526315789473683",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Проверка сроков действия сертификатов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a11",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка событий приложения | 5,03 % | 2,31 |",
+      "raw_text": "5,03",
+      "value": "5.03",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Загрузка событий приложения | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[2].share_retry_success_chains",
+        "value": "0.05034546395696892",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a12",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка событий приложения | 5,03 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_in_retry_success_chains",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_in_retry_success_chains",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[13].avg_attempts_in_retry_success_chains",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_in_retry_success_chains",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a13",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обработка заявок на возврат | 4,85 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_in_retry_success_chains",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_in_retry_success_chains",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[13].avg_attempts_in_retry_success_chains",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_in_retry_success_chains",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a14",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление остатков | 4,83 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_in_retry_success_chains",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_in_retry_success_chains",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[13].avg_attempts_in_retry_success_chains",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_in_retry_success_chains",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a15",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Формирование электронных чеков | 4,78 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_in_retry_success_chains",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_in_retry_success_chains",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[13].avg_attempts_in_retry_success_chains",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_in_retry_success_chains",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a16",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Пересчёт доступности товаров | 5,02 % | 2,32 |",
+      "raw_text": "5,02",
+      "value": "5.02",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Пересчёт доступности товаров | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[3].share_retry_success_chains",
+        "value": "0.05019072475406545",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a17",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Резервное копирование справочников | 4,96 % | 2,32 |",
+      "raw_text": "4,96",
+      "value": "4.96",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Резервное копирование справочников | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[4].share_retry_success_chains",
+        "value": "0.04962243797195254",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a18",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление статусов доставки | 4,93 % | 2,30 |",
+      "raw_text": "4,93",
+      "value": "4.93",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление статусов доставки | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[5].share_retry_success_chains",
+        "value": "0.049317265497961824",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a19",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление статусов доставки | 4,93 % | 2,30 |",
+      "raw_text": "2,30",
+      "value": "2.30",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[5].avg_attempts_in_retry_success_chains",
+        "value": "2.303974706413731",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_in_retry_success_chains",
+        "value": "2.3006134969325154",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a20",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление поискового индекса | 4,92 % | 2,30 |",
+      "raw_text": "2,30",
+      "value": "2.30",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[5].avg_attempts_in_retry_success_chains",
+        "value": "2.303974706413731",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_in_retry_success_chains",
+        "value": "2.3006134969325154",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a21",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Расчёт бонусов за покупки | 4,92 % | 2,32 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Расчёт бонусов за покупки | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[6].share_retry_success_chains",
+        "value": "0.04923472118163331",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a22",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление поискового индекса | 4,92 % | 2,30 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление поискового индекса | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[7].share_retry_success_chains",
+        "value": "0.049210023145818654",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a23",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Отправка уведомлений о заказах | 4,92 % | 2,32 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Отправка уведомлений о заказах | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[8].share_retry_success_chains",
+        "value": "0.049174716099361505",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a24",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Выгрузка документов в ЭДО | 4,89 % | 2,32 |",
+      "raw_text": "4,89",
+      "value": "4.89",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Выгрузка документов в ЭДО | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[9].share_retry_success_chains",
+        "value": "0.048856479946967186",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a25",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка качества данных | 4,87 % | 2,32 |",
+      "raw_text": "4,87",
+      "value": "4.87",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Проверка качества данных | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[10].share_retry_success_chains",
+        "value": "0.048684092338093954",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a26",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обработка заявок на возврат | 4,85 % | 2,31 |",
+      "raw_text": "4,85",
+      "value": "4.85",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обработка заявок на возврат | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[11].share_retry_success_chains",
+        "value": "0.04846312155613092",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a27",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка цен поставщиков | 4,84 % | 2,29 |",
+      "raw_text": "4,84",
+      "value": "4.84",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Загрузка цен поставщиков | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[12].share_retry_success_chains",
+        "value": "0.0483646641841267",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a28",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка цен поставщиков | 4,84 % | 2,29 |",
+      "raw_text": "2,29",
+      "value": "2.29",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_in_retry_success_chains",
+        "value": "2.292207792207792",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_in_retry_success_chains",
+        "value": "2.289029535864979",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a29",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Сверка платёжных операций | 4,77 % | 2,29 |",
+      "raw_text": "2,29",
+      "value": "2.29",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_in_retry_success_chains",
+        "value": "2.292207792207792",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_in_retry_success_chains",
+        "value": "2.289029535864979",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a30",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление остатков | 4,83 % | 2,31 |",
+      "raw_text": "4,83",
+      "value": "4.83",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление остатков | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[13].share_retry_success_chains",
+        "value": "0.04830170921497118",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a31",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Формирование электронных чеков | 4,78 % | 2,31 |",
+      "raw_text": "4,78",
+      "value": "4.78",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Формирование электронных чеков | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[14].share_retry_success_chains",
+        "value": "0.047839971079110685",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a32",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Сверка платёжных операций | 4,77 % | 2,29 |",
+      "raw_text": "4,77",
+      "value": "4.77",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Сверка платёжных операций | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[15].share_retry_success_chains",
+        "value": "0.04769091457893148",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a33",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Подготовка отчёта по продажам | 4,71 % | 2,28 |",
+      "raw_text": "4,71",
+      "value": "4.71",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Подготовка отчёта по продажам | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[16].share_retry_success_chains",
+        "value": "0.04710341093665403",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a34",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Подготовка отчёта по продажам | 4,71 % | 2,28 |",
+      "raw_text": "2,28",
+      "value": "2.28",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[16].avg_attempts_in_retry_success_chains",
+        "value": "2.281609195402299",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_in_retry_success_chains",
+        "value": "2.27893175074184",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a35",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Архивирование журналов | 4,65 % | 2,28 |",
+      "raw_text": "2,28",
+      "value": "2.28",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[16].avg_attempts_in_retry_success_chains",
+        "value": "2.281609195402299",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_in_retry_success_chains",
+        "value": "2.27893175074184",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg attempts in retry success chains average mean среднее attempts in chain Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a36",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Архивирование журналов | 4,65 % | 2,28 |",
+      "raw_text": "4,65",
+      "value": "4.65",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Архивирование журналов | |",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": null,
+        "cell_address": "data.rows[17].share_retry_success_chains",
+        "value": "0.04654696132596685",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_retry_success_chains Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a37",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "- Сумма долей: 88,31 %",
+      "raw_text": "88,31",
+      "value": "88.31",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "Сумма долей",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": "r_22c08693011e437a9b100d341e147462:fact:1",
+        "cell_address": null,
+        "value": "0.8830840593342775",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "column_totals.share_retry_success_chains Суммы числовых колонок по всем строкам результата",
+        "source": "fact",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a38",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "- Среднее число попыток (взвешенное по строкам): 41,47",
+      "raw_text": "41,47",
+      "value": "41.47",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "Среднее число попыток (взвешенное по строкам",
+      "evidence": [
+       {
+        "result_id": "r_22c08693011e437a9b100d341e147462",
+        "fact_id": "r_22c08693011e437a9b100d341e147462:fact:1",
+        "cell_address": null,
+        "value": "41.470162995485026",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "column_totals.avg_attempts_in_retry_success_chains Суммы числовых колонок по всем строкам результата",
+        "source": "fact",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     }
+    ],
+    "rejected_assertions": [],
+    "issues": [],
+    "result_ids": [
+     "r_aed3a5db51de4bb6b1703a5dfbd9b43d",
+     "r_22c08693011e437a9b100d341e147462"
+    ]
+   },
+   "safety_checks": {
+    "forbidden_tools": [],
+    "called_forbidden": [],
+    "planned_forbidden": [],
+    "passed": true
+   },
+   "diagnostics": [
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.989173+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "run_started",
+     "node": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.990259+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "load_ctx"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.994279+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "load_ctx",
+     "duration_ms": 4.017,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.994645+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "fast_route"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.994696+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "fast_route",
+     "duration_ms": 0.05,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.995220+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "understand"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.995416+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_started",
+     "node": "understand",
+     "call_id": "call_d9e0c6ac784a45e3aac0fd69f2d70280",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:35.998859+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_started",
+     "node": "understand",
+     "call_id": "call_d9e0c6ac784a45e3aac0fd69f2d70280",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.920954+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_finished",
+     "node": "understand",
+     "call_id": "call_d9e0c6ac784a45e3aac0fd69f2d70280",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 1922.085
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.921558+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_finished",
+     "node": "understand",
+     "call_id": "call_d9e0c6ac784a45e3aac0fd69f2d70280",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 1926.137,
+     "attempts": 1,
+     "input_tokens": 2114,
+     "output_tokens": 67,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.921600+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "understand",
+     "duration_ms": 1926.379,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.922139+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "plan"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.927303+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_started",
+     "node": "plan",
+     "call_id": "call_ae28a322924b4ba199a1d4c94712bbf7",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:37.934162+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_started",
+     "node": "plan",
+     "call_id": "call_ae28a322924b4ba199a1d4c94712bbf7",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.081608+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_finished",
+     "node": "plan",
+     "call_id": "call_ae28a322924b4ba199a1d4c94712bbf7",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 16147.438
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.082197+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_finished",
+     "node": "plan",
+     "call_id": "call_ae28a322924b4ba199a1d4c94712bbf7",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 16154.889,
+     "attempts": 1,
+     "input_tokens": 16779,
+     "output_tokens": 1274,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.082243+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "plan",
+     "duration_ms": 16160.103,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.082656+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "execute"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.096323+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "execute",
+     "duration_ms": 13.661,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.096818+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "plan"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.101440+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_started",
+     "node": "plan",
+     "call_id": "call_f56b8e290af74105866d3e9533c9a6d9",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:28:54.104034+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_started",
+     "node": "plan",
+     "call_id": "call_f56b8e290af74105866d3e9533c9a6d9",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.800117+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_finished",
+     "node": "plan",
+     "call_id": "call_f56b8e290af74105866d3e9533c9a6d9",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 17696.07
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.801210+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_finished",
+     "node": "plan",
+     "call_id": "call_f56b8e290af74105866d3e9533c9a6d9",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 17699.76,
+     "attempts": 1,
+     "input_tokens": 4366,
+     "output_tokens": 1542,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.801243+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "plan",
+     "duration_ms": 17704.423,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.801694+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "execute"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.854023+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "execute",
+     "duration_ms": 52.323,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.854569+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "visualize"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.854594+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "visualize",
+     "duration_ms": 0.023,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.855277+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "compose"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.861086+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_started",
+     "node": "compose",
+     "call_id": "call_3ce4157ad4b64bc9b98f841682ea215e",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:11.865817+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_started",
+     "node": "compose",
+     "call_id": "call_3ce4157ad4b64bc9b98f841682ea215e",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.687025+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_finished",
+     "node": "compose",
+     "call_id": "call_3ce4157ad4b64bc9b98f841682ea215e",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 6821.199
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.687757+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_finished",
+     "node": "compose",
+     "call_id": "call_3ce4157ad4b64bc9b98f841682ea215e",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 6826.665,
+     "attempts": 1,
+     "input_tokens": 3601,
+     "output_tokens": 549,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.687778+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "compose",
+     "duration_ms": 6832.5,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.688196+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_started",
+     "node": "verify"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.720767+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_started",
+     "node": "verify",
+     "call_id": "call_3657645fa5d14709a78153727ab3c46a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:18.723045+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_started",
+     "node": "verify",
+     "call_id": "call_3657645fa5d14709a78153727ab3c46a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:20.067449+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_attempt_finished",
+     "node": "verify",
+     "call_id": "call_3657645fa5d14709a78153727ab3c46a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 1344.395
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:20.068022+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "model_call_finished",
+     "node": "verify",
+     "call_id": "call_3657645fa5d14709a78153727ab3c46a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 1347.251,
+     "attempts": 1,
+     "input_tokens": 3812,
+     "output_tokens": 27,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:20.068065+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "stage_finished",
+     "node": "verify",
+     "duration_ms": 1379.869,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T11:29:20.070080+00:00",
+     "run_id": "run_7ee21dceaa624c69b42f5495e14a3ba0",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_7250f5c0f35e4515822722ed04c02dcf",
+     "event": "run_finished",
+     "node": "verify",
+     "status": "success",
+     "error_type": null,
+     "error_node": null,
+     "duration_ms": 44080.905,
+     "trace": [
+      {
+       "node": "load_ctx",
+       "duration_ms": 4.017,
+       "error_type": null
+      },
+      {
+       "node": "fast_route",
+       "duration_ms": 0.05,
+       "error_type": null
+      },
+      {
+       "node": "understand",
+       "duration_ms": 1926.379,
+       "error_type": null
+      },
+      {
+       "node": "plan",
+       "duration_ms": 16160.103,
+       "error_type": null
+      },
+      {
+       "node": "execute",
+       "duration_ms": 13.661,
+       "error_type": null
+      },
+      {
+       "node": "plan",
+       "duration_ms": 17704.423,
+       "error_type": null
+      },
+      {
+       "node": "execute",
+       "duration_ms": 52.323,
+       "error_type": null
+      },
+      {
+       "node": "visualize",
+       "duration_ms": 0.023,
+       "error_type": null
+      },
+      {
+       "node": "compose",
+       "duration_ms": 6832.5,
+       "error_type": null
+      },
+      {
+       "node": "verify",
+       "duration_ms": 1379.869,
+       "error_type": null
+      }
+     ]
+    }
+   ],
+   "terminal_error": null,
+   "automated_status": "passed",
+   "automated_issues": [],
+   "semantic_status": "passed",
+   "semantic_issues": [],
+   "semantic_rubrics": [],
+   "id": "organizer_q6",
+   "status": "passed",
+   "duration_seconds": 44.08,
+   "total_duration_seconds": 44.09,
+   "thread_id": "eval_organizer_q6",
+   "context_cases": [],
+   "context_results": [],
+   "issues": [],
+   "question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+   "scenario": "organizer"
+  }
+ ],
+ "elapsed_seconds": 44.11,
+ "finished_at": "2026-10-31T11:29:20.081203+00:00"
+}
