@@ -367,6 +367,23 @@ def test_runtime_proven_percent_multiplier_does_not_exempt_an_analytical_count()
     assert "Number 100 in the answer is not backed by tool results" in issues
 
 
+@pytest.mark.parametrize(("factor", "expected"), [("100.", "passed"), ("100.5", "failed")])
+def test_percent_factor_distinguishes_sentence_punctuation_from_a_decimal(factor, expected):
+    case = answer_case("percent_formula_punctuation", answer_contains_value={"from_result": True})
+    status, issues, _ = evaluate_case(
+        case,
+        {
+            "results": [tool_result(rows=[[62.29]])],
+            "answer_blocks": [
+                Block("text", f"Рост 62,29 %. Формула: изменение / исходная выручка × {factor}")
+            ],
+        },
+    )
+    assert status == expected, issues
+    if expected == "failed":
+        assert "Number 100.5 in the answer is not backed by tool results" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",
