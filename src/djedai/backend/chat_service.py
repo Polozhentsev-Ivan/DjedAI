@@ -82,6 +82,7 @@ from djedai.contracts.sse import (
     SSEToolResultEvent,
 )
 from djedai.contracts.tool_result import ToolError, ToolResult
+from djedai.contracts.verification import VerificationReport
 from djedai.execution import ExecutionBudget, TurnCancelled, TurnTimeout
 
 _BLOCK_ADAPTER: TypeAdapter[MessageBlock] = TypeAdapter(MessageBlock)
@@ -210,6 +211,11 @@ def message_to_chat_message(message: MessageModel) -> ChatMessage:
         text=message.content if role == "user" else None,
         blocks=blocks,
         result_ids=message.result_ids or [],
+        verification=(
+            VerificationReport.model_validate(message.verification)
+            if message.verification
+            else None
+        ),
         turn=ChatTurnState.model_validate(message.turn) if message.turn else None,
     )
 
@@ -743,6 +749,7 @@ def stream_chat_turn(
         seen_results: set[str] = set()
         answer_blocks: list[Block] = []
         stream_focus: list[str] | None = None
+        verification_report: VerificationReport | None = None
         started = perf_counter()
         previous = started
 
@@ -832,6 +839,13 @@ def stream_chat_turn(
                         stream_focus = list(node_update["focus_result_ids"] or [])
                     if "answer_blocks" in node_update:
                         answer_blocks = node_update["answer_blocks"] or []
+                    if node == "verify" and "verification" in node_update:
+                        raw_verification = node_update["verification"]
+                        verification_report = (
+                            VerificationReport.model_validate(raw_verification)
+                            if raw_verification
+                            else None
+                        )
 
         budget.check()
         error_detail = _agent_error(answer_blocks)
@@ -922,6 +936,7 @@ def stream_chat_turn(
             created_at=datetime.now(UTC),
             blocks=message_blocks,
             result_ids=result_ids,
+            verification=verification_report,
             trace=trace,
         )
         budget.check()

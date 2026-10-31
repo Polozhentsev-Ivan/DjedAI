@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import UUID4, AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from djedai.contracts.message import MessageBlock
+from djedai.contracts.verification import VerificationReport
 
 
 class ChatCreate(BaseModel):
@@ -68,6 +69,9 @@ class ChatMessage(BaseModel):
     )
     result_ids: list[str] = Field(
         default_factory=list, description="ID результатов вычислений, на которые опирается ответ"
+    )
+    verification: VerificationReport | None = Field(
+        default=None, description="Проверка чисел опубликованного ответа и её причины"
     )
     turn: ChatTurnState | None = Field(
         default=None, description="Состояние хода этого вопроса; у прежних сообщений отсутствует"
