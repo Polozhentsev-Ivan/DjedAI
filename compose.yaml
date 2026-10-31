@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: infra/backend.Dockerfile
     env_file:
-      - .env
+      - ${DJEDAI_ENV_FILE:-.env}
     environment:
       APP_ENV: production
       APP_DATABASE_URL: sqlite:////app/var/app.db
