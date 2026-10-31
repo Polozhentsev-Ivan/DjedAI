@@ -27,6 +27,44 @@ DjedAI помогает исследовать табличные данные �
 
 Основное хранение и вычисления находятся на машине установки. Если используется внешняя модель, ей передаётся разрешённый контекст; состав передачи описан в [конфигурации](docs/configuration.md#политика-отправки-данных).
 
+## Подключить модель организаторов
+
+После копирования `.env.example` в `.env` замените значения модели на параметры
+вашего OpenAI-совместимого сервера. Для сервера на машине Docker пример такой:
+
+```dotenv
+MODEL_BASE_URL=http://host.docker.internal:8001/v1
+MODEL_NAME=Qwen/Qwen3.6-27B
+MODEL_API_KEY=local-no-auth
+MODEL_SETTINGS_FROM_UI=false
+MODEL_TIMEOUT_SECONDS=180
+AGENT_TURN_TIMEOUT_SECONDS=400
+MODEL_REASONING_SUPPORTED=false
+MODEL_REASONING_UNDERSTAND=provider_default
+MODEL_REASONING_PLAN=provider_default
+MODEL_REASONING_VISUALIZE=provider_default
+MODEL_REASONING_COMPOSE=provider_default
+MODEL_REASONING_VERIFY=provider_default
+```
+
+Адрес, порт и `MODEL_NAME` должны совпадать с сервером организаторов; указанное
+имя модели — пример. `local-no-auth` подходит только серверу без авторизации:
+при включённой авторизации нужен выданный ключ. Пустое значение приложение
+не принимает. `provider_default` не отправляет необязательный `reasoning_effort`.
+
+```sh
+docker compose -f compose.yaml -f infra/compose.model-host.yaml up -d --build --wait --wait-timeout 180
+```
+
+Откройте `http://localhost:8080`. Для удалённого сервера задайте его URL;
+дополнение `compose.model-host.yaml` нужно только для доступа к хосту.
+Уже сохранённый выбор модели пользователя может перекрывать `MODEL_NAME`:
+в интерфейсе выберите модель с ID из этого параметра.
+
+Подробности маршрутизации, подтверждённый профиль DeepInfra/Qwen3.6-27B,
+контрольные вопросы и команда проверки с JSON-отчётом — в
+[профиле организаторов](docs/configuration.md#профиль-организаторов-pl-9).
+
 ## Устройство проекта
 
 Монорепозиторий объединяет Python/FastAPI backend, данные и аналитику на DuckDB, агент на LangGraph и frontend на React/TypeScript. Pydantic-контракты используются для согласования API и генерации типов frontend. Карта компонентов и причины решений — в [архитектуре](docs/architecture.md).
