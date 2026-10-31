@@ -679,6 +679,32 @@ def _clarification(question: str, options: list[str]) -> dict:
     }
 
 
+# «Сколько было закуплено»: за «сколько» сразу идёт глагол, единица счёта не названа.
+_UNITLESS_HOW_MUCH_RE = re.compile(
+    r"(?<!\w)сколько\s+(?:(?:ещё|еще|всего|же)\s+)?"
+    r"(?:был[оаи]?|будет|стало|ушло"
+    r"|\w+(?:но|то|лось))(?!\w)",
+    re.IGNORECASE,
+)
+
+
+# «На конец 31 марта», «на 1 апреля», «as of March 31»: состояние на дату, а не итог за период.
+_AS_OF_RE = re.compile(
+    r"(?<!\w)(?:на\s+(?:конец|начало|дату|момент)|на\s+\d{1,2}\s+" + _MONTH + r"|as\s+of)(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def asks_state_on_date(text: str | None) -> bool:
+    """Вопрос о состоянии на дату: события сверяются с датой, а не с выгрузкой."""
+    return bool(_AS_OF_RE.search(text or ""))
+
+
+def unitless_how_much(text: str | None) -> bool:
+    """«Сколько» без единицы счёта: это может быть и число записей, и их сумма."""
+    return bool(_UNITLESS_HOW_MUCH_RE.search(text or ""))
+
+
 def reversed_period_update(text: str | None) -> dict | None:
     """Обновление состояния для перепутанного периода; None, если его нет."""
     period = find_reversed_period(text or "")

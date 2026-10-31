@@ -296,8 +296,9 @@ class BIModelClient:
         *,
         stage: str | None = None,
         max_output_tokens: int | None = None,
+        reasoning: ReasoningEffort | None = None,
     ) -> ModelResponse[T]:
-        setting = self.reasoning_for(stage)
+        setting = reasoning or self.reasoning_for(stage)
         effort = actual_reasoning_effort(setting)
         with model_call(
             self.model,
