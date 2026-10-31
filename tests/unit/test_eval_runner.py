@@ -249,6 +249,141 @@ def test_calendar_exemptions_do_not_hide_wrong_measured_values(wrong_count):
     assert f"Number {wrong_count} in the answer is not backed by tool results" in issues
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_status"),
+    [
+        ("Лидер — Калининград. Рост составил 62,29 %.", "passed"),
+        ("Калининград показал стабильность. Рост Москвы составляет 62,29 %.", "failed"),
+    ],
+)
+def test_following_sentence_keeps_the_subject_of_the_required_answer_row(text, expected_status):
+    case = answer_case(
+        "city_growth",
+        answer_rows=[
+            {
+                "label": "Калининград",
+                "values": [{"value": 62.29, "abs_tolerance": 0.01, "unit": "percent"}],
+            }
+        ],
+    )
+    result = {
+        "results": [tool_result(rows=[["Калининград", 62.29]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", text)],
+    }
+
+    status, issues, _ = evaluate_case(case, result)
+
+    assert status == expected_status, issues
+    if expected_status == "failed":
+        assert "Answer is missing or misstates values for 'Калининград'" in issues
+
+
+@pytest.mark.parametrize("text", ["1732 / 28 / 40 = 1,55", "1732 / (28 × 40) = 1,55"])
+def test_verified_formula_constants_do_not_authorize_unrelated_measurements(text):
+    import duckdb
+
+    from djedai.agent.graph import verify
+    from djedai.analytics.tools import run_sql
+    from djedai.contracts.agent import Block as AnswerBlock
+    from djedai.contracts.agent import Message
+
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT 1732 AS sales, 40 AS pharmacies, 1732.0 / (28 * 40) AS daily",
+            connection=connection,
+        )
+    state = {
+        "messages": [Message(role="user", content="Пришли расчёт.")],
+        "results": [result],
+        "answer_blocks": [AnswerBlock(type="text", markdown=text)],
+        "compose_retries": 2,
+    }
+    report = verify(state, {"configurable": {}})["verification"]
+    assert report.status == "verified"
+    case = answer_case("formula_constants", answer_contains_value={"from_result": True})
+
+    def evaluate(answer, verification=report):
+        return evaluate_case(
+            case,
+            {
+                "results": [result],
+                "verification": verification,
+                "answer_blocks": [Block("text", answer)],
+            },
+        )
+
+    assert evaluate(text)[0] == "passed"
+    assert evaluate(text, report.model_dump(mode="json"))[0] == "passed"
+    assert evaluate(text, None)[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"result_ids": ["other"]}))[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"status": "failed"}))[0] == "failed"
+    status, issues, _ = evaluate(f"{text}\nСредняя длительность 28 дней.")
+    assert status == "failed"
+    assert "Number 28 in the answer is not backed by tool results" in issues
+
+
+def test_runtime_proven_percent_multiplier_does_not_exempt_an_analytical_count():
+    import duckdb
+
+    from djedai.agent.graph import verify
+    from djedai.analytics.tools import run_sql
+    from djedai.contracts.agent import Block as AnswerBlock
+    from djedai.contracts.agent import Message
+
+    text = (
+        "Рост 62,29 %. Рост рассчитан как разница между выручкой марта и февраля, "
+        "делённая на выручку февраля и умноженная на 100"
+    )
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT (2640589.1392 - 1627110.3466) / 1627110.3466 * 100 AS growth_pct",
+            connection=connection,
+        )
+    report = verify(
+        {
+            "messages": [Message(role="user", content="Какой рост?")],
+            "results": [result],
+            "answer_blocks": [AnswerBlock(type="text", markdown=text)],
+            "compose_retries": 2,
+        },
+        {"configurable": {}},
+    )["verification"]
+    assert report.status == "verified"
+    case = answer_case("percent_multiplier", answer_contains_value={"from_result": True})
+
+    def evaluate(answer, proof=report):
+        return evaluate_case(
+            case,
+            {"results": [result], "verification": proof, "answer_blocks": [Block("text", answer)]},
+        )
+
+    assert evaluate(text)[0] == "passed"
+    assert evaluate(text, None)[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"result_ids": ["foreign"]}))[0] == "failed"
+    assert evaluate(text.replace("умноженная на 100", "Получено 100 заказов"))[0] == "failed"
+    status, issues, _ = evaluate(f"{text}. Всего 100 заказов.")
+    assert status == "failed"
+    assert "Number 100 in the answer is not backed by tool results" in issues
+
+
+@pytest.mark.parametrize(("factor", "expected"), [("100.", "passed"), ("100.5", "failed")])
+def test_percent_factor_distinguishes_sentence_punctuation_from_a_decimal(factor, expected):
+    case = answer_case("percent_formula_punctuation", answer_contains_value={"from_result": True})
+    status, issues, _ = evaluate_case(
+        case,
+        {
+            "results": [tool_result(rows=[[62.29]])],
+            "answer_blocks": [
+                Block("text", f"Рост 62,29 %. Формула: изменение / исходная выручка × {factor}")
+            ],
+        },
+    )
+    assert status == expected, issues
+    if expected == "failed":
+        assert "Number 100.5 in the answer is not backed by tool results" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",

@@ -1466,6 +1466,18 @@ def _verification_failure(
     return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
 
+def _verification_query(state: AgentState, entries: list[dict]) -> tuple[str, dict[str, str]]:
+    """Текст пользователя и SQL каждого результата: переформулировка модели сюда не входит."""
+    messages = state.get("messages", [])
+    question = messages[-1].content if messages and messages[-1].role == "user" else ""
+    queries = {
+        str(entry["result_id"]): str(entry["query"])
+        for entry in entries
+        if entry.get("query") and entry.get("result_id")
+    }
+    return question or "", queries
+
+
 def verify(state: AgentState, config: RunnableConfig) -> dict:
     """Проверяет числа детерминированно, затем независимо уточняет у модели.
 
@@ -1515,7 +1527,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     evidence = build_evidence(results, facts_and_data)
-    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    question, queries = _verification_query(state, facts_and_data)
+    deterministic = verify_numeric_text(
+        draft, evidence, result_ids=result_ids, question=question, sql=queries
+    )
     deterministic_ok = deterministic.status != "failed"
     unsupported = unsupported_numbers(draft, facts_and_data)
     budget = current_budget()
@@ -1554,6 +1569,28 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         stage="verify",
     )
 
+    # Код уже подтвердил все числа: длинный ответ проверяющей модели не повод их удалять.
+    if response.error_type == "OUTPUT_LIMIT" and deterministic.status == "verified":
+        return {
+            "is_verified": True,
+            "verification": _finished_verification(
+                deterministic, status="verified", rejected=_previous_rejected(state)
+            ),
+        }
+
+    # Код уже отклонил черновик: повторный compose полезнее, чем ответ об ошибке.
+    if (
+        response.error_type == "OUTPUT_LIMIT"
+        and state.get("compose_retries", 0) < 2
+        and enough_time
+    ):
+        return {
+            "is_verified": False,
+            "verification": _finished_verification(
+                deterministic, status="failed", rejected=_previous_rejected(state)
+            ),
+        }
+
     if response.status != "success" or not response.data:
         message = (
             RESTRICTED_CONTEXT_MESSAGE
@@ -1589,21 +1626,11 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     llm_rejected = not v_data.is_valid
     at_last_attempt = state.get("compose_retries", 0) >= 2
-    if not at_last_attempt:
-        report = _finished_verification(
-            deterministic,
-            status="failed",
-            rejected=_previous_rejected(state),
-            issues=[
-                *deterministic.issues,
-                *([_verification_issue("llm_reported")] if llm_rejected else []),
-            ],
-        )
-        return {"is_verified": False, "verification": report}
-
     corrected = (v_data.corrected_markdown or "").strip()
     if corrected and corrected != draft:
-        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        corrected_report = verify_numeric_text(
+            corrected, evidence, result_ids=result_ids, question=question, sql=queries
+        )
         if corrected_report.status != "failed":
             new_blocks = _publish_corrected(blocks, corrected)
             issues = [
@@ -1623,13 +1650,26 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                     issues=issues,
                 ),
             }
-        return _verification_failure(
-            state,
-            blocks,
-            corrected_report,
-            extra_rejected=[*deterministic.rejected_assertions],
-            extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+        if at_last_attempt:
+            return _verification_failure(
+                state,
+                blocks,
+                corrected_report,
+                extra_rejected=[*deterministic.rejected_assertions],
+                extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+            )
+
+    if not at_last_attempt:
+        report = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[
+                *deterministic.issues,
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+            ],
         )
+        return {"is_verified": False, "verification": report}
 
     return _verification_failure(
         state,

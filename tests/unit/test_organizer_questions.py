@@ -40,7 +40,11 @@ def test_every_question_has_facts_and_a_manifest():
 @pytest.mark.parametrize(
     ("case_id", "columns", "rows"),
     [
-        ("organizer_q1", ["id", "growth"], [["1019", 30.3211]]),
+        (
+            "organizer_q1",
+            ["id", "name", "feb_avg", "mar_avg", "growth"],
+            [["1019", "Цетиризин", 1.5464285714285715, 2.015322580645161, 30.3211]],
+        ),
         ("organizer_q2", ["city", "growth"], [["Калининград", 62.29]]),
         ("organizer_q3", ["group", "hours"], [["Доставка заказов", 72.49]]),
         ("organizer_q3", ["group", "hours"], [["Доставка заказов", 72.62]]),
@@ -82,6 +86,15 @@ def test_wrong_results_are_caught(case_id, columns, rows):
 
 def _published_case(case_id):
     """A complete result/answer, with mutations below independent of check_fact."""
+    if case_id == "organizer_q1":
+        # Independent raw-CSV calculation: 1732 / 28 / 40 and 2499 / 31 / 40.
+        return (
+            _result(
+                ["id", "name", "feb_avg", "mar_avg", "growth"],
+                [["1019", "Цетиризин", 1.5464285714285715, 2.015322580645161, 30.3211]],
+            ),
+            "ID | Препарат | Февраль 2025 | Март 2025 | %\n1019 | Цетиризин | 1,55 | 2,02 | 30,32",
+        )
     expected = CASES[case_id]["expect"]["answer_rows"]
     rows = [[item["label"], *(value["value"] for value in item["values"])] for item in expected]
     # Use actual supported quantiles rather than the midpoint of the tolerance.
@@ -154,10 +167,37 @@ def test_every_group_and_its_own_values_must_reach_the_answer(case_id):
 
 
 def test_original_review_reproduction_rejects_false_answers():
-    result = _result(["id", "growth"], [[1019, 30.3211]])
-    assert _evaluate("organizer_q1", result, "Лекарство 1019: рост 30,32 %.")[0] == "passed"
+    result, correct = _published_case("organizer_q1")
+    assert _evaluate("organizer_q1", result, correct)[0] == "passed"
     for text in ["Лекарство 9999: рост 99 %.", "Расчёт не выполнен."]:
         assert _evaluate("organizer_q1", result, text)[0] == "failed"
+
+
+def test_correct_growth_does_not_hide_missing_per_pharmacy_calculation():
+    # Actual preflight: equal pharmacy counts cancel in growth, but the SQL
+    # daily totals 61.86/80.61 are not daily sales per pharmacy 1.55/2.02.
+    result = _result(
+        ["id", "name", "feb_avg", "mar_avg", "growth"],
+        [["1019", "Цетиризин", 61.857142857142854, 80.61290322580645, 30.321090665276017]],
+    )
+    text = "Цетиризин, ID 1019: рост 30,32 %.\nФевраль 2025: 61,86; март 2025: 80,61."
+    status, issues, details = _evaluate("organizer_q1", result, text)
+    assert status == "failed"
+    checks = {check["key"]: check["passed"] for check in details["fact_checks"]}
+    assert checks["medicine.growth_percent"] is True
+    assert checks["medicine.feb_daily_per_pharmacy"] is False
+    assert checks["medicine.mar_daily_per_pharmacy"] is False
+    assert any("not confirmed by tool results" in issue for issue in issues)
+
+
+def test_complete_q1_calculation_must_reach_the_answer_with_the_medicine_name():
+    result, text = _published_case("organizer_q1")
+    for wrong in (
+        "Цетиризин, ID 1019: рост 30,32 %.",
+        text.replace("1,55", "61,86").replace("2,02", "80,61"),
+        text.replace("Цетиризин", "Другое лекарство"),
+    ):
+        assert _evaluate("organizer_q1", result, wrong)[0] == "failed"
 
 
 def test_two_groups_in_one_line_cannot_supply_each_others_numbers():
@@ -208,8 +248,21 @@ def test_decimal_currency_cells_are_checked_as_numbers():
 
 def test_numeric_group_labels_are_separate_clauses():
     result = _result(["id", "growth"], [[1019, 30.3211], [9999, 1]])
-    assert _evaluate("organizer_q1", result, "1019: 1 %, 9999: 30.3211 %.")[0] == "failed"
-    assert _evaluate("organizer_q1", result, "1019: 30.3211 %, 9999: 1 %.")[0] == "passed"
+    case = {
+        **CASES["organizer_q1"],
+        "expect": {
+            "outcome": "answer",
+            "answer_rows": [{"label": "1019", "values": [{"value": 30.3211, "unit": "percent"}]}],
+        },
+    }
+
+    def evaluate(text):
+        return evaluate_case(
+            case, {"results": [result], "answer_blocks": [{"type": "text", "markdown": text}]}
+        )[0]
+
+    assert evaluate("1019: 1 %, 9999: 30.3211 %.") == "failed"
+    assert evaluate("1019: 30.3211 %, 9999: 1 %.") == "passed"
 
 
 def test_percentile_number_in_header_does_not_disable_unit_inheritance():
@@ -217,3 +270,22 @@ def test_percentile_number_in_header_does_not_disable_unit_inheritance():
     text = text.replace("Группа | часы", "Группа | 90-й перцентиль, часы")
     status, issues, _ = _evaluate("organizer_q3", result, text)
     assert status == "passed", issues
+
+
+def test_calculation_constants_and_next_sentence_do_not_hide_wrong_answers():
+    result = _result(["city", "growth"], [["Калининград", 62.29]])
+    good = "Калининград | 62.29 %."
+    assert _evaluate("organizer_q2", result, good)[0] == "passed"
+    assert _evaluate("organizer_q2", result, f"{good} Всего 100 заказов.")[0] == "failed"
+    assert _evaluate("organizer_q2", result, f"{good} Всего 31 заказ.")[0] == "failed"
+    text = "Калининград показал стабильность. Москва выросла на 62,29 %."
+    assert _evaluate("organizer_q2", result, text)[0] == "failed"
+
+
+def test_durations_and_named_groups_are_not_calculation_context():
+    result = _result(["city", "growth"], [["Калининград", 62.29]])
+    good = "Калининград | 62.29 %."
+    assert _evaluate("organizer_q2", result, f"{good} Средняя длительность 28 дней.")[0] == "failed"
+    assert _evaluate("organizer_q2", result, f"{good} Февраль 2025: 31 день.")[0] == "failed"
+    text = "Калининград показал стабильность. Рост Москвы составляет 62,29 %."
+    assert _evaluate("organizer_q2", result, text)[0] == "failed"
