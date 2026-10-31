@@ -7,7 +7,7 @@ import { setAccessToken } from '@/api/session';
 import { chartExamples } from '@/fixtures/charts';
 import { testQueryClient } from '@/test/renderRoute';
 import { server } from '@/test/server';
-import { dataError, displayData } from './data';
+import { dataError, displayData, MAX_CHART_ROWS } from './data';
 import { measureLabel } from './format';
 import { ResultChart } from './ResultChart';
 import { ResultTable } from './ResultTable';
@@ -122,6 +122,21 @@ describe('data mapping without client-side analytical calculations', () => {
     render(<SpecChart spec={projection} data={data} />);
     expect(screen.getByText(/Показана часть результата: 2 строк/)).toBeInTheDocument();
     expect(pieLegend({ ...projection, type: 'pie' }, data).map((v) => plain(v.value))).toEqual(['10 ₽', '10 ₽']);
+  });
+
+  it('shows the whole series without a limit and caps only a huge result', () => {
+    const { spec } = example('line');
+    const months = Array.from({ length: 24 }, (_, i) => [`m${i}`, i]);
+    const { limit: _limit, ...unlimited } = spec;
+    expect(displayData(unlimited, { columns: ['month', 'amount'], rows: months }).rows).toHaveLength(24);
+    expect(displayData({ ...unlimited, limit: null }, { columns: ['month', 'amount'], rows: months }).rows).toHaveLength(24);
+    expect(displayData({ ...unlimited, limit: 5 }, { columns: ['month', 'amount'], rows: months }).rows).toHaveLength(5);
+
+    const huge = Array.from({ length: MAX_CHART_ROWS + 1 }, (_, i) => [`m${i}`, i]);
+    const data = { columns: ['month', 'amount'], rows: huge };
+    expect(displayData(unlimited, data).rows).toHaveLength(MAX_CHART_ROWS);
+    render(<SpecChart spec={unlimited} data={data} />);
+    expect(screen.getByText(new RegExp(`Показана часть результата: ${MAX_CHART_ROWS} строк`))).toBeInTheDocument();
   });
 
   it('pivots pre-aggregated grouped series and keeps gaps distinct from zero', () => {
