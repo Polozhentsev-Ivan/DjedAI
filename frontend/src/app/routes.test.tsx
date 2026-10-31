@@ -21,7 +21,12 @@ describe('routing', () => {
     expect(await screen.findByRole('heading', { name: 'Дашборд: Квартальная статистика продаж' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: 'Чат' }));
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat'); });
-    await userEvent.click(await screen.findByRole('link', { name: /Регионы/ }));
+    const regionsChat = await waitFor(() => {
+      const link = screen.getByRole('link', { name: /Регионы/ });
+      expect(link).toHaveAttribute('href', '/chat/c_reg');
+      return link;
+    });
+    await userEvent.click(regionsChat);
     await waitFor(() => { expect(router.state.location.pathname).toBe('/chat/c_reg'); });
     expect(await screen.findByRole('heading', { name: 'Регионы' })).toBeInTheDocument();
   });
