@@ -94,19 +94,34 @@ TMPDIR=/var/tmp uv run --locked uvicorn --app-dir src djedai.backend.app:app
 
 ## Compose с управляемой моделью для CI
 
-Проверка тех же production-образов без внешнего inference использует отдельный overlay. На Docker-хосте из корня репозитория запустите тестовый OpenAI-совместимый сервер:
+Проверка production-образов без внешнего inference использует отдельный Compose-проект.
+В Linux/WSL нужны Docker Compose, закреплённый Node/npm, зависимости frontend
+(`npm --prefix frontend ci`) и Chromium (`cd frontend && npx playwright install --with-deps chromium`).
+Из корня репозитория:
 
 ```sh
-uv run --locked uvicorn --app-dir tests/e2e serve_cp1:model_app --factory --host 0.0.0.0 --port 18081
+bash scripts/test-compose.sh /tmp/djedai-compose-evidence
 ```
 
-В другом терминале, с `.env`, созданным из безопасного образца:
+Это та же команда, что выполняется в CI: upload → ответ → restart → verify.
+Имя проекта включает GitHub run/attempt, локально — время и PID. Docker назначает
+свободный порт на `127.0.0.1`, затем скрипт получает его через `compose port` и
+использует актуальный URL для smoke, health и verify. После restart порт определяется
+повторно: Docker может назначить новый. Verify открывает прежний путь чата на текущем
+адресе приложения. Управляемая модель запускается
+внутри сети проекта без публикации порта на хосте.
 
-```sh
-docker compose -f compose.yaml -f infra/compose.test.yaml up --build -d --wait
-```
+Скрипт читает `.env.example`, не изменяет рабочий `.env` и не использует его секреты.
+Том SQLite/DuckDB/Parquet принадлежит тестовому проекту. При завершении, ошибке или
+TERM/INT сохраняются логи и удаляются только контейнеры, сеть и тома этого проекта.
+В каталоге результата остаются `compose-run.txt` (проект и URL), `compose.log`,
+`browser-report.json` и скриншоты. Для сравнения прогонов используйте разные каталоги.
 
-Overlay подставляет исключительно тестовые `MODEL_*` в backend и явно связывает `host.docker.internal` с Docker host gateway для Linux CI. Все HTTP-запросы приложения по-прежнему проходят через nginx, SQLite/DuckDB/Parquet используют обычный том. Этот тест не является проверкой выбранной реальной модели; её прогон выполняется отдельно без overlay.
+Для проверки изоляции оставьте рабочее приложение на 8080 запущенным, сохраните
+ID его датасета/чата и выполните команду выше. После прогона проверьте его
+`/api/health`, прежний чат и данные: они должны остаться доступны. Освобождать 8080
+не требуется. Все запросы теста проходят через nginx; качество реальной модели
+проверяется отдельно без overlay.
 
 ## Демо-БД: PostgreSQL и ClickHouse
 
