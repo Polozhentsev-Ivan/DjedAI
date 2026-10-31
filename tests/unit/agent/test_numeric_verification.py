@@ -899,6 +899,8 @@ def test_value_and_period_pair_is_confirmed_by_a_bucket_of_the_result() -> None:
     assert _checked("Минимум: 19 094 (февраль 2025)", results, "Покажи").status != "failed"
     assert _checked("Минимум: 19 094 (март 2025)", results, "Покажи").status == "failed"
     assert _checked("Минимум: 19 094 (май 2025)", results, "Покажи").status == "failed"
+
+
 def test_review_bypasses_stay_rejected() -> None:
     # Алиас cnt не делает MAX подсчётом.
     results = _query_result(

@@ -1,7 +1,13 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import _without_chart_code, build_agent_graph, compose, verify
+from djedai.agent.graph import (
+    _without_chart_code,
+    build_agent_graph,
+    compose,
+    sanitize_charts,
+    verify,
+)
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -11,7 +17,8 @@ from djedai.contracts.agent import (
     Understanding,
     VerifyResponse,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.chart import ChartSpec
+from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 
 def test_compose_verify_loop_and_strip():
@@ -290,3 +297,25 @@ def test_chart_code_is_removed_from_the_answer_text():
         ]
     )
     assert [block.markdown for block in blocks] == ["Итог.", "```sql\nSELECT 1\n```"]
+
+
+def test_line_over_dates_gets_a_time_axis_but_other_lines_do_not():
+    def chart_for(value):
+        result = ToolResult(
+            result_id="r1",
+            tool="run_sql",
+            status="ok",
+            data=ToolResultData(columns=["x", "y"], rows=[[value, 1]], row_count=1),
+        )
+        spec = ChartSpec(
+            chart_id="c",
+            type="line",
+            title="t",
+            x={"field": "x"},
+            y=[{"field": "y"}],
+            result_id="r1",
+        )
+        return sanitize_charts([spec], [result])[0]
+
+    assert chart_for("2025-02-01T00:00:00").x.kind == "time"
+    assert chart_for("Север").x.kind == "category"

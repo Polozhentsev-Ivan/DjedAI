@@ -437,6 +437,7 @@ def describe_dataset(
                     values={
                         "table_name": t_name,
                         "row_count": row_count,
+                        "column_count": len(col_names),
                         "columns": col_names,
                         "column_types": col_types,
                     },

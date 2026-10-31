@@ -1183,6 +1183,19 @@ def _fill_missing_axes(
     return chart.model_copy(update=update) if update else chart
 
 
+def _time_axis_for_date_line(chart: ChartSpec, result: ToolResult, columns: dict) -> ChartSpec:
+    """Линия по датам — временной ряд, даже если модель назвала ось категорией."""
+    column = columns.get(chart.x.field) if chart.x else None
+    if chart.type != "line" or column is None or chart.x.kind != "category":
+        return chart
+    rows = result.data.rows or []
+    if rows and all(
+        re.match(r"\d{4}-\d{2}-\d{2}", str(row[column[0]])) for row in rows if column[0] < len(row)
+    ):
+        return chart.model_copy(update={"x": chart.x.model_copy(update={"kind": "time"})})
+    return chart
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
     """Оставляет только графики, совместимые с сохранённым результатом.
 
@@ -1206,6 +1219,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
                 columns[name] = (index, column_type)
 
         chart = _fill_missing_axes(chart, res, columns)
+        chart = _time_axis_for_date_line(chart, res, columns)
         is_valid = True
 
         # Проверка оси X (наличие и совместимость типа)
@@ -1391,6 +1405,10 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
         )
         if response.status == "success" and response.data:
             blocks = _without_chart_code(response.data.answer_blocks)
+            had_text = any(block.type == "text" for block in response.data.answer_blocks)
+            if had_text and state.get("charts") and not any(b.type == "text" for b in blocks):
+                # Без блока текста ответ из одного графика нечем пересказать в истории.
+                blocks.append(Block(type="text", markdown="Результат показан на графике."))
         else:
             message = (
                 RESTRICTED_CONTEXT_MESSAGE
