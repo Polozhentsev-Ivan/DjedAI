@@ -10,7 +10,7 @@
 
 `ChatTurnState` в `contracts/chat.py` содержит:
 
-- `run_id` для связи с [журналом диагностики](agent-diagnostics.md);
+- `run_id` для связи с [журналом диагностики](../administrator/agent-diagnostics.md);
 - `status`: `running`, `success`, `error`, `timeout`, `cancelled`, `interrupted`;
 - `node`, `phase` (`stage` / `retry`), русский `message`;
 - безопасные `code` и `suggestion` для неуспешного исхода;

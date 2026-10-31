@@ -6,16 +6,16 @@ Backend связывает браузер, источники, аналитич�
 
 | Слой | Основные файлы | Ответственность |
 | --- | --- | --- |
-| Сборка приложения | [app.py](../src/djedai/backend/app.py), [config.py](../src/djedai/backend/config.py) | FastAPI, app state/lifespan, middleware, ошибки, OpenAPI, настройки |
-| HTTP | [api/router.py](../src/djedai/backend/api/router.py), [api/routes/](../src/djedai/backend/api/routes/) | Входные схемы, auth dependencies, статусы, ресурсные операции и потоки |
-| Сессия и доступ | [auth/](../src/djedai/backend/auth/) | Пароль/токен, попытки входа, текущий владелец, проверка уже открытого потока |
-| Датасеты | [dataset_service.py](../src/djedai/backend/dataset_service.py) | Приём CSV/подключений, файлы, обработка, каталог, fresh/refresh, очередь и recovery |
-| Чат | [chat_service.py](../src/djedai/backend/chat_service.py), [chat_turns.py](../src/djedai/backend/chat_turns.py), [admission.py](../src/djedai/backend/admission.py) | Runtime графа, бюджет, admission, сохранение результата/блоков, исход вопроса и отмена |
-| Дашборды | [dashboard_service.py](../src/djedai/backend/dashboard_service.py) | Проверка рецепта, сохранение, snapshot, изменение и автономный refresh |
-| Метрики | [metric_service.py](../src/djedai/backend/metric_service.py) | Предложения, подтверждение, версия и вывод определения из употребления |
-| Модель установки | [model_settings.py](../src/djedai/backend/model_settings.py) | Общие overrides, шифрование ключа, разрешённые модели, короткая проверка |
-| База и результаты | [db/](../src/djedai/backend/db/), [migrations/](../src/djedai/backend/migrations/) | SQLAlchemy, транзакции и ограничения, Parquet, преобразование сохранённого объекта в контракт |
-| Наблюдение | [sse.py](../src/djedai/backend/sse.py), [diagnostics.py](../src/djedai/backend/diagnostics.py) | Wire-события и отдельный операторский JSONL-журнал |
+| Сборка приложения | [app.py](../../src/djedai/backend/app.py), [config.py](../../src/djedai/backend/config.py) | FastAPI, app state/lifespan, middleware, ошибки, OpenAPI, настройки |
+| HTTP | [api/router.py](../../src/djedai/backend/api/router.py), [api/routes/](../../src/djedai/backend/api/routes) | Входные схемы, auth dependencies, статусы, ресурсные операции и потоки |
+| Сессия и доступ | [auth/](../../src/djedai/backend/auth) | Пароль/токен, попытки входа, текущий владелец, проверка уже открытого потока |
+| Датасеты | [dataset_service.py](../../src/djedai/backend/dataset_service.py) | Приём CSV/подключений, файлы, обработка, каталог, fresh/refresh, очередь и recovery |
+| Чат | [chat_service.py](../../src/djedai/backend/chat_service.py), [chat_turns.py](../../src/djedai/backend/chat_turns.py), [admission.py](../../src/djedai/backend/admission.py) | Runtime графа, бюджет, admission, сохранение результата/блоков, исход вопроса и отмена |
+| Дашборды | [dashboard_service.py](../../src/djedai/backend/dashboard_service.py) | Проверка рецепта, сохранение, snapshot, изменение и автономный refresh |
+| Метрики | [metric_service.py](../../src/djedai/backend/metric_service.py) | Предложения, подтверждение, версия и вывод определения из употребления |
+| Модель установки | [model_settings.py](../../src/djedai/backend/model_settings.py) | Общие overrides, шифрование ключа, разрешённые модели, короткая проверка |
+| База и результаты | [db/](../../src/djedai/backend/db), [migrations/](../../src/djedai/backend/migrations) | SQLAlchemy, транзакции и ограничения, Parquet, преобразование сохранённого объекта в контракт |
+| Наблюдение | [sse.py](../../src/djedai/backend/sse.py), [diagnostics.py](../../src/djedai/backend/diagnostics.py) | Wire-события и отдельный операторский JSONL-журнал |
 
 Роутер не должен заново реализовывать статистический инструмент, а frontend не должен воспроизводить серверные бизнес-расчёты. Внутренний результат графа преобразуется в публичные блоки сообщения; это разные уровни контракта.
 
@@ -25,13 +25,13 @@ Backend связывает браузер, источники, аналитич�
 
 В `lifespan` создаются `DatasetService`, `MetricService` и `DashboardService`. Контекст модельного описания каталога получает адресат и разрешение на передачу данных из одного снимка действующих настроек. Перед готовностью приложения выполняется recovery незавершённой обработки датасетов. При завершении закрывается очередь датасетов и освобождается engine.
 
-Миграции — отдельный шаг поставки: [backend-entrypoint.sh](../infra/backend-entrypoint.sh) выполняет `alembic upgrade head`, затем допустимый конфигурацией legacy bootstrap и запуск Uvicorn. Обычный Python import приложения не является заменой миграциям. `init_db/create_all` предназначен для начального dev/test-хранилища, а не обновления существующей базы.
+Миграции — отдельный шаг поставки: [backend-entrypoint.sh](../../infra/backend-entrypoint.sh) выполняет `alembic upgrade head`, затем допустимый конфигурацией legacy bootstrap и запуск Uvicorn. Обычный Python import приложения не является заменой миграциям. `init_db/create_all` предназначен для начального dev/test-хранилища, а не обновления существующей базы.
 
 `GET /health` и `/api/health` возвращают статус процесса, окружение и версию. Обработчик не выполняет контрольный запрос ко всем пользовательским БД, не проверяет наличие каждого Parquet и не вызывает модель. Healthy-контейнер подтверждает доступность этой пробы; пользовательский сценарий проверяется отдельно.
 
 ## Какие сущности сохраняются
 
-Схема задаётся в [db/models.py](../src/djedai/backend/db/models.py), изменения — в миграциях. Таблица ниже объясняет смысл, точные колонки следует смотреть в коде.
+Схема задаётся в [db/models.py](../../src/djedai/backend/db/models.py), изменения — в миграциях. Таблица ниже объясняет смысл, точные колонки следует смотреть в коде.
 
 | Таблица | Содержимое и связь |
 | --- | --- |
@@ -73,7 +73,7 @@ erDiagram
 
 Открытый поток повторно проверяет сессию, включая ожидание между событиями. Logout/истечение прекращают дальнейшее чтение защищённого потока. Auth ограничивает тело, время и частоту попыток до полноценной проверки реквизитов; CORS регулирует origin браузера и не заменяет авторизацию.
 
-Реквизиты источника защищены owner-bound payload и Fernet-ключом установки. Перенос одной строки SQLite к другому владельцу не является поддерживаемым переносом подключения. Утрата `SOURCE_ENCRYPTION_KEY` не исправляется повторной генерацией нового ключа. Настройки модели общие, поэтому их ownership отличается от личных датасетов. Подробности — [конфигурация](configuration.md), [AUTH](decisions/103-owner-isolation.md).
+Реквизиты источника защищены owner-bound payload и Fernet-ключом установки. Перенос одной строки SQLite к другому владельцу не является поддерживаемым переносом подключения. Утрата `SOURCE_ENCRYPTION_KEY` не исправляется повторной генерацией нового ключа. Настройки модели общие, поэтому их ownership отличается от личных датасетов. Подробности — [конфигурация](../configuration.md), [AUTH](../decisions/103-owner-isolation.md).
 
 ## Две разные модели фоновой работы
 
@@ -113,4 +113,4 @@ SQLAlchemy session имеет ограниченную область работ
 
 Проверки backend должны затрагивать настоящее сохранение/перечитывание, другой аккаунт, чужую вложенную ссылку, отзыв уже открытого потока, очередь/отмену, ошибку после accepted, рестарт и совместимость миграций. Для численных методов требуется независимый контроль; для реальной модели — отдельная оценка. Команды и область подтверждения — [quality.md](quality.md).
 
-Практические процедуры находятся в [эксплуатации](operations.md). Поставка использует один процесс backend и локальные хранилища. Увеличение числа Uvicorn workers или реплик требует пересмотра очередей, лимитов, файлов, recovery и координации записи, а не только новой команды запуска.
+Практические процедуры находятся в [эксплуатации](../administrator/operations.md). Поставка использует один процесс backend и локальные хранилища. Увеличение числа Uvicorn workers или реплик требует пересмотра очередей, лимитов, файлов, recovery и координации записи, а не только новой команды запуска.

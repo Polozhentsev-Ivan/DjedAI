@@ -1,16 +1,16 @@
 # Разработка
 
-Глава описывает работу с исходниками. Если нужно только запустить приложение, используйте [Compose-инструкцию](local-build.md): она не требует отдельной установки Python/Node на host. Устройство сервисов и хранения описано в [backend](backend.md), браузерного приложения — в [frontend](frontend.md).
+Глава описывает работу с исходниками. Если нужно только запустить приложение, используйте [Compose-инструкцию](../administrator/local-build.md): она не требует отдельной установки Python/Node на host. Устройство сервисов и хранения описано в [backend](backend.md), браузерного приложения — в [frontend](frontend.md).
 
 ## Окружение
 
 | Инструмент | Где закреплена версия |
 | --- | --- |
-| Python | [.python-version](../.python-version), `requires-python` в [pyproject.toml](../pyproject.toml) |
-| Python dependencies | `pyproject.toml` + [uv.lock](../uv.lock) |
-| uv для CI/образа | [workflow](../.github/workflows/ci.yml), [backend Dockerfile](../infra/backend.Dockerfile) |
-| Node | [.nvmrc](../.nvmrc) и `engines` frontend |
-| npm и frontend dependencies | [package.json](../frontend/package.json), [package-lock.json](../frontend/package-lock.json) |
+| Python | [.python-version](../../.python-version), `requires-python` в [pyproject.toml](../../pyproject.toml) |
+| Python dependencies | `pyproject.toml` + [uv.lock](../../uv.lock) |
+| uv для CI/образа | [workflow](../../.github/workflows/ci.yml), [backend Dockerfile](../../infra/backend.Dockerfile) |
+| Node | [.nvmrc](../../.nvmrc) и `engines` frontend |
+| npm и frontend dependencies | [package.json](../../frontend/package.json), [package-lock.json](../../frontend/package-lock.json) |
 
 Версии берутся из checkout, а не из глобального окружения соседнего проекта. Python использует src-layout и `tool.uv.package=false`; standalone runtime нужен `PYTHONPATH=src`. Pytest получает этот путь из конфигурации.
 
@@ -22,13 +22,13 @@
 uv sync --locked
 ```
 
-Создайте локальный `.env` по [инструкции](local-build.md), сохранив существующие значения. Настройки и секреты не помещаются в Git. Отдельная dev-база и каталоги данных помогают не смешать тестовые действия с рабочей установкой.
+Создайте локальный `.env` по [инструкции](../administrator/local-build.md), сохранив существующие значения. Настройки и секреты не помещаются в Git. Отдельная dev-база и каталоги данных помогают не смешать тестовые действия с рабочей установкой.
 
 ```sh
 uv run --locked alembic upgrade head
 ```
 
-Alembic добавляет/меняет схему существующей БД. `create_all` не заменяет миграции. Применение к рабочей базе выполняется по [эксплуатационной процедуре](operations.md).
+Alembic добавляет/меняет схему существующей БД. `create_all` не заменяет миграции. Применение к рабочей базе выполняется по [эксплуатационной процедуре](../administrator/operations.md).
 
 ## Запуск backend
 
@@ -143,7 +143,7 @@ SQLAlchemy-модели — `backend/db/models.py`, Alembic revisions — `backe
 - Новая долгая операция учитывает `current_budget()` и cancel; permit освобождается по фактическому завершению.
 - Error/empty не превращаются в успешный ноль; truncated data не используется как полный источник зависимой агрегации.
 - Prompt — runtime-вход: его изменение требует соответствующих проверок, даже если файл Markdown.
-- Для новых переменных обновляются конфигурация, безопасный example и [справочник](configuration.md).
+- Для новых переменных обновляются конфигурация, безопасный example и [справочник](../configuration.md).
 - Документируется результат изменения и его проверка; историческая метрика тестов не переносится на новый SHA.
 
-Процесс issue/PR, роли и CI — [project-workflow.md](project-workflow.md), обязательные соглашения — [CONTRIBUTING.md](../CONTRIBUTING.md).
+Процесс issue/PR, роли и CI — [project-workflow.md](project-workflow.md), обязательные соглашения — [CONTRIBUTING.md](../../CONTRIBUTING.md).

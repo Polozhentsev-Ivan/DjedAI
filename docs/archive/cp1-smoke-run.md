@@ -12,7 +12,7 @@
 Отдельный Python-процесс повторно прочитал каталог, сообщения, результат Parquet
 и таблицу DuckDB; проверки прошли.
 
-Сценарий выполняется [скриптом smoke_cp1.py](../scripts/smoke_cp1.py).
+Сценарий выполняется [скриптом smoke_cp1.py](../../scripts/smoke_cp1.py).
 Он вызывает `stream_chat_turn()` напрямую, без HTTP-сервера и браузера.
 Это проверка ядра сценария [#106](https://github.com/Polozhentsev-Ivan/DjedAI/issues/106).
 Полная приёмка чекпоинта с UI и Compose остаётся отдельной работой.
@@ -157,7 +157,7 @@ uv run --locked python scripts/smoke_cp1.py --verify-only artifacts/cp1-smoke/hk
 
 На этапе реализации прошли 449 быстрых тестов, покрытие Python-кода — 94,09%.
 Также прошли Ruff, проверка экспортированных frontend-контрактов и структуры репозитория.
-Исходные четыре [интеграционных теста CLI](../tests/integration/test_cp1_smoke.py)
+Исходные четыре [интеграционных теста CLI](../../tests/integration/test_cp1_smoke.py)
 дали `4 passed`. В них API модели заменён локальным HTTP endpoint, а граф,
 DuckDB, SQLite, Parquet и проверка в новом процессе остаются настоящими.
 Проверены успешный путь, неправильное число в ответе, SQL с константой вместо
@@ -217,7 +217,7 @@ PostgreSQL/ClickHouse и качество на наборе разных воп�
 20 октября 2026 выполнен повтор на **Qwen/Qwen3.6-35B-A3B**, DeepInfra, FP8:
 35B суммарных параметров, открытые веса Apache-2.0. Внешний инференс разрешён
 пользователем; ограничения и серия JSON/latency приведены в
-[профиле PL-1](archive/model-profile-pl1.md).
+[профиле PL-1](model-profile-pl1.md).
 
 Команда из обновлённого checkout с изменениями PR #143:
 

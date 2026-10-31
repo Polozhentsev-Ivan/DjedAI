@@ -58,9 +58,9 @@ npm run test:e2e
 
 Auth harness проверяет transport на настоящем API; production UI проверяет формы и взаимодействие с backend/управляемой моделью. Compose/nginx и restart выполняются отдельным шагом workflow и smoke. Сервер управляемой модели не измеряет качество/latency внешнего провайдера.
 
-Для запущенного приложения `smoke:cp1` использует настоящий API модели и может расходовать средства. Задаются отдельные тестовые `DJEDAI_SMOKE_USERNAME/PASSWORD`, результат пишется вне Git; `--verify` проверяет тот же комплект после restart. [Инструкция](../frontend/README.md).
+Для запущенного приложения `smoke:cp1` использует настоящий API модели и может расходовать средства. Задаются отдельные тестовые `DJEDAI_SMOKE_USERNAME/PASSWORD`, результат пишется вне Git; `--verify` проверяет тот же комплект после restart. [Инструкция](../../frontend/README.md).
 
-Сохранность означает чтение прежних каталогов, истории, result IDs, SQL/параметров и полных данных. Наличие SQLite-строки при потерянном Parquet или fallback preview не является сохранностью полного результата. Backup/restore проверяется отдельно по [operations.md](operations.md).
+Сохранность означает чтение прежних каталогов, истории, result IDs, SQL/параметров и полных данных. Наличие SQLite-строки при потерянном Parquet или fallback preview не является сохранностью полного результата. Backup/restore проверяется отдельно по [operations.md](../administrator/operations.md).
 
 ## Независимые данные
 
@@ -94,7 +94,7 @@ uv run --locked python scripts/eval_runner.py --data-file ../data/08_Фонов�
 
 Нужен полный исходник, совпадающий с manifest, настроенный endpoint и явный выбор такого прогона. JSON отчёта записывается атомарно по ходу работы; interrupted/pending не превращаются в completed/pass. Зависимый контекст исполняет предыдущие вопросы реально, а сбой предпосылки блокирует продолжение.
 
-Автоматические проверки не покрывают большинство смысловых рубрик. Такие рубрики получают `not_evaluated`, а вопрос — `needs_review`: это не принятый ответ, его оценивает человек. Отчёт разделяет `automated_status` и `semantic_status`. Форматы и команды — [eval/README.md](../eval/README.md).
+Автоматические проверки не покрывают большинство смысловых рубрик. Такие рубрики получают `not_evaluated`, а вопрос — `needs_review`: это не принятый ответ, его оценивает человек. Отчёт разделяет `automated_status` и `semantic_status`. Форматы и команды — [eval/README.md](../../eval/README.md).
 
 ## Протокол проверки
 
@@ -113,7 +113,7 @@ uv run --locked python scripts/eval_runner.py --data-file ../data/08_Фонов�
 
 | Область | Практическая граница |
 | --- | --- |
-| Ответы модели | Typed JSON, детерминированная проверка чисел (#167) и LLM verify не дают универсальной гарантии всех чисел/смысла. Итог проверки сохраняется в отчёте, ответ с неподтверждённым числом может быть заменён отказом ([решение #167](decisions/167-numeric-verification.md)). Dashboard — отдельная ветка с собственной проверкой плана/результатов. |
+| Ответы модели | Typed JSON, детерминированная проверка чисел (#167) и LLM verify не дают универсальной гарантии всех чисел/смысла. Итог проверки сохраняется в отчёте, ответ с неподтверждённым числом может быть заменён отказом ([решение #167](../decisions/167-numeric-verification.md)). Dashboard — отдельная ветка с собственной проверкой плана/результатов. |
 | Внешний inference | Ограниченный контекст отправляется провайдеру даже при `ALLOW_DATA_SHARING=false`; это не offline-режим. |
 | Источники | PostgreSQL живой, профиль может устареть. ClickHouse — материализованный snapshot с ограничением размера, не безлимитный pushdown. |
 | Статистика | NULL, малые группы, постоянные ряды, временные бакеты и единицы влияют на применимость. Корреляция не доказывает причинность; прогноз не является известным будущим. |
@@ -126,11 +126,11 @@ uv run --locked python scripts/eval_runner.py --data-file ../data/08_Фонов�
 | Масштабирование | Один backend/локальные файлы; несколько реплик требуют отдельной архитектуры. |
 | Сеть | `ALLOWED_OUTBOUND_HOSTS` не заменяет реально настроенный egress filter. |
 
-Подробные условия — [данные](data-and-catalog.md), [аналитика](analytics.md), [агент](agent.md), [конфигурация](configuration.md), [эксплуатация](operations.md).
+Подробные условия — [данные](data-and-catalog.md), [аналитика](analytics.md), [агент](agent.md), [конфигурация](../configuration.md), [эксплуатация](../administrator/operations.md).
 
 ## Исторические доказательства и текущая готовность
 
-[CP1 smoke](cp1-smoke-run.md), [HK_Datasets](pl3-hk-datasets-run.md), [reasoning benchmark](decisions/159-benchmark-validation.md) и [runtime-тесты](../tests/integration/README.md) имеют свои SHA/окружения. Их нельзя складывать в вымышленный полный прогон сегодняшней версии.
+[CP1 smoke](../archive/cp1-smoke-run.md), [HK_Datasets](../pl3-hk-datasets-run.md), [reasoning benchmark](../decisions/159-benchmark-validation.md) и [runtime-тесты](../../tests/integration/README.md) имеют свои SHA/окружения. Их нельзя складывать в вымышленный полный прогон сегодняшней версии.
 
 Актуальный статус CI смотрится в [Actions](https://github.com/Polozhentsev-Ivan/DjedAI/actions). Docs-only workflow может законно пропустить application suites; это не новый полный релизный прогон. [Устройство CI](project-workflow.md).
 

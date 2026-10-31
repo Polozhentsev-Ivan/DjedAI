@@ -6,8 +6,8 @@ API DjedAI обслуживает тот же backend, с которым раб�
 
 - `GET /api/openapi.json` — маршруты и `components.schemas`;
 - `GET /api/schemas` — реестр JSON Schema общих контрактов;
-- [`src/djedai/contracts`](../src/djedai/contracts/) — Pydantic-контракты;
-- [`backend/api/router.py`](../src/djedai/backend/api/router.py) и [`routes`](../src/djedai/backend/api/routes/) — фактически подключённые обработчики.
+- [`src/djedai/contracts`](../../src/djedai/contracts) — Pydantic-контракты;
+- [`backend/api/router.py`](../../src/djedai/backend/api/router.py) и [`routes`](../../src/djedai/backend/api/routes) — фактически подключённые обработчики.
 
 В dev-запуске напрямую на `localhost:8000` FastAPI также предоставляет `/docs` и `/redoc`. Основной nginx проксирует только `/api/`; `/docs` на frontend-порту не является Swagger UI.
 
@@ -76,7 +76,7 @@ $datasetId = $upload.dataset_id
 $upload
 ```
 
-Успех — 202 с `dataset_id` и `status: processing`. Он означает, что загрузка принята и обработка поставлена в очередь, а не что каталог уже готов. Превышение размера запроса/квоты даёт 413, переполнение очереди — 429, нехватка места — 507 `insufficient_storage`. Стандартные ограничения CSV: 2 000 000 000 байт на запрос и 5 000 000 000 байт хранилища датасетов владельца. Отдельного лимита одного файла нет; подробности в [configuration.md](configuration.md#загрузка-очереди-и-квоты).
+Успех — 202 с `dataset_id` и `status: processing`. Он означает, что загрузка принята и обработка поставлена в очередь, а не что каталог уже готов. Превышение размера запроса/квоты даёт 413, переполнение очереди — 429, нехватка места — 507 `insufficient_storage`. Стандартные ограничения CSV: 2 000 000 000 байт на запрос и 5 000 000 000 байт хранилища датасетов владельца. Отдельного лимита одного файла нет; подробности в [configuration.md](../configuration.md#загрузка-очереди-и-квоты).
 
 ### 2. Дождаться готовности
 
@@ -236,9 +236,9 @@ $resultData = Invoke-RestMethod -Uri "$apiBase/results/$resultId/data" -Headers 
 - `PATCH /dashboards/{id}` — название, удаление виджетов и раскладка;
 - `POST /dashboards/{id}/refresh` — автономно повторить сохранённые инструменты/рецепты без активного чата.
 
-Кнопка **В дашборд** на графике чата вызывает `POST /dashboards` с `dataset_id`, `result_id`, `chart` и необязательным `dashboard_id` для существующей подборки. Рецепт восстанавливает сервер по цепочке сохранённых результатов; клиент его не передаёт. Чужая ссылка отклоняется с 404, неполная цепочка — с 422. Подробнее — [сохранение графика](decisions/88-how-calculated-save-to-dashboard.md).
+Кнопка **В дашборд** на графике чата вызывает `POST /dashboards` с `dataset_id`, `result_id`, `chart` и необязательным `dashboard_id` для существующей подборки. Рецепт восстанавливает сервер по цепочке сохранённых результатов; клиент его не передаёт. Чужая ссылка отклоняется с 404, неполная цепочка — с 422. Подробнее — [сохранение графика](../decisions/88-how-calculated-save-to-dashboard.md).
 
-Refresh синхронно возвращает snapshot; это не SSE задачи датасета и не POST вопроса. Ошибки отдельных виджетов и consistency проверяются в самом snapshot, а не только по HTTP 200. Лимит вызовов общих шагов/виджетов — `DASHBOARD_MAX_TOOL_CALLS=20`. Генерация дашборда по естественному вопросу идёт через агентную ветку чата, а не через отдельный несуществующий `/generate` маршрут. См. [agent.md](agent.md) и [руководство пользователя](user-guide.md).
+Refresh синхронно возвращает snapshot; это не SSE задачи датасета и не POST вопроса. Ошибки отдельных виджетов и consistency проверяются в самом snapshot, а не только по HTTP 200. Лимит вызовов общих шагов/виджетов — `DASHBOARD_MAX_TOOL_CALLS=20`. Генерация дашборда по естественному вопросу идёт через агентную ветку чата, а не через отдельный несуществующий `/generate` маршрут. См. [agent.md](agent.md) и [руководство пользователя](../user/user-guide.md).
 
 ## Настройки модели
 
@@ -258,7 +258,7 @@ Invoke-RestMethod -Method Post -Uri "$apiBase/settings/model/check" -Headers $ap
 
 `PUT` применяет переданные поля; пустая строка возвращает поле к `.env`, отсутствие/null его не меняет. Адрес и ключ разрешены только при `MODEL_SETTINGS_FROM_UI=true`; в серверном default-режиме — 403. Check выполняет один короткий запрос с бюджетом 10 с и ничего не сохраняет. Секрет в check не сохраняется в БД.
 
-`matches_env=false` означает, что пара endpoint+model отличается от серверной: явный reasoning и тариф не применяются, используется restricted data policy. Эта политика всё ещё допускает текущие значения результата; `ALLOW_DATA_SHARING=false` не отключает внешний inference. Подробные правила и защита ключа — [configuration.md](configuration.md#модель-и-настройки-интерфейса).
+`matches_env=false` означает, что пара endpoint+model отличается от серверной: явный reasoning и тариф не применяются, используется restricted data policy. Эта политика всё ещё допускает текущие значения результата; `ALLOW_DATA_SHARING=false` не отключает внешний inference. Подробные правила и защита ключа — [configuration.md](../configuration.md#модель-и-настройки-интерфейса).
 
 ## Ошибки и завершение сессии
 
