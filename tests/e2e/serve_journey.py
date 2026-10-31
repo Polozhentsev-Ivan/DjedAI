@@ -97,7 +97,8 @@ def response_for(name: str, system: str, question: str) -> dict:
             ]
         }
     if name == "VerifyResponse":
-        return {"is_valid": True, "issues": [], "corrected_markdown": None}
+        draft = system.split("Drafted Response:\n", 1)[1].split("\n\nRules:", 1)[0]
+        return {"is_valid": True, "issues": [], "corrected_markdown": draft}
     raise ValueError(f"Unexpected schema: {name}")
 
 

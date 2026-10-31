@@ -103,7 +103,7 @@ async function ask(question) {
   await page.getByRole('textbox', { name: 'Вопрос к данным' }).fill(question);
   await page.getByRole('button', { name: 'Отправить', exact: true }).click();
   await expect(page.locator('[data-role="assistant"]')).toHaveCount(before + 1, { timeout: 90_000 });
-  await expect(page.getByRole('button', { name: 'Отправить', exact: true })).toBeEnabled();
+  await expect(page.getByRole('textbox', { name: 'Вопрос к данным' })).toBeEnabled();
   const chatId = new URL(page.url()).pathname.split('/').at(-1);
   const chat = await json(`/api/chats/${chatId}`);
   const message = chat.messages.filter((m) => m.role === 'assistant').at(-1);
@@ -232,6 +232,7 @@ try {
         assert.equal(widget.status, 'ok');
         assert.notEqual(widget.result_id, s.dashboard.widgets[i].result_id);
         assert.deepEqual(widget.recipe, s.dashboard.widgets[i].recipe);
+        assert.deepEqual(widget.tool_call, s.dashboard.widgets[i].tool_call);
         await result(widget.result_id, i === 1 ? [['North', 100], ['South', 200]] : [['North', s.kind === 'postgres' ? 30 : 20], ['South', 30]]);
       }
       s.refreshed = updated;
@@ -265,6 +266,7 @@ try {
   report.status = 'failed';
   report.failed_phase = values.phase;
   report.error = String(error);
+  report.page_text = await page.locator('body').innerText().catch(() => 'Page unavailable');
   await page.screenshot({ path: path.join(output, `${values.phase}-failure.png`), fullPage: true }).catch(() => {});
   throw error;
 } finally {

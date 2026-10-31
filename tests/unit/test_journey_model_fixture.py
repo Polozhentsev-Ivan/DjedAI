@@ -6,8 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from djedai.contracts.agent import VerifyResponse
+
 fixture = runpy.run_path(str(Path(__file__).parents[1] / "e2e/serve_journey.py"))
 respond = fixture["response_for"]
+
+
+def test_verifier_returns_the_required_string_without_changing_the_draft():
+    draft = "Результат показан в таблице."
+    value = respond("VerifyResponse", f"Drafted Response:\n{draft}\n\nRules:\n", "Verify")
+    assert VerifyResponse.model_validate(value).corrected_markdown == draft
 
 
 def test_follow_up_requires_period_and_current_chat_result():
