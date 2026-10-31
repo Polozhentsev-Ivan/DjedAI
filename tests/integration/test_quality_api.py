@@ -190,9 +190,11 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
         ok(PlanResponse(plan=[])),
         ok(VisualizeResponse(charts=[])),
         ok(
-            ComposeResponse(answer_blocks=[Block(type="text", markdown="Кратко: сумма — 5 376,0.")])
+            ComposeResponse(
+                answer_blocks=[Block(type="text", markdown="Кратко: результат без изменений.")]
+            )
         ),
-        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: сумма — 5 376,0.")),
+        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: результат без изменений.")),
     ]
     with _client(configured) as client:
         upload = client.post("/api/datasets/upload", files=_files())
@@ -213,13 +215,15 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
         send = f"/api/chats/{chat_id}/messages"
         first = client.post(send, json={"text": "Сумма заказов?"})
         assert "event: done" in first.text
+        first_answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
+        assert first_answer["verification"]["status"] == "verified"
         followup = client.post(send, json={"text": "Объясни тот же результат короче."})
         assert "event: done" in followup.text, followup.text
         assert "event: tool_call" not in followup.text
         assert "4 из 100" in followup.text
         answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
-        assert "Кратко: сумма — 5 376,0." in _markdown(answer)
-        assert answer["verification"]["status"] == "verified"
+        assert "Кратко: результат без изменений." in _markdown(answer)
+        assert answer["verification"]["status"] == "not_applicable"
         assert "**Ограничения данных.**" in _markdown(answer)
         assert "4 из 100" in _markdown(answer)
 

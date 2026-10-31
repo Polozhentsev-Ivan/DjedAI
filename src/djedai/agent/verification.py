@@ -803,6 +803,8 @@ def _label_keys(text: str | None) -> set[str]:
         return set()
     normalized = text.lower().replace("ё", "е").replace("_", " ")
     keys: set[str] = set()
+    if re.search(r"\bcount\s*\(\s*\*\s*\)", normalized):
+        keys.add("__rows__")
     for token in re.findall(r"[a-zа-я0-9_]+", normalized):
         if token in _STOPWORDS or token.isdigit() or len(token) < 2:
             continue
@@ -1341,6 +1343,26 @@ _SQL_AGGREGATE_LABELS: tuple[tuple[type[exp.Expression], str], ...] = (
 )
 
 
+def _sql_compatible_caption(caption: str, semantics: str) -> str:
+    aggregate_keys = {
+        "__average__",
+        "__min__",
+        "__max__",
+        "__median__",
+        "__std__",
+        "__variance__",
+        "__total__",
+        "__count__",
+        "__rows__",
+    }
+    actual = _label_keys(semantics) & aggregate_keys
+    return " ".join(
+        word
+        for word in caption.replace("_", " ").split()
+        if (_label_keys(word) & aggregate_keys) <= actual
+    )
+
+
 def _sql_projection_label(projection: exp.Expression) -> str:
     """Смысл выходной колонки SQL не зависит от её произвольного алиаса."""
     inner = projection.this if isinstance(projection, exp.Alias) else projection
@@ -1364,7 +1386,9 @@ def _sql_projection_label(projection: exp.Expression) -> str:
             return ""
     column = inner if isinstance(inner, exp.Column) else inner.find(exp.Column)
     if column is not None:
-        parts.append(column.name)
+        parts.append(
+            _sql_compatible_caption(column.name, " ".join(parts)) if parts else column.name
+        )
     return " ".join(dict.fromkeys(part for part in parts if part))
 
 
@@ -1444,6 +1468,9 @@ def _data_evidence(
                 column = columns[column_index]
             name = _column_name(column)
             label = _column_label(column)
+            sql_label = sql_labels.get(name.lower(), "")
+            if sql_label:
+                label = f"{_sql_compatible_caption(label or name, sql_label)} {sql_label}".strip()
             column_type = (_column_type(column) or "").lower()
             period = row_period
             value_period = row_dates[column_index] if column_index < len(row_dates) else None
@@ -1507,7 +1534,7 @@ def _data_evidence(
                         " ".join(
                             part
                             for part in (
-                                metric_title or sql_labels.get(name.lower()) or label or name,
+                                metric_title or label or name,
                                 row_label,
                             )
                             if part
