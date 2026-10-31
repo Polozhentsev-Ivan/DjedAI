@@ -10,6 +10,7 @@ import duckdb
 import pytest
 import yaml
 
+from djedai.agent.dashboard import dashboard_preview_blocks, dashboard_refresh_blocks
 from djedai.contracts.agent import Block
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.dashboard import (
@@ -756,6 +757,90 @@ def _make_dashboard_widget(widget_id, chart_type="line", result_id="r1", tool_pa
         layout=WidgetLayout(x=0, y=0, w=4, h=2),
         tool_call=WidgetToolCall(tool="run_sql", params=tool_params or {"query": "SELECT 1"}),
     )
+
+
+def dashboard_answer(preview=dashboard_preview_blocks, *, title="Показатели", count=3):
+    snapshot = DashboardSnapshot(
+        dashboard_id="dash_counts",
+        dataset_id="ds_validation",
+        title=title,
+        created_at=datetime.now(UTC),
+        widgets=[_make_dashboard_widget(f"w{i}", result_id=f"r{i}") for i in range(count)],
+    )
+    return {
+        "results": [
+            result([["ready", 123]], columns=["date", "cnt"], result_id=f"r{i}")
+            for i in range(count)
+        ],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": preview(snapshot),
+        "dashboard_snapshot": snapshot,
+    }
+
+
+@pytest.mark.parametrize("preview", [dashboard_preview_blocks, dashboard_refresh_blocks])
+@pytest.mark.parametrize("count", [3, 8])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_dashboard_service_counts_are_verified_by_snapshot(preview, count, serialized):
+    s = dashboard_answer(preview, count=count)
+    original = s["answer_blocks"][0].markdown
+    if serialized:
+        s["dashboard_snapshot"] = s["dashboard_snapshot"].model_dump(mode="json")
+        s["answer_blocks"] = [block.model_dump(mode="json") for block in s["answer_blocks"]]
+    status, issues, details = evaluate_case(case(dashboard={}), s)
+    assert status == "passed", issues
+    assert details["answer"] == original
+    assert details["dashboard_checks"]["widget_count"] == count
+
+
+@pytest.mark.parametrize("number", [3, 999])
+@pytest.mark.parametrize("separate_block", [False, True])
+def test_dashboard_service_count_never_justifies_an_analytical_number(number, separate_block):
+    s = dashboard_answer()
+    claim = f"Всего {number} строк."
+    if separate_block:
+        s["answer_blocks"].append(Block(type="text", markdown=claim))
+    else:
+        s["answer_blocks"][0].markdown += " " + claim
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_dashboard_summary_keeps_correct_analytical_prose_and_checks_title():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown += " Всего 123 строки."
+    assert evaluate_case(case(dashboard={}), s)[0] == "passed"
+    status, issues, _ = evaluate_case(case(dashboard={}), dashboard_answer(title="Всего 999 строк"))
+    assert status == "failed"
+    assert "Number 999 in the answer is not backed by tool results" in issues
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing_snapshot", "invalid_snapshot", "wrong_link", "wrong_count"]
+)
+def test_dashboard_count_exemption_requires_matching_saved_evidence(defect):
+    s = dashboard_answer()
+    if defect == "missing_snapshot":
+        s.pop("dashboard_snapshot")
+    elif defect == "invalid_snapshot":
+        s["dashboard_snapshot"] = {"widgets": []}
+    elif defect == "wrong_link":
+        s["answer_blocks"][-1].dashboard_id = "another_dashboard"
+    else:
+        s["answer_blocks"][0].markdown = s["answer_blocks"][0].markdown.replace("3", "7")
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    number = 7 if defect == "wrong_count" else 3
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_ordinary_widget_mentions_are_still_numeric_claims():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown = "Виджетов: 3."
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert "Number 3 in the answer is not backed by tool results" in issues
 
 
 def test_dashboard_missing_link_or_snapshot_fails():
@@ -1508,3 +1593,85 @@ def test_chart_without_limit_shows_the_whole_series():
     s = state(result(rows, columns=["date", "val"], result_id="r_chart"), "24")
     s["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
     assert not [issue for issue in evaluate_case(c, s)[1] if "truncates" in issue]
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Не удалось получить ответ модели. Попробуйте повторить запрос.", "Changed wording"],
+)
+def test_typed_terminal_error_fails_even_with_matching_facts(message):
+    s = state(result([[123]]), "123")
+    s["answer_blocks"].append(Block(type="error", markdown=message))
+    s["terminal_error"] = "SERVER_ERROR"
+    c = case(facts=[{"key": "count", "comparison": "exact", "value": 123}])
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    graph = SimpleNamespace(invoke=lambda *a, **k: s)
+    report = process_case(c, {c["id"]: c}, None, graph, dataset)
+    assert report["status"] == "failed"
+    assert report["fact_checks"] == []
+    assert report["terminal_error"] == "SERVER_ERROR"
+    assert report["diagnostics"][-1]["status"] == "error"
+    assert report["diagnostics"][-1]["error_type"] == "SERVER_ERROR"
+
+
+def test_recovered_model_error_does_not_fail_successful_turn():
+    def invoke(input_state, config):
+        config["configurable"]["diagnostics"].last_error = "SERVER_ERROR"
+        return state(result([[123]]), "123")
+
+    c = case()
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = process_case(c, {c["id"]: c}, None, SimpleNamespace(invoke=invoke), dataset)
+    assert report["status"] == "passed"
+    assert report["diagnostics"][-1]["status"] == "success"
+    assert report["diagnostics"][-1]["error_type"] is None
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_total_includes_every_outcome_in_partial_and_completed_reports(
+    tmp_path, monkeypatch, blocked
+):
+    skipped = case(outcome="input_error")
+    skipped["id"] = "skipped"
+    questions, manifest = suite_files(tmp_path, [case(), skipped])
+    output = tmp_path / "report.json"
+    outcomes = ("passed", "failed", "needs_review", "skipped", "blocked", "pending")
+
+    def assert_counts(report):
+        summary = report["summary"]
+        assert summary["total"] == len(report["cases"]) == 2
+        assert summary["total"] == sum(summary[key] for key in outcomes)
+
+    def invoke(*args, **kwargs):
+        partial = json.loads(output.read_text("utf-8"))
+        assert_counts(partial)
+        assert partial["summary"]["pending"] == 1
+        assert partial["summary"]["skipped"] == 1
+        return state(result([[123]]), "123")
+
+    def client():
+        if blocked:
+            raise ValueError("Unavailable")
+        return None
+
+    monkeypatch.setattr("scripts.eval_runner.get_agent_client", client)
+    monkeypatch.setattr(
+        "scripts.eval_runner.build_agent_graph", lambda: SimpleNamespace(invoke=invoke)
+    )
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = run_eval(questions, output, manifest_path=manifest, dataset=dataset)
+    assert_counts(report)
+    assert report["summary"]["pending"] == 0
+    assert report["summary"]["blocked" if blocked else "passed"] == 1

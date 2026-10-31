@@ -248,6 +248,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "results": [],
         "charts": [],
         "answer_blocks": [],
+        "terminal_error": None,
         "fast_path": None,
         "retries": 0,
         "compose_retries": 0,
@@ -432,10 +433,12 @@ def understand(state: AgentState, config: RunnableConfig) -> dict:
             return {
                 "understanding": Understanding(intent="invalid"),
                 "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+                "terminal_error": response.error_type,
             }
         return {
             "understanding": Understanding(intent="ambiguous"),
             "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     intent = "ambiguous" if "ambiguous" in last_msg.lower() else "data_question"
@@ -492,6 +495,7 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
             "plan": [],
             "retries": state.get("retries", 0) + 1,
             "answer_blocks": [Block(type="error", markdown=message)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     return {"plan": state.get("plan", []), "retries": state.get("retries", 0) + 1}
@@ -559,12 +563,14 @@ def plan_dashboard(state: AgentState, config: RunnableConfig) -> dict:
             "dashboard_plan": None,
             "dashboard_retries": retries,
             "answer_blocks": [Block(type="error", markdown=message)],
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
         }
 
     return {
         "dashboard_plan": None,
         "dashboard_retries": retries,
         "answer_blocks": [Block(type="error", markdown=MODEL_ERROR_MARKDOWN)],
+        "terminal_error": "UNKNOWN_ERROR",
     }
 
 
@@ -1277,6 +1283,7 @@ def visualize(state: AgentState, config: RunnableConfig) -> dict:
                 "charts": [],
                 "focus_result_ids": focus,
                 "answer_blocks": [Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE)],
+                "terminal_error": response.error_type,
             }
 
     return {"charts": [], "focus_result_ids": focus}
@@ -1363,7 +1370,12 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
                 if response.error_type == "POLICY_RESTRICTED"
                 else MODEL_ERROR_MARKDOWN
             )
-            blocks = [Block(type="error", markdown=message)]
+            return {
+                "answer_blocks": [Block(type="error", markdown=message)],
+                "terminal_error": response.error_type or "UNKNOWN_ERROR",
+                "compose_retries": state.get("compose_retries", 0) + 1,
+                "focus_result_ids": focus,
+            }
     else:
         blocks = [Block(type="text", markdown=f"Based on facts: {facts_and_data}")]
 
@@ -1558,7 +1570,12 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
             rejected=_previous_rejected(state),
             issues=[*deterministic.issues, _verification_issue("llm_unavailable")],
         )
-        return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
+        return {
+            "is_verified": True,
+            "answer_blocks": new_blocks,
+            "verification": failed,
+            "terminal_error": response.error_type or "UNKNOWN_ERROR",
+        }
 
     v_data = response.data
     if v_data.is_valid and deterministic_ok:
