@@ -89,6 +89,40 @@ def test_population_must_be_confirmed_not_guessed() -> None:
     assert wrong.assertions[0].reason_code == "population_mismatch"
 
 
+def test_population_requires_the_entire_condition_in_both_languages() -> None:
+    scenarios = (
+        (
+            "Revenue 1000 USD without cancelled orders",
+            "Revenue 1000 USD excluding cancelled orders",
+            (
+                "Revenue 1000 USD without active orders",
+                "Revenue 1000 USD without test clients",
+                "Revenue 1000 USD among cancelled orders",
+            ),
+        ),
+        (
+            "Выручка 1000 RUB без отменённых заказов",
+            "Выручка 1000 RUB исключая отмененные заказы",
+            (
+                "Выручка 1000 RUB без активных заказов",
+                "Выручка 1000 RUB без тестовых клиентов",
+                "Выручка 1000 RUB только отменённые заказы",
+            ),
+        ),
+    )
+    for fact, same_population, wrong_populations in scenarios:
+        results = [
+            ToolResult(result_id="r_filter", status="ok", tool="run_sql", facts=[Fact(text=fact)])
+        ]
+        evidence = _evidence(results)
+        assert _report(fact, evidence, results).status == "verified"
+        assert _report(same_population, evidence, results).status == "verified"
+        for text in wrong_populations:
+            report = _report(text, evidence, results)
+            assert report.status == "failed"
+            assert report.assertions[0].reason_code == "population_mismatch"
+
+
 def _ratio_result() -> ToolResult:
     metric = MetricProvenance(
         metric_id="cancel_rate",

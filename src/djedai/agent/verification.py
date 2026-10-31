@@ -853,14 +853,27 @@ def _population_compatible(left: str | None, right: str | None) -> bool:
         return True
     if not right:
         return False
-    left_keys = _label_keys(left)
-    right_keys = _label_keys(right)
-    negative = {"без", "исключ", "кроме", "not", "ne", "!="}
-    left_negative = any(token.startswith(tuple(negative)) for token in _words(left))
-    right_negative = any(token.startswith(tuple(negative)) for token in _words(right))
-    if left_negative != right_negative:
-        return False
-    return bool(left_keys & right_keys)
+
+    def signature(text: str) -> tuple[bool, frozenset[tuple[str, ...]]]:
+        negative_words = {"без", "кроме", "without", "excluding", "except", "not", "ne"}
+        scope_words = {"только", "среди", "among", "only"}
+        negative = False
+        conditions: set[tuple[str, ...]] = set()
+        for word in _words(text):
+            if word in negative_words or word.startswith("исключ"):
+                negative = True
+                continue
+            if word in scope_words or word in _STOPWORDS:
+                continue
+            groups = sorted(key for key in _label_keys(word) if key.startswith("__"))
+            conditions.add(tuple(groups) if groups else (word[:5] if not word.isdigit() else word,))
+        return negative, frozenset(conditions)
+
+    # Общие слова «без»/without и «заказы»/orders не подтверждают условие
+    # фильтра. Сравниваем все условия, сохраняя полярность и числовые пороги.
+    claimed = signature(left)
+    actual = signature(right)
+    return bool(claimed[1]) and claimed == actual
 
 
 def _words(text: str) -> list[str]:
