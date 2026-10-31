@@ -123,9 +123,16 @@ class PlannedModel:
     def generate_typed_response(self, system_prompt, user_prompt, response_model, **kwargs):
         name = response_model.__name__
         self.stages.append(name)
+        # This acceptance scenario requests one tool execution. The graph can
+        # replan after exploration or an error; there is no further work here.
+        plan = (
+            [{"tool": self.tool, "args": self.args}]
+            if self.stages.count("PlanResponse") == 1
+            else []
+        )
         values = {
             "Understanding": {"intent": "data_question", "resolved_question": user_prompt},
-            "PlanResponse": {"plan": [{"tool": self.tool, "args": self.args}]},
+            "PlanResponse": {"plan": plan},
             "ComposeResponse": {
                 "answer_blocks": [{"type": "text", "markdown": "Расчёт завершён."}]
             },
@@ -495,6 +502,9 @@ def test_each_tool_survives_protected_runtime_and_restart(seed, monkeypatch, sav
     assert len(results) == 1
     assert_success(tool, results[0])
     assert {"ComposeResponse", "VerifyResponse"} <= set(model.stages)
+    assert model.stages.count("PlanResponse") == (
+        2 if tool in {"describe_column", "value_counts"} else 1
+    )
 
 
 FILTER_CASES = [
