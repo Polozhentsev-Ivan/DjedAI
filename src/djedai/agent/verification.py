@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
@@ -362,6 +363,7 @@ class _FormulaSpec:
     start: int
     end: int
     percent_result: bool = False
+    tree: ast.Expression | None = None
 
 
 class _FormulaError(Exception):
@@ -1882,26 +1884,30 @@ def _formula_specs(text: str, tokens: Sequence[_NumberToken]) -> list[_FormulaSp
         if len(right_tokens) != 1 or len(left_tokens) < 2:
             continue
         result = right_tokens[0]
-        operators: list[str] = []
-        valid = True
-        for before, after in zip(left_tokens, left_tokens[1:], strict=False):
-            gap = text[before.end : after.start].strip()
-            operator = _operator(gap)
-            if operator is None:
-                valid = False
+        # A caption can contain a separately checked calendar count before the
+        # formula: ``February (28 days): 1732 / (28 * 40) = 1.55``.
+        # Leave that prefix outside the formula instead of consuming its number.
+        for first in range(max(0, len(left_tokens) - 32), len(left_tokens) - 1):
+            operands = left_tokens[first:]
+            expression_start = operands[0].start
+            while expression_start > left and text[expression_start - 1] in "( \t":
+                expression_start -= 1
+            tree = _formula_tree(text, operands, expression_start, equal.start())
+            if tree is not None:
+                left_tokens = operands
                 break
-            operators.append(operator)
-        if not valid or len(operators) != len(left_tokens) - 1:
+        else:
             continue
-        expression = text[left_tokens[0].start : left_tokens[-1].end]
+        expression = text[expression_start : equal.start()].strip()
         spec = _FormulaSpec(
             left=tuple(left_tokens),
             result=result,
             expression=expression,
-            raw=text[left_tokens[0].start : result.end],
-            start=left_tokens[0].start,
+            raw=text[expression_start : result.end].strip(),
+            start=expression_start,
             end=result.end,
             percent_result=result.unit == "percent",
+            tree=tree,
         )
         specs.append(spec)
     chosen: list[_FormulaSpec] = []
@@ -1910,6 +1916,35 @@ def _formula_specs(text: str, tokens: Sequence[_NumberToken]) -> list[_FormulaSp
             continue
         chosen.append(spec)
     return chosen
+
+
+def _formula_tree(
+    text: str, tokens: Sequence[_NumberToken], start: int, end: int
+) -> ast.Expression | None:
+    """Parse only bounded arithmetic over the already extracted operands."""
+    parts = []
+    position = start
+    for index, token in enumerate(tokens):
+        gap = text[position : token.start]
+        if not re.fullmatch(r"[\s()+*/×÷:−-]*", gap):
+            return None
+        parts.extend((gap, f"n{index}"))
+        position = token.end
+    tail = text[position:end]
+    if not re.fullmatch(r"[\s)]*", tail):
+        return None
+    parts.append(tail)
+    expression = "".join(parts).translate(str.maketrans({"×": "*", "÷": "/", ":": "/", "−": "-"}))
+    try:
+        tree = ast.parse(expression.strip(), mode="eval")
+    except (SyntaxError, RecursionError):
+        return None
+    allowed = (ast.Expression, ast.BinOp, ast.Name, ast.Load, ast.Add, ast.Sub, ast.Mult, ast.Div)
+    if any(not isinstance(node, allowed) for node in ast.walk(tree)):
+        return None
+    if sum(1 for _ in ast.walk(tree)) > 128:
+        return None
+    return tree
 
 
 def _claim_label(
@@ -2244,6 +2279,7 @@ class _ResultConditions:
     end: date | None = None
     divisors: frozenset[Decimal] = frozenset()
     cutoffs: frozenset[tuple[str, str, date]] = frozenset()
+    percent_scaling: bool = False
 
     def covers(self, period: VerificationPeriod) -> bool:
         first, last = _date(period.start), _date(period.end)
@@ -2374,6 +2410,13 @@ def _sql_conditions(sql: str) -> _ResultConditions:
         max(bounds, default=None),
         frozenset(divisors),
         frozenset(cutoffs),
+        any(
+            isinstance(product.expression, exp.Literal)
+            and not product.expression.is_string
+            and product.expression.this in ("100", "100.0")
+            and isinstance(product.this.unnest(), (exp.Div, exp.Sub))
+            for product in parsed.find_all(exp.Mul)
+        ),
     )
 
 
@@ -2483,6 +2526,16 @@ def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     if value in context.thresholds and _THRESHOLD_BEFORE_RE.search(before):
         return True
     if value == 100 and _PERCENT_FACTOR_BEFORE_RE.search(before):
+        return True
+    if (
+        value == 100
+        and re.search(r"умноженн\w*\s+на\s*$", before, re.I)
+        and (
+            re.search(r"(?:рост|изменени\w*|дол\w*)\s+в\s+процент", draft.text, re.I)
+            or re.search(r"(?:рост|изменени\w*).*разниц\w*.*дел[её]нн\w*\s+на", draft.text, re.I)
+        )
+        and any(result.percent_scaling for result in context.results.values())
+    ):
         return True
     # «31 марта 2025»: день даты, а период проверяется отдельным утверждением.
     return (
@@ -2750,7 +2803,7 @@ def _apply_formula(left: Decimal, operator: str, right: Decimal) -> Decimal:
 
 
 def _evaluate_formula(
-    tokens: Sequence[_NumberToken], operators: Sequence[str]
+    tokens: Sequence[_NumberToken], operators: Sequence[str], tree: ast.Expression | None = None
 ) -> tuple[Decimal, str]:
     values = [_formula_operand_value(tokens[0])]
     units = [_formula_unit(tokens[0].unit)]
@@ -2791,6 +2844,29 @@ def _evaluate_formula(
         values.append(_apply_formula(left, operator, right))
         units.append(unit)
         currencies.append(currency)
+
+    if tree is not None:
+        values.clear()
+        units.clear()
+        currencies.clear()
+
+        def visit(node: ast.AST) -> None:
+            if isinstance(node, ast.Name):
+                token = tokens[int(node.id[1:])]
+                values.append(_formula_operand_value(token))
+                units.append(_formula_unit(token.unit))
+                currencies.append(token.currency)
+            elif isinstance(node, ast.BinOp):
+                visit(node.left)
+                visit(node.right)
+                operator = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}[type(node.op)]
+                pending.append((operator, 0))
+                apply()
+            else:
+                raise _FormulaError("invalid_formula")
+
+        visit(tree.body)
+        return values[0], units[0]
 
     for index, operator in enumerate(operators):
         while pending and precedence[pending[-1][0]] >= precedence[operator]:
@@ -2847,7 +2923,7 @@ def _resolve_formula(
     sql_divisors: set[Decimal] = set()
     operators: list[str] = []
     for before, after in zip(raw_spec.left, raw_spec.left[1:], strict=False):
-        gap = draft.text[before.end : after.start].strip()
+        gap = draft.text[before.end : after.start].strip().replace("(", "").replace(")", "").strip()
         operator = _operator(gap)
         if operator is None:
             _reject(draft, "invalid_formula")
@@ -2926,10 +3002,21 @@ def _resolve_formula(
         _reject(draft, "number_not_found")
         return
     try:
-        calculated, unit = _evaluate_formula(resolved_tokens, operators)
+        calculated, unit = _evaluate_formula(resolved_tokens, operators, raw_spec.tree)
     except _FormulaError as error:
         _reject(draft, error.code)
         return
+    # An explicit final ``* 100`` already expresses a ratio as percentage points.
+    body = raw_spec.tree.body if raw_spec.tree else None
+    if (
+        draft.unit == "percent"
+        and unit in ("number", "ratio", "unknown", "percent")
+        and isinstance(body, ast.BinOp)
+        and isinstance(body.op, ast.Mult)
+        and isinstance(body.right, ast.Name)
+        and resolved_tokens[int(body.right.id[1:])].value == 100
+    ):
+        calculated /= 100
     if not _formula_result_matches(
         draft,
         calculated,

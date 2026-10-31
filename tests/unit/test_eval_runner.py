@@ -279,6 +279,50 @@ def test_following_sentence_keeps_the_subject_of_the_required_answer_row(text, e
         assert "Answer is missing or misstates values for 'Калининград'" in issues
 
 
+@pytest.mark.parametrize("text", ["1732 / 28 / 40 = 1,55", "1732 / (28 × 40) = 1,55"])
+def test_verified_formula_constants_do_not_authorize_unrelated_measurements(text):
+    import duckdb
+
+    from djedai.agent.graph import verify
+    from djedai.analytics.tools import run_sql
+    from djedai.contracts.agent import Block as AnswerBlock
+    from djedai.contracts.agent import Message
+
+    with duckdb.connect() as connection:
+        result = run_sql(
+            "SELECT 1732 AS sales, 40 AS pharmacies, 1732.0 / (28 * 40) AS daily",
+            connection=connection,
+        )
+    state = {
+        "messages": [Message(role="user", content="Пришли расчёт.")],
+        "results": [result],
+        "answer_blocks": [AnswerBlock(type="text", markdown=text)],
+        "compose_retries": 2,
+    }
+    report = verify(state, {"configurable": {}})["verification"]
+    assert report.status == "verified"
+    case = answer_case("formula_constants", answer_contains_value={"from_result": True})
+
+    def evaluate(answer, verification=report):
+        return evaluate_case(
+            case,
+            {
+                "results": [result],
+                "verification": verification,
+                "answer_blocks": [Block("text", answer)],
+            },
+        )
+
+    assert evaluate(text)[0] == "passed"
+    assert evaluate(text, report.model_dump(mode="json"))[0] == "passed"
+    assert evaluate(text, None)[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"result_ids": ["other"]}))[0] == "failed"
+    assert evaluate(text, report.model_copy(update={"status": "failed"}))[0] == "failed"
+    status, issues, _ = evaluate(f"{text}\nСредняя длительность 28 дней.")
+    assert status == "failed"
+    assert "Number 28 in the answer is not backed by tool results" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",
