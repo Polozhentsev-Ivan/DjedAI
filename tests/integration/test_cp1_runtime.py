@@ -128,13 +128,13 @@ def test_browser_model_supports_successful_numeric_verification(question: str) -
         )
         try:
             composed = model.generate_typed_response(
-                load_prompt("compose").format(facts=facts), question, ComposeResponse
+                load_prompt("compose").format(catalog="", facts=facts), question, ComposeResponse
             )
             assert composed.status == "success" and composed.data is not None
             draft = composed.data.answer_blocks[0].markdown
             assert draft
             verified = model.generate_typed_response(
-                load_prompt("verify").format(facts=facts, draft=draft),
+                load_prompt("verify").format(catalog="", facts=facts, draft=draft),
                 "Verify the numbers and formats.",
                 VerifyResponse,
             )
@@ -327,10 +327,17 @@ def test_unverified_numbers_are_neither_published_nor_saved(
                 )
             if response_model is ComposeResponse:
                 self.compose_calls += 1
+                # Reach the model verifier before its explicit rejection; later drafts
+                # exercise the deterministic unsupported-number retry as well.
+                draft = (
+                    "Количество строк: 2"
+                    if failure == "timeout_after_rejection" and self.compose_calls == 1
+                    else "Количество строк: 999"
+                )
                 return ModelResponse(
                     status="success",
                     data=ComposeResponse.model_validate(
-                        {"answer_blocks": [{"type": "text", "markdown": "Количество строк: 999"}]}
+                        {"answer_blocks": [{"type": "text", "markdown": draft}]}
                     ),
                 )
             if response_model is VerifyResponse:
@@ -340,7 +347,7 @@ def test_unverified_numbers_are_neither_published_nor_saved(
                         status="success",
                         data=VerifyResponse(
                             is_valid=False,
-                            issues=["999 не подтверждено данными"],
+                            issues=["Не показана запрошенная сумма amount"],
                             corrected_markdown="Количество строк: 2",
                         ),
                     )
@@ -371,7 +378,8 @@ def test_unverified_numbers_are_neither_published_nor_saved(
             assert names[-1] == "error" and "done" not in names and "block" not in names
             assert [message["role"] for message in history] == ["user"]
             expected_calls = 2 if failure == "timeout_after_rejection" else 1
-            assert model.compose_calls == model.verify_calls == expected_calls
+            assert model.verify_calls == expected_calls
+            assert model.compose_calls == 2
 
 
 def test_missing_foreign_and_unowned_resources_are_hidden(configured, monkeypatch) -> None:

@@ -7,8 +7,6 @@ import pytest
 
 from djedai.analytics.registry import execute_tool
 from djedai.analytics.scope import quote_catalog_tables, rename_reserved_ctes
-
-
 from djedai.data.service import CsvSource, ingest_csv_dataset
 
 TABLE = "08_fonovye_zadaniya"
@@ -124,13 +122,41 @@ def test_forbidden_function_hint_names_no_sql(connection):
 def test_cte_named_pivot_is_renamed_and_runs():
     sql = "WITH a AS (SELECT 1 AS x), pivot AS (SELECT x FROM a) SELECT 'pivot' AS s, x FROM pivot"
     renamed = rename_reserved_ctes(sql)
-    assert renamed.endswith("FROM pivot_cte") and "'pivot' AS s" in renamed
+    assert renamed.endswith('FROM "pivot"') and "'pivot' AS s" in renamed
     assert duckdb.connect().execute(renamed).fetchall() == [("pivot", 1)]
 
 
 def test_pivot_operator_is_left_alone():
     sql = "SELECT * FROM t PIVOT (SUM(x) FOR y IN (1, 2))"
     assert rename_reserved_ctes(sql) == sql
+
+
+@pytest.mark.parametrize(
+    "prefix", ["SELECT 'WITH pivot AS (' AS note,", "/* WITH pivot AS ( */ SELECT"]
+)
+def test_pivot_declaration_inside_literal_or_comment_does_not_change_operator(prefix):
+    sql = f"{prefix} * FROM t PIVOT (SUM(x) FOR y IN ('a', 'b'))"
+    assert rename_reserved_ctes(sql) == sql
+
+
+@pytest.mark.parametrize("operator", ["PIVOT", "UNPIVOT"])
+def test_reserved_cte_keeps_its_operator_and_does_not_collide(operator):
+    if operator == "PIVOT":
+        source = "SELECT * FROM t PIVOT (SUM(x) FOR y IN ('a', 'b'))"
+        expected = [(1, 2, 42)]
+    else:
+        source = "SELECT * FROM (SELECT 1 AS a, 2 AS b) UNPIVOT (x FOR y IN (a, b))"
+        expected = [("a", 1, 42), ("b", 2, 42)]
+    name = operator.lower()
+    sql = (
+        f"WITH {name} AS ({source}), {name}_cte AS (SELECT 42 AS n) "
+        f"SELECT {name}.*, n FROM {name} CROSS JOIN {name}_cte"
+    )
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE t AS SELECT 'a' y, 1 x UNION ALL SELECT 'b', 2")
+        result = execute_tool("run_sql", {"sql": sql}, connection=connection, allowed_tables={"t"})
+    assert result.status == "ok", result.error
+    assert [tuple(row) for row in result.data.rows] == expected
 
 
 @pytest.mark.parametrize(

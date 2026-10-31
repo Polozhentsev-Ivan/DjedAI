@@ -430,6 +430,169 @@ def _missing_answer_values(case: dict, blocks: Sequence[Any], text: str) -> list
     return issues
 
 
+def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list[str]:
+    """Check labelled answers against references, preserving group/value association.
+
+    A table or chart block does not exempt these explicit text requirements. Units
+    may be stated in a table header; each group's values must occur in its own
+    line/sentence. This is a numeric check, not a judgement of the explanation.
+    """
+    expect = case.get("expect") or {}
+    issues = []
+    plain = text.replace("*", "").replace("`", "")
+    for pattern in expect.get("answer_units") or []:
+        if not re.search(pattern, plain, re.I):
+            issues.append(f"Answer does not state the required unit: {pattern}")
+    # Decimal separators must not split sentences.
+    lines = re.split(r"\n|;|(?<!\d)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain)
+    unit_patterns = {
+        "hours": r"(?:ч(?:ас\w*)?\.?|hours?|h)\b",
+        "seconds": r"(?:сек\w*|seconds?|secs?|s)\b",
+        "percent": r"(?:%|процент\w*|percent\w*)",
+        "rub": r"(?:руб\w*\.?|RUB|₽)",
+        "attempts": r"(?:попыт\w*|attempts?)\b",
+    }
+
+    def stated_unit(suffix: str) -> str | None:
+        for unit, pattern in unit_patterns.items():
+            if re.match(r"\s*" + pattern, suffix, re.I):
+                return unit
+        return None
+
+    table_headers: dict[str, dict[int, str]] = {}
+    header: dict[int, str] = {}
+    row_labels = [
+        label
+        for row in expect.get("answer_rows") or []
+        for label in [row["label"], *row.get("aliases", [])]
+    ]
+    for line in lines:
+        if "|" not in line:
+            header = {}
+            continue
+        cells = line.split("|")
+        if not any(
+            re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in row_labels
+        ):
+            found = {}
+            for index, cell in enumerate(cells):
+                for unit, pattern in unit_patterns.items():
+                    if re.search(pattern, cell, re.I):
+                        found[index] = unit
+                        break
+            if found:
+                header = found
+        table_headers[line] = dict(header)
+    for reference in expect.get("answer_rows") or []:
+        labels = [reference["label"], *reference.get("aliases", [])]
+
+        def labelled(line: str, labels=labels) -> bool:
+            return any(
+                re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in labels
+            )
+
+        def has_values(values: Sequence[Any], required=reference["values"]) -> bool:
+            numbers = []
+            for value in values:
+                number = _decimal(value)
+                if isinstance(value, str) and re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?", value):
+                    number = Decimal(value.replace(",", "."))
+                if number is not None:
+                    numbers.append(number)
+            return all(
+                any(
+                    abs(number - Decimal(str(wanted["value"])))
+                    <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    for number in numbers
+                )
+                for wanted in required
+            )
+
+        def states_values(line: str, required=reference["values"]) -> bool:
+            if not has_values(list(_text_numbers(line))):
+                return False
+            for wanted in required:
+                unit = wanted.get("unit")
+                if not unit:
+                    continue
+                found = False
+                for match in NUMBER_RE.finditer(line):
+                    numbers = list(_text_numbers(match[0]))
+                    if not numbers or abs(numbers[0] - Decimal(str(wanted["value"]))) > Decimal(
+                        str(wanted.get("abs_tolerance", 0))
+                    ):
+                        continue
+                    explicit = stated_unit(line[match.end() :])
+                    # Units may be inherited from a table header, but an explicit
+                    # contradictory suffix always wins over unrelated text.
+                    inherited = table_headers.get(line, {}).get(line[: match.start()].count("|"))
+                    if explicit == unit or explicit is None and inherited == unit:
+                        found = True
+                if not found:
+                    return False
+            return True
+
+        if not any(labelled(line) and states_values(line) for line in lines):
+            issues.append(f"Answer is missing or misstates values for '{reference['label']}'")
+        if not any(
+            any(labelled(str(cell)) for cell in row) and has_values(row)
+            for group in _structured_groups(results)
+            for row in group
+            if isinstance(row, (list, tuple))
+        ):
+            issues.append(f"Tool results do not confirm the row for '{reference['label']}'")
+    return issues
+
+
+def _duration_result_units(case: dict, results: Sequence[ToolResult]) -> list[ToolResult]:
+    """Expose independently converted hours for explicitly named duration columns.
+
+    Keep original cells as evidence too. No unit is inferred from the magnitude
+    or an ambiguous SQL alias such as ``value``. Used only by opted-in cases.
+    """
+    if (case.get("expect") or {}).get("result_duration_unit") != "hours":
+        return list(results)
+    normalized = []
+    for result in results:
+        data = result.data
+        names = _column_names(data)
+        conversions = []
+        for index, name in enumerate(names):
+            if re.search(r"(?:^|_)(?:secs?|seconds?)$", name, re.I):
+                conversions.append((index, Decimal(3600)))
+            elif re.search(r"(?:^|_)(?:mins?|minutes?)$", name, re.I):
+                conversions.append((index, Decimal(60)))
+        if data is None or not conversions:
+            normalized.append(result)
+            continue
+        rows = []
+        for row in data.rows:
+            converted = []
+            for index, divisor in conversions:
+                try:
+                    value = Decimal(str(row[index])) / divisor
+                    converted.append(float(value) if value.is_finite() else None)
+                except (InvalidOperation, IndexError):
+                    converted.append(None)
+            rows.append([*row, *converted])
+        normalized.append(
+            result.model_copy(
+                update={
+                    "data": data.model_copy(
+                        update={
+                            "columns": [
+                                *data.columns,
+                                *(f"{names[index]}_as_hours" for index, _ in conversions),
+                            ],
+                            "rows": rows,
+                        }
+                    )
+                }
+            )
+        )
+    return normalized
+
+
 def _verified_percentage(
     fact: dict,
     results: Sequence[Any],
@@ -1168,6 +1331,7 @@ def evaluate_case(
         ):
             automated_issues.append("The answer contains no text block")
 
+        results = _duration_result_units(case, results)
         reference_facts = expect.get("facts") or []
         for fact in reference_facts:
             result_ok = check_fact(
@@ -1195,6 +1359,7 @@ def evaluate_case(
                 )
         automated_issues.extend(_answer_issues(case, text, results))
         automated_issues.extend(_missing_answer_values(case, blocks, text))
+        automated_issues.extend(_required_answer_rows(case, text, results))
 
         # Chart checks
         chart_issues, chart_details = _check_chart(

@@ -51,33 +51,54 @@ def _skip_quoted(sql: str, start: int) -> int:
     return start
 
 
-_RESERVED_CTE = re.compile(r"(?:\bwith|,)\s+(pivot|unpivot)\s+as\s*\(", re.IGNORECASE)
-
-
 def rename_reserved_ctes(sql: str) -> str:
-    """Rename a CTE called ``pivot``: DuckDB rejects it, and models keep writing it.
+    """Quote reserved CTE names and their references without renaming SQL operators.
 
-    Such a query is a syntax error anyway, so the rename cannot change a working one.
-    Literals, comments and quoted identifiers stay intact.
+    Quoting preserves the CTE's identity, including when ``pivot_cte`` already exists.
+    Only unquoted tokens outside literals/comments participate in the rewrite.
     """
-    reserved = {match.group(1).casefold() for match in _RESERVED_CTE.finditer(sql)}
-    if not reserved:
-        return sql
-    parts: list[str] = []
+    tokens: list[tuple[int, int, str]] = []
     index = 0
     while index < len(sql):
         end = _skip_quoted(sql, index)
         if end != index:
-            parts.append(sql[index:end])
+            if not sql.startswith(("--", "/*"), index):
+                tokens.append((index, end, ""))
             index = end
         elif word := _WORD.match(sql, index):
-            parts.append(
-                f"{word.group()}_cte" if word.group().casefold() in reserved else word.group()
-            )
+            tokens.append((index, word.end(), word.group().casefold()))
             index = word.end()
         else:
-            parts.append(sql[index])
+            if not sql[index].isspace():
+                tokens.append((index, index + 1, sql[index]))
             index += 1
+
+    declarations = {
+        index
+        for index, (_, _, token) in enumerate(tokens)
+        if token in {"pivot", "unpivot"}
+        and index > 0
+        and tokens[index - 1][2] in {"with", "recursive", ","}
+        and [value for _, _, value in tokens[index + 1 : index + 3]] == ["as", "("]
+    }
+    reserved = {tokens[index][2] for index in declarations}
+    if not reserved:
+        return sql
+    parts: list[str] = []
+    previous_end = 0
+    for index, (start, end, token) in enumerate(tokens):
+        if token not in reserved:
+            continue
+        previous = tokens[index - 1][2] if index else ""
+        following = tokens[index + 1][2] if index + 1 < len(tokens) else ""
+        if (
+            index in declarations
+            or following == "."
+            or previous in {"from", "join", "table", ",", "pivot", "unpivot"}
+        ):
+            parts.extend((sql[previous_end:start], '"' + sql[start:end] + '"'))
+            previous_end = end
+    parts.append(sql[previous_end:])
     return "".join(parts)
 
 
