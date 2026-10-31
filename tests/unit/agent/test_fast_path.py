@@ -90,6 +90,51 @@ def test_single_table_allows_omitting_its_name(one_table):
     assert classify_fast_query("Какие колонки?", one_table).table_id == "orders"
 
 
+@pytest.mark.parametrize(
+    "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
+)
+@pytest.mark.parametrize("quotes", [('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("`", "`")])
+@pytest.mark.parametrize("name", ["table orders.csv", "таблица orders.csv", "table", "a  b.csv"])
+def test_quoted_table_names_are_preserved(catalog, template, quotes, name):
+    target = catalog.tables[1].model_copy(update={"original_name": name})
+    other = catalog.tables[0].model_copy(
+        update={"original_name": "a b.csv" if name == "a  b.csv" else "orders.csv"}
+    )
+    catalog = catalog.model_copy(update={"tables": [other, target]})
+    question = template.format(quotes[0] + name + quotes[1])
+
+    path = classify_fast_query(question, catalog)
+
+    assert path is not None
+    assert path.table_id == target.table_id
+
+
+def test_unknown_quoted_generic_word_is_not_an_implicit_single_table(one_table):
+    assert classify_fast_query('Сколько строк в таблице "table"?', one_table) is None
+    assert classify_fast_query('Сколько строк в таблице ""?', one_table) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many rows in tableorders.csv?",
+        "Show structure of tableorders.csv?",
+        "What columns are in tableorders.csv?",
+        "Show columns of tableorders.csv?",
+        "Сколько строк в таблицаorders.csv?",
+        "Какова структура таблицаorders.csv?",
+        "Какие колонки в таблицаorders.csv?",
+    ],
+)
+def test_table_keyword_requires_a_word_boundary(catalog, question):
+    name = "таблицаorders.csv" if "таблицаorders.csv" in question else "tableorders.csv"
+    other = catalog.tables[0].model_copy(update={"original_name": "orders.csv"})
+    target = catalog.tables[1].model_copy(update={"original_name": name})
+    catalog = catalog.model_copy(update={"tables": [other, target]})
+
+    assert classify_fast_query(question, catalog).table_id == target.table_id
+
+
 def test_count_sql_quotes_the_verified_table_and_counts_all_rows():
     assert count_sql('orders"2024') == 'SELECT COUNT(*) AS row_count FROM "orders""2024"'
 

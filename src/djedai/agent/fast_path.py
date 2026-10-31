@@ -38,7 +38,7 @@ _COUNT_RE = re.compile(
     rf"^(?:{_COUNT_PREFIX})"
     r"(?:\s+(?:в|во|in|of)\s+"
     r"(?:(?:этой|данной|this|the)\s+)?"
-    r"(?:(?:таблице|таблицы|таблица|таблицу|table)\s*)?"
+    r"(?:(?:таблице|таблицы|таблица|таблицу|table)(?:\s+|$))?"
     r"(?P<table>.+))?$",
     re.IGNORECASE,
 )
@@ -55,7 +55,7 @@ _STRUCTURE_PATTERNS = [
     ),
     re.compile(
         r"^(?:какая|какова)\s+(?:структура|схема)(?:\s+(?:у|в))?\s*"
-        r"(?:(?:таблицы|таблица|таблице|таблицу)\s*)?"
+        r"(?:(?:таблицы|таблица|таблице|таблицу)(?:\s+|$))?"
         r"(?P<table>.*)$"
     ),
     re.compile(
@@ -66,7 +66,7 @@ _STRUCTURE_PATTERNS = [
     re.compile(
         r"^(?:какие|какой)\s+(?:колонки|столбцы|поля)"
         r"(?:\s+(?:в|у|есть))?\s*"
-        r"(?:(?:таблице|таблицы|таблица|таблицу)\s*)?"
+        r"(?:(?:таблице|таблицы|таблица|таблицу)(?:\s+|$))?"
         r"(?P<table>.*)$"
     ),
     re.compile(
@@ -76,17 +76,17 @@ _STRUCTURE_PATTERNS = [
     re.compile(
         r"^(?:show|display|describe)\s+(?:me\s+)?(?:the\s+)?"
         r"(?:structure|schema)(?:\s+of)?\s*"
-        r"(?:(?:the\s+)?(?:table|dataset)\s*)?(?P<table>.*)$",
+        r"(?:(?:the\s+)?(?:table|dataset)(?:\s+|$))?(?P<table>.*)$",
         re.IGNORECASE,
     ),
     re.compile(
         r"^(?:what|which)\s+(?:columns|fields)\s+(?:are\s+)?(?:in|does)\s+"
-        r"(?:the\s+)?(?:(?:table)\s*)?(?P<table>.+?)(?:\s+have)?$",
+        r"(?:the\s+)?(?:table\s+)?(?P<table>.+?)(?:\s+have)?$",
         re.IGNORECASE,
     ),
     re.compile(
         r"^(?:show|display)\s+(?:me\s+)?(?:the\s+)?(?:columns|fields)\s+"
-        r"(?:of|in)\s+(?:the\s+)?(?:(?:table)\s*)?(?P<table>.+)$",
+        r"(?:of|in)\s+(?:the\s+)?(?:table\s+)?(?P<table>.+)$",
         re.IGNORECASE,
     ),
     re.compile(r"^describe\s+(?:the\s+)?(?:table\s+)?(?P<table>.+)$", re.IGNORECASE),
@@ -104,7 +104,12 @@ class FastPathError(ValueError):
 
 def _normalize(text: str) -> str:
     text = text.strip()
-    text = re.sub(r"\s+", " ", text)
+    # Пробелы внутри явно указанного имени принадлежат имени, а не грамматике.
+    text = re.sub(
+        r""""[^"]*"|'[^']*'|«[^»]*»|“[^”]*”|`[^`]*`|\s+""",
+        lambda match: " " if match.group().isspace() else match.group(),
+        text,
+    )
     text = re.sub(r"(?:\s*[?!.])+$", "", text)
     text = re.sub(r"\s*,?\s*(?:пожалуйста|please)$", "", text, flags=re.IGNORECASE)
     return text.strip().casefold()
@@ -115,15 +120,13 @@ def _clean_table_token(token: str | None) -> str:
     if not token:
         return ""
     cleaned = token.strip().strip("?!. ")
-    if len(cleaned) >= 2:
-        opener = cleaned[0]
-        closer = _QUOTE_PAIRS.get(opener)
-        if closer is not None and cleaned[-1] == closer:
-            cleaned = cleaned[1:-1].strip()
-    if _GENERIC_TABLE.fullmatch(cleaned):
-        return ""
     previous = None
     while cleaned != previous:
+        if len(cleaned) >= 2 and _QUOTE_PAIRS.get(cleaned[0]) == cleaned[-1]:
+            # Граница кавычек отделяет имя от служебных слов вопроса.
+            return cleaned[1:-1] or cleaned
+        if _GENERIC_TABLE.fullmatch(cleaned):
+            return ""
         previous = cleaned
         cleaned = _TABLE_PREFIX.sub("", cleaned).strip()
     return cleaned
