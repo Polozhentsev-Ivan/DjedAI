@@ -1,10 +1,15 @@
 """Таблицы с цифрой в начале имени и подсказки в ошибках SQL (#233)."""
 
+from datetime import UTC, datetime
+
 import duckdb
 import pytest
 
 from djedai.analytics.registry import execute_tool
 from djedai.analytics.scope import quote_catalog_tables, rename_reserved_ctes
+
+
+from djedai.data.service import CsvSource, ingest_csv_dataset
 
 TABLE = "08_fonovye_zadaniya"
 
@@ -126,3 +131,67 @@ def test_cte_named_pivot_is_renamed_and_runs():
 def test_pivot_operator_is_left_alone():
     sql = "SELECT * FROM t PIVOT (SUM(x) FOR y IN (1, 2))"
     assert rename_reserved_ctes(sql) == sql
+
+
+@pytest.mark.parametrize(
+    ("sql", "name"),
+    [
+        ('SELECT COUNT(*) FROM "1e3" WHERE amount < 1e3', "1e3"),
+        ("SELECT 1E3 FROM t", "1e3"),
+        ("SELECT 1 FROM t WHERE x < 1e-3", "1e"),
+        ("SELECT 1.5e3 FROM t", "5e3"),
+        ("SELECT 0x1F FROM t", "0x1f"),
+        ("SELECT 1 FROM t LIMIT 1e3", "1e3"),
+    ],
+)
+def test_numeric_constant_stays_when_a_table_reads_the_same(sql, name):
+    assert quote_catalog_tables(sql, [name]) == sql
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("SELECT * FROM 1e3", 'SELECT * FROM "1e3"'),
+        ("SELECT * FROM t JOIN\n 1e3 ON true", 'SELECT * FROM t JOIN\n "1e3" ON true'),
+        ("SELECT * FROM 1e3 WHERE x < 1e3", 'SELECT * FROM "1e3" WHERE x < 1e3'),
+    ],
+)
+def test_numeric_lookalike_is_a_table_after_from_or_join(sql, expected):
+    assert quote_catalog_tables(sql, ["1e3"]) == expected
+
+
+def test_numeric_table_name_through_real_ingest_keeps_the_constant(tmp_path):
+    path = tmp_path / "1e3.csv"
+    path.write_text("amount\n7\n2000\n", encoding="utf-8")
+    database = tmp_path / "data.duckdb"
+    catalog = ingest_csv_dataset(
+        [CsvSource(path=path, original_name=path.name)],
+        database,
+        dataset_id="d",
+        name=path.name,
+        created_at=datetime.now(UTC),
+    )
+    table = catalog.tables[0].table_id
+    assert table == "1e3"
+    connection = duckdb.connect(str(database), read_only=True)
+    sql = f'SELECT COUNT(*) AS n FROM "{table}" WHERE amount < 1e3'
+    # Эталон считается самой DuckDB, без функции преобразования.
+    assert connection.execute(sql).fetchone()[0] == 1
+
+    result = execute_tool("run_sql", {"sql": sql}, connection=connection, allowed_tables=[table])
+
+    assert result.status == "ok"
+    assert result.data.rows == [[1]]
+    assert result.sql == sql
+    bare = execute_tool(
+        "run_sql",
+        {"sql": f"SELECT COUNT(*) AS n FROM {table} WHERE amount < 1e3"},
+        connection=connection,
+        allowed_tables=[table],
+    )
+    assert bare.data.rows == [[1]]
+    denied = execute_tool(
+        "run_sql", {"sql": 'DROP TABLE "1e3"'}, connection=connection, allowed_tables=[table]
+    )
+    assert denied.status == "error"
+    connection.close()

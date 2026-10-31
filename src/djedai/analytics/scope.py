@@ -81,12 +81,17 @@ def rename_reserved_ctes(sql: str) -> str:
     return "".join(parts)
 
 
+# ``1e`` is here too: in ``1e-3`` the word ends before the sign.
+_NUMERIC_LOOKALIKE = re.compile(r"\d[\d_]*e\d*|0x[\da-f_]+|0b[01_]+", re.IGNORECASE)
+
+
 def quote_catalog_tables(sql: str, allowed_tables: Collection[str]) -> str:
     """Quote catalog tables whose names cannot be written bare (``08_jobs``).
 
     Literals, comments and quoted identifiers stay intact. Only exact names of the
     selected dataset change, and the result still passes the usual scope validation,
-    so this cannot widen access.
+    so this cannot widen access. A name that also reads as a number (``1e3``) is a
+    table only right after FROM or JOIN; anywhere else it stays a numeric constant.
     """
     names = {
         name.casefold(): name
@@ -97,17 +102,24 @@ def quote_catalog_tables(sql: str, allowed_tables: Collection[str]) -> str:
         return sql
     parts: list[str] = []
     index = 0
+    after_table_keyword = False
     while index < len(sql):
         end = _skip_quoted(sql, index)
         if end > index:
             parts.append(sql[index:end])
             index = end
+            after_table_keyword = False
         elif word := _WORD.match(sql, index):
-            name = names.get(word.group().casefold())
-            parts.append(word.group() if name is None else '"' + name.replace('"', '""') + '"')
+            text = word.group()
+            name = names.get(text.casefold())
+            if name is not None and _NUMERIC_LOOKALIKE.fullmatch(text) and not after_table_keyword:
+                name = None
+            parts.append(text if name is None else '"' + name.replace('"', '""') + '"')
             index = word.end()
+            after_table_keyword = text.casefold() in {"from", "join"}
         else:
             parts.append(sql[index])
+            after_table_keyword = after_table_keyword and sql[index].isspace()
             index += 1
     return "".join(parts)
 
