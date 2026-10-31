@@ -819,6 +819,32 @@ def _label_keys(text: str | None) -> set[str]:
 def _same_label(left: str | None, right: str | None) -> bool:
     left_keys = _label_keys(left)
     right_keys = _label_keys(right)
+    aggregates = {
+        "__average__",
+        "__min__",
+        "__max__",
+        "__median__",
+        "__std__",
+        "__variance__",
+        "__total__",
+    }
+    requested = left_keys & aggregates
+    actual = right_keys & aggregates
+    # Общее имя меры (amount) не делает AVG и MAX одной операцией.
+    if requested and actual and requested.isdisjoint(actual):
+        return False
+    counts = {"__count__", "__rows__"}
+    if (
+        "__rows__" in left_keys
+        and "__rows__" not in right_keys
+        and right_keys & (aggregates | counts)
+    ):
+        return False
+    # «Всего строк» допустимо для COUNT(*), но среднее/минимум/максимум — нет.
+    if requested - {"__total__"} and not actual and right_keys & counts:
+        return False
+    if actual - {"__total__"} and not requested and left_keys & counts:
+        return False
     return bool(left_keys and right_keys and left_keys & right_keys)
 
 
@@ -1280,7 +1306,11 @@ def _fact_evidence(
                     period=fact_period,
                     population=fact_population,
                     denominator=denominator,
-                    label=_segment_at(segments, token.start, token.end),
+                    label=_metric_value_caption(
+                        _segment_at(segments, token.start, token.end), metric
+                    )
+                    if fact.get("kind") == "metric"
+                    else _segment_at(segments, token.start, token.end),
                     fact_id=fact_id,
                 )
             )
@@ -1311,6 +1341,8 @@ def _fact_evidence(
                 denominator = ratio_denominator
             segment = _segment_for_value(segments, key, value)
             label = f"{path} {segment.text}".strip() if segment is not None else path
+            if fact.get("kind") == "metric" and key == "value":
+                label = _metric_value_caption(label, metric)
             evidence.append(
                 _evidence(
                     result_id=result_id,
@@ -1370,9 +1402,14 @@ def _sql_projection_label(projection: exp.Expression) -> str:
     for node_type, label in _SQL_AGGREGATE_LABELS:
         if isinstance(inner, node_type):
             if isinstance(inner, exp.Count):
+                operand = inner.this
+                while isinstance(operand, (exp.Paren, exp.Neg)):
+                    operand = operand.this
                 if isinstance(inner.this, exp.Distinct):
                     parts.append("count distinct уникальные значения")
-                elif isinstance(inner.this, exp.Star):
+                elif isinstance(operand, (exp.Star, exp.Literal, exp.Boolean)):
+                    # COUNT(non-NULL literal), включая COUNT(1), считает все строки.
+                    # NULL — отдельный узел AST и сюда не попадает.
                     parts.append(label)
                 else:
                     # COUNT(column/expression) исключает NULL и не доказывает
@@ -1390,6 +1427,21 @@ def _sql_projection_label(projection: exp.Expression) -> str:
             _sql_compatible_caption(column.name, " ".join(parts)) if parts else column.name
         )
     return " ".join(dict.fromkeys(part for part in parts if part))
+
+
+def _metric_value_caption(caption: str | None, metric: Any) -> str | None:
+    """Смысл простой агрегатной метрики сохраняется и у факта, и у ячейки value."""
+    formula = getattr(metric, "formula", None) if metric is not None else None
+    if not formula:
+        return caption
+    try:
+        expression = sqlglot.parse_one(formula, read="duckdb")
+    except Exception:
+        return caption
+    if not any(isinstance(expression, node_type) for node_type, _ in _SQL_AGGREGATE_LABELS):
+        return caption
+    semantics = _sql_projection_label(expression)
+    return f"{_sql_compatible_caption(caption or '', semantics)} {semantics}".strip()
 
 
 def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
@@ -1534,7 +1586,13 @@ def _data_evidence(
                         " ".join(
                             part
                             for part in (
-                                metric_title or label or name,
+                                (
+                                    _metric_value_caption(metric_title, metric)
+                                    if metric is not None and name == "value"
+                                    else metric_title
+                                )
+                                or label
+                                or name,
                                 row_label,
                             )
                             if part

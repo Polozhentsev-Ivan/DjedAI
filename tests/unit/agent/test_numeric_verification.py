@@ -9,8 +9,9 @@ import duckdb
 from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.graph import _answer_payload
 from djedai.agent.verification import build_evidence, verify_numeric_text
+from djedai.analytics.metrics import MetricContext, compute_metric
 from djedai.analytics.tools import run_sql
-from djedai.contracts.metrics import MetricFilter, MetricGrain, MetricProvenance
+from djedai.contracts.metrics import MetricDefinition, MetricFilter, MetricGrain, MetricProvenance
 from djedai.contracts.tool_result import Fact, ToolResult, ToolResultData
 
 MONEY = [
@@ -475,6 +476,98 @@ def test_count_nullable_column_does_not_confirm_all_rows() -> None:
         assert _report("Количество: 2.", evidence, results).status == "verified"
     results, evidence = _sql_evidence("SELECT COUNT(*) AS n FROM orders", "n", 3)
     assert _report("В таблице 3 строки.", evidence, results).status == "verified"
+
+
+def test_count_nonnull_literals_count_all_rows_through_real_duckdb() -> None:
+    with duckdb.connect() as connection:
+        connection.execute(
+            "CREATE TABLE orders AS SELECT * FROM (VALUES (1), (NULL), (NULL)) t(amount)"
+        )
+        assert connection.execute("SELECT COUNT(*) FROM orders").fetchone() == (3,)
+        for expression in ("1", "0", "-1", "(1)", "'x'", "TRUE", "FALSE"):
+            result = run_sql(
+                f"SELECT COUNT({expression}) AS n FROM orders",
+                connection=connection,
+                allowed_tables={"orders"},
+            )
+            assert result.status == "ok", result.error
+            assert result.data.rows == [[3]]
+            assert _report("Rows: 3.", _evidence([result]), [result]).status == "verified"
+
+        null = run_sql(
+            "SELECT COUNT(NULL) AS n FROM orders",
+            connection=connection,
+            allowed_tables={"orders"},
+        )
+        assert null.status == "ok"
+        assert null.data.rows == [[0]]
+        assert _report("Rows: 0.", _evidence([null]), [null]).status == "failed"
+
+
+def test_shared_measure_name_cannot_override_sql_aggregate_or_row_semantics() -> None:
+    with duckdb.connect() as connection:
+        connection.execute(
+            "CREATE TABLE orders AS SELECT * FROM (VALUES (10), (100), (NULL)) t(amount)"
+        )
+        for expression, caption in (("MAX", "Maximum"), ("MIN", "Minimum"), ("AVG", "Average")):
+            result = run_sql(
+                f"SELECT {expression}(amount) AS measure_amount FROM orders",
+                connection=connection,
+                allowed_tables={"orders"},
+            )
+            assert result.status == "ok", result.error
+            value = result.data.rows[0][0]
+            evidence = _evidence([result])
+            assert _report(f"{caption} amount: {value}.", evidence, [result]).status == "verified"
+            for wrong in {"Maximum", "Minimum", "Average", "Total"} - {caption}:
+                assert _report(f"{wrong} amount: {value}.", evidence, [result]).status == "failed"
+        nullable = run_sql(
+            "SELECT COUNT(amount) AS amount_count FROM orders",
+            connection=connection,
+            allowed_tables={"orders"},
+        )
+        assert nullable.data.rows == [[2]]
+        evidence = _evidence([nullable])
+        assert _report("Количество строк: 2.", evidence, [nullable]).status == "failed"
+        assert _report("Количество amount: 2.", evidence, [nullable]).status == "verified"
+        count = run_sql("SELECT COUNT(*) AS n FROM orders", connection=connection)
+        assert _report("Всего строк: 3.", _evidence([count]), [count]).status == "verified"
+
+
+def test_real_compute_metric_keeps_sum_semantics_in_cells_and_facts(metrics_dataset) -> None:
+    connection, catalog = metrics_dataset
+    definition = MetricDefinition.model_validate(
+        {
+            "metric_id": "revenue",
+            "title": "Revenue",
+            "kind": "sum",
+            "status": "confirmed",
+            "confirmation": {"source": "api", "by_user_id": "u", "at": "2026-10-25T09:00:00Z"},
+            "grain": {"table": "orders", "key": "zakaz_id"},
+            "measure": {"table": "orders", "column": "summa_itogo"},
+            "additivity": "additive",
+            "unit": "money",
+            "currency": "RUB",
+        }
+    )
+    result = compute_metric(
+        "revenue",
+        connection=connection,
+        allowed_tables={t.table_id for t in catalog.tables},
+        semantics=MetricContext(catalog, {"revenue": definition}),
+    )
+    assert result.status == "ok", result.error
+    expected = connection.execute("SELECT SUM(summa_itogo) FROM orders").fetchone()[0]
+    assert result.data.rows == [[expected]]
+    evidence = _evidence([result])
+    assert _report(f"Revenue: {expected} RUB.", evidence, [result]).status == "verified"
+    assert _report(f"Total revenue: {expected} RUB.", evidence, [result]).status == "verified"
+    for caption in ("Average", "Maximum", "Minimum"):
+        assert _report(f"{caption} revenue: {expected} RUB.", evidence, [result]).status == "failed"
+    for source in ("data_cell", "fact"):
+        relevant = [item for item in evidence if item.source == source and item.value == expected]
+        assert relevant
+        assert all("sum" in (item.label or "") for item in relevant)
 
 
 def test_formula_cannot_combine_operands_from_unrelated_results() -> None:
