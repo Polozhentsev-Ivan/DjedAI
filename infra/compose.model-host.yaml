@@ -1,0 +1,6 @@
+# Optional host access for an OpenAI-compatible model running outside Compose.
+# Use with: docker compose -f compose.yaml -f infra/compose.model-host.yaml up -d --build
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
