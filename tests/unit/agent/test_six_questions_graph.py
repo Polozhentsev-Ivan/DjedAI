@@ -14,7 +14,7 @@ from djedai.contracts.agent import (
     Understanding,
     VerifyResponse,
 )
-from djedai.contracts.tool_result import ToolResult, ToolResultData
+from djedai.contracts.tool_result import ToolResult, ToolResultColumn, ToolResultData
 
 
 class _Policy(DataTransferPolicy):
@@ -73,7 +73,7 @@ def test_exploration_returns_to_plan_with_seen_values():
         calls.append(tool)
         if tool == "value_counts":
             return _result("r_a", ["status", "count"], [["Успешно", 7]])
-        return _result("r_b", ["job", "share"], [["x", 5.24]])
+        return _result("r_b", ["job", "share_percent"], [["x", 5.24]])
 
     client = _client(
         _ok(Understanding(intent="data_question")),
@@ -186,7 +186,14 @@ def test_number_missing_from_data_goes_back_to_compose_without_model_verify():
         _text("Рост 30,32 %"),
         _verified(),
     )
-    state = _run(client, MagicMock(return_value=_result("r_a", ["growth"], [[30.3211]])))
+    state = _run(
+        client,
+        MagicMock(
+            return_value=_result(
+                "r_a", [ToolResultColumn(name="growth_percent", label="Рост")], [[30.3211]]
+            )
+        ),
+    )
 
     assert _stages(client) == ["understand", "plan", "compose", "compose", "verify"]
     assert state["answer_blocks"][0].markdown == "Рост 30,32 %"

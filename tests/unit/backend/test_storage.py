@@ -55,6 +55,7 @@ from djedai.contracts.tool_result import (
     ToolResultColumn,
     ToolResultData,
 )
+from djedai.contracts.verification import NumericAssertion, VerificationEvidence, VerificationReport
 from djedai.execution import ExecutionBudget, TurnTimeout
 
 
@@ -496,6 +497,29 @@ def test_assistant_message_blocks_persistence() -> None:
                 ),
             ],
             result_ids=["r_ok_1"],
+            verification=VerificationReport(
+                status="verified",
+                result_ids=["r_ok_1"],
+                assertions=[
+                    NumericAssertion(
+                        assertion_id="a1",
+                        kind="quantity",
+                        status="verified",
+                        text="Revenue 12.5",
+                        raw_text="12.5",
+                        value=Decimal("12.5"),
+                        evidence=[
+                            VerificationEvidence(
+                                result_id="r_ok_1",
+                                source="data_cell",
+                                value=Decimal("12.5"),
+                                cell_address="data.rows[0].revenue",
+                                unknown=["period"],
+                            )
+                        ],
+                    )
+                ],
+            ),
             trace=[TraceStep(node="plan", tool="run_sql", ms=30)],
         )
 
@@ -515,6 +539,10 @@ def test_assistant_message_blocks_persistence() -> None:
         assert saved.blocks[3]["type"] == "clarification"
         assert len(saved.trace) == 1
         assert saved.trace[0]["node"] == "plan"
+        assert to_assistant_message(saved).verification == msg.verification
+        from djedai.backend.chat_service import message_to_chat_message
+
+        assert message_to_chat_message(saved).verification == msg.verification
 
 
 def test_alembic_migrations_lifecycle(tmp_path: Path) -> None:

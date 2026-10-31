@@ -43,6 +43,7 @@ from djedai.agent.guards import (
 )
 from djedai.agent.memory import conversation_context, next_focus_result_ids
 from djedai.agent.prompts import load_prompt
+from djedai.agent.verification import build_evidence, verify_numeric_text
 from djedai.analytics.registry import RunSqlParams, get_tools_for_llm
 from djedai.analytics.tools import run_sql
 from djedai.config import get_limits
@@ -64,9 +65,18 @@ from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, metrics_prompt
 from djedai.contracts.quality import QualityIssue
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult
+from djedai.contracts.verification import (
+    NumericAssertion,
+    VerificationIssue,
+    VerificationReport,
+)
 from djedai.execution import TurnCancelled, TurnTimeout, current_budget
 
 MODEL_ERROR_MARKDOWN = "Не удалось получить ответ модели. Попробуйте повторить запрос."
+VERIFICATION_ERROR_MARKDOWN = (
+    "Не удалось подтвердить числа в ответе по фактам и данным. "
+    "Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос."
+)
 # Dashboard widgets must be independently refreshable. The exploratory analytics
 # tools do not produce a stable widget result, and their schemas make the planner
 # prompt large enough for a real endpoint to time out.
@@ -242,6 +252,7 @@ def load_ctx(state: AgentState, config: RunnableConfig) -> dict:
         "retries": 0,
         "compose_retries": 0,
         "is_verified": False,
+        "verification": None,
         "dashboard_plan": None,
         "dashboard_widgets": [],
         "dashboard_snapshot": None,
@@ -1307,6 +1318,13 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             "Please carefully check formatting, rounding, and units, "
             "and ensure ALL numbers strictly match the facts."
         )
+        previous = state.get("verification")
+        if previous is not None and previous.issues:
+            reasons = "\n".join(f"- {issue.message}" for issue in previous.issues)
+            user_prompt += (
+                "\nThe deterministic verifier rejected these points; do not repeat them:\n"
+                + reasons
+            )
 
     if last_msg and user_prompt != last_msg:
         user_prompt += f"\nOriginal question and response requirements: {last_msg}"
@@ -1339,10 +1357,92 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def _verification_issue(code: str) -> VerificationIssue:
+    messages = {
+        "llm_reported": "Модель отметила утверждение как неподтверждённое.",
+        "llm_unavailable": "Проверка ответа моделью недоступна.",
+        "invalid_correction": "Исправленный моделью текст не прошёл проверку чисел.",
+    }
+    return VerificationIssue(code=code, message=messages[code])  # type: ignore[arg-type]
+
+
+def _previous_rejected(state: AgentState) -> list[NumericAssertion]:
+    report = state.get("verification")
+    return list(report.rejected_assertions) if report is not None else []
+
+
+def _unique_assertions(items: Collection[NumericAssertion]) -> list[NumericAssertion]:
+    unique: dict[tuple[object, ...], NumericAssertion] = {}
+    for item in items:
+        key = (item.kind, item.raw_text, item.reason_code, item.text)
+        unique.setdefault(key, item)
+    return list(unique.values())
+
+
+def _unique_issues(items: Collection[VerificationIssue]) -> list[VerificationIssue]:
+    unique: dict[tuple[str, str], VerificationIssue] = {}
+    for item in items:
+        unique.setdefault((item.code, item.message), item)
+    return list(unique.values())
+
+
+def _finished_verification(
+    report: VerificationReport,
+    *,
+    status: str,
+    rejected: Collection[NumericAssertion] = (),
+    issues: Collection[VerificationIssue] = (),
+) -> VerificationReport:
+    return report.model_copy(
+        update={
+            "status": status,
+            "rejected_assertions": _unique_assertions([*report.rejected_assertions, *rejected]),
+            "issues": _unique_issues(issues),
+        }
+    )
+
+
+def _publish_corrected(blocks: list[Block], corrected: str) -> list[Block]:
+    new_blocks = [block for block in blocks if block.type not in ("text", "chart")]
+    new_blocks.append(Block(type="text", markdown=corrected))
+    return new_blocks
+
+
+def _verification_failure(
+    state: AgentState,
+    blocks: list[Block],
+    report: VerificationReport,
+    *,
+    extra_rejected: Collection[NumericAssertion] = (),
+    extra_issues: Collection[VerificationIssue] = (),
+) -> dict:
+    rejected = [
+        *_previous_rejected(state),
+        *report.rejected_assertions,
+        *extra_rejected,
+    ]
+    issues = [
+        *(state.get("verification").issues if state.get("verification") else ()),
+        *report.issues,
+        *extra_issues,
+    ]
+    failed = _finished_verification(report, status="failed", rejected=rejected, issues=issues)
+    new_blocks = [block for block in blocks if block.type not in ("text", "chart")]
+    new_blocks.append(Block(type="error", markdown=VERIFICATION_ERROR_MARKDOWN))
+    return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
+
+
 def verify(state: AgentState, config: RunnableConfig) -> dict:
-    """Final check of numbers in text and chart metadata vs data."""
+    """Проверяет числа детерминированно, затем независимо уточняет у модели.
+
+    Модель не может подтвердить число, которое не прошло детерминированную
+    проверку. Исправленный ею текст проверяется тем же алгоритмом; если он
+    снова не проходит, публикуется явная ошибка, а не «проверенный» ответ.
+    """
     client = config.get("configurable", {}).get("client")
     blocks = state.get("answer_blocks", [])
+    results = answer_results(state)
+    result_ids = [result.result_id for result in results]
 
     draft_parts = []
     for b in blocks:
@@ -1360,76 +1460,143 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                 draft_parts.append(sub)
 
     if not draft_parts:
-        return {"is_verified": True}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "verification": report}
 
     draft = "\n\n".join(draft_parts)
 
     policy = _policy(config)
-    results = answer_results(state)
     facts_and_data, usable = _answer_payload(state, policy)
 
     if not facts_and_data:
         new_blocks = [b for b in blocks if b.type != "text"]
         new_blocks.append(Block(type="text", markdown="Нет данных для формирования ответа."))
-        return {"is_verified": True, "answer_blocks": new_blocks}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     if results and not usable:
         new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
         new_blocks.append(Block(type="error", markdown=RESTRICTED_CONTEXT_MESSAGE))
-        return {"is_verified": True, "answer_blocks": new_blocks}
+        report = VerificationReport(status="not_applicable", result_ids=result_ids)
+        return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
-    # Числа без опоры в данных возвращаются на compose до вызова модели. На второй попытке
-    # решает verify: он может убрать такие числа из текста.
+    evidence = build_evidence(results, facts_and_data)
+    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    deterministic_ok = deterministic.status != "failed"
     unsupported = unsupported_numbers(draft, facts_and_data)
     budget = current_budget()
     enough_time = budget is None or budget.remaining > COMPOSE_RETRY_MIN_SECONDS
-    if unsupported and state.get("compose_retries", 0) < 2 and enough_time:
-        return {"is_verified": False}
+    if unsupported and state.get("compose_retries", 0) < 2 and enough_time and client:
+        return {
+            "is_verified": False,
+            "verification": _finished_verification(
+                deterministic, status="failed", rejected=_previous_rejected(state)
+            ),
+        }
 
-    if client:
-        sys_prompt = load_prompt("verify").format(
-            catalog=state.get("catalog_fields", ""),
-            facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
-            + _policy_note(facts_and_data),
-            draft=draft,
-        )
-        response = client.generate_typed_response(
-            sys_prompt,
-            "Verify the numbers and formats."
-            + (f" Not found in the data: {', '.join(unsupported)}." if unsupported else ""),
-            VerifyResponse,
-            stage="verify",
-        )
+    if not client:
+        if deterministic_ok:
+            status = "verified" if deterministic.status == "verified" else "not_applicable"
+            return {
+                "is_verified": True,
+                "verification": _finished_verification(
+                    deterministic, status=status, rejected=_previous_rejected(state)
+                ),
+            }
+        return _verification_failure(state, blocks, deterministic)
 
-        if response.status == "success" and response.data:
-            v_data = response.data
-            if v_data.is_valid:
-                return {"is_verified": True}
-            else:
-                # If we've reached max retries, accept the corrected/stripped markdown
-                if state.get("compose_retries", 0) >= 2:
-                    new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
-                    new_blocks.append(Block(type="text", markdown=v_data.corrected_markdown))
-                    return {"is_verified": True, "answer_blocks": new_blocks}
-                else:
-                    # Triggers conditional route to loop back to compose
-                    return {"is_verified": False}
-        else:
-            # The API failed (timeout, 500, policy restriction, etc.).
-            # We do not allow the publication of an unvalidated draft.
-            new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
-            message = (
-                RESTRICTED_CONTEXT_MESSAGE
-                if response.error_type == "POLICY_RESTRICTED"
-                else (
-                    "Ошибка проверки ответа: недоступен API верификации. "
-                    "Неподтвержденный ответ удален."
-                )
+    sys_prompt = load_prompt("verify").format(
+        facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
+        + _policy_note(facts_and_data),
+        catalog=state.get("catalog_fields") or "",
+        draft=draft,
+    )
+    response = client.generate_typed_response(
+        sys_prompt,
+        "Verify the numbers and formats."
+        + (f" Not found in the data: {', '.join(unsupported)}." if unsupported else ""),
+        VerifyResponse,
+        stage="verify",
+    )
+
+    if response.status != "success" or not response.data:
+        message = (
+            RESTRICTED_CONTEXT_MESSAGE
+            if response.error_type == "POLICY_RESTRICTED"
+            else (
+                "Ошибка проверки ответа: недоступен API верификации. Неподтвержденный ответ удален."
             )
-            new_blocks.append(Block(type="error", markdown=message))
-            return {"is_verified": True, "answer_blocks": new_blocks}
+        )
+        new_blocks = [b for b in blocks if b.type not in ("text", "chart")]
+        new_blocks.append(Block(type="error", markdown=message))
+        failed = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[*deterministic.issues, _verification_issue("llm_unavailable")],
+        )
+        return {"is_verified": True, "answer_blocks": new_blocks, "verification": failed}
 
-    return {"is_verified": True}
+    v_data = response.data
+    if v_data.is_valid and deterministic_ok:
+        status = "verified" if deterministic.status == "verified" else "not_applicable"
+        return {
+            "is_verified": True,
+            "verification": _finished_verification(
+                deterministic, status=status, rejected=_previous_rejected(state)
+            ),
+        }
+
+    llm_rejected = not v_data.is_valid
+    at_last_attempt = state.get("compose_retries", 0) >= 2
+    if not at_last_attempt:
+        report = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[
+                *deterministic.issues,
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+            ],
+        )
+        return {"is_verified": False, "verification": report}
+
+    corrected = (v_data.corrected_markdown or "").strip()
+    if corrected and corrected != draft:
+        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        if corrected_report.status != "failed":
+            new_blocks = _publish_corrected(blocks, corrected)
+            issues = [
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+                *deterministic.issues,
+            ]
+            return {
+                "is_verified": True,
+                "answer_blocks": new_blocks,
+                "verification": _finished_verification(
+                    corrected_report,
+                    status="corrected",
+                    rejected=[
+                        *_previous_rejected(state),
+                        *deterministic.rejected_assertions,
+                    ],
+                    issues=issues,
+                ),
+            }
+        return _verification_failure(
+            state,
+            blocks,
+            corrected_report,
+            extra_rejected=[*deterministic.rejected_assertions],
+            extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+        )
+
+    return _verification_failure(
+        state,
+        blocks,
+        deterministic,
+        extra_issues=[*([_verification_issue("llm_reported")] if llm_rejected else [])],
+    )
 
 
 def clarify(state: AgentState, config: RunnableConfig | None = None) -> dict:
