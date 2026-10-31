@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.graph import build_agent_graph, compose, verify
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -263,3 +263,43 @@ def test_invalid_final_correction_is_replaced_by_an_explicit_error():
     assert "invalid_correction" in {issue.code for issue in result["verification"].issues}
     assert result["verification"].rejected_assertions
     assert all("3000" not in block.markdown for block in result["answer_blocks"])
+
+
+def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
+    draft = "Всего в данных 500 000 запусков."
+    corrected = "Всего 500 000 строк."
+    state = {
+        "messages": [Message(role="user", content="Что передо мной?")],
+        "results": [
+            ToolResult(
+                result_id="r_rows",
+                tool="describe_dataset",
+                status="ok",
+                facts=[{"text": "Таблица jobs: 500000 строк", "values": {"row_count": 500000}}],
+            )
+        ],
+        "answer_blocks": [Block(type="text", markdown=draft)],
+        "compose_retries": 2,
+    }
+    rejected = verify(state, {"configurable": {}})["verification"]
+    assert rejected.status == "failed"
+    assert rejected.rejected_assertions[0].reason_code == "unrelated_result"
+    client = MagicMock()
+
+    def respond(system_prompt, user_prompt, schema, **kwargs):
+        assert "Всего в данных 500 000 запусков" in user_prompt
+        assert "Подпись числа относится к другому результату" in user_prompt
+        if schema is ComposeResponse:
+            data = ComposeResponse(answer_blocks=[Block(type="text", markdown=corrected)])
+        else:
+            data = VerifyResponse(is_valid=False, corrected_markdown=corrected)
+        return ModelResponse(status="success", data=data)
+
+    client.generate_typed_response.side_effect = respond
+    config = {"configurable": {"client": client}}
+    retry = compose({**state, "verification": rejected}, config)
+    assert retry["answer_blocks"][0].markdown == corrected
+    final = verify(state, config)
+    assert final["verification"].status == "corrected"
+    assert final["answer_blocks"][0].markdown == corrected
+    assert final["verification"].rejected_assertions[0].reason_code == "unrelated_result"

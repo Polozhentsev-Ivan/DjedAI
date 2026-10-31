@@ -1,0 +1,3589 @@
+{
+  "schema_version": 2,
+  "dataset": "hk_background_jobs_v1",
+  "capabilities": {
+    "tools": [
+      "compare_segments",
+      "compute_metric",
+      "correlation",
+      "describe_column",
+      "describe_dataset",
+      "detect_anomalies",
+      "find_duplicates",
+      "forecast",
+      "lagged_correlation",
+      "run_sql",
+      "seasonality",
+      "segment_profile",
+      "time_aggregate",
+      "value_counts"
+    ],
+    "requirements": [
+      "charts",
+      "correlation",
+      "dashboards",
+      "forecast",
+      "memory",
+      "seasonality",
+      "segments"
+    ]
+  },
+  "evaluation_scope": {
+    "semantic_rubrics": "code_checks_only_rest_not_evaluated",
+    "transport": "direct_graph",
+    "turn_timeout_seconds": 400.0
+  },
+  "status": "completed",
+  "started_at": "2026-10-31T07:24:15.410891+00:00",
+  "summary": {
+    "total": 3,
+    "passed": 0,
+    "failed": 2,
+    "needs_review": 1,
+    "skipped": 0,
+    "blocked": 0,
+    "pending": 0,
+    "automated_passed": 1,
+    "automated_failed": 2,
+    "semantic_passed": 0,
+    "semantic_failed": 0,
+    "semantic_partial": 0,
+    "semantic_not_evaluated": 3,
+    "timed_out": 0,
+    "rubrics_passed": 0,
+    "rubrics_failed": 0,
+    "rubrics_not_evaluated": 11
+  },
+  "cases": [
+    {
+      "answer": "Не удалось подтвердить числа в ответе по фактам и данным. Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос.",
+      "used_tools": [
+        "describe_dataset",
+        "run_sql"
+      ],
+      "fact_checks": [
+        {
+          "key": "dataset.row_count",
+          "comparison": "exact",
+          "expected": 500000,
+          "result": true,
+          "passed": true,
+          "source": "current"
+        }
+      ],
+      "plan": [
+        {
+          "tool": "describe_dataset",
+          "args": {}
+        },
+        {
+          "tool": "run_sql",
+          "args": {
+            "sql": "SELECT COUNT(DISTINCT kod_zapuska) AS total_launches FROM \"0000\""
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "result_id": "r_1776bd7bf97f41199a0a6b36a14bd816",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "table_name",
+              "row_count",
+              "columns"
+            ],
+            "rows": [
+              [
+                "0000",
+                500000,
+                "kod_zapuska, kod_tsepochki_zapuskov, zadanie, servis, okruzhenie, sposob_zapuska, nomer_popytki, nachalo_msk, okonchanie_msk, status, zapisey_k_obrabotke, obrabotano_zapisey, kod_oshibki, opisanie_oshibki, uzel_vypolneniya"
+              ]
+            ],
+            "row_count": 1,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "В базе 1 таблиц: 0000",
+              "kind": "dataset_summary",
+              "values": {
+                "table_count": 1,
+                "tables": [
+                  "0000"
+                ]
+              }
+            },
+            {
+              "text": "Таблица '0000': 500000 строк, колонки: kod_zapuska, kod_tsepochki_zapuskov, zadanie, servis, okruzhenie, sposob_zapuska, nomer_popytki, nachalo_msk, okonchanie_msk, status, zapisey_k_obrabotke, obrabotano_zapisey, kod_oshibki, opisanie_oshibki, uzel_vypolneniya",
+              "kind": "table_overview",
+              "values": {
+                "table_name": "0000",
+                "row_count": 500000,
+                "columns": [
+                  "kod_zapuska",
+                  "kod_tsepochki_zapuskov",
+                  "zadanie",
+                  "servis",
+                  "okruzhenie",
+                  "sposob_zapuska",
+                  "nomer_popytki",
+                  "nachalo_msk",
+                  "okonchanie_msk",
+                  "status",
+                  "zapisey_k_obrabotke",
+                  "obrabotano_zapisey",
+                  "kod_oshibki",
+                  "opisanie_oshibki",
+                  "uzel_vypolneniya"
+                ],
+                "column_types": {
+                  "kod_zapuska": "VARCHAR",
+                  "kod_tsepochki_zapuskov": "VARCHAR",
+                  "zadanie": "VARCHAR",
+                  "servis": "VARCHAR",
+                  "okruzhenie": "VARCHAR",
+                  "sposob_zapuska": "VARCHAR",
+                  "nomer_popytki": "BIGINT",
+                  "nachalo_msk": "TIMESTAMP",
+                  "okonchanie_msk": "TIMESTAMP",
+                  "status": "VARCHAR",
+                  "zapisey_k_obrabotke": "BIGINT",
+                  "obrabotano_zapisey": "BIGINT",
+                  "kod_oshibki": "VARCHAR",
+                  "opisanie_oshibki": "VARCHAR",
+                  "uzel_vypolneniya": "VARCHAR"
+                }
+              }
+            }
+          ],
+          "chart_hint": null,
+          "error": null,
+          "tool": "describe_dataset",
+          "params": {},
+          "sql": null,
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": null,
+          "metric": null,
+          "quality": null,
+          "read": null
+        },
+        {
+          "result_id": "r_e55bd2ad04fc434aa2fc111861942df7",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "total_launches"
+            ],
+            "rows": [
+              [
+                500000
+              ]
+            ],
+            "row_count": 1,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "Запрос выполнен успешно, получено строк: 1",
+              "kind": "summary",
+              "values": {
+                "row_count": 1
+              }
+            }
+          ],
+          "chart_hint": null,
+          "error": null,
+          "tool": "run_sql",
+          "params": {
+            "sql": "SELECT COUNT(DISTINCT kod_zapuska) AS total_launches FROM \"0000\""
+          },
+          "sql": "SELECT COUNT(DISTINCT kod_zapuska) AS total_launches FROM \"0000\"",
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": null,
+          "metric": null,
+          "quality": null,
+          "read": null
+        }
+      ],
+      "answer_blocks": [
+        {
+          "type": "error",
+          "markdown": "Не удалось подтвердить числа в ответе по фактам и данным. Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос.",
+          "result_id": null,
+          "columns": [],
+          "limit": 20,
+          "chart": null,
+          "options": [],
+          "dashboard_id": null,
+          "title": null,
+          "items": [],
+          "metric_candidates": []
+        }
+      ],
+      "intent": "data_overview",
+      "understanding": {
+        "intent": "data_overview",
+        "resolved_question": "Опиши структуру данных в датасете 08_Фоновые_задания.csv: что означает одна строка и сколько всего запусков.",
+        "entities": {
+          "tables": [],
+          "columns": []
+        },
+        "references": [],
+        "dashboard_id": null,
+        "clarification": null
+      },
+      "safety_checks": {
+        "forbidden_tools": [],
+        "called_forbidden": [],
+        "planned_forbidden": [],
+        "passed": true
+      },
+      "diagnostics": [
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.383432+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "run_started",
+          "node": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.399950+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "load_ctx"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.430519+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "load_ctx",
+          "duration_ms": 30.546,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.432734+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "fast_route"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.434007+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "fast_route",
+          "duration_ms": 1.261,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.436852+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "understand"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.438277+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "understand",
+          "call_id": "call_4268673e2adc438687261d1573d62e51",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:04.725396+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "understand",
+          "call_id": "call_4268673e2adc438687261d1573d62e51",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:06.909539+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "understand",
+          "call_id": "call_4268673e2adc438687261d1573d62e51",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 2184.208
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:06.924890+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "understand",
+          "call_id": "call_4268673e2adc438687261d1573d62e51",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 2486.579,
+          "attempts": 1,
+          "input_tokens": 2094,
+          "output_tokens": 67,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:06.925106+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "understand",
+          "duration_ms": 2488.246,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:06.928648+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:06.959736+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_97a34f27e8d6490d87c072d1e3b2df00",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:07.006403+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_97a34f27e8d6490d87c072d1e3b2df00",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.392762+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_97a34f27e8d6490d87c072d1e3b2df00",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 16386.363
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.393213+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_97a34f27e8d6490d87c072d1e3b2df00",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 16433.485,
+          "attempts": 1,
+          "input_tokens": 16767,
+          "output_tokens": 1314,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.393269+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 16464.622,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.393832+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.480585+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 86.742,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.481464+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "visualize"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.481502+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "visualize",
+          "duration_ms": 0.036,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.482551+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.484912+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_bba49b018dab4fb3957daf30e751e9bb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:23.489195+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_bba49b018dab4fb3957daf30e751e9bb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.615443+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_bba49b018dab4fb3957daf30e751e9bb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 3126.236
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.616040+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_bba49b018dab4fb3957daf30e751e9bb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 3131.125,
+          "attempts": 1,
+          "input_tokens": 2462,
+          "output_tokens": 155,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.616065+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 3133.513,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.616580+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.622676+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_a6293b56788547da8904c81bbeefddd5",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:26.624898+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_a6293b56788547da8904c81bbeefddd5",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.362074+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_a6293b56788547da8904c81bbeefddd5",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 14737.165
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.362568+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_a6293b56788547da8904c81bbeefddd5",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 14739.888,
+          "attempts": 1,
+          "input_tokens": 2250,
+          "output_tokens": 1256,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.362787+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 14746.193,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.363995+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.368864+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_2198648af4c8473e96bc3e6ab4e2fc30",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:41.380001+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_2198648af4c8473e96bc3e6ab4e2fc30",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.919048+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_2198648af4c8473e96bc3e6ab4e2fc30",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 2539.027
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.919662+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_2198648af4c8473e96bc3e6ab4e2fc30",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 2550.792,
+          "attempts": 1,
+          "input_tokens": 2521,
+          "output_tokens": 104,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.919700+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 2555.703,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.920515+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.931449+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_d37de614722b42a2a9f22ab168480c9a",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:43.936480+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_d37de614722b42a2a9f22ab168480c9a",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.717537+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_d37de614722b42a2a9f22ab168480c9a",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 14781.042
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.718383+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_d37de614722b42a2a9f22ab168480c9a",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 14786.926,
+          "attempts": 1,
+          "input_tokens": 2200,
+          "output_tokens": 1256,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.718481+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 14797.964,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.723632+00:00",
+          "run_id": "run_098e31e114e14902970b1fe94f0db825",
+          "owner_id": "eval",
+          "chat_id": "eval_s1_overview_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3e5ddeaef88c4a22847a4af1fafe8477",
+          "event": "run_finished",
+          "node": "verify",
+          "status": "success",
+          "error_type": null,
+          "error_node": null,
+          "duration_ms": 54340.203,
+          "trace": [
+            {
+              "node": "load_ctx",
+              "duration_ms": 30.546,
+              "error_type": null
+            },
+            {
+              "node": "fast_route",
+              "duration_ms": 1.261,
+              "error_type": null
+            },
+            {
+              "node": "understand",
+              "duration_ms": 2488.246,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 16464.622,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 86.742,
+              "error_type": null
+            },
+            {
+              "node": "visualize",
+              "duration_ms": 0.036,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 3133.513,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 14746.193,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 2555.703,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 14797.964,
+              "error_type": null
+            }
+          ]
+        }
+      ],
+      "automated_status": "failed",
+      "automated_issues": [
+        "The answer contains no text block",
+        "Answer text does not state 'dataset.row_count' (500000)"
+      ],
+      "semantic_status": "not_evaluated",
+      "semantic_issues": [],
+      "semantic_rubrics": [
+        {
+          "kind": "must_explain",
+          "rubric": "Это журнал попыток выполнения фоновых заданий: одна строка — отдельная попытка запуска.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_explain",
+          "rubric": "Есть задания, сервисы, окружения, время начала и окончания, статусы и счётчики обработанных записей.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_not_claim",
+          "rubric": "500000 строк — это 500000 разных заданий, цепочек, пользователей или заказов.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_not_claim",
+          "rubric": "Счётчик обработанных записей является выручкой или денежной суммой.",
+          "status": "not_evaluated",
+          "reason": null
+        }
+      ],
+      "id": "s1_overview_01",
+      "status": "failed",
+      "duration_seconds": 54.34,
+      "total_duration_seconds": 54.34,
+      "thread_id": "eval_s1_overview_01",
+      "context_cases": [],
+      "context_results": [],
+      "issues": [
+        "The answer contains no text block",
+        "Answer text does not state 'dataset.row_count' (500000)"
+      ],
+      "question": "Что передо мной? Кратко опиши эти данные, что означает одна строка и сколько здесь запусков.",
+      "scenario": 1
+    },
+    {
+      "answer": "Не удалось подтвердить числа в ответе по фактам и данным. Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос.",
+      "used_tools": [
+        "value_counts"
+      ],
+      "fact_checks": [
+        {
+          "key": "status.counts",
+          "comparison": "exact_unordered",
+          "expected": [
+            [
+              "Успешно",
+              454882
+            ],
+            [
+              "Ошибка",
+              40414
+            ],
+            [
+              "Отменено",
+              4704
+            ]
+          ],
+          "result": true,
+          "passed": true,
+          "source": "current"
+        }
+      ],
+      "plan": [],
+      "tool_results": [
+        {
+          "result_id": "r_42f53469acdc4a00bc85d4ffe184f603",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "status",
+              "count"
+            ],
+            "rows": [
+              [
+                "Успешно",
+                454882
+              ],
+              [
+                "Ошибка",
+                40414
+              ],
+              [
+                "Отменено",
+                4704
+              ]
+            ],
+            "row_count": 3,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "Значение 'Успешно' встречается 454882 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Успешно",
+                "count": 454882
+              }
+            },
+            {
+              "text": "Значение 'Ошибка' встречается 40414 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Ошибка",
+                "count": 40414
+              }
+            },
+            {
+              "text": "Значение 'Отменено' встречается 4704 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Отменено",
+                "count": 4704
+              }
+            },
+            {
+              "text": "Суммы числовых колонок по всем строкам результата",
+              "kind": "summary",
+              "values": {
+                "column_totals": {
+                  "count": 500000
+                }
+              }
+            }
+          ],
+          "chart_hint": {
+            "type": "bar",
+            "x": "status",
+            "y": [
+              "count"
+            ],
+            "color": null
+          },
+          "error": null,
+          "tool": "value_counts",
+          "params": {
+            "table": "0000",
+            "column": "status",
+            "top_n": 10
+          },
+          "sql": null,
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": null,
+          "metric": null,
+          "quality": null,
+          "read": null
+        }
+      ],
+      "answer_blocks": [
+        {
+          "type": "error",
+          "markdown": "Не удалось подтвердить числа в ответе по фактам и данным. Неподтверждённый ответ не опубликован. Уточните вопрос или повторите запрос.",
+          "result_id": null,
+          "columns": [],
+          "limit": 20,
+          "chart": null,
+          "options": [],
+          "dashboard_id": null,
+          "title": null,
+          "items": [],
+          "metric_candidates": []
+        }
+      ],
+      "intent": "data_question",
+      "understanding": {
+        "intent": "data_question",
+        "resolved_question": "Какие значения «Статус» встречаются чаще всего? Покажи число запусков для каждого статуса по всему файлу, включая повторные попытки.",
+        "entities": {
+          "tables": [],
+          "columns": []
+        },
+        "references": [],
+        "dashboard_id": null,
+        "clarification": null
+      },
+      "safety_checks": {
+        "forbidden_tools": [],
+        "called_forbidden": [],
+        "planned_forbidden": [],
+        "passed": true
+      },
+      "diagnostics": [
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.724945+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "run_started",
+          "node": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.728448+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "load_ctx"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.741294+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "load_ctx",
+          "duration_ms": 12.837,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.742281+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "fast_route"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.742415+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "fast_route",
+          "duration_ms": 0.128,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.744624+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "understand"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.748301+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "understand",
+          "call_id": "call_cd7db449d0684fd5a4fbf6df1f4b21b8",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:26:58.757587+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "understand",
+          "call_id": "call_cd7db449d0684fd5a4fbf6df1f4b21b8",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.711473+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "understand",
+          "call_id": "call_cd7db449d0684fd5a4fbf6df1f4b21b8",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 1953.866
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.712172+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "understand",
+          "call_id": "call_cd7db449d0684fd5a4fbf6df1f4b21b8",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 1963.864,
+          "attempts": 1,
+          "input_tokens": 2100,
+          "output_tokens": 64,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.712264+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "understand",
+          "duration_ms": 1967.638,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.713369+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.727431+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_9048d7238bfd427683621b0f8495330d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:00.745994+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_9048d7238bfd427683621b0f8495330d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:04.961347+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_9048d7238bfd427683621b0f8495330d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 4215.337
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:04.962303+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_9048d7238bfd427683621b0f8495330d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 4234.857,
+          "attempts": 1,
+          "input_tokens": 16765,
+          "output_tokens": 268,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:04.962413+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 4249.042,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:04.963387+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:05.009432+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 46.03,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:05.010798+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:05.022989+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_046a059a547740ec916baf02bc1a53dc",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:05.029802+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_046a059a547740ec916baf02bc1a53dc",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.555852+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_046a059a547740ec916baf02bc1a53dc",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 12526.018
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.557499+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_046a059a547740ec916baf02bc1a53dc",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 12534.484,
+          "attempts": 1,
+          "input_tokens": 4352,
+          "output_tokens": 1053,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.557916+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 12547.101,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.559692+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.559759+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 0.057,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.563548+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "visualize"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.563664+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "visualize",
+          "duration_ms": 0.106,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.565119+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.567909+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_da40e54ef3af4ec5b3d13959a37a73eb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:17.598313+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_da40e54ef3af4ec5b3d13959a37a73eb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.868203+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_da40e54ef3af4ec5b3d13959a37a73eb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 2269.845
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.870076+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_da40e54ef3af4ec5b3d13959a37a73eb",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 2302.137,
+          "attempts": 1,
+          "input_tokens": 1855,
+          "output_tokens": 104,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.870189+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 2305.058,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.875085+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.896046+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_4eb62923899f4ce58e156f2f78bac23c",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:19.909702+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_4eb62923899f4ce58e156f2f78bac23c",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.787191+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_4eb62923899f4ce58e156f2f78bac23c",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 11877.481
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.787987+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_4eb62923899f4ce58e156f2f78bac23c",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 11891.945,
+          "attempts": 1,
+          "input_tokens": 1624,
+          "output_tokens": 987,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.788061+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 11912.98,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.789130+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.791053+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_780286133a3c42a293fc732f979a12e9",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:31.803463+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_780286133a3c42a293fc732f979a12e9",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.949576+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_780286133a3c42a293fc732f979a12e9",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 3146.111
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.950008+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_780286133a3c42a293fc732f979a12e9",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 3158.954,
+          "attempts": 1,
+          "input_tokens": 1949,
+          "output_tokens": 104,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.950031+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 3160.901,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.950661+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.954084+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_cece2382e2f54233b3e80061a2b2012f",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:34.956081+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_cece2382e2f54233b3e80061a2b2012f",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.415640+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_cece2382e2f54233b3e80061a2b2012f",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 10459.53
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.416630+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_cece2382e2f54233b3e80061a2b2012f",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 10462.528,
+          "attempts": 1,
+          "input_tokens": 1624,
+          "output_tokens": 842,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.416747+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 10466.081,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.420603+00:00",
+          "run_id": "run_e29d754f56434d00be98c9471c1cd19a",
+          "owner_id": "eval",
+          "chat_id": "eval_s2_status_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_d8457a97fac24ff88609fb3f6ea5de0d",
+          "event": "run_finished",
+          "node": "verify",
+          "status": "success",
+          "error_type": null,
+          "error_node": null,
+          "duration_ms": 46695.648,
+          "trace": [
+            {
+              "node": "load_ctx",
+              "duration_ms": 12.837,
+              "error_type": null
+            },
+            {
+              "node": "fast_route",
+              "duration_ms": 0.128,
+              "error_type": null
+            },
+            {
+              "node": "understand",
+              "duration_ms": 1967.638,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 4249.042,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 46.03,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 12547.101,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 0.057,
+              "error_type": null
+            },
+            {
+              "node": "visualize",
+              "duration_ms": 0.106,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 2305.058,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 11912.98,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 3160.901,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 10466.081,
+              "error_type": null
+            }
+          ]
+        }
+      ],
+      "automated_status": "failed",
+      "automated_issues": [
+        "The answer contains no text block"
+      ],
+      "semantic_status": "not_evaluated",
+      "semantic_issues": [],
+      "semantic_rubrics": [
+        {
+          "kind": "must_explain",
+          "rubric": "Частоты относятся ко всем строкам попыток, независимо от окружения и номера попытки.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_explain",
+          "rubric": "Наиболее частый статус — «Успешно»; представлены все статусы, включая «Отменено».",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_not_claim",
+          "rubric": "Эти частоты описывают последние состояния уникальных цепочек.",
+          "status": "not_evaluated",
+          "reason": null
+        }
+      ],
+      "id": "s2_status_01",
+      "status": "failed",
+      "duration_seconds": 46.7,
+      "total_duration_seconds": 46.7,
+      "thread_id": "eval_s2_status_01",
+      "context_cases": [],
+      "context_results": [],
+      "issues": [
+        "The answer contains no text block"
+      ],
+      "question": "Какие значения «Статус» встречаются чаще всего? Покажи число запусков для каждого статуса по всему файлу, включая повторные попытки.",
+      "scenario": 2
+    },
+    {
+      "answer": "Количество попыток, начавшихся в каждом календарном месяце (по полю «Начало (МСК)»):\n\n- 2024-10: 21 223\n- 2024-11: 20 278\n- 2024-12: 21 286\n- 2025-01: 21 201\n- 2025-02: 19 094\n- 2025-03: 21 458\n- 2025-04: 20 347\n- 2025-05: 21 227\n- 2025-06: 20 380\n- 2025-07: 21 377\n- 2025-08: 21 272\n- 2025-09: 20 479\n- 2025-10: 21 262\n- 2025-11: 20 557\n- 2025-12: 21 250\n- 2026-01: 21 295\n- 2026-02: 19 121\n- 2026-03: 20 983\n- 2026-04: 20 750\n- 2026-05: 21 405\n- 2026-06: 20 777\n- 2026-07: 21 375\n- 2026-08: 21 092\n- 2026-09: 20 511\n\nВсего за период: 500 000",
+      "used_tools": [
+        "time_aggregate"
+      ],
+      "fact_checks": [
+        {
+          "key": "monthly.counts",
+          "comparison": "exact",
+          "expected": [
+            [
+              "2024-10",
+              21223
+            ],
+            [
+              "2024-11",
+              20278
+            ],
+            [
+              "2024-12",
+              21286
+            ],
+            [
+              "2025-01",
+              21201
+            ],
+            [
+              "2025-02",
+              19094
+            ],
+            [
+              "2025-03",
+              21458
+            ],
+            [
+              "2025-04",
+              20347
+            ],
+            [
+              "2025-05",
+              21227
+            ],
+            [
+              "2025-06",
+              20380
+            ],
+            [
+              "2025-07",
+              21377
+            ],
+            [
+              "2025-08",
+              21272
+            ],
+            [
+              "2025-09",
+              20479
+            ],
+            [
+              "2025-10",
+              21262
+            ],
+            [
+              "2025-11",
+              20557
+            ],
+            [
+              "2025-12",
+              21250
+            ],
+            [
+              "2026-01",
+              21295
+            ],
+            [
+              "2026-02",
+              19121
+            ],
+            [
+              "2026-03",
+              20983
+            ],
+            [
+              "2026-04",
+              20750
+            ],
+            [
+              "2026-05",
+              21405
+            ],
+            [
+              "2026-06",
+              20777
+            ],
+            [
+              "2026-07",
+              21375
+            ],
+            [
+              "2026-08",
+              21092
+            ],
+            [
+              "2026-09",
+              20511
+            ]
+          ],
+          "result": true,
+          "passed": true,
+          "source": "current"
+        }
+      ],
+      "plan": [
+        {
+          "tool": "time_aggregate",
+          "args": {
+            "table": "0000",
+            "time_col": "nachalo_msk",
+            "agg": "count",
+            "freq": "month"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "result_id": "r_96b26e2956154ed2ab3b31c15318a875",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "time_bucket",
+              "value"
+            ],
+            "rows": [
+              [
+                "2024-10-01T00:00:00",
+                21223
+              ],
+              [
+                "2024-11-01T00:00:00",
+                20278
+              ],
+              [
+                "2024-12-01T00:00:00",
+                21286
+              ],
+              [
+                "2025-01-01T00:00:00",
+                21201
+              ],
+              [
+                "2025-02-01T00:00:00",
+                19094
+              ],
+              [
+                "2025-03-01T00:00:00",
+                21458
+              ],
+              [
+                "2025-04-01T00:00:00",
+                20347
+              ],
+              [
+                "2025-05-01T00:00:00",
+                21227
+              ],
+              [
+                "2025-06-01T00:00:00",
+                20380
+              ],
+              [
+                "2025-07-01T00:00:00",
+                21377
+              ],
+              [
+                "2025-08-01T00:00:00",
+                21272
+              ],
+              [
+                "2025-09-01T00:00:00",
+                20479
+              ],
+              [
+                "2025-10-01T00:00:00",
+                21262
+              ],
+              [
+                "2025-11-01T00:00:00",
+                20557
+              ],
+              [
+                "2025-12-01T00:00:00",
+                21250
+              ],
+              [
+                "2026-01-01T00:00:00",
+                21295
+              ],
+              [
+                "2026-02-01T00:00:00",
+                19121
+              ],
+              [
+                "2026-03-01T00:00:00",
+                20983
+              ],
+              [
+                "2026-04-01T00:00:00",
+                20750
+              ],
+              [
+                "2026-05-01T00:00:00",
+                21405
+              ],
+              [
+                "2026-06-01T00:00:00",
+                20777
+              ],
+              [
+                "2026-07-01T00:00:00",
+                21375
+              ],
+              [
+                "2026-08-01T00:00:00",
+                21092
+              ],
+              [
+                "2026-09-01T00:00:00",
+                20511
+              ]
+            ],
+            "row_count": 24,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "Всего временных бакетов: 24 (частота: month).",
+              "kind": "time_summary",
+              "values": {
+                "bucket_count": 24,
+                "freq": "month"
+              }
+            },
+            {
+              "text": "Период: с 2024-10-01 00:00:00 по 2026-09-01 00:00:00.",
+              "kind": "time_range",
+              "values": {
+                "start": "2024-10-01 00:00:00",
+                "end": "2026-09-01 00:00:00"
+              }
+            },
+            {
+              "text": "Максимум: 21458 (бакет 2025-03-01 00:00:00).",
+              "kind": "peak",
+              "values": {
+                "value": 21458.0,
+                "bucket": "2025-03-01 00:00:00",
+                "group": []
+              }
+            },
+            {
+              "text": "Минимум: 19094 (бакет 2025-02-01 00:00:00).",
+              "kind": "trough",
+              "values": {
+                "value": 19094.0,
+                "bucket": "2025-02-01 00:00:00",
+                "group": []
+              }
+            },
+            {
+              "text": "Среднее по бакетам: 20833.3333.",
+              "kind": "average",
+              "values": {
+                "value": 20833.3333
+              }
+            },
+            {
+              "text": "Суммы числовых колонок по всем строкам результата",
+              "kind": "summary",
+              "values": {
+                "column_totals": {
+                  "value": 500000
+                }
+              }
+            }
+          ],
+          "chart_hint": {
+            "type": "line",
+            "x": "time_bucket",
+            "y": [
+              "value"
+            ],
+            "color": null
+          },
+          "error": null,
+          "tool": "time_aggregate",
+          "params": {
+            "table": "0000",
+            "time_col": "nachalo_msk",
+            "agg": "count",
+            "freq": "month"
+          },
+          "sql": "SELECT DATE_TRUNC('month', CAST(\"nachalo_msk\" AS TIMESTAMP)) AS time_bucket, COUNT(*) AS value FROM \"0000\" WHERE \"nachalo_msk\" IS NOT NULL GROUP BY 1 ORDER BY 1 ASC LIMIT 5001",
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": 102,
+          "metric": null,
+          "quality": null,
+          "read": null
+        }
+      ],
+      "answer_blocks": [
+        {
+          "type": "text",
+          "markdown": "Количество попыток, начавшихся в каждом календарном месяце (по полю «Начало (МСК)»):\n\n- 2024-10: 21 223\n- 2024-11: 20 278\n- 2024-12: 21 286\n- 2025-01: 21 201\n- 2025-02: 19 094\n- 2025-03: 21 458\n- 2025-04: 20 347\n- 2025-05: 21 227\n- 2025-06: 20 380\n- 2025-07: 21 377\n- 2025-08: 21 272\n- 2025-09: 20 479\n- 2025-10: 21 262\n- 2025-11: 20 557\n- 2025-12: 21 250\n- 2026-01: 21 295\n- 2026-02: 19 121\n- 2026-03: 20 983\n- 2026-04: 20 750\n- 2026-05: 21 405\n- 2026-06: 20 777\n- 2026-07: 21 375\n- 2026-08: 21 092\n- 2026-09: 20 511\n\nВсего за период: 500 000",
+          "result_id": null,
+          "columns": [],
+          "limit": 20,
+          "chart": null,
+          "options": [],
+          "dashboard_id": null,
+          "title": null,
+          "items": [],
+          "metric_candidates": []
+        }
+      ],
+      "intent": "data_question",
+      "understanding": {
+        "intent": "data_question",
+        "resolved_question": "Сколько попыток начиналось в каждом календарном месяце? Покажи все месяцы за весь период по порядку, включая повторные попытки; используй «Начало (МСК)».",
+        "entities": {
+          "tables": [],
+          "columns": []
+        },
+        "references": [],
+        "dashboard_id": null,
+        "clarification": null
+      },
+      "safety_checks": {
+        "forbidden_tools": [],
+        "called_forbidden": [],
+        "planned_forbidden": [],
+        "passed": true
+      },
+      "diagnostics": [
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.421826+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "run_started",
+          "node": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.423258+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "load_ctx"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.432138+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "load_ctx",
+          "duration_ms": 8.868,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.433265+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "fast_route"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.433424+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "fast_route",
+          "duration_ms": 0.153,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.437069+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "understand"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.445078+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "understand",
+          "call_id": "call_c99b84e298914995ab48a753219c72f1",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:45.454737+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "understand",
+          "call_id": "call_c99b84e298914995ab48a753219c72f1",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.433259+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "understand",
+          "call_id": "call_c99b84e298914995ab48a753219c72f1",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 1978.519
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.433586+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "understand",
+          "call_id": "call_c99b84e298914995ab48a753219c72f1",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 1988.509,
+          "attempts": 1,
+          "input_tokens": 2113,
+          "output_tokens": 78,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.433641+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "understand",
+          "duration_ms": 1996.572,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.434134+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.439564+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_caa0bda36c5f403ca9a985ebb7bbb487",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:47.449133+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_caa0bda36c5f403ca9a985ebb7bbb487",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.456597+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_caa0bda36c5f403ca9a985ebb7bbb487",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 10007.44
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.457357+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_caa0bda36c5f403ca9a985ebb7bbb487",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 10017.781,
+          "attempts": 1,
+          "input_tokens": 16778,
+          "output_tokens": 755,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.457457+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 10023.319,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.458415+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.588647+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 130.22,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.589204+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "visualize"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.589229+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "visualize",
+          "duration_ms": 0.023,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.590036+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.592302+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_e068005fd8de48ec9ea43765212e3e34",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:27:57.596883+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_e068005fd8de48ec9ea43765212e3e34",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.507962+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_e068005fd8de48ec9ea43765212e3e34",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 6911.06
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.508580+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_e068005fd8de48ec9ea43765212e3e34",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 6916.268,
+          "attempts": 1,
+          "input_tokens": 3046,
+          "output_tokens": 491,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.508615+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 6918.577,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.509388+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.559275+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_9a5bb5d1f2a5458ba9389d0c1c9f6c8d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:04.561972+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_9a5bb5d1f2a5458ba9389d0c1c9f6c8d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:18.970802+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_9a5bb5d1f2a5458ba9389d0c1c9f6c8d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 14408.803
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:18.971669+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_9a5bb5d1f2a5458ba9389d0c1c9f6c8d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 14412.378,
+          "attempts": 1,
+          "input_tokens": 3190,
+          "output_tokens": 1256,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:18.971795+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 14462.402,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:18.973355+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:18.985823+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_49ce6326f89d47ddb2356909cf37f66e",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:19.002217+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_49ce6326f89d47ddb2356909cf37f66e",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.785515+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_49ce6326f89d47ddb2356909cf37f66e",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 6783.278
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.786659+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_49ce6326f89d47ddb2356909cf37f66e",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 6800.819,
+          "attempts": 1,
+          "input_tokens": 3152,
+          "output_tokens": 515,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.786713+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 6813.355,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.787935+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.867492+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_3d4a36f5c89744b6ad6715d84b1d229d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:25.874828+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_3d4a36f5c89744b6ad6715d84b1d229d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:40.924532+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_3d4a36f5c89744b6ad6715d84b1d229d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 15049.68
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:40.925644+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_3d4a36f5c89744b6ad6715d84b1d229d",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 15058.14,
+          "attempts": 1,
+          "input_tokens": 3213,
+          "output_tokens": 1256,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:40.925757+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 15137.817,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T07:28:40.934508+00:00",
+          "run_id": "run_d88aada6a6f340278ce524a6811c0ac0",
+          "owner_id": "eval",
+          "chat_id": "eval_s3_monthly_counts_01",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_3b283e0ee9ef44aea3f7677d4bb219cf",
+          "event": "run_finished",
+          "node": "verify",
+          "status": "success",
+          "error_type": null,
+          "error_node": null,
+          "duration_ms": 55512.666,
+          "trace": [
+            {
+              "node": "load_ctx",
+              "duration_ms": 8.868,
+              "error_type": null
+            },
+            {
+              "node": "fast_route",
+              "duration_ms": 0.153,
+              "error_type": null
+            },
+            {
+              "node": "understand",
+              "duration_ms": 1996.572,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 10023.319,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 130.22,
+              "error_type": null
+            },
+            {
+              "node": "visualize",
+              "duration_ms": 0.023,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 6918.577,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 14462.402,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 6813.355,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 15137.817,
+              "error_type": null
+            }
+          ]
+        }
+      ],
+      "automated_status": "passed",
+      "automated_issues": [],
+      "semantic_status": "not_evaluated",
+      "semantic_issues": [],
+      "semantic_rubrics": [
+        {
+          "kind": "must_explain",
+          "rubric": "Все 24 месяца представлены в хронологическом порядке; месяц определяется по началу попытки в МСК.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_explain",
+          "rubric": "Повторные попытки входят в число строк своего месяца.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_not_claim",
+          "rubric": "Месяц определён по окончанию запуска, UTC или текущей дате.",
+          "status": "not_evaluated",
+          "reason": null
+        },
+        {
+          "kind": "must_not_claim",
+          "rubric": "Часть месяцев скрыта лимитом результата.",
+          "status": "not_evaluated",
+          "reason": null
+        }
+      ],
+      "id": "s3_monthly_counts_01",
+      "status": "needs_review",
+      "duration_seconds": 55.51,
+      "total_duration_seconds": 55.52,
+      "thread_id": "eval_s3_monthly_counts_01",
+      "context_cases": [],
+      "context_results": [],
+      "issues": [],
+      "question": "Сколько попыток начиналось в каждом календарном месяце? Покажи все месяцы за весь период по порядку, включая повторные попытки; используй «Начало (МСК)».",
+      "scenario": 3
+    }
+  ],
+  "elapsed_seconds": 265.54,
+  "finished_at": "2026-10-31T07:28:40.952772+00:00",
+  "model_profile": {
+    "model": "Qwen/Qwen3.6-27B",
+    "endpoint": "https://api.deepinfra.com/v1/openai",
+    "reasoning": {
+      "understand": "none",
+      "plan": "provider_default",
+      "visualize": "none",
+      "compose": "none",
+      "verify": "provider_default"
+    },
+    "reasoning_supported": true,
+    "attempt_timeout_seconds": 180.0,
+    "turn_timeout_seconds": 400.0,
+    "max_retries": 1,
+    "max_output_tokens": 2048,
+    "context_tokens": 8192,
+    "scope": "direct_graph_numeric_controls_not_browser_or_semantic_acceptance",
+    "passed": false,
+    "checks": [
+      {
+        "id": "s1_overview_01",
+        "passed": false,
+        "model_verify_completed": true
+      },
+      {
+        "id": "s2_status_01",
+        "passed": false,
+        "model_verify_completed": true
+      },
+      {
+        "id": "s3_monthly_counts_01",
+        "passed": true,
+        "model_verify_completed": true
+      }
+    ],
+    "application_sha": "0363d55cce8c78fcdd9381e23d3c5b4bfa81ba4a"
+  }
+}

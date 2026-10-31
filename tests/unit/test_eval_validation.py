@@ -366,9 +366,11 @@ def test_report_preserves_plan_results_and_blocks_for_rechecking():
     r = result([[123]], params={"sql": "SELECT 123 AS n"})
     s = state(r, "123")
     s["plan"] = [{"tool": "run_sql", "args": {"sql": "SELECT 123 AS n"}}]
+    s["verification"] = {"status": "verified", "result_ids": [r.result_id]}
     _, _, details = evaluate_case(case(must_explain=["Explain the origin"]), s)
     assert details["tool_results"][0]["params"] == r.params
     assert details["plan"] == s["plan"]
+    assert details["verification"] == s["verification"]
     assert details["answer_blocks"][0]["markdown"] == "123"
     assert details["semantic_rubrics"][0]["kind"] == "must_explain"
 
