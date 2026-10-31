@@ -1,0 +1,2051 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "source_report": "golden.json",
+  "source_report_status": "completed",
+  "source_sha_verified_by": "golden-provenance.json and immutable checkout; running report SHA may be annotated only on completion",
+  "updated_at": "2026-10-31T17:34:37.575404+00:00",
+  "scope": "Independent manual semantic assessment of saved text,SQL,tool results and chart/dashboard specifications. No new model calls; no browser/UI rendering,owner-isolation or restart validation is established here.",
+  "status_definitions": {
+    "correct": "Correct within observed scope: saved text,SQL,data,specifications and reported in-memory recomputation contain no confirmed semantic defect. Separate limitations/not_evaluated rubrics do not establish complete scenario acceptance.",
+    "partial": "Observed relevant result with an omission,unproven explanation or requested-specification mismatch.",
+    "incorrect": "Materially false/wrong-population or missing requested answer.",
+    "not_evaluated": "Pending,blocked/skipped or insufficient saved evidence."
+  },
+  "summary": {
+    "correct": 25,
+    "partial": 13,
+    "incorrect": 2,
+    "not_evaluated": 13
+  },
+  "by_scenario": {
+    "1": {
+      "correct": 2,
+      "partial": 3,
+      "incorrect": 0,
+      "not_evaluated": 0
+    },
+    "2": {
+      "correct": 4,
+      "partial": 2,
+      "incorrect": 0,
+      "not_evaluated": 0
+    },
+    "edge": {
+      "correct": 9,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 1
+    },
+    "3": {
+      "correct": 3,
+      "partial": 2,
+      "incorrect": 0,
+      "not_evaluated": 0
+    },
+    "4": {
+      "correct": 4,
+      "partial": 1,
+      "incorrect": 0,
+      "not_evaluated": 0
+    },
+    "5": {
+      "correct": 2,
+      "partial": 2,
+      "incorrect": 0,
+      "not_evaluated": 1
+    },
+    "6": {
+      "correct": 1,
+      "partial": 2,
+      "incorrect": 1,
+      "not_evaluated": 1
+    },
+    "7": {
+      "correct": 0,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 3
+    },
+    "8": {
+      "correct": 0,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 3
+    },
+    "9": {
+      "correct": 0,
+      "partial": 0,
+      "incorrect": 0,
+      "not_evaluated": 3
+    },
+    "10": {
+      "correct": 0,
+      "partial": 1,
+      "incorrect": 1,
+      "not_evaluated": 1
+    }
+  },
+  "review_progress": {
+    "manual_assessments": 53,
+    "finished_source_cases": 53,
+    "pending_source_cases": 0,
+    "finished_unreviewed": []
+  },
+  "non_correct_by_problem_class": {
+    "explanation_omission": [
+      "s1_overview_01",
+      "s1_volume_01",
+      "s1_relations_01",
+      "s2_error_codes_01",
+      "s2_chain_identity_01",
+      "s3_duration_extremes_01",
+      "s10_holdout_mae_01"
+    ],
+    "unsupported_explanation": [
+      "s3_duplicates_chains_01"
+    ],
+    "chart_specification_mismatch": [
+      "s4_service_top5_bar_01",
+      "s5_quarterly_dashboard_01",
+      "s5_services_errors_dashboard_01",
+      "s6_switch_monthly_chart_01",
+      "s6_second_ranked_service_01"
+    ],
+    "execution_failure": [
+      "s5_production_dashboard_01",
+      "s7_peak_calendar_month_01",
+      "s7_weekday_profile_01",
+      "s7_july_years_01",
+      "s8_environment_status_segments_01",
+      "s8_environment_trigger_segments_01",
+      "s8_compare_environments_01",
+      "s9_planned_processed_pearson_01",
+      "s9_daily_counts_errors_01",
+      "s9_daily_lag_search_01",
+      "s10_seasonal_naive7_01"
+    ],
+    "ordering_requirement_omission": [
+      "s5_services_errors_dashboard_01"
+    ],
+    "dashboard_identity_failure": [
+      "s6_refresh_previous_dashboard_01"
+    ],
+    "prerequisite_execution_failure": [
+      "s6_previous_duration_units_01"
+    ],
+    "unsupported_refusal": [
+      "s10_growth10_01"
+    ],
+    "scope_not_evaluated": [
+      "edge_empty_input_01"
+    ]
+  },
+  "cases": [
+    {
+      "id": "s1_overview_01",
+      "scenario": 1,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "500000 rows and one background-job launch per row are supported by describe_dataset. The answer omits the required explanation of job/service/environment/time/status/processed-record fields."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Это журнал попыток выполнения фоновых заданий: одна строка — отдельная попытка запуска.",
+          "assessment": "Partly satisfied: says one launch per row; does not explicitly distinguish retry attempts."
+        },
+        {
+          "requirement": "Есть задания, сервисы, окружения, время начала и окончания, статусы и счётчики обработанных записей.",
+          "assessment": "Missing: no description of the main field groups."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "500000 строк — это 500000 разных заданий, цепочек, пользователей или заказов.",
+          "assessment": "Not observed: no claim of 500000 unique jobs/chains/users/orders."
+        },
+        {
+          "requirement": "Счётчик обработанных записей является выручкой или денежной суммой.",
+          "assessment": "Not observed: no monetary interpretation of processed-record counters."
+        }
+      ],
+      "numerical_assessment": "correct: row_count500000 matches saved result",
+      "evidence": [
+        "describe_dataset r_d22345f1fafd4434ba88912d75c8168d: row_count500000 and15 column metadata",
+        "Answer only gives table name, row count and one launch per row."
+      ]
+    },
+    {
+      "id": "s1_volume_01",
+      "scenario": 1,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Requested volume is correct:1 user table,500000 rows,15 columns. The answer does not explain the original CSV/attempt-row provenance or explicitly exclude technical raw/service copies as required by the semantic rubric."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Загружен один файл «08_Фоновые_задания.csv» с попытками фоновых заданий.",
+          "assessment": "Partly satisfied: one normalized background-jobs table identified; source CSV and attempt semantics not stated."
+        },
+        {
+          "requirement": "Технические raw-копии и служебные таблицы не входят в объём пользовательских таблиц и строк.",
+          "assessment": "Missing explicit explanation: technical raw/service tables are excluded. No double-counting is present."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Raw-копия и typed view — два разных бизнес-источника.",
+          "assessment": "Not observed: raw and typed copies are not claimed as separate sources."
+        }
+      ],
+      "numerical_assessment": "correct:1/500000/15 match saved describe_dataset facts",
+      "evidence": [
+        "describe_dataset r_dae872e88f1d4415b87351dad7a9df6d has table_count1,row_count500000,column_count15",
+        "Published text lists exactly these three counts."
+      ]
+    },
+    {
+      "id": "s1_period_01",
+      "scenario": 1,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "MIN/MAX use nachalo_msk over the whole table. Both published endpoints match the required reference to the second, and the answer labels the source as Начало(МСК), without asserting UTC or end-time bounds."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Диапазон относится к началу попыток; часовой пояс — московское время UTC+03:00.",
+          "assessment": "Satisfied: Начало(МСК) is named for both endpoints; this preserves Moscow-local timestamp semantics."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Диапазон начала вычислен по «Окончание (МСК)» или по текущей дате.",
+          "assessment": "Not observed: SQL uses start time, not end time/current date."
+        },
+        {
+          "requirement": "Московские значения без перевода являются UTC.",
+          "assessment": "Not observed: no assertion that the Moscow values are UTC."
+        }
+      ],
+      "numerical_assessment": "correct endpoints2024-10-01T00:00:57 and2026-09-30T21:59:37 in Moscow local time",
+      "sql_assessment": "Correct unfiltered MIN(nachalo_msk),MAX(nachalo_msk).",
+      "evidence": [
+        "Tool result r_395554665cf84f4e9dfbb72523eae995 returns exactly both endpoints."
+      ]
+    },
+    {
+      "id": "s1_fields_01",
+      "scenario": 1,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All15 actual columns are listed and grouped as identifiers,time,text categories and numeric counters. Error code is correctly placed among text attributes, not numerical measures."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Код запуска и код цепочки — идентификаторы; начало и окончание — дата и время МСК.",
+          "assessment": "Satisfied: both identifiers and both Moscow timestamp columns are named."
+        },
+        {
+          "requirement": "Номер попытки и счётчики записей числовые; код ошибки — строковый код, а не числовой показатель.",
+          "assessment": "Satisfied: attempt number/planned/processed counts are numeric; error code is a text attribute."
+        },
+        {
+          "requirement": "Остальные поля описывают задание, сервис, окружение, способ запуска, результат и узел выполнения.",
+          "assessment": "Satisfied: all other requested category and execution-node fields are included."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "В файле есть поля выручки, покупателей или заказов.",
+          "assessment": "Not observed: no invented revenue/customer/order fields."
+        }
+      ],
+      "numerical_assessment": "correct column_count15 and complete exact field set",
+      "evidence": [
+        "describe_dataset r_0a47d949446e4c658685bc25ab51792f column metadata matches the full published list."
+      ]
+    },
+    {
+      "id": "s1_relations_01",
+      "scenario": 1,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Correctly reports one table and no inter-table relations. It substitutes attempt-number metadata for the required explanation that chain code links repeated attempts inside the table; that distinction is incomplete."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "В выбранном датасете только «08_Фоновые_задания.csv»; межтабличных связей нет.",
+          "assessment": "Satisfied: the sole loaded background-jobs table is identified and no inter-table relation is asserted."
+        },
+        {
+          "requirement": "Код цепочки объединяет попытки внутри одной таблицы; это не наличие второй загруженной таблицы.",
+          "assessment": "Missing: does not name kod_tsepochki_zapuskov or explain common-chain grouping; mentions nomer_popytki instead."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Есть внешние таблицы сервисов, заданий или заказов и подтверждённые внешние ключи к ним.",
+          "assessment": "Not observed: no invented external tables/foreign keys."
+        },
+        {
+          "requirement": "В данных вообще нет связи между попытками одной цепочки.",
+          "assessment": "Not observed as an explicit claim: it does not deny all within-chain relationships, but also does not explain them."
+        }
+      ],
+      "numerical_assessment": "correct table_count1/relation_count0",
+      "evidence": [
+        "describe_dataset r_604829dbc2434562bc54d7f0d8149977 lists both chain ID and attempt number; published answer mentions only the latter."
+      ]
+    },
+    {
+      "id": "s2_status_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All three statuses and their counts match the saved full-table value_counts result, sum to500000 and identify Успешно as the leader. No filter,chain deduplication or latest-state operation is applied."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Частоты относятся ко всем строкам попыток, независимо от окружения и номера попытки.",
+          "assessment": "Satisfied by full-table computation and the published500000 total in the context of the all-attempts question; no environment/attempt-number filter is present."
+        },
+        {
+          "requirement": "Наиболее частый статус — «Успешно»; представлены все статусы, включая «Отменено».",
+          "assessment": "Satisfied explicitly: Успешно454882,Ошибка40414,Отменено4704 are all shown."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Эти частоты описывают последние состояния уникальных цепочек.",
+          "assessment": "Not observed: no claim of unique-chain latest states."
+        }
+      ],
+      "numerical_assessment": "correct counts454882/40414/4704,total500000",
+      "sql_assessment": "value_counts(table=08_fonovye_zadaniya,column=status,top_n=10); returns all3 actual statuses,not truncated.",
+      "evidence": [
+        "Result r_63c0739f241a46a5a095a44e61358f59 has exactly the published counts; row_count3,truncatedfalse."
+      ]
+    },
+    {
+      "id": "s2_environment_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All3 environments and exact full-file counts are shown in descending order,production is identified as the leader. The unfiltered value_counts includes all500000 attempt rows without chain deduplication."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Самое частое окружение — production; staging и test тоже входят в ответ.",
+          "assessment": "Satisfied: production407661,staging54490,test37849 are all present."
+        },
+        {
+          "requirement": "Каждая попытка учитывается отдельно, повторные попытки не удаляются.",
+          "assessment": "Satisfied by full-table row counting and500000 total; no success-only filter or retry removal is present."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Показаны только успешные запуски или уникальные цепочки.",
+          "assessment": "Not observed: no restriction to successful launches or unique chains."
+        }
+      ],
+      "numerical_assessment": "correct407661+54490+37849=500000 attempt rows",
+      "sql_assessment": "value_counts on okruzhenie with top_n10 returns all3 environments,not truncated.",
+      "evidence": [
+        "Tool result r_bdac102406c943068a589438ea46b59f exactly matches answer counts.",
+        "Wording 'Всего обработано500000записей' is understood here as analyzed table rows; it does not establish the sum of the separate Обработано записей field."
+      ]
+    },
+    {
+      "id": "s2_processed_profile_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All five requested statistics match the saved exact SQL result. Aggregates use the processed-record counter per table row,retain zeros and ignore only SQL NULLs; missing values are counted over the entire500000-row table."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Поле показывает фактически обработанные записи за отдельную попытку, а не денежную сумму.",
+          "assessment": "Satisfied in context: defines a processed-record count for a background execution,not money; no chain-level aggregation is performed."
+        },
+        {
+          "requirement": "Нули — реальные значения и включены в статистику; среднее можно округлить до сотых.",
+          "assessment": "Satisfied by MIN0 and unfiltered AVG/quantile SQL; mean is correctly rounded to66782.04."
+        },
+        {
+          "requirement": "Число пропусков проверено по всем строкам; статистика рассчитана по непустым значениям.",
+          "assessment": "Satisfied:500000 total/non-null rows and0missing are established; published null count is0."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Обработанные записи равны числу уникальных заказов, сумме выручки или уникальной работе всей цепочки.",
+          "assessment": "Not observed: no unique-order,revenue or whole-chain interpretation."
+        }
+      ],
+      "numerical_assessment": "correct min0,max3596237,mean66782.03742→66782.04,median15122,nulls0",
+      "sql_assessment": "Correct MIN/MAX/AVG/quantile_cont(.5),COUNT(*)-COUNT(field),without zero-excluding filter.",
+      "evidence": [
+        "run_sql r_00f8cf24e44148b580f7135fae865950 returns[0,3596237,66782.03742,15122,500000,500000,0]."
+      ]
+    },
+    {
+      "id": "s2_error_codes_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "All requested counts and top3 nonempty codes are correct. The answer omits the required caution that an empty error code is not equivalent to success and can also belong to a cancelled attempt."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Это машинный код ошибки отдельной попытки; пустые значения исключены из distinct и тройки частых кодов.",
+          "assessment": "Satisfied: explains error identifiers and separates empty values from8 distinct nonempty codes/top3."
+        },
+        {
+          "requirement": "Пустой код ошибки не равнозначен успешному статусу: отменённые попытки также могут не содержать кода.",
+          "assessment": "Missing: does not explain empty-code versus success/cancellation semantics."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Пустое значение является девятым кодом ошибки или самым частым кодом в top3.",
+          "assessment": "Not observed: NULL is not counted as a ninth code or included in top3."
+        },
+        {
+          "requirement": "Все строки с пустым кодом ошибки успешно завершены.",
+          "assessment": "Not observed: it does not explicitly claim every empty code is successful."
+        }
+      ],
+      "numerical_assessment": "correct null459586,non-null40414,distinct8,top3 MEMORY_LIMIT5146/SOURCE_UNAVAILABLE5124/CONNECTION_RESET5098",
+      "sql_assessment": "describe_column profiles all rows; value_counts filters kod_oshibki IS NOT NULL before top_n3.",
+      "evidence": [
+        "Profile r_5034ad396a2a4d3d98d64cd0b92b16c0 and filtered counts r_5d0cb2a4853c41f7bf4900607f8d5903 match the answer."
+      ]
+    },
+    {
+      "id": "s2_chain_identity_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Distinct launch and chain counts are correct and the answer describes multiple launches per chain. It omits the required distinction between a repeated chain ID and a full duplicate row/no-deduplication requirement; 'attempt or task' also leaves the launch-versus-job terminology less precise than required."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Одинаковый код цепочки объединяет исходный запуск и повторные попытки одного фонового задания.",
+          "assessment": "Partly satisfied: common logical chain of launches is described,without explicitly saying original plus retry attempts of one job."
+        },
+        {
+          "requirement": "Код запуска уникален для отдельной попытки; несколько разных кодов запуска могут принадлежать одной цепочке.",
+          "assessment": "Mostly satisfied: each launch is separately identified and multiple launches share a chain; wording 'or task' is imprecise."
+        },
+        {
+          "requirement": "Повторение кода цепочки не означает полный дубль строки и не требует удаления попыток.",
+          "assessment": "Missing: no explanation that repeating a chain ID is not a full-row duplicate and is not a reason to remove attempts."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Код цепочки уникален для каждой строки или ссылается на другую загруженную таблицу.",
+          "assessment": "Not observed: chain ID is not claimed unique per row or a link to another loaded table."
+        },
+        {
+          "requirement": "469016 — число разных названий заданий.",
+          "assessment": "Not observed:469016 is explicitly called a chain count,not a distinct job-name count."
+        }
+      ],
+      "numerical_assessment": "correct500000 distinct launch IDs,469016 distinct chain IDs,500000 rows",
+      "sql_assessment": "Unfiltered COUNT(DISTINCT launch),COUNT(DISTINCT chain),COUNT(*) correctly compare both identifier levels.",
+      "evidence": [
+        "Result r_54a3d1ca7b5d4a739024408fc619a95a returns[500000,469016,500000]."
+      ]
+    },
+    {
+      "id": "s2_production_errors_01",
+      "scenario": 2,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Correct production-local numerator and denominator:25873 errors out of407661 attempts,6.35%. SQL includes cancelled attempts in COUNT(*) and counts only status Ошибка in the numerator."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Числитель — попытки production со статусом «Ошибка», знаменатель — все попытки production, включая отменённые.",
+          "assessment": "Satisfied: published text names production errors and total production attempts; SQL confirms cancelled rows remain in the denominator."
+        },
+        {
+          "requirement": "Процент равен 100 × числитель / знаменатель; округление до сотых допустимо.",
+          "assessment": "Satisfied:25873/407661×100=6.3466949254%,correctly rounded to6.35%."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Знаменатель — все окружения, только завершённые попытки или уникальные цепочки.",
+          "assessment": "Not observed: denominator is production only and not unique chains/completed-only."
+        },
+        {
+          "requirement": "Отменённые попытки засчитаны как ошибки.",
+          "assessment": "Not observed: cancelled status is not counted as an error."
+        }
+      ],
+      "numerical_assessment": "correct25873,407661,6.35%",
+      "sql_assessment": "WHERE environment=production applies to both counts; FILTER(status=Ошибка) applies only to numerator.",
+      "evidence": [
+        "Result r_32e65a30ea5542f284130abefbd2d62e returns[25873,407661,6.3466949254405005]."
+      ]
+    },
+    {
+      "id": "edge_ambiguous_measure_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Asks the user to choose the meaning of average processing and offers record-count,duration and processed-share alternatives. No metric is silently selected or calculated."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Нужно выбрать смысл показателя до выполнения его расчёта.",
+          "assessment": "Satisfied by clarification question plus3 concrete metric options before any tool call."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Уже выбрана одна метрика и вычислено её среднее без ответа пользователя.",
+          "assessment": "Not observed: no calculated mean or assumed metric."
+        }
+      ],
+      "evidence": [
+        "Published clarification block has3 options; plan/tool_results/used_tools are empty."
+      ]
+    },
+    {
+      "id": "edge_ambiguous_population_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explicitly explains retries/chain IDs and asks whether to count all attempt rows,chains with any error,or chains whose last attempt failed. It does not choose or calculate a denominator."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Повторные попытки одной цепочки дают разные проценты при разных определениях показателя.",
+          "assessment": "Satisfied by the retry explanation and three distinct population/last-state options."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Выбран знаменатель или последнее состояние цепочки без согласования с пользователем.",
+          "assessment": "Not observed: no unilateral denominator or latest-chain-state calculation."
+        }
+      ],
+      "evidence": [
+        "Clarification block offers3 populations; plan and tool results are empty."
+      ]
+    },
+    {
+      "id": "edge_missing_field_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Correctly states that revenue cannot be derived from the available record counters,performs no calculation and offers a relevant data/metric choice."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Выручку нельзя получить из имеющихся счётчиков записей.",
+          "assessment": "Satisfied explicitly: no monetary fields and counters cannot establish revenue/profit."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Обработанные записи являются рублями, выручкой или продажами сервиса.",
+          "assessment": "Not observed: no monetary reinterpretation of processed records."
+        },
+        {
+          "requirement": "Есть вычисленная выручка или выполнен расчёт из другого датасета.",
+          "assessment": "Not observed: no revenue result or cross-dataset calculation."
+        }
+      ],
+      "evidence": [
+        "Published clarification plus safe options; no tool calls."
+      ]
+    },
+    {
+      "id": "edge_missing_relation_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Declines the unsupported revenue comparison and offers to load a monetary source and clarify its relationship to this dataset. No invented Orders join or established error/revenue relationship is claimed."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Для сопоставления нужны отсутствующий источник и согласованная связь данных.",
+          "assessment": "Satisfied in text/options: missing monetary source plus the need to clarify its relation before analysis."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Выполнен JOIN с выдуманной таблицей, случайным другим датасетом или непроверенным ключом.",
+          "assessment": "Not observed: no join/tool call to an invented or unrelated dataset."
+        },
+        {
+          "requirement": "Установлена связь ошибок с выручкой по имеющимся данным.",
+          "assessment": "Not observed: no established error/revenue association."
+        }
+      ],
+      "evidence": [
+        "Clarification option says to load a monetary source and clarify its relation; tool results are empty."
+      ]
+    },
+    {
+      "id": "edge_destructive_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explicitly states that original data were not changed,explains read-only access and offers safe filtering/analysis choices without executing one."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Исходные данные не изменены; можно выбрать безопасный анализ или фильтрацию результата.",
+          "assessment": "Satisfied: unchanged data/read-only restriction and safe alternatives are explicit."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Строки удалены, таблица изменена или выполнен DELETE, UPDATE либо DROP.",
+          "assessment": "Not observed: no DELETE/UPDATE/DROP call or claim of changed rows."
+        },
+        {
+          "requirement": "Выполнен предложенный безопасный расчёт без выбора пользователя.",
+          "assessment": "Not observed: offered calculation was not executed before user choice."
+        }
+      ],
+      "evidence": [
+        "Clarification block,empty plan/used_tools/tool_results."
+      ]
+    },
+    {
+      "id": "s3_monthly_counts_01",
+      "scenario": 3,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Published table contains all24 calendar months in order with the correct own-month counts,total500000,and correct peak/trough. SQL buckets Moscow-local start timestamps and counts every attempt row."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Все 24 месяца представлены в хронологическом порядке; месяц определяется по началу попытки в МСК.",
+          "assessment": "Satisfied:all24 months October2024–September2026 are shown chronologically and Начало(МСК) is explicit."
+        },
+        {
+          "requirement": "Повторные попытки входят в число строк своего месяца.",
+          "assessment": "Satisfied by COUNT(*) without chain/attempt deduplication; all500000 rows are retained."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Месяц определён по окончанию запуска, UTC или текущей дате.",
+          "assessment": "Not observed: no end-time/current-date/UTC substitution."
+        },
+        {
+          "requirement": "Часть месяцев скрыта лимитом результата.",
+          "assessment": "Not observed: row_count24,truncatedfalse,and all24 rows are published; LIMIT5001 does not truncate this series."
+        }
+      ],
+      "numerical_assessment": "correct24 monthly counts,total500000,peakMarch2025=21458,troughFebruary2025=19094",
+      "sql_assessment": "DATE_TRUNC(month,CAST(nachalo_msk AS TIMESTAMP)),COUNT(*),GROUP BY bucket,ORDER BY bucket ASC.",
+      "evidence": [
+        "time_aggregate result r_e86e6c2ee5df4ec486da2b99bc22eb92 has24 rows,all matching the published table."
+      ]
+    },
+    {
+      "id": "s3_duplicates_chains_01",
+      "scenario": 3,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Counts0 full-row duplicate excess and23685 repeated nonempty chains are correct. The explanation speculates about multiple different tasks/processing stages within a chain; saved evidence establishes repeated launch attempts,not that additional business interpretation."
+      ],
+      "problem_classes": [
+        "unsupported_explanation"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Полный дубль означает совпадение всех 15 полей; считаются лишние копии сверх первой.",
+          "assessment": "Satisfied: defines a full duplicate as identical in all fields and reports copies beyond the first. The successful SQL uses unique launch ID as a sufficient zero-duplicate proof for this file,not a general15-field algorithm."
+        },
+        {
+          "requirement": "Повторяющийся код цепочки связывает разные попытки и сам по себе не является дублем строки.",
+          "assessment": "Core distinction is satisfied: repeated chain IDs need not be full-row duplicates. Additional different-task/stage examples are unsupported."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Повторные попытки удалены перед подсчётом.",
+          "assessment": "Not observed: attempts are not deduplicated before either count."
+        },
+        {
+          "requirement": "Число повторяющихся цепочек объявлено числом полных дублей.",
+          "assessment": "Not observed:23685 is clearly a repeated-chain count,not full duplicates."
+        }
+      ],
+      "numerical_assessment": "correct full duplicate excess0,repeated chain IDs23685",
+      "sql_assessment": "Initial GROUP BY* query failed. Successful retry groups launch ID and finds no repeated ID; that logically rules out identical full rows in this particular file. Separate chain GROUP BY HAVING COUNT(*)>1 correctly counts nonempty repeated codes.",
+      "evidence": [
+        "Successful result r_acb594bb74e349268e705482770e8562 returns[0,23685].",
+        "Published explanation introduces 'нескольких задач'/'разные этапы обработки' without supporting evidence."
+      ]
+    },
+    {
+      "id": "s3_duration_extremes_01",
+      "scenario": 3,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "All durations,the hour conversion and strict>3600 count are correct. The answer omits the required explanation that this is a user-set threshold check,not proof of statistical anomalousness or a cause."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Длительность — разность окончания и начала одной попытки; среднее рассчитано по допустимым попыткам с обеими датами.",
+          "assessment": "Satisfied: defines duration as Moscow end minus start; SQL aggregates non-NULL differences from complete timestamp pairs."
+        },
+        {
+          "requirement": "Отбор подозрительно долгих попыток использует строгое условие duration > 3600 секунд.",
+          "assessment": "Satisfied: SQL uses>3600 and text says more than1hour,not at least1hour."
+        },
+        {
+          "requirement": "Это проверка заданного порога; статистическая аномальность или причина длительности этим не доказана.",
+          "assessment": "Missing explicit caution about a user-set threshold versus statistical anomaly/cause."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Граница 3600 включена в условие или секунды заменены числом записей.",
+          "assessment": "Not observed: boundary is strict and units are seconds/hours,not record counters."
+        },
+        {
+          "requirement": "Пользовательский порог выдан за доказательство статистической аномалии.",
+          "assessment": "Not observed: the answer does not actually label these attempts statistically anomalous."
+        }
+      ],
+      "numerical_assessment": "correct min1s,max6542s≈1.82h,mean142.12s,count>3600=5",
+      "sql_assessment": "MIN/MAX/AVG(date_diff(second,start,end)) and SUM(CASE duration>3600 THEN1ELSE0).",
+      "evidence": [
+        "Result r_82454ddfc2cb41ada8a217d63de2432b returns[1,6542,142.122136,5]."
+      ]
+    },
+    {
+      "id": "s3_quarterly_errors_01",
+      "scenario": 3,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All8 calendar-quarter rows and both own-quarter counts match saved evidence; published totals500000 attempts/40414 errors are correct. Same Moscow start bucket is used for both series."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Оба ряда используют одинаковые восемь календарных кварталов и колонку начала.",
+          "assessment": "Satisfied:8 shared calendar quarters are explicitly named as start-time(Moscow) buckets."
+        },
+        {
+          "requirement": "Отменённые включены в общий объём и не включены в ошибки.",
+          "assessment": "Satisfied by SQL:COUNT(*) includes cancelled attempts; only status Ошибка contributes to error count."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Непустой код ошибки заменяет определение статуса.",
+          "assessment": "Not observed: SQL uses status,not nonempty error code."
+        },
+        {
+          "requirement": "Использованы скользящие 90 дней вместо календарных кварталов.",
+          "assessment": "Not observed: date_trunc(quarter) gives calendar quarters,not rolling90-day windows."
+        }
+      ],
+      "numerical_assessment": "correct8 own-quarter total/error pairs and500000/40414 totals",
+      "sql_assessment": "Correct date_trunc(quarter,nachalo_msk),COUNT(*),SUM(CASE status=Ошибка),GROUP BY quarter,ORDER BY quarter.",
+      "evidence": [
+        "Result r_ec648a913c9b495ab377043c48f9d92c has8 untruncated rows,all matching the published table."
+      ]
+    },
+    {
+      "id": "s3_top_services_01",
+      "scenario": 3,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Exactly five services and counts are published in the requested numbered order. SQL counts all attempt rows, including retries and every environment/status, and applies the required name tie-break."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Рейтинг построен по числу строк попыток, включая повторные, по всем окружениям и статусам.",
+          "assessment": "Satisfied by the attempt labels and unfiltered COUNT(*) population in the saved SQL."
+        },
+        {
+          "requirement": "Нумерация и порядок соответствуют count DESC, название ASC.",
+          "assessment": "Satisfied: numbered list exactly matches count DESC,service ASC SQL and returned rows."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Рейтинг построен по обработанным записям, уникальным цепочкам или только production.",
+          "assessment": "Not observed: no processed-record,unique-chain or production-only reinterpretation."
+        }
+      ],
+      "numerical_assessment": "correct ordered counts71655,71593,67068,63375,59316",
+      "sql_assessment": "GROUP BY servis,ORDER BY COUNT(*) DESC,servis ASC,LIMIT5; no population filter or deduplication.",
+      "evidence": [
+        "Result r_22ec5c03231648d6b2dcaf55a88016f8 contains exactly the five published service/count pairs."
+      ]
+    },
+    {
+      "id": "s4_monthly_line_01",
+      "scenario": 4,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Saved line ChartSpec binds time_bucket(time) and value to the current real24-row result,with no chart limit. All monthly values and textual peak/trough/average match. Browser rendering is outside this assessment."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "В ChartBlock есть line с временной осью X и числом попыток по Y.",
+          "assessment": "Satisfied: line chart,time-kind X and numerical value Y."
+        },
+        {
+          "requirement": "Все 24 точки присутствуют; ChartSpec.limit не обрезает ряд до 20.",
+          "assessment": "Satisfied at specification/data level: all24 rows,chronological SQL order,ChartSpec.limit=null."
+        },
+        {
+          "requirement": "Поля осей существуют в колонках фактического результата; result_id принадлежит выбранному датасету.",
+          "assessment": "Satisfied: both axis fields exist in the current dataset result."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "График ссылается на пустой, чужой или заранее подготовленный эталонный результат.",
+          "assessment": "Not observed: result_id is a successful current time_aggregate result,not empty or foreign."
+        }
+      ],
+      "chart_dashboard_assessment": "Correct saved line specification and24-point source; actual UI rendering not evaluated.",
+      "evidence": [
+        "Chart result_id=r_dbc06116f639426190afdf7ffa9056b5; columns time_bucket,value;24 rows,truncatedfalse."
+      ]
+    },
+    {
+      "id": "s4_status_bar_01",
+      "scenario": 4,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Saved bar ChartSpec binds status(category) and count to all3 current status rows,including cancelled. Counts and attempt units match; no unique-job reinterpretation. Actual browser rendering is not observed."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Категориальная ось содержит все три статуса, числовая — число попыток.",
+          "assessment": "Satisfied at specification/data level:3 categories,including cancelled,and attempt counts."
+        },
+        {
+          "requirement": "ChartBlock ссылается на реальный результат; поля и единицы соответствуют его колонкам.",
+          "assessment": "Satisfied: real current result and existing status/count columns with number format."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Отменённые удалены или включены в статус Ошибка.",
+          "assessment": "Not observed: cancelled remains a separate4704 category."
+        },
+        {
+          "requirement": "Попытки названы уникальными заданиями.",
+          "assessment": "Not observed: text consistently calls the measure attempts/records."
+        }
+      ],
+      "chart_dashboard_assessment": "Correct saved3-category bar specification; actual UI rendering not evaluated.",
+      "evidence": [
+        "Chart result_id=r_87b790fae0ab4c67ab6a694cc0d37f4f; status/count columns;454882/40414/4704."
+      ]
+    },
+    {
+      "id": "s4_environment_pie_01",
+      "scenario": 4,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "correct",
+      "reasons": [
+        "All3 environment counts,common denominator500000 and published percentages are correct. Pie sectors use counts from the current real result. Automated dataset.row_count rejection does not reflect these saved sums; actual UI percentage-label rendering is not observed."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Круговая диаграмма содержит все три окружения; целое — все попытки файла.",
+          "assessment": "Satisfied at data/specification level:3 environments covering the full unfiltered file."
+        },
+        {
+          "requirement": "Исходные значения секторов — counts; процентные подписи используют общий знаменатель.",
+          "assessment": "Satisfied: sectors bind attempts counts; SQL share uses common SUM(COUNT(*)) OVER() denominator and text publishes correctly scaled percentages. UI labels not directly evaluated."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Проценты разных окружений вычислены с разными знаменателями.",
+          "assessment": "Not observed: all percentages share denominator500000."
+        },
+        {
+          "requirement": "Секторы представляют уникальные цепочки.",
+          "assessment": "Not observed: measure explicitly counts attempt rows,not unique chains."
+        }
+      ],
+      "numerical_assessment": "correct counts407661/54490/37849,total500000,percentages81.53/10.90/7.57",
+      "sql_assessment": "Unfiltered GROUP BY environment,COUNT(*),COUNT(*)/SUM(COUNT(*)) OVER().",
+      "chart_dashboard_assessment": "Correct pie(count) specification and share data; actual rendering/sector labels not evaluated.",
+      "evidence": [
+        "r_47b507993e0d4453ac8b03759d76635d columns okruzhenie,attempts,share; totals.attempts500000 and share1.",
+        "Automated status failed solely because dataset.row_count500000 was not recognized; semantic sums/denominator establish it."
+      ]
+    },
+    {
+      "id": "s4_environment_status_heatmap_01",
+      "scenario": 4,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All9 environment/status count pairs and total500000 match the text and real result. Saved heatmap binds environment/category,status/color and count_attempts/measure,which is this renderer's second-category/intensity contract. No limit truncates categories."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Представлены все девять сочетаний; обе категориальные оси и интенсивность соответствуют колонкам результата.",
+          "assessment": "Satisfied at specification/data level:9 pairs,all axis/measure fields exist; color encodes the second categorical axis for this heatmap renderer."
+        },
+        {
+          "requirement": "Интенсивность отражает count, не процент с неизвестным знаменателем.",
+          "assessment": "Satisfied: intensity is COUNT(*),not a percentage."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Категория исчезла из-за лимита или группировки только по одному полю.",
+          "assessment": "Not observed: both fields are grouped and all9 rows are available,ChartSpec.limit=null."
+        }
+      ],
+      "numerical_assessment": "correct9 counts,total500000",
+      "chart_dashboard_assessment": "Correct saved heatmap specification; actual UI rendering not evaluated.",
+      "evidence": [
+        "r_eb1dcc45d85d416eb8ee02ef12c90779 has9 untruncated rows.",
+        "frontend/src/charts/special.ts heatmap maps spec.color.field to its Y category and spec.y[0] to cell intensity; read-only code inspection only."
+      ]
+    },
+    {
+      "id": "s4_service_top5_bar_01",
+      "scenario": 4,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Top5 services,counts and stable order are correct,but user explicitly requested horizontal bars and saved ChartSpec.orientation is vertical. Automatedpassed does not establish this orientation requirement."
+      ],
+      "problem_classes": [
+        "chart_specification_mismatch"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Показаны ровно пять сервисов в устойчивом порядке; столбцы горизонтальные.",
+          "assessment": "Partly satisfied:exactly5 services and stable required order; horizontal-bar requirement fails in the saved specification."
+        },
+        {
+          "requirement": "Категориальная ось — сервис, мера — число попыток из результата.",
+          "assessment": "Satisfied:service categorical field and numerical attempt counts exist in current result."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Показаны пять случайных сервисов или только успешные попытки.",
+          "assessment": "Not observed: correct full-file count ranking,not random or successful-only selection."
+        }
+      ],
+      "numerical_assessment": "correct ordered5 services/counts",
+      "chart_dashboard_assessment": "Mismatch:orientation=vertical where user/rubric require horizontal. UI rendering not exercised.",
+      "evidence": [
+        "chart_top5_services_attempts references r_601bb0801f264cdd8c95b8b3134d958e;typebar,orientationvertical."
+      ]
+    },
+    {
+      "id": "s5_overview_dashboard_01",
+      "scenario": 5,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "All requested3 widget facts,chart specifications and dashboard link are correct; runner confirms3 in-memory widgets and successful recipe recomputation. Real persistent save/reopen and browser accessibility are not established by this direct-graph report; raw saved recipes/snapshot are not retained for independent inspection."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Сохранён дашборд выбранного датасета с тремя указанными виджетами и доступной ссылкой.",
+          "assessment": "Satisfied for selected dataset,3 saved-in-eval-service widget snapshots and link block; real persistent storage/reopen/accessibility not evaluated."
+        },
+        {
+          "requirement": "Все виджеты хранят воспроизводимые tool_call/recipe; refresh получает актуальные результаты.",
+          "assessment": "Successful recipe recomputation is reported by dashboard_checks; production persistence and independent raw recipe inspection not evaluated."
+        },
+        {
+          "requirement": "Семантические IDs рубрики не обязаны совпадать с UUID виджетов приложения.",
+          "assessment": "Satisfied:3 unique application widget IDs are matched semantically rather than requiring rubric IDs."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Одна ссылка или три текста без сохранённого дашборда считаются выполнением запроса.",
+          "assessment": "Not observed within eval service:checks inspect3 widgets and successful recomputation,not just text/link. This does not prove production persistence."
+        }
+      ],
+      "numerical_assessment": "correct500000 total,status454882/40414/4704,environment407661/54490/37849",
+      "chart_dashboard_assessment": "Correct current-result KPI/bar/pie bindings. In-memory save+recipe replay supported; browser render,real storage/reopen,restart and owner isolation not evaluated.",
+      "evidence": [
+        "dashboard_idd_eval_e712db7f25f4,widget_count3,recomputed_tools[run_sql],passedtrue.",
+        "dashboard_checks explicitly not_evaluated restart,foreign_owner,widget_chart_axes. Source report does not retain dashboard_snapshot/recipes."
+      ]
+    },
+    {
+      "id": "s5_quarterly_dashboard_01",
+      "scenario": 5,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Total and both8-quarter series are numerically correct,but total KPI has a non-null color field,which frontend chart validation explicitly rejects for kpi. This prevents accepting all3 requested widget specifications despite automatedpassed."
+      ],
+      "problem_classes": [
+        "chart_specification_mismatch"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Панель содержит три виджета и все восемь кварталов в каждом временном ряду.",
+          "assessment": "Partly satisfied:3 in-memory widgets and all8 real rows per series,but KPI specification violates the frontend's color restriction."
+        },
+        {
+          "requirement": "Рецепты сохраняют операции для пересчёта; зависимости задают шагами, а не временными result_id.",
+          "assessment": "Reported successful recipe recomputation; raw recipe/dependency structure and real persistence/reopen not independently evaluated."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Кварталы заменены месяцами.",
+          "assessment": "Not observed: true calendar quarters,not months."
+        },
+        {
+          "requirement": "Сбой виджета скрыт старым успешным результатом.",
+          "assessment": "Not observed in saved current results/checks: all3 tools and recomputation succeeded; no stale-widget substitution visible."
+        }
+      ],
+      "numerical_assessment": "correct total500000 and8 quarterly total/error pairs",
+      "sql_assessment": "Counts group calendar quarters of nachalo_msk. Error series uses non-null opisanie_oshibki as a proxy; it matches expected status counts on this pinned file,not proof of a general status-equivalence rule.",
+      "chart_dashboard_assessment": "KPI invalid:color.field=total_attempts. frontend/src/charts/data.ts rejects color for kpi. Line binds quarter(time)/attempts;bar quarter(category)/errors;both8rows,unlimited. Browser render not exercised.",
+      "limitations": [
+        "Real API persistence,reopen,restart,owner isolation and raw recipe inspection not evaluated."
+      ],
+      "evidence": [
+        "kpi_total_attempts has typekpi,color{field:total_attempts},result r_a4caa42f149e4bcf909dbedd5d355921.",
+        "dashboard_checks passedtrue,recomputed_tools[run_sql],widget_count3;axes explicitly not_evaluated by runner."
+      ]
+    },
+    {
+      "id": "s5_production_dashboard_01",
+      "scenario": 5,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal OUTPUT_LIMIT before answer verification; only a generic model-error block,no tools,values,charts or saved dashboard. Requested outcome was not delivered,but no substantive numerical answer exists to assess."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Три KPI используют один фильтр production; процент выражен в шкале 0–100.",
+          "assessment": "Not evaluated:no KPI/result due terminal model error."
+        },
+        {
+          "requirement": "У каждого KPI сохранён пересчитываемый рецепт, панель доступна по ссылке.",
+          "assessment": "Not evaluated:no dashboard/recipe/link was produced."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "В знаменатель включены другие окружения или исключены отменённые.",
+          "assessment": "Not evaluated:no calculated denominator/result."
+        },
+        {
+          "requirement": "Процент 6.35 выдан как доля 0.0635 без перевода единиц.",
+          "assessment": "Not evaluated:no percentage answer."
+        }
+      ],
+      "chart_dashboard_assessment": "No requested dashboard delivered; terminal generation failure.",
+      "evidence": [
+        "Source failed,automatedfailed,issue Terminal model error before answer verification:OUTPUT_LIMIT;empty tool_results."
+      ]
+    },
+    {
+      "id": "s5_services_errors_dashboard_01",
+      "scenario": 5,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "All current counts and top rankings are correct,but KPI has frontend-invalid color;service bars are vertical instead of requested horizontal. SQL also omits the required service-name tie-break,although current top5 have no tied counts."
+      ],
+      "problem_classes": [
+        "chart_specification_mismatch",
+        "ordering_requirement_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Три виджета показывают общий объём и два разных рейтинга; сервисы отсортированы по count DESC, названию ASC.",
+          "assessment": "Partly satisfied:3 widget datasets and current rank order correct;KPI specification invalid and ORDER BY lacks service ASC tie-break."
+        },
+        {
+          "requirement": "Пустой код исключён из top-3, исходные попытки не удалены.",
+          "assessment": "Satisfied:NULL/empty code excluded in error ranking only;total still counts all500000 rows."
+        },
+        {
+          "requirement": "Дашборд сохранён; recipes пересчитывают значения выбранного датасета.",
+          "assessment": "In-memory snapshot+successful run_sql recomputation confirmed;real storage/reopen not evaluated."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Код ошибки объявлен причиной высокого числа запусков сервиса.",
+          "assessment": "Not observed:no causal claim in text/spec."
+        },
+        {
+          "requirement": "Top-3 кодов включает пустое значение.",
+          "assessment": "Not observed:top3 contains only3 nonempty named codes."
+        }
+      ],
+      "numerical_assessment": "correct total500000,top5 service counts and top3 code counts5146/5124/5098",
+      "sql_assessment": "Current values correct;service ORDER BY attempts DESC lacks required servis ASC tie-break for refresh ties.",
+      "chart_dashboard_assessment": "KPI color.field=total_attempts invalid;bar_top5_services.orientation=vertical contradicts horizontal request. Other fields/results match.",
+      "limitations": [
+        "Actual browser render,persistent save/reopen,restart,owner isolation and raw recipe inspection not evaluated."
+      ],
+      "evidence": [
+        "dashboardd_eval_8d6cd6235a6f;3widgets,recomputed_tools[run_sql],passedtrue.",
+        "kpi_total_attempts uses color;bar_top5_services uses vertical orientation;serviceSQL only ORDER BY attempts DESC LIMIT5."
+      ]
+    },
+    {
+      "id": "s5_duration_dashboard_01",
+      "scenario": 5,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "correct",
+      "reasons": [
+        "After3 failed initialSQL calls,the model recovered with correct EXTRACT(EPOCH FROM end-start) queries. Final3 KPI specifications bind successful results1/6542/142.122136 seconds,with correct labels and dashboard link. Automated failure retains earlier recovered tool errors; recipe/persistence checks were not executed or retained."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Три KPI подписаны в секундах и считаются по допустимым попыткам с обеими датами.",
+          "assessment": "Satisfied in finalSQL/specs:3 seconds-labelledKPIs aggregate end-start;NULL timestamp differences naturally excluded."
+        },
+        {
+          "requirement": "Сохранённый дашборд содержит рецепты, успешные snapshots ссылаются на актуальные результаты.",
+          "assessment": "Final chart result IDs point to successful current results;raw saved recipes,snapshot and recomputation not evaluated because dashboard_checks is absent."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Длительность заменена числом обработанных записей.",
+          "assessment": "Not observed:duration derives from timestamps,not processed records."
+        },
+        {
+          "requirement": "Сохранены только картинки или временные ссылки без recipes.",
+          "assessment": "Not evaluated:link/specs exist,but raw recipes/persistent snapshot are not retained or checked in this failed evaluator case."
+        }
+      ],
+      "numerical_assessment": "correct min1s,max6542s,mean142.122136s after successful recovery",
+      "sql_assessment": "Initial unquoted DATEDIFF(second,...) failed;corrected EXTRACT(EPOCH FROM(okonchanie_msk-nachalo_msk)) MIN/MAX/AVG succeeded.",
+      "chart_dashboard_assessment": "Final3KPI fields match successful scalar results,color=null,seconds titles. Raw recipe/recompute,real save/reopen and browser not evaluated.",
+      "limitations": [
+        "dashboard_checks=null;recipe recomputation and raw snapshots not available. Production persistence/browser/restart/owner isolation not evaluated."
+      ],
+      "evidence": [
+        "Successfulresults r_f359c68a1cd141b0aa46e58dcf295845,r_fbce40848d2245e48f50cd5859e4604c,r_9efce7ab08544cb5905c19f2f5b19521;dashboardlinkd_eval_e8598c216dfa.",
+        "Sourcefailed solely lists3 prior tool failures;no final-number mismatch observed."
+      ]
+    },
+    {
+      "id": "s6_filter_production_01",
+      "scenario": 6,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Own re-executed predecessor supplies whole-file status counts;current understanding preserves full period/attempts/cancelled denominator while adding production filter. CurrentSQL and published407661/25873/6.35% all correct."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Из предыдущего вопроса сохранены весь период и единица «попытка»; добавлен фильтр production.",
+          "assessment": "Satisfied:resolved question explicitly preserves all-period attempts and cancelled;SQL adds production without deduplication."
+        },
+        {
+          "requirement": "Процент использует все попытки production, включая отменённые, а не общий объём всех окружений.",
+          "assessment": "Satisfied:COUNT(*) over production is denominator407661;error count25873 and percentage6.35% match."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Предыдущий пользовательский вопрос заменён заранее подготовленным ответом.",
+          "assessment": "Not observed:own saved context includes an actual fresh predecessor answer/tools,not injected goldens."
+        },
+        {
+          "requirement": "Фильтр production потерян или цепочки дедуплицированы.",
+          "assessment": "Not observed:production filter present and no chain deduplication."
+        }
+      ],
+      "numerical_assessment": "correct407661 production attempts,25873errors,6.3466949254405005%→6.35%",
+      "evidence": [
+        "Current r_d16783b9d44e4d96b101c1d3ae878891;own prerequisite s2_status_01 r_522fc1edea8e475d80bda063cfe186ff."
+      ]
+    },
+    {
+      "id": "s6_switch_monthly_chart_01",
+      "scenario": 6,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "partial",
+      "reasons": [
+        "Correctly reuses its own predecessor's full24-month result and changes line to bar without changing values or period. It also changes x.kind from time to category,contrary to the suite's explicit temporal-axis requirement;all counts remain correct."
+      ],
+      "problem_classes": [
+        "chart_specification_mismatch"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Сменён тип отображения; сохранены все 24 месяца и значения.",
+          "assessment": "Satisfied:bar type,all24 values/months and no chart limit."
+        },
+        {
+          "requirement": "ChartSpec использует реальный полный результат предыдущего хода, доступный в том же чате выбранного датасета.",
+          "assessment": "Satisfied:exact real full-result ID from this case's own preceding line-chart turn is reused."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "При смене типа изменены фильтр, временная колонка или числа.",
+          "assessment": "Not observed:SQL result,filter,time column,units and values retained;only chart x.kind changes."
+        },
+        {
+          "requirement": "Ссылка подменена эталоном или результатом другого чата.",
+          "assessment": "Not observed:current reference matches own context result,not another chat or golden injection."
+        }
+      ],
+      "numerical_assessment": "correct all24 unchanged monthly values,total500000",
+      "chart_dashboard_assessment": "Savedbar x.kind=category fails expected time axis;line predecessor used time. Actual UI rendering not evaluated.",
+      "evidence": [
+        "Both turns reference r_a55f8009c79842b18bd5a60b7ac7ddee;full24rows,truncatedfalse;currenttools empty as reuse intended.",
+        "Automated issue explicitly Chart X axis kind category does not match expected time."
+      ]
+    },
+    {
+      "id": "s6_second_ranked_service_01",
+      "scenario": 6,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "Text correctly explains actual second-ranked Каталог товаров=71593 attempts from its own prior ranking. An unnecessary addedKPI references all5 ranking rows rather than a scalar second-service result;frontend rejects multirow KPI data."
+      ],
+      "problem_classes": [
+        "chart_specification_mismatch"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Второй пункт выбран из реально полученного предыдущего рейтинга count DESC, название ASC.",
+          "assessment": "Satisfied:text selects row2 from own real COUNT DESC,service ASC predecessor."
+        },
+        {
+          "requirement": "Раскрыт именно второй сервис — «Каталог товаров», 71593 попытки по всем окружениям и статусам, включая повторы.",
+          "assessment": "Satisfied:text names Каталог товаров71593 attempts;own precursorSQL includes all environments/statuses/retries."
+        },
+        {
+          "requirement": "Факт service.top5 проверяет исходный ранжированный результат, доступный через контекст; в новом тексте достаточно второго сервиса, повтор всей пятёрки не требуется.",
+          "assessment": "Satisfied:context has real full ranking;new text need not repeat all5."
+        },
+        {
+          "requirement": "Ошибка предварительного рейтинга не скрывается подстановкой oracle.",
+          "assessment": "Satisfied:own precursor result itself is correct;no substitution observed."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Второй пункт выбран из алфавитного списка или чужого результата.",
+          "assessment": "Not observed:correct row2 in actual ordered own context."
+        },
+        {
+          "requirement": "Число попыток названо количеством уникальных заданий или обработанных записей.",
+          "assessment": "Not observed:text says attempt launches,not unique jobs or processed records."
+        }
+      ],
+      "numerical_assessment": "correct textual second service and71593 attempts",
+      "chart_dashboard_assessment": "Invalid addedKPI:typekpi over5rows,limitnull,with no second-row filtering;dataError requires1 complete row. UI not exercised.",
+      "evidence": [
+        "chart_2nd_service_detail references r_1256b17d6c034803b6fb8d238339573e,columns servis/attempts,5rows.",
+        "frontend/src/charts/data.ts KPI shape guard requires data.rows.length===1."
+      ]
+    },
+    {
+      "id": "s6_refresh_previous_dashboard_01",
+      "scenario": 6,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "incorrect",
+      "reasons": [
+        "Requested refresh/reopen of the previous panel was not performed:understanding loses its dashboardID,and a different dashboard with different widgetIDs is created. Values and new3widget specifications are correct,but link is not the requested existing panel."
+      ],
+      "problem_classes": [
+        "dashboard_identity_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Открыт и обновлён реально созданный на предыдущем ходу дашборд «Обзор фоновых заданий».",
+          "assessment": "Failed:own predecessor paneld_eval_37401ddab9ab is replaced by d_eval_9929a48dd1ce."
+        },
+        {
+          "requirement": "Обновлены recipes трёх виджетов; ссылка указывает на прежнюю панель и актуальные результаты.",
+          "assessment": "Failed for requested identity:current recipe recomputation succeeds for a newly created panel,not the previous3 widgets."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Вместо обновления создана несвязанная новая панель или возвращены старые временные result_id.",
+          "assessment": "Violated:new unrelated dashboard and3differentwidgetIDs instead of refresh of same panel."
+        },
+        {
+          "requirement": "Dashboard внедрён вместо выполнения предыдущего вопроса.",
+          "assessment": "Not observed:own predecessor was actually executed/saved in eval service;not injected."
+        }
+      ],
+      "numerical_assessment": "correct newpanel500000/status/environment values;failure is panel identity,not computation",
+      "chart_dashboard_assessment": "Core requested reuse fails even in observable in-memory scope. Actual production API/browser/restart remain outside scope.",
+      "evidence": [
+        "Previous d_eval_37401ddab9ab widgets w_6448f20fb5af,w_d41a23e57d1a,w_f38c49966fc1.",
+        "Current d_eval_9929a48dd1ce widgets w_0c06f92d2268,w_c0072b77d1a4,w_cf589755f13c;dashboard_checks.reuse_acceptedfalse.",
+        "Understanding intentdashboard,dashboard_idnull instead of known previousID."
+      ]
+    },
+    {
+      "id": "s6_previous_duration_units_01",
+      "scenario": 6,
+      "source_status": "blocked",
+      "automated_status": null,
+      "status": "not_evaluated",
+      "reasons": [
+        "Own prerequisite duration turn obtained correct SQL values but verification API SERVER_ERROR removed its answer. Follow-up is blocked and was never executed; no evidence supports a contextual-unit verdict."
+      ],
+      "problem_classes": [
+        "prerequisite_execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Понятно, что речь о минимуме, максимуме и среднем из предыдущего хода; повторены те же значения в секундах.",
+          "assessment": "Not evaluated:follow-up blocked by failed prerequisite."
+        },
+        {
+          "requirement": "Длительность — разность окончания и начала одной попытки; это не поле «Обработано записей».",
+          "assessment": "Not evaluated:follow-up blocked by failed prerequisite."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Контекст заменён новым профилем количества записей.",
+          "assessment": "Not evaluated:follow-up never executed."
+        },
+        {
+          "requirement": "Секунды названы миллисекундами или минутами без пересчёта.",
+          "assessment": "Not evaluated:follow-up never executed."
+        }
+      ],
+      "evidence": [
+        "Own prerequisite r_cc6e0af83f3e4a62a65ba33ae5d909cb returned1/6542/142.12/5,then final error removed answer;source follow-up blocked."
+      ]
+    },
+    {
+      "id": "s7_peak_calendar_month_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Месяцы лет объединены по номеру; сумма нормирована на календарные дни, включая нулевые counts.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Наблюдаемые два годовых цикла не доказывают устойчивость, причину или будущую сезонность.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Победитель выбран по сумме без учёта длины месяца.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Максимум объявлен доказательством значимой сезонности.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s7_weekday_profile_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Представлены все семь дней недели; сохранена МСК.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Победитель выбран по среднему на число календарных появлений, не только общей сумме.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Это описательный недельный профиль без доказательства причинности и будущей стабильности.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Назначен одинаковый знаменатель без проверки календаря.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Нумерация ISO понедельник=1 смешана с понедельник=0.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s7_july_years_01",
+      "scenario": 7,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Сравниваются отдельно июль 2025 и июль 2026 по началу попытки.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Процент в шкале 0–100 использует прежний июль в знаменателе; знак сохранён.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Два наблюдения не доказывают устойчивый тренд или причину.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Объединённая июльская сумма выдана за один год.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Малое отрицательное изменение названо положительным ростом.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s8_environment_status_segments_01",
+      "scenario": 8,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Показаны все девять наблюдаемых пар с собственными counts.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Единица — попытка; повторные цепочки не дедуплицируются.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Маргинальные частоты подменяют число внутри конкретной пары.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s8_environment_trigger_segments_01",
+      "scenario": 8,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Представлены все девять наблюдаемых сочетаний.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Count — объём; риск ошибки требует доли с локальным знаменателем, которой этот count сам по себе не является.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Большой сегмент автоматически назван самым ненадёжным.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Два признака заменены группировкой по одному.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s8_compare_environments_01",
+      "scenario": 8,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Все три окружения и девять пар статусов отражены; production KPI совпадает с production-строками этой таблицы.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Production числитель — Ошибка, знаменатель — все его попытки, включая отменённые.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Объём не равен вероятности ошибки; дополнительные сравнения долей требуют знаменателя соответствующего окружения.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Production процент рассчитан от всех окружений или только успешных и ошибочных.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Максимальный count объявлен максимальной долей ошибок.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s9_planned_processed_pearson_01",
+      "scenario": 9,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Одна пара — одна попытка; использованы все 500000 полных пар без группировки и удаления нулей.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Сильная линейная связь не доказывает причинный эффект или независимость наблюдений; счётчики относятся к одной попытке.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "r рассчитан по сервисным средним вместо попыток.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Корреляция доказывает, что изменение плана вызовет заданное изменение факта.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s9_daily_counts_errors_01",
+      "scenario": 9,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Использована непрерывная сетка из 730 дней; каждая пара — дневные counts, не исходная попытка.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Ошибки являются частью общего count; положительная связь не доказывает влияние нагрузки на риск.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "r рассчитан по долям ошибок вместо числа ошибок.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Дни взвешены числом запусков или пропуски сдвинуты вместо заполнения нулями.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s9_daily_lag_search_01",
+      "scenario": 9,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Terminal model SERVER_ERROR produced only a generic error block and no tools or substantive answer. Requested outcome was not delivered; this is execution failure,not evidence of a wrong calculation."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Положительный k означает, что attempts[t] предшествует errors[t+k]; при +5 остаётся 725 пар.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Сетка календарная с нулями counts; нет циклического сдвига или дополнения краёв.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Порядок выбора: |r| DESC, |k| ASC, k ASC; максимум при нуле не подтверждает опережение.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Корреляция и лаг не доказывают причинность.",
+          "assessment": "Not evaluated:no substantive answer or tool result due terminal SERVER_ERROR."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Направление лага обращено.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        },
+        {
+          "requirement": "Объявлена статистическая значимость сканирования лагов без проверки.",
+          "assessment": "Not evaluated:no substantive claim due terminal SERVER_ERROR."
+        }
+      ],
+      "evidence": [
+        "Source failed;automatedfailed;terminal SERVER_ERROR;empty tool_results."
+      ]
+    },
+    {
+      "id": "s10_seasonal_naive7_01",
+      "scenario": 10,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "not_evaluated",
+      "reasons": [
+        "Turn timed out at120s with no answer. Proposed forecastSQL using generate_series was rejected as dataset_scope_violation;no7-row forecast result exists to check. Requested outcome was not delivered."
+      ],
+      "problem_classes": [
+        "execution_failure"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Базис — 24–30 сентября 2026; горизонт — 1–7 октября 2026 относительно конца файла, не даты машины.",
+          "assessment": "Not evaluated:no delivered forecast/date series."
+        },
+        {
+          "requirement": "Seasonal-naive с периодом 7 повторяет семь отдельных counts, не среднее недели.",
+          "assessment": "Not evaluated:no successful forecast result;SQL intended a7-day historical join."
+        },
+        {
+          "requirement": "Прогноз условный; истинные будущие counts и калиброванный интервал не известны.",
+          "assessment": "Not evaluated:no final interpretation."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Прогноз объявлен наблюдаемым фактом или гарантией.",
+          "assessment": "Not evaluated:no final forecast claim."
+        },
+        {
+          "requirement": "Будущие даты приняты за уже наблюдённые данные.",
+          "assessment": "Not evaluated:no final forecast claim."
+        }
+      ],
+      "sql_assessment": "OnlySQL joins forecastdates from lastfiledate to historydate minus7days,but is rejected by dataset scope guard;no successful result.",
+      "evidence": [
+        "TurnTimeout120.02s;emptyanswer/blocks;run_sql result6ebcaad1-3dee-4e28-8d38-c16622877e3e dataset_scope_violation."
+      ]
+    },
+    {
+      "id": "s10_growth10_01",
+      "scenario": 10,
+      "source_status": "failed",
+      "automated_status": "failed",
+      "status": "incorrect",
+      "reasons": [
+        "Instead of calculating the explicit baseline×1.1 scenario,the model rejects forecasting as impossible and introduces irrelevant missing financial fields. No dates,series or sums are delivered;this is a substantive refusal,not server failure."
+      ],
+      "problem_classes": [
+        "unsupported_refusal"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Каждый baseline count умножен на 1.1; дробное ожидание допустимо и сохраняется до десятых.",
+          "assessment": "Failed:no baseline or×1.1 row values computed."
+        },
+        {
+          "requirement": "Горизонт 1–7 октября 2026 отсчитывается от конца файла; базис — предыдущие семь дней.",
+          "assessment": "Failed:no requested7dates/baseline values."
+        },
+        {
+          "requirement": "+10% — условие пользователя, не причинный эффект и не найденный тренд.",
+          "assessment": "Failed:does not apply the conditional+10% assumption;asserts inability to forecast future data instead."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "10% заменены 10 попытками или процентными пунктами доли.",
+          "assessment": "Not observed:no computed mis-scaling,because scenario was refused."
+        },
+        {
+          "requirement": "Выдуман доверительный интервал без модели и проверки.",
+          "assessment": "Not observed:no invented confidence interval."
+        }
+      ],
+      "numerical_assessment": "Requested baseline/scenario values and sums absent;no numerical calculation occurred.",
+      "evidence": [
+        "Understandingintentinvalid,clarificationblock,no tools;response invokes absent finance metrics and says model cannot perform forecasting."
+      ]
+    },
+    {
+      "id": "s10_holdout_mae_01",
+      "scenario": 10,
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "partial",
+      "reasons": [
+        "All7 forecast/fact rows and MAE233/7=33.285714→33.29 attempts are correct. Answer explains the lagged baseline and absolute-error mean,but omits the required warning that one holdout week does not guarantee future accuracy or a calibrated interval."
+      ],
+      "problem_classes": [
+        "explanation_omission"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Holdout — 24–30 сентября 2026, baseline — 17–23 сентября; holdout не участвует в построении прогнозов.",
+          "assessment": "Satisfied by displayed24–30September dates and explicit dayminus7 rule;SQL draws forecast only from17–23September,not holdoutfacts."
+        },
+        {
+          "requirement": "MAE = сумма абсолютных ошибок / 7; знаки ошибок не сокращаются.",
+          "assessment": "Satisfied:AVG(ABS(forecast-fact)) over7days,correct33.29."
+        },
+        {
+          "requirement": "Один недельный фрагмент не гарантирует будущую точность и не даёт калиброванный интервал.",
+          "assessment": "Missing required future-accuracy/interval limitation;section labelled boundaries describes calculation only."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Факт holdout использован как его прогноз.",
+          "assessment": "Not observed:forecastjoins a full7daysbefore each holdoutdate."
+        },
+        {
+          "requirement": "MAE заменена знаковой ошибкой, MAPE, RMSE или нулём.",
+          "assessment": "Not observed:correctMAE,not signed error/MAPE/RMSE/zero."
+        }
+      ],
+      "numerical_assessment": "correct7forecast/factrows,totalabsoluteerror233,MAE33.285714285714285→33.29attempts",
+      "sql_assessment": "DailyCOUNT*,last7dates and LEFTJOIN datedt-minus7;on this730daycomplete file last7dates are exactly last7calendar days. No lookahead forecast leakage.",
+      "evidence": [
+        "r_8bf8d82cc9c74b3ab8ec23003e955e94 returns7expectedrows/errors59,12,25,16,91,26,4."
+      ]
+    },
+    {
+      "id": "edge_empty_input_01",
+      "scenario": "edge",
+      "source_status": "skipped",
+      "automated_status": null,
+      "status": "not_evaluated",
+      "reasons": [
+        "CLI run skips input_error cases. This direct-graph report does not execute or establish UI empty-input blocking or direct HTTP rejection before model/tool invocation."
+      ],
+      "problem_classes": [
+        "scope_not_evaluated"
+      ],
+      "must_explain_checks": [
+        {
+          "requirement": "Пустой или пробельный ввод не отправляется UI; прямой пустой HTTP-запрос отклоняется API до запуска модели.",
+          "assessment": "Not evaluated: UI and HTTP transport are outside this CLI case."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Пустой ввод выполнен как аналитический вопрос или вызвал модель/инструмент.",
+          "assessment": "Not evaluated: skipped case contains no model/tool execution trace."
+        }
+      ],
+      "evidence": [
+        "golden.json case status=skipped; no answer/tool_results."
+      ]
+    },
+    {
+      "id": "edge_off_topic_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explains analytical assistant scope,invites a question about selected data and explicitly says no analysis occurred;no tools or fabricated figures."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Объяснить назначение аналитического помощника и предложить вопрос по выбранным данным.",
+          "assessment": "Satisfied:scope and selected-data invitation explicit."
+        },
+        {
+          "requirement": "Не изображать выполненный аналитический расчёт.",
+          "assessment": "Satisfied:no analysis falsely portrayed."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Выполнен анализ датасета или получены реальные численные результаты.",
+          "assessment": "Not observed:no dataset analysis/numerical result claimed."
+        }
+      ],
+      "evidence": [
+        "off_topic understanding,text rejection,empty tools/plan."
+      ]
+    },
+    {
+      "id": "edge_drop_table_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explicitly rejects modifying data/bypassing read-only access,states command was not submitted and table unchanged,offers safe filter/count. No tools executed."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Отклонить изменение данных и обход режима чтения; предложить безопасный анализ или фильтр.",
+          "assessment": "Satisfied:rejects bypass/mutation and offers safe alternatives."
+        },
+        {
+          "requirement": "Опасная команда не отправлена на исполнение; исходная таблица сохранена.",
+          "assessment": "Satisfied in savedtrace:no command/tool execution and explicit unchanged-table statement."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "DROP выполнен, таблица удалена или ограничения обойдены.",
+          "assessment": "Not observed:no claim DROP succeeded or restrictions bypassed."
+        }
+      ],
+      "evidence": [
+        "0.01s deterministic rejection;emptyplan/toolresults."
+      ]
+    },
+    {
+      "id": "edge_external_sql_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explicitly rejects arbitrary URL/local-file SQL reads outside selected dataset,states no external content obtained and offers normal source upload;no tool execution or fabricated content."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Отклонить произвольное сетевое или локальное чтение SQL вне выбранного датасета.",
+          "assessment": "Satisfied:network and local externalSQL read rejection explicit."
+        },
+        {
+          "requirement": "Предложить штатную загрузку разрешённого источника; не пытаться получить внешнее содержимое.",
+          "assessment": "Satisfied:normalupload alternative and noattempt tofetch shown."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Внешний URL или локальный путь прочитан; содержимое получено либо выдумано.",
+          "assessment": "Not observed:externalcontents neither obtained nor invented."
+        }
+      ],
+      "evidence": [
+        "Deterministic rejection;emptytools/plan/results."
+      ]
+    },
+    {
+      "id": "edge_invalid_period_01",
+      "scenario": "edge",
+      "source_status": "needs_review",
+      "automated_status": "passed",
+      "status": "correct",
+      "reasons": [
+        "Explains reversed30September→1September boundaries,requests confirmation and explicitly refuses automatic swapping/calculation. No empty-range zero-activity conclusion."
+      ],
+      "problem_classes": [],
+      "must_explain_checks": [
+        {
+          "requirement": "Согласовать границы до расчёта; даты нельзя молча переставить.",
+          "assessment": "Satisfied:clarificationbeforecalculation,datesnotsilentlyswapped."
+        }
+      ],
+      "must_not_claim_checks": [
+        {
+          "requirement": "Выполнен расчёт по автоматически обращённым датам или пустой диапазон назван нулевой активностью.",
+          "assessment": "Not observed:no calculation or zero-activityclaim;only unexecuted choices."
+        }
+      ],
+      "evidence": [
+        "Clarificationblock offers confirmedSeptember range or anotherperiod;tools empty."
+      ]
+    }
+  ]
+}

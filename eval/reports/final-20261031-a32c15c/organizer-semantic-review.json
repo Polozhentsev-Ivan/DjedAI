@@ -1,0 +1,393 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "scope": "independent_semantic_review_of_actual_live_published_answers_and_SQL",
+  "model_calls_by_reviewer": 0,
+  "updated_at_utc": "2026-10-31T17:33:55.116072+00:00",
+  "profile": {
+    "MODEL_NAME": "Qwen/Qwen3.6-27B",
+    "MODEL_TIMEOUT_SECONDS": "120",
+    "AGENT_TURN_TIMEOUT_SECONDS": "120",
+    "MODEL_MAX_RETRIES": "1",
+    "MODEL_MAX_OUTPUT_TOKENS": "2048",
+    "MODEL_CONTEXT_TOKENS": "8192",
+    "MODEL_REASONING_SUPPORTED": "true",
+    "MODEL_REASONING_UNDERSTAND": "none",
+    "MODEL_REASONING_PLAN": "provider_default",
+    "MODEL_REASONING_VISUALIZE": "none",
+    "MODEL_REASONING_COMPOSE": "none",
+    "MODEL_REASONING_VERIFY": "none"
+  },
+  "expectation_cross_checks": {
+    "q1": "Independent Decimal arithmetic: 1732/28/40=1.5464285714, 2499/31/40=2.0153225806, growth30.3210906653 percent.",
+    "q3": "Full raw-CSV recomputation in q3-independent-oracle.json: all seven group counts >=565; winner 4515 closures, continuous p90=72.49 hours.",
+    "q4": "Full raw-CSV recomputation in q4-independent-oracle.json: winner 3733 March deliveries, continuous p95=23.146 hours with nonnegative delay.",
+    "q5": "All8 reference rows match the previous independent raw-CSV oracle; its SHA256 matches this preflight source.",
+    "q6": "All18 reference rows match the previous independent raw-CSV oracle; its SHA256 matches this preflight source.",
+    "oracle_artifact": "artifacts/oct31-pr-fixes/independent-oracles.json"
+  },
+  "status_definitions": {
+    "correct": "Published answer fully addresses the requested calculation, matches the actual SQL and independent references, and contains no identified incorrect extra claim.",
+    "partial": "Some correct requested content is published, with an omission or an incorrect additional claim documented explicitly.",
+    "incorrect": "Published requested result is wrong, or no usable requested answer is published; correct SQL alone does not make the answer correct.",
+    "not_evaluated": "Awaiting review, or not assessable because of independently confirmed infrastructure failure; inspect failure_category."
+  },
+  "runs": [
+    {
+      "question": 1,
+      "repeat": 1,
+      "source": "q1-r1.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 89.51,
+      "within_120_seconds": true,
+      "source_sha256": "a95fb741b1e636a8e5cee578c32894e2b4c54b7ff6fb5c6861e915d3ffab5421",
+      "summary": "Correct winner, per-pharmacy daily averages, growth, and explanation; no identified incorrect additional claim.",
+      "sql_review": "Groups by medicine and February/March 2025, sums actual quantities, counts 40 pharmacies, uses 28/31 calendar days including zero-sale days. Returns 1019 / Цетиризин; February 1732/(28*40)=1.5464285714, March 2499/(31*40)=2.0153225806, growth 30.3210906653 percent.",
+      "answer_review": "Published answer states 1019 / Цетиризин, 30.32 percent, February 1.55 and March 2.02. The growth formula and calendar-days/pharmacy normalization are explained. No incorrect rounded substitution is asserted.",
+      "independent_numeric_checks": {
+        "feb_average": 1.5464285714285715,
+        "mar_average": 2.015322580645161,
+        "growth_percent": 30.321090665276003
+      },
+      "limitations": []
+    },
+    {
+      "question": 1,
+      "repeat": 2,
+      "source": "q1-r2.json",
+      "status": "partial",
+      "formal_status": "passed",
+      "duration_seconds": 78.9,
+      "within_120_seconds": true,
+      "source_sha256": "fbd85f8ff84cd9efb1df65e56dcff8ce425379bb60947a4b4a7a661ce65205cf",
+      "summary": "Correct medicine and all requested numerical results, but the explicit request to provide the calculation is only partly answered.",
+      "sql_review": "Correct February/March 2025 conditions and separate pharmacy denominators, 28/31 calendar days, grouping by medicine, descending growth ranking. Winner 1019 / Цетиризин and all three numeric results match the independent reference.",
+      "answer_review": "The published answer gives 30.32 percent and a table with February 1.55 / March 2.02. It does not show the growth formula or explain the calendar-day/pharmacy denominator and inclusion of days without sales. No incorrect number is stated.",
+      "independent_numeric_checks": {
+        "feb_average": 1.5464285714285715,
+        "mar_average": 2.015322580645161,
+        "growth_percent": 30.321090665276003
+      },
+      "limitations": [
+        "Missing requested calculation/formula explanation; the table of precomputed averages alone does not document how the growth and daily-per-pharmacy normalization were calculated."
+      ]
+    },
+    {
+      "question": 1,
+      "repeat": 3,
+      "source": "q1-r3.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 95.76,
+      "within_120_seconds": true,
+      "source_sha256": "c2e01986743dd3180edcc8690c4d59aac73cdb091142c14254af2f0bbc0e5559",
+      "summary": "Correct medicine, per-pharmacy averages and growth; the normalization is explicitly explained in words and display rounding is disclosed.",
+      "sql_review": "Correct monthly source conditions, per-medicine grouping, separate monthly pharmacy counts and calendar-day denominators, then February/March join and growth ranking. Returns 1019 / Цетиризин, 1.5464285714 / 2.0153225806 and 30.3210906653 percent.",
+      "answer_review": "The published answer names the medicine and ID, reports both monthly averages and growth, explains dividing monthly sales by calendar days and unique pharmacies, and identifies the February-to-March percentage change. It does not assert an incorrect equation using rounded averages.",
+      "independent_numeric_checks": {
+        "feb_average": 1.5464285714285715,
+        "mar_average": 2.015322580645161,
+        "growth_percent": 30.321090665276003
+      },
+      "limitations": []
+    },
+    {
+      "question": 2,
+      "repeat": 1,
+      "source": "q2-r1.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 115.3,
+      "within_120_seconds": true,
+      "source_sha256": "369a7ee6b4d5690135655ab4fa1cba427515cfff13ae209f1c3bcb0e2d36c865",
+      "summary": "Correct winning city and net-revenue growth, including signed quantities and discounts.",
+      "sql_review": "February/March 2025 net revenue is SUM(quantity * pre-discount price * (1-discount/100)); grouped by city and month. Descending percentage growth returns Калининград, February 1627110.3466, March 2640589.1392, growth 62.2870350937 percent.",
+      "answer_review": "Published answer correctly states Калининград, growth 62.29 percent and monthly revenues 1627110.35 / 2640589.14. No incorrect additional claim.",
+      "independent_numeric_checks": {
+        "feb_revenue": 1627110.3466,
+        "mar_revenue": 2640589.1392,
+        "growth_percent": 62.287035093702194
+      },
+      "limitations": []
+    },
+    {
+      "question": 2,
+      "repeat": 2,
+      "source": "q2-r2.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 103.7,
+      "within_120_seconds": true,
+      "source_sha256": "20939f51c90520a0c03059c6dcb2f3b3adf83a7c06adf1f9948538c019c4f9d0",
+      "summary": "Correct winning city and net-revenue growth, including signed quantities and discounts.",
+      "sql_review": "Correct city/month net-revenue aggregation, signed quantities, discounts, February/March conditions and descending growth ranking. Result matches the independent reference: Калининград, 1627110.3466 / 2640589.1392 and 62.2870350937 percent.",
+      "answer_review": "Published answer correctly states Калининград, growth 62.29 percent and monthly revenues 1627110.35 / 2640589.14. No incorrect additional claim.",
+      "independent_numeric_checks": {
+        "feb_revenue": 1627110.3466,
+        "mar_revenue": 2640589.1392,
+        "growth_percent": 62.287035093702194
+      },
+      "limitations": []
+    },
+    {
+      "question": 2,
+      "repeat": 3,
+      "source": "q2-r3.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 92.23,
+      "within_120_seconds": true,
+      "source_sha256": "a04c11352e2b5dc7b5c3be76fe76621e9bcb22847b6aeb6584411b79d7d8ad9d",
+      "summary": "Correct winning city and net-revenue growth, including signed quantities and discounts.",
+      "sql_review": "Correct city/month net-revenue aggregation, signed quantities, discounts, February/March conditions and descending growth ranking. Result matches the independent reference: Калининград, 1627110.3466 / 2640589.1392 and 62.2870350937 percent.",
+      "answer_review": "Published answer correctly states Калининград, growth 62.29 percent and monthly revenues 1627110.35 / 2640589.14. No incorrect additional claim.",
+      "independent_numeric_checks": {
+        "feb_revenue": 1627110.3466,
+        "mar_revenue": 2640589.1392,
+        "growth_percent": 62.287035093702194
+      },
+      "limitations": []
+    },
+    {
+      "question": 3,
+      "repeat": 1,
+      "source": "q3-r1.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 46.71,
+      "within_120_seconds": true,
+      "source_sha256": "04c1d265351a89f8eb3a6a8282664bef8b17b4125eed801983e1b32f5a2a1918",
+      "summary": "Correct March-closure winner and continuous 90th percentile in hours, independently recomputed from the full raw CSV.",
+      "sql_review": "Elapsed closed-minus-created seconds divided by 3600; March closure-date filter, grouped support group, descending continuous p90. Winner has 4515 closures and p90 72.49 hours. HAVING count > 100 is one count stricter than requested >= 100; direct raw-CSV counts show all seven groups have 565 or more closures, so this does not exclude any actual eligible group or change this result.",
+      "answer_review": "Published answer correctly names Доставка заказов and 72.49 hours. No incorrect numerical claim.",
+      "independent_numeric_checks": {
+        "closed_count": 4515,
+        "p90_hours": 72.48999999999997
+      },
+      "limitations": [
+        "Non-impacting boundary discrepancy: SQL and prose use >100 instead of >=100; there is no group with exactly 100 closures in this source. Independent evidence: q3-independent-oracle.json."
+      ]
+    },
+    {
+      "question": 3,
+      "repeat": 2,
+      "source": "q3-r2.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 58.04,
+      "within_120_seconds": true,
+      "source_sha256": "d8b1a8cd168f63e5b3cba595acb08248ce10817b2e0f186feb1abe4c883b433d",
+      "summary": "Correct winning support group, closure count and p90 hours; all requested filtering semantics are preserved.",
+      "sql_review": "March closure-date filter, elapsed created-to-closed hours, grouped continuous p90 with HAVING count >=100. Independent full-CSV oracle confirms Доставка заказов, 4515 and 72.49 hours.",
+      "answer_review": "Published answer correctly states group, 72.49 hours, 4515 closures and at-least-100 inclusion rule.",
+      "independent_numeric_checks": {
+        "closed_count": 4515,
+        "p90_hours": 72.48999999999997
+      },
+      "limitations": []
+    },
+    {
+      "question": 3,
+      "repeat": 3,
+      "source": "q3-r3.json",
+      "status": "correct",
+      "formal_status": "failed",
+      "duration_seconds": 30.65,
+      "within_120_seconds": true,
+      "source_sha256": "4f2351a60ebcffcb0bcf81ab2342c495c3cc050876ae0c7679a9d88afcb625d4",
+      "summary": "Semantically correct published answer; formal evaluator false rejection of separated list-label/value presentation.",
+      "sql_review": "March closure-date filter, elapsed created-to-closed hours, grouped continuous p90 with HAVING count >=100. Independent full-CSV oracle confirms Доставка заказов, 4515 and 72.49 hours.",
+      "answer_review": "Published answer explicitly names the winning group, then lists support group, 4515 closures and 72.49 hours on separate lines. All values and units are correct. Formal issue says missing/misstated values for the group despite their presence.",
+      "independent_numeric_checks": {
+        "closed_count": 4515,
+        "p90_hours": 72.48999999999997
+      },
+      "limitations": [
+        "Formal evaluation rejects this correct answer: group label and p90 are presented on separate bullet lines. This is an evaluator false failure, not a computation or publication error."
+      ]
+    },
+    {
+      "question": 4,
+      "repeat": 1,
+      "source": "q4-r1.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 27.38,
+      "within_120_seconds": true,
+      "source_sha256": "03a307b5e1c3605c9fa19b9fa57469848f605781995f82f92871e95e8c227cb8",
+      "summary": "Correct carrier and 95th percentile of nonnegative delay for deliveries completed in March.",
+      "sql_review": "Filters actual delivery timestamp into March 2025, clamps early/on-time deliveries to zero, uses elapsed seconds/3600 and continuous p95 per carrier, descending ranking. Independent raw-CSV oracle confirms Собственная доставка and 23.146 hours.",
+      "answer_review": "Published answer correctly gives Собственная доставка and 23.15 hours.",
+      "independent_numeric_checks": {
+        "p95_hours": 23.145999999999944
+      },
+      "limitations": []
+    },
+    {
+      "question": 4,
+      "repeat": 2,
+      "source": "q4-r2.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 27.03,
+      "within_120_seconds": true,
+      "source_sha256": "4a5ba01377f81bac3b12d1f346dc86c2879b44d96147f419126401649a9a4b32",
+      "summary": "Correct carrier and 95th percentile of nonnegative delay for deliveries completed in March.",
+      "sql_review": "Filters actual delivery timestamp into March 2025, clamps early/on-time deliveries to zero, uses elapsed seconds/3600 and continuous p95 per carrier, descending ranking. Independent raw-CSV oracle confirms Собственная доставка and 23.146 hours.",
+      "answer_review": "Published answer correctly gives Собственная доставка and 23.15 hours.",
+      "independent_numeric_checks": {
+        "p95_hours": 23.145999999999944
+      },
+      "limitations": []
+    },
+    {
+      "question": 4,
+      "repeat": 3,
+      "source": "q4-r3.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 26.3,
+      "within_120_seconds": true,
+      "source_sha256": "f8b8943479ee8074d3ae128cf19a8bdcfc53d836a852d80dae1472394d1d4ea1",
+      "summary": "Correct carrier and 95th percentile of nonnegative delay for deliveries completed in March.",
+      "sql_review": "Filters actual delivery timestamp into March 2025, clamps early/on-time deliveries to zero, uses elapsed seconds/3600 and continuous p95 per carrier, descending ranking. Independent raw-CSV oracle confirms Собственная доставка and 23.146 hours.",
+      "answer_review": "Published answer correctly gives Собственная доставка and 23.15 hours.",
+      "independent_numeric_checks": {
+        "p95_hours": 23.145999999999944
+      },
+      "limitations": []
+    },
+    {
+      "question": 5,
+      "repeat": 1,
+      "source": "q5-r1.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 38.31,
+      "within_120_seconds": true,
+      "source_sha256": "cfa7702da07d1ddf63fbf9c4657d7223458664449781db75dd831ca3e7f5f803",
+      "summary": "All eight departmental counts and amounts plus the grand total are correct.",
+      "sql_review": "Approvals before April 1; payment/cancellation/rejection must be NULL or at/after April 1. ROLLUP produces exactly the eight departmental groups and one additive grand total. All eight rows equal the independent raw-CSV oracle; total count 14184 and amount 2007280012.82 agree with their sums.",
+      "answer_review": "Published table reproduces all eight labels, counts and ruble amounts accurately and gives the correct additional grand total, with the requested as-of date.",
+      "independent_numeric_checks": {
+        "matched_department_rows": 8,
+        "total_requests": 14184,
+        "total_rubles": "2007280012.82"
+      },
+      "limitations": []
+    },
+    {
+      "question": 5,
+      "repeat": 2,
+      "source": "q5-r2.json",
+      "status": "partial",
+      "formal_status": "passed",
+      "duration_seconds": 79.25,
+      "within_120_seconds": true,
+      "source_sha256": "d807834e62f6d5f9b47c37732e4f5263328f78135bf81a18d1e502806b0e6670",
+      "summary": "Correct SQL, all eight departmental counts/amounts and total; unclear published explanation describes each row as one application after a department-aggregate table.",
+      "sql_review": "Uses <= March 31 23:59:59 for approvals and NULL or later timestamps for payment/cancellation/rejection; equivalent end-of-day selection for this second-resolution source. ROLLUP produces all eight oracle rows and the correct additive total.",
+      "answer_review": "All eight department labels/counts/ruble amounts and total are correct. The final sentence says each row represents one application; this is accurate for source CSV rows but misleading if read as describing the displayed department-aggregate table.",
+      "independent_numeric_checks": {
+        "matched_department_rows": 8,
+        "total_requests": 14184,
+        "total_rubles": "2007280012.82"
+      },
+      "limitations": [
+        "Ambiguous explanatory wording: ?each row represents one application? should be qualified as a source-data row, because each displayed row aggregates a department. No numeric or selection error."
+      ]
+    },
+    {
+      "question": 5,
+      "repeat": 3,
+      "source": "q5-r3.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 68.5,
+      "within_120_seconds": true,
+      "source_sha256": "e5736733a18c8076da4d260645c98a6867b83ad5d08aaad98d3eabbadd8fdfb1",
+      "summary": "All eight departmental counts and amounts plus the grand total are correct.",
+      "sql_review": "Approvals before April 1; payment/cancellation/rejection must be NULL or at/after April 1. ROLLUP produces exactly the eight departmental groups and one additive grand total. All eight rows equal the independent raw-CSV oracle; total count 14184 and amount 2007280012.82 agree with their sums.",
+      "answer_review": "Published table accurately reproduces every department, count, ruble amount and correct grand total. Its introduction correctly explains that nine rows represent departments or the overall total.",
+      "independent_numeric_checks": {
+        "matched_department_rows": 8,
+        "total_requests": 14184,
+        "total_rubles": "2007280012.82"
+      },
+      "limitations": []
+    },
+    {
+      "question": 6,
+      "repeat": 1,
+      "source": "q6-r1.json",
+      "status": "incorrect",
+      "formal_status": "failed",
+      "duration_seconds": 118.1,
+      "within_120_seconds": true,
+      "source_sha256": "247f535d3a528e6e48f829e8ec2876ee0f343422e368a402dc59b8ca6c3ca9ab",
+      "summary": "All 18 SQL groups are correct, but the requested answer is withheld by runtime verification; the user receives no usable per-job results.",
+      "sql_review": "Groups launch chains, identifies success after a retry, counts all chains as denominator and averages attempt counts only in successful retry chains. All 18 group labels, total-chain counts, qualifying counts, shares and attempt averages match the independent full-CSV oracle (shares returned as fractions).",
+      "answer_review": "Published text is only the numeric-verification refusal. The unpublished primary assertions contain the correct per-job table plus a mathematically correct additional overall share 4.90 percent (23003/469016), rejected because it is not directly present in results. Subsequent model corrections introduce 4.91 percent and 4.88 percent; these are also rejected. The correct requested table never reaches the user.",
+      "independent_numeric_checks": {
+        "matched_job_rows": 18,
+        "total_chains": 469016,
+        "successful_retry_chains": 23003,
+        "correct_overall_percent": 4.904523513057124,
+        "correct_overall_avg_attempts": 2.3083510846411337
+      },
+      "limitations": [
+        "Runtime false rejection of a correct derived additional percentage begins the failed correction cycle; overall share is not requested, so omitting it would have avoided this specific extra assertion.",
+        "Do not count correct tool results as a successful user-visible answer. No bogus 88.31-percent/41.47-attempt total is published."
+      ]
+    },
+    {
+      "question": 6,
+      "repeat": 2,
+      "source": "q6-r2.json",
+      "status": "correct",
+      "formal_status": "passed",
+      "duration_seconds": 105.81,
+      "within_120_seconds": true,
+      "source_sha256": "22101af214607ac112853c04e598c4cd61b3c8127cd6661474ef7d0269b7f717",
+      "summary": "All 18 per-job SQL results and published rows are correct; added totals are only additive chain counts, with no invalid sum of percentages or averages.",
+      "sql_review": "Correct chain grouping, successful-retry flags, total-chain denominators and conditional mean attempts. All 18 groups/counts/shares/averages equal the independent oracle.",
+      "answer_review": "Independently checked all 18 printed rows: chain counts exact, percentages and mean attempts correctly rounded to two decimals. Correct additive totals 469016 / 23003 and correct explanation of denominator and conditional average. Initial unsupported overall-share assertions were removed by correction before publication. No overall 88.31 percent or 41.47 attempts is present.",
+      "independent_numeric_checks": {
+        "matched_sql_job_rows": 18,
+        "matched_published_job_rows": 18,
+        "total_chains": 469016,
+        "successful_retry_chains": 23003
+      },
+      "limitations": []
+    },
+    {
+      "question": 6,
+      "repeat": 3,
+      "source": "q6-r3.json",
+      "status": "not_evaluated",
+      "formal_status": "failed",
+      "duration_seconds": 53.84,
+      "within_120_seconds": true,
+      "source_sha256": "da178e73eba94a3427db66d94871e71f3b80ea00a266de67b164358ee4254576",
+      "summary": "Not semantically evaluated: two planning ConnectError failures before any HTTP response prevented an analytical plan or answer. Raw formal status remains failed.",
+      "sql_review": "No analytical plan was generated. Only the preliminary status-count result exists; it cannot answer per-job retry-chain metrics.",
+      "answer_review": "Published message only says the model response could not be obtained and asks to retry. No requested groups or values are published.",
+      "independent_numeric_checks": {},
+      "limitations": [
+        "Root independently confirmed two planning ConnectError failures without HTTP response. Terminal SERVER_ERROR is infrastructure failure, not evidence about model calculation quality. No usable requested answer was published; retain the original run and assess any recovery separately."
+      ],
+      "failure_category": "infrastructure_failure"
+    }
+  ],
+  "summary": {
+    "correct": 14,
+    "partial": 2,
+    "incorrect": 1,
+    "not_evaluated": 1
+  },
+  "formal_summary_for_available_results": {
+    "passed": 15,
+    "failed": 3
+  },
+  "complete": true
+}

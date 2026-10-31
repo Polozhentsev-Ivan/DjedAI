@@ -1,0 +1,168 @@
+{
+  "python": "3.13.16 (main, Oct 14 2026, 01:05:56) [MSC v.1944 64 bit (AMD64)]",
+  "dependencies": [
+    {
+      "name": "pandas",
+      "expected": "3.0.6",
+      "installed": "3.0.6",
+      "matches": true
+    },
+    {
+      "name": "numpy",
+      "expected": "2.5.4",
+      "installed": "2.5.4",
+      "matches": true
+    },
+    {
+      "name": "alembic",
+      "expected": "1.15.1",
+      "installed": "1.15.1",
+      "matches": true
+    },
+    {
+      "name": "argon2-cffi",
+      "expected": "25.1.0",
+      "installed": "25.1.0",
+      "matches": true
+    },
+    {
+      "name": "charset-normalizer",
+      "expected": "3.5.2",
+      "installed": "3.5.2",
+      "matches": true
+    },
+    {
+      "name": "duckdb",
+      "expected": "1.5.6",
+      "installed": "1.5.6",
+      "matches": true
+    },
+    {
+      "name": "fastapi",
+      "expected": "0.143.0",
+      "installed": "0.143.0",
+      "matches": true
+    },
+    {
+      "name": "langgraph",
+      "expected": "1.2.16",
+      "installed": "1.2.16",
+      "matches": true
+    },
+    {
+      "name": "openai",
+      "expected": "3.31.0",
+      "installed": "3.31.0",
+      "matches": true
+    },
+    {
+      "name": "pydantic",
+      "expected": "2.14.1",
+      "installed": "2.14.1",
+      "matches": true
+    },
+    {
+      "name": "pydantic-settings",
+      "expected": "2.8.1",
+      "installed": "2.8.1",
+      "matches": true
+    },
+    {
+      "name": "sqlalchemy",
+      "expected": "2.0.38",
+      "installed": "2.0.38",
+      "matches": true
+    },
+    {
+      "name": "python-dotenv",
+      "expected": "1.2.4",
+      "installed": "1.2.4",
+      "matches": true
+    },
+    {
+      "name": "sqlglot",
+      "expected": "30.23.0",
+      "installed": "30.23.0",
+      "matches": true
+    },
+    {
+      "name": "starlette",
+      "expected": "1.7.0",
+      "installed": "1.7.0",
+      "matches": true
+    },
+    {
+      "name": "uvicorn",
+      "expected": "0.34.0",
+      "installed": "0.34.0",
+      "matches": true
+    },
+    {
+      "name": "python-multipart",
+      "expected": "0.0.32",
+      "installed": "0.0.32",
+      "matches": true
+    },
+    {
+      "name": "cryptography",
+      "expected": "50.0.2",
+      "installed": "50.0.2",
+      "matches": true
+    },
+    {
+      "name": "statsmodels",
+      "expected": "0.15.0",
+      "installed": "0.15.0",
+      "matches": true
+    },
+    {
+      "name": "scipy",
+      "expected": "1.18.1",
+      "installed": "1.18.1",
+      "matches": true
+    },
+    {
+      "name": "httpx",
+      "expected": "0.28.1",
+      "installed": "0.28.1",
+      "matches": true
+    },
+    {
+      "name": "pytest",
+      "expected": "9.1.1",
+      "installed": "9.1.1",
+      "matches": true
+    },
+    {
+      "name": "pytest-cov",
+      "expected": "7.1.0",
+      "installed": "7.1.0",
+      "matches": true
+    },
+    {
+      "name": "pytest-mock",
+      "expected": "3.17.0",
+      "installed": "3.17.0",
+      "matches": true
+    },
+    {
+      "name": "pytest-xdist",
+      "expected": "3.8.0",
+      "installed": "3.8.0",
+      "matches": true
+    },
+    {
+      "name": "pyyaml",
+      "expected": "6.0.3",
+      "installed": "6.0.3",
+      "matches": true
+    },
+    {
+      "name": "ruff",
+      "expected": "0.17.0",
+      "installed": "0.17.0",
+      "matches": true
+    }
+  ],
+  "all_match": true
+}

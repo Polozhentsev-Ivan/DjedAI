@@ -1,0 +1,8 @@
+{
+  "model_context_tokens": 8192,
+  "model_max_output_tokens": 2048,
+  "dashboard_max_output_tokens": 4096,
+  "model_timeout_seconds": 120.0,
+  "agent_turn_timeout_seconds": 120.0,
+  "model_max_retries": 1
+}

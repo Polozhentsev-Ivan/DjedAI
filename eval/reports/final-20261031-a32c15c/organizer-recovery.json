@@ -1,0 +1,1136 @@
+{
+  "sha": "a32c15cffd160c345d99b15e358d1bd00e9fc734",
+  "profile": {
+    "MODEL_NAME": "Qwen/Qwen3.6-27B",
+    "MODEL_TIMEOUT_SECONDS": "120",
+    "AGENT_TURN_TIMEOUT_SECONDS": "120",
+    "MODEL_MAX_RETRIES": "1",
+    "MODEL_MAX_OUTPUT_TOKENS": "2048",
+    "MODEL_CONTEXT_TOKENS": "8192",
+    "MODEL_REASONING_SUPPORTED": "true",
+    "MODEL_REASONING_UNDERSTAND": "none",
+    "MODEL_REASONING_PLAN": "provider_default",
+    "MODEL_REASONING_VISUALIZE": "none",
+    "MODEL_REASONING_COMPOSE": "none",
+    "MODEL_REASONING_VERIFY": "none"
+  },
+  "scope": "Separate single retry of infrastructure-affected cases after model-health-probe.json; original reports unchanged",
+  "case_ids": [
+    "organizer_q6"
+  ],
+  "started_at": "2026-10-31T17:34:01.563089+00:00",
+  "status": "completed",
+  "cases": [
+    {
+      "answer": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Всего цепочек | Цепочек с успехом после повтора | Доля (%) | Ср. число попыток |\n|---|---|---|---|---|\n| Очистка временных файлов | 11 083 | 581 | 5,24 % | 2,32 |\n| Проверка сроков действия сертификатов | 3 674 | 190 | 5,17 % | 2,25 |\n| Загрузка событий приложения | 44 433 | 2 237 | 5,03 % | 2,31 |\n| Пересчёт доступности товаров | 44 829 | 2 250 | 5,02 % | 2,32 |\n| Резервное копирование справочников | 3 708 | 184 | 4,96 % | 2,32 |\n| Обновление статусов доставки | 44 893 | 2 214 | 4,93 % | 2,30 |\n| Расчёт бонусов за покупки | 18 686 | 920 | 4,92 % | 2,32 |\n| Обновление поискового индекса | 29 811 | 1 467 | 4,92 % | 2,30 |\n| Отправка уведомлений о заказах | 67 189 | 3 304 | 4,92 % | 2,32 |\n| Выгрузка документов в ЭДО | 15 085 | 737 | 4,89 % | 2,32 |\n| Проверка качества данных | 11 133 | 542 | 4,87 % | 2,32 |\n| Обработка заявок на возврат | 15 063 | 730 | 4,85 % | 2,31 |\n| Загрузка цен поставщиков | 22 289 | 1 078 | 4,84 % | 2,29 |\n| Обновление остатков | 59 501 | 2 874 | 4,83 % | 2,31 |\n| Формирование электронных чеков | 33 194 | 1 588 | 4,78 % | 2,31 |\n| Сверка платёжных операций | 29 817 | 1 422 | 4,77 % | 2,29 |\n| Подготовка отчёта по продажам | 7 388 | 348 | 4,71 % | 2,28 |\n| Архивирование журналов | 7 240 | 337 | 4,65 % | 2,28 |\n| **Итого** | **469 016** | **23 003** | **4,91 %** | **2,32** |\n\n**Расчёт:**\n- **Доля цепочек с успехом после повтора** = (Количество цепочек, где статус «Успешно» достигнут не с первой попытки) / (Общее количество цепочек по заданию) * 100%.\n- **Среднее число попыток** = Среднее значение максимального номера попытки (`nomer_popytki`) среди цепочек, завершившихся успешно только после повторных попыток.\n\n*Примечание: Доля в итоговой строке рассчитана как отношение общего количества цепочек с успехом после повтора (23 003) к общему количеству цепочек (469 016).*",
+      "used_tools": [
+        "value_counts",
+        "run_sql"
+      ],
+      "fact_checks": [
+        {
+          "key": "cleanup.avg_attempts",
+          "comparison": "approx",
+          "expected": 2.3201,
+          "result": true,
+          "passed": true,
+          "source": "current"
+        },
+        {
+          "key": "archive.avg_attempts",
+          "comparison": "approx",
+          "expected": 2.279,
+          "result": true,
+          "passed": true,
+          "source": "current"
+        }
+      ],
+      "plan": [
+        {
+          "tool": "run_sql",
+          "args": {
+            "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MAX(CASE WHEN nomer_popytki = 1 AND status = 'Успешно' THEN 1 ELSE 0 END) AS first_success,\n        MAX(nomer_popytki) AS max_attempts\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nretry_success AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        max_attempts,\n        (has_success = 1 AND first_success = 0) AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    COUNT(DISTINCT kod_tsepochki_zapuskov) AS total_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) AS retry_success_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) * 1.0 / COUNT(DISTINCT kod_tsepochki_zapuskov) AS share_retry_success,\n    AVG(CASE WHEN is_retry_success THEN max_attempts END) AS avg_attempts_retry_success\nFROM retry_success\nGROUP BY zadanie\nORDER BY share_retry_success DESC"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "result_id": "r_ddc636e6142a4cb2b1bf6b6b4323cfae",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "status",
+              "count"
+            ],
+            "rows": [
+              [
+                "Успешно",
+                454882
+              ],
+              [
+                "Ошибка",
+                40414
+              ],
+              [
+                "Отменено",
+                4704
+              ]
+            ],
+            "row_count": 3,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "Значение 'Успешно' встречается 454882 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Успешно",
+                "count": 454882
+              }
+            },
+            {
+              "text": "Значение 'Ошибка' встречается 40414 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Ошибка",
+                "count": 40414
+              }
+            },
+            {
+              "text": "Значение 'Отменено' встречается 4704 раз.",
+              "kind": "freq",
+              "values": {
+                "value": "Отменено",
+                "count": 4704
+              }
+            },
+            {
+              "text": "Суммы числовых колонок по всем строкам результата",
+              "kind": "summary",
+              "values": {
+                "column_totals": {
+                  "count": 500000
+                }
+              }
+            }
+          ],
+          "chart_hint": {
+            "type": "bar",
+            "x": "status",
+            "y": [
+              "count"
+            ],
+            "color": null
+          },
+          "error": null,
+          "tool": "value_counts",
+          "params": {
+            "table": "08_fonovye_zadaniya",
+            "column": "status",
+            "top_n": 10
+          },
+          "sql": null,
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": null,
+          "metric": null,
+          "quality": null,
+          "read": null
+        },
+        {
+          "result_id": "r_8497e252ea9a481098c792d92bf2409e",
+          "status": "ok",
+          "data": {
+            "columns": [
+              "zadanie",
+              "total_chains",
+              "retry_success_chains",
+              "share_retry_success",
+              "avg_attempts_retry_success"
+            ],
+            "rows": [
+              [
+                "Очистка временных файлов",
+                11083,
+                581,
+                0.05242262925200758,
+                2.3201376936316693
+              ],
+              [
+                "Проверка сроков действия сертификатов",
+                3674,
+                190,
+                0.051714752313554706,
+                2.2526315789473683
+              ],
+              [
+                "Загрузка событий приложения",
+                44433,
+                2237,
+                0.05034546395696892,
+                2.3124720607957086
+              ],
+              [
+                "Пересчёт доступности товаров",
+                44829,
+                2250,
+                0.05019072475406545,
+                2.320888888888889
+              ],
+              [
+                "Резервное копирование справочников",
+                3708,
+                184,
+                0.04962243797195254,
+                2.3206521739130435
+              ],
+              [
+                "Обновление статусов доставки",
+                44893,
+                2214,
+                0.049317265497961824,
+                2.303974706413731
+              ],
+              [
+                "Расчёт бонусов за покупки",
+                18686,
+                920,
+                0.04923472118163331,
+                2.3163043478260867
+              ],
+              [
+                "Обновление поискового индекса",
+                29811,
+                1467,
+                0.049210023145818654,
+                2.3006134969325154
+              ],
+              [
+                "Отправка уведомлений о заказах",
+                67189,
+                3304,
+                0.049174716099361505,
+                2.317493946731235
+              ],
+              [
+                "Выгрузка документов в ЭДО",
+                15085,
+                737,
+                0.048856479946967186,
+                2.320217096336499
+              ],
+              [
+                "Проверка качества данных",
+                11133,
+                542,
+                0.048684092338093954,
+                2.3154981549815496
+              ],
+              [
+                "Обработка заявок на возврат",
+                15063,
+                730,
+                0.04846312155613092,
+                2.3123287671232875
+              ],
+              [
+                "Загрузка цен поставщиков",
+                22289,
+                1078,
+                0.0483646641841267,
+                2.292207792207792
+              ],
+              [
+                "Обновление остатков",
+                59501,
+                2874,
+                0.04830170921497118,
+                2.3072372999304105
+              ],
+              [
+                "Формирование электронных чеков",
+                33194,
+                1588,
+                0.047839971079110685,
+                2.3079345088161207
+              ],
+              [
+                "Сверка платёжных операций",
+                29817,
+                1422,
+                0.04769091457893148,
+                2.289029535864979
+              ],
+              [
+                "Подготовка отчёта по продажам",
+                7388,
+                348,
+                0.04710341093665403,
+                2.281609195402299
+              ],
+              [
+                "Архивирование журналов",
+                7240,
+                337,
+                0.04654696132596685,
+                2.27893175074184
+              ]
+            ],
+            "row_count": 18,
+            "truncated": false
+          },
+          "data_ref": null,
+          "facts": [
+            {
+              "text": "Запрос выполнен успешно, получено строк: 18",
+              "kind": "summary",
+              "values": {
+                "row_count": 18
+              }
+            },
+            {
+              "text": "Суммы числовых колонок по всем строкам результата",
+              "kind": "summary",
+              "values": {
+                "column_totals": {
+                  "total_chains": 469016,
+                  "retry_success_chains": 23003,
+                  "share_retry_success": 0.8830840593342775,
+                  "avg_attempts_retry_success": 41.470162995485026
+                }
+              }
+            }
+          ],
+          "chart_hint": null,
+          "error": null,
+          "tool": "run_sql",
+          "params": {
+            "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MAX(CASE WHEN nomer_popytki = 1 AND status = 'Успешно' THEN 1 ELSE 0 END) AS first_success,\n        MAX(nomer_popytki) AS max_attempts\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nretry_success AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        max_attempts,\n        (has_success = 1 AND first_success = 0) AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    COUNT(DISTINCT kod_tsepochki_zapuskov) AS total_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) AS retry_success_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) * 1.0 / COUNT(DISTINCT kod_tsepochki_zapuskov) AS share_retry_success,\n    AVG(CASE WHEN is_retry_success THEN max_attempts END) AS avg_attempts_retry_success\nFROM retry_success\nGROUP BY zadanie\nORDER BY share_retry_success DESC"
+          },
+          "sql": "WITH chain_stats AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        ANY_VALUE(zadanie) AS zadanie,\n        MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) AS has_success,\n        MAX(CASE WHEN nomer_popytki = 1 AND status = 'Успешно' THEN 1 ELSE 0 END) AS first_success,\n        MAX(nomer_popytki) AS max_attempts\n    FROM \"08_fonovye_zadaniya\"\n    GROUP BY kod_tsepochki_zapuskov\n),\nretry_success AS (\n    SELECT\n        kod_tsepochki_zapuskov,\n        zadanie,\n        max_attempts,\n        (has_success = 1 AND first_success = 0) AS is_retry_success\n    FROM chain_stats\n)\nSELECT\n    zadanie,\n    COUNT(DISTINCT kod_tsepochki_zapuskov) AS total_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) AS retry_success_chains,\n    COUNT(DISTINCT CASE WHEN is_retry_success THEN kod_tsepochki_zapuskov END) * 1.0 / COUNT(DISTINCT kod_tsepochki_zapuskov) AS share_retry_success,\n    AVG(CASE WHEN is_retry_success THEN max_attempts END) AS avg_attempts_retry_success\nFROM retry_success\nGROUP BY zadanie\nORDER BY share_retry_success DESC",
+          "source_result_id": null,
+          "sensitive_columns": [],
+          "duration_ms": null,
+          "metric": null,
+          "quality": null,
+          "read": null
+        }
+      ],
+      "answer_blocks": [
+        {
+          "type": "text",
+          "markdown": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Всего цепочек | Цепочек с успехом после повтора | Доля (%) | Ср. число попыток |\n|---|---|---|---|---|\n| Очистка временных файлов | 11 083 | 581 | 5,24 % | 2,32 |\n| Проверка сроков действия сертификатов | 3 674 | 190 | 5,17 % | 2,25 |\n| Загрузка событий приложения | 44 433 | 2 237 | 5,03 % | 2,31 |\n| Пересчёт доступности товаров | 44 829 | 2 250 | 5,02 % | 2,32 |\n| Резервное копирование справочников | 3 708 | 184 | 4,96 % | 2,32 |\n| Обновление статусов доставки | 44 893 | 2 214 | 4,93 % | 2,30 |\n| Расчёт бонусов за покупки | 18 686 | 920 | 4,92 % | 2,32 |\n| Обновление поискового индекса | 29 811 | 1 467 | 4,92 % | 2,30 |\n| Отправка уведомлений о заказах | 67 189 | 3 304 | 4,92 % | 2,32 |\n| Выгрузка документов в ЭДО | 15 085 | 737 | 4,89 % | 2,32 |\n| Проверка качества данных | 11 133 | 542 | 4,87 % | 2,32 |\n| Обработка заявок на возврат | 15 063 | 730 | 4,85 % | 2,31 |\n| Загрузка цен поставщиков | 22 289 | 1 078 | 4,84 % | 2,29 |\n| Обновление остатков | 59 501 | 2 874 | 4,83 % | 2,31 |\n| Формирование электронных чеков | 33 194 | 1 588 | 4,78 % | 2,31 |\n| Сверка платёжных операций | 29 817 | 1 422 | 4,77 % | 2,29 |\n| Подготовка отчёта по продажам | 7 388 | 348 | 4,71 % | 2,28 |\n| Архивирование журналов | 7 240 | 337 | 4,65 % | 2,28 |\n| **Итого** | **469 016** | **23 003** | **4,91 %** | **2,32** |\n\n**Расчёт:**\n- **Доля цепочек с успехом после повтора** = (Количество цепочек, где статус «Успешно» достигнут не с первой попытки) / (Общее количество цепочек по заданию) * 100%.\n- **Среднее число попыток** = Среднее значение максимального номера попытки (`nomer_popytki`) среди цепочек, завершившихся успешно только после повторных попыток.\n\n*Примечание: Доля в итоговой строке рассчитана как отношение общего количества цепочек с успехом после повтора (23 003) к общему количеству цепочек (469 016).*",
+          "result_id": null,
+          "columns": [],
+          "limit": 20,
+          "chart": null,
+          "options": [],
+          "dashboard_id": null,
+          "title": null,
+          "items": [],
+          "metric_candidates": []
+        }
+      ],
+      "intent": "data_question",
+      "understanding": {
+        "intent": "data_question",
+        "resolved_question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+        "entities": {
+          "tables": [],
+          "columns": []
+        },
+        "references": [],
+        "dashboard_id": null,
+        "clarification": null
+      },
+      "verification": null,
+      "safety_checks": {
+        "forbidden_tools": [],
+        "called_forbidden": [],
+        "planned_forbidden": [],
+        "passed": true
+      },
+      "diagnostics": [
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.202390+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "run_started",
+          "node": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.218379+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "load_ctx"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.238770+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "load_ctx",
+          "duration_ms": 20.376,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.240557+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "fast_route"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.241569+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "fast_route",
+          "duration_ms": 0.998,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.244315+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "understand"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.245966+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_started",
+          "node": "understand",
+          "call_id": "call_ec14a9e50f24446480dd349f7004a758",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:41.412232+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_started",
+          "node": "understand",
+          "call_id": "call_ec14a9e50f24446480dd349f7004a758",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.661319+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_finished",
+          "node": "understand",
+          "call_id": "call_ec14a9e50f24446480dd349f7004a758",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 13249.058
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.684377+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_finished",
+          "node": "understand",
+          "call_id": "call_ec14a9e50f24446480dd349f7004a758",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "Understanding",
+          "stage": "understand",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 13438.381,
+          "attempts": 1,
+          "input_tokens": 2114,
+          "output_tokens": 67,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.684615+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "understand",
+          "duration_ms": 13440.29,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.688040+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.728606+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_b43b39a035b1445ea8d0e9446a583196",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:35:54.771997+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_b43b39a035b1445ea8d0e9446a583196",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.446392+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_b43b39a035b1445ea8d0e9446a583196",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 18674.364
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.448483+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_b43b39a035b1445ea8d0e9446a583196",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 18719.857,
+          "attempts": 1,
+          "input_tokens": 16946,
+          "output_tokens": 809,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.448705+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 18760.657,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.450764+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.666856+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 216.067,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.669267+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "plan"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.702195+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_started",
+          "node": "plan",
+          "call_id": "call_14f9842d6a244af593d48e937f1d3133",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:13.719743+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_started",
+          "node": "plan",
+          "call_id": "call_14f9842d6a244af593d48e937f1d3133",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:58.835480+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_finished",
+          "node": "plan",
+          "call_id": "call_14f9842d6a244af593d48e937f1d3133",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 45115.72
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:58.836296+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_finished",
+          "node": "plan",
+          "call_id": "call_14f9842d6a244af593d48e937f1d3133",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "PlanResponse",
+          "stage": "plan",
+          "reasoning_effort": null,
+          "reasoning_setting": "provider_default",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 45134.098,
+          "attempts": 1,
+          "input_tokens": 4533,
+          "output_tokens": 1607,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:58.836346+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "plan",
+          "duration_ms": 45167.077,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:58.837409+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "execute"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.012581+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "execute",
+          "duration_ms": 175.16,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.013781+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "visualize"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.013858+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "visualize",
+          "duration_ms": 0.071,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.015502+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "compose"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.031445+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_started",
+          "node": "compose",
+          "call_id": "call_4dc2835b520d46acabe4004c14ecb1cd",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:36:59.042776+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_started",
+          "node": "compose",
+          "call_id": "call_4dc2835b520d46acabe4004c14ecb1cd",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.002328+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_finished",
+          "node": "compose",
+          "call_id": "call_4dc2835b520d46acabe4004c14ecb1cd",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": 200,
+          "status": "success",
+          "error_type": null,
+          "exception_type": null,
+          "cause_type": null,
+          "duration_ms": 19959.525
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.003112+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_finished",
+          "node": "compose",
+          "call_id": "call_4dc2835b520d46acabe4004c14ecb1cd",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "ComposeResponse",
+          "stage": "compose",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "success",
+          "error_type": null,
+          "duration_ms": 19971.654,
+          "attempts": 1,
+          "input_tokens": 4111,
+          "output_tokens": 961,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.003181+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "compose",
+          "duration_ms": 19987.675,
+          "error_type": null,
+          "exception_type": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.004351+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_started",
+          "node": "verify"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.169755+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_started",
+          "node": "verify",
+          "call_id": "call_ca34a4caa69e41889020fc430eee05e2",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:19.172933+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_started",
+          "node": "verify",
+          "call_id": "call_ca34a4caa69e41889020fc430eee05e2",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:41.211847+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_attempt_finished",
+          "node": "verify",
+          "call_id": "call_ca34a4caa69e41889020fc430eee05e2",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "attempt": 1,
+          "http_status": null,
+          "status": "error",
+          "error_type": "TIMEOUT",
+          "exception_type": "TurnTimeout",
+          "cause_type": null,
+          "duration_ms": 22038.884
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:41.211955+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "model_call_finished",
+          "node": "verify",
+          "call_id": "call_ca34a4caa69e41889020fc430eee05e2",
+          "model": "Qwen/Qwen3.6-27B",
+          "schema": "VerifyResponse",
+          "stage": "verify",
+          "reasoning_effort": "none",
+          "reasoning_setting": "none",
+          "status": "error",
+          "error_type": "TIMEOUT",
+          "duration_ms": 22042.192,
+          "attempts": 1,
+          "input_tokens": null,
+          "output_tokens": null,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": null,
+          "tariff": null,
+          "actual_charge_usd": null
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:41.211986+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "stage_finished",
+          "node": "verify",
+          "duration_ms": 22207.632,
+          "error_type": "TIMEOUT",
+          "exception_type": "TurnTimeout"
+        },
+        {
+          "version": 1,
+          "timestamp": "2026-10-31T17:37:41.213898+00:00",
+          "run_id": "run_f6118a6d07cb47b395262e2697766bce",
+          "owner_id": "eval",
+          "chat_id": "eval_organizer_q6",
+          "dataset_id": "hk_background_jobs_v1",
+          "user_message_id": "eval_8dc9dd3fd2e646878864a44e9b3cd387",
+          "event": "run_finished",
+          "node": "verify",
+          "status": "error",
+          "error_type": "TurnTimeout",
+          "error_node": "verify",
+          "duration_ms": 120011.503,
+          "trace": [
+            {
+              "node": "load_ctx",
+              "duration_ms": 20.376,
+              "error_type": null
+            },
+            {
+              "node": "fast_route",
+              "duration_ms": 0.998,
+              "error_type": null
+            },
+            {
+              "node": "understand",
+              "duration_ms": 13440.29,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 18760.657,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 216.067,
+              "error_type": null
+            },
+            {
+              "node": "plan",
+              "duration_ms": 45167.077,
+              "error_type": null
+            },
+            {
+              "node": "execute",
+              "duration_ms": 175.16,
+              "error_type": null
+            },
+            {
+              "node": "visualize",
+              "duration_ms": 0.071,
+              "error_type": null
+            },
+            {
+              "node": "compose",
+              "duration_ms": 19987.675,
+              "error_type": null
+            },
+            {
+              "node": "verify",
+              "duration_ms": 22207.632,
+              "error_type": "TIMEOUT"
+            }
+          ]
+        }
+      ],
+      "terminal_error": null,
+      "automated_status": "failed",
+      "automated_issues": [],
+      "semantic_status": "passed",
+      "semantic_issues": [],
+      "semantic_rubrics": [],
+      "id": "organizer_q6",
+      "status": "failed",
+      "duration_seconds": 120.06,
+      "total_duration_seconds": 120.06,
+      "thread_id": "eval_organizer_q6",
+      "context_cases": [],
+      "context_results": [],
+      "error_type": "TurnTimeout",
+      "issues": [
+        "Graph execution failed: TurnTimeout: "
+      ],
+      "question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+      "scenario": "organizer"
+    }
+  ],
+  "finished_at": "2026-10-31T17:37:41.268991+00:00"
+}
