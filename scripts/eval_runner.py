@@ -372,7 +372,7 @@ ANAPHORIC_SENTENCE_RE = re.compile(
     r"(?!\w)(?!(?-i:\s+[А-ЯЁA-Z]))",
     re.I,
 )
-PERCENT_FACTOR_RE = re.compile(r"[*×·]\s*100(?![\d.,])")
+PERCENT_FACTOR_RE = re.compile(r"[*×·]\s*100(?!\d|[.,]\d)")
 CALENDAR_DAYS_RE = re.compile(r"(?<![\d.,])(?:2[89]|3[01])(?![\d.,])")
 
 
