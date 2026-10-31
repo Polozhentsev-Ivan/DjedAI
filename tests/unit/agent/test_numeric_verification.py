@@ -855,3 +855,30 @@ def test_count_alias_through_a_cte_names_its_entity() -> None:
         [["Склад", 4515]],
     )
     assert _checked("Вошло 4 515 обращений.", results, P90_QUESTION).status == "verified"
+
+
+def test_review_bypasses_stay_rejected() -> None:
+    # Алиас cnt не делает MAX подсчётом.
+    results = _query_result(
+        "SELECT MAX(amount) AS cnt FROM orders WHERE amount > 0", ["cnt"], [[100]]
+    )
+    assert _checked("Среднее 100", results, "Сколько?").status == "failed"
+    # LIMIT не делитель, а фильтр по ID не длительность.
+    results = _query_result("SELECT 77 AS value LIMIT 5", ["value"], [[77]])
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT COUNT(*) AS n, AVG(days) AS d FROM t WHERE id > 28", ["n", "d"], [[3, 2]]
+    )
+    assert _checked("Средняя длительность 28 дней; строк 3", results, "Сколько?").status == "failed"
+    # Дата из комментария не условие запроса.
+    results = _query_result("SELECT COUNT(*) AS n FROM orders -- 2024-01-01", ["n"], [[2]])
+    assert _checked("2024-01-01: строк 2", results, "Сколько?").status == "failed"
+    # Условие отбора, которого нет в вопросе.
+    results = _query_result("SELECT SUM(amount) AS revenue FROM orders", ["revenue"], [[110]])
+    text = "Выручка 110 без тестовых клиентов"
+    assert _checked(text, results, "Выручка без отменённых заказов?").status == "failed"
+    # Значение группы rub не валюта колонки.
+    results = _query_result(
+        "SELECT dept, SUM(qty) AS total FROM q GROUP BY dept", ["dept", "total"], [["rub", 10]]
+    )
+    assert _checked("Сумма 10 RUB", results, "Сколько?").status == "failed"

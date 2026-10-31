@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -1497,6 +1498,47 @@ def _counts_distinct_rows(select: exp.Select) -> bool:
     )
 
 
+def _inner_select(select: exp.Select) -> exp.Select | None:
+    """Единственный источник SELECT: подзапрос или CTE."""
+    source = select.args.get("from_") or select.args.get("from")
+    if source is None or select.args.get("joins"):
+        return None
+    table = source.this
+    if isinstance(table, exp.Subquery):
+        return table.this if isinstance(table.this, exp.Select) else None
+    with_ = select.args.get("with_") or select.args.get("with")
+    if isinstance(table, exp.Table) and with_:
+        for cte in with_.expressions:
+            if cte.alias == table.name and isinstance(cte.this, exp.Select):
+                return cte.this
+    return None
+
+
+def _with_source_markers(label: str, projection: exp.Expression, select: exp.Select) -> str:
+    """Смысл колонки берётся из её выражения: через CTE, а не из алиаса или значений строки."""
+    inner = projection.this if isinstance(projection, exp.Alias) else projection
+    owner = select
+    # Внешний SELECT по CTE лишь переносит колонку: смотрим её исходное выражение.
+    while isinstance(inner, exp.Column) and (nested := _inner_select(owner)) is not None:
+        found = next(
+            (item for item in nested.expressions if item.alias_or_name == inner.name), None
+        )
+        if found is None:
+            break
+        inner = found.this if isinstance(found, exp.Alias) else found
+        owner = nested
+    markers = []
+    if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Star | exp.Literal):
+        if owner.args.get("where") or owner.args.get("group"):
+            markers.append(_FILTERED_COUNT)
+    if any(
+        re.search(r"(?:^|_)(?:rub|руб)$", column.name, re.I)
+        for column in inner.find_all(exp.Column)
+    ):
+        markers.append(_RUB_SOURCE)
+    return " ".join([label, *markers]).strip()
+
+
 def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
     """Сопоставляет выходные колонки run_sql с их агрегатной семантикой."""
     if result is None or result.tool != "run_sql":
@@ -1520,6 +1562,7 @@ def _sql_column_semantics(result: ToolResult | None) -> dict[str, str]:
         if not alias:
             continue
         label = _sql_projection_label(projection)
+        label = _with_source_markers(label, projection, select)
         if label:
             if "__rows__" in _label_keys(label) and _counts_distinct_rows(select):
                 label = f"{label} count distinct уникальные значения"
@@ -1708,13 +1751,13 @@ def _with_total_currency(evidence: list[VerificationEvidence]) -> list[Verificat
     rub_columns = {
         (item.result_id, item.cell_address.rsplit(".", 1)[-1])
         for item in evidence
-        if item.cell_address and _RUB_LABEL_RE.search(item.label or "")
+        if item.cell_address and _RUB_SOURCE in (item.label or "")
     }
     updated = []
     for item in evidence:
         match = re.search(r"column_totals\.(\S+)", item.label or "")
         if match and (item.result_id, match.group(1)) in rub_columns:
-            item = item.model_copy(update={"label": f"{item.label} rub"})
+            item = item.model_copy(update={"label": f"{item.label} {_RUB_SOURCE}"})
         updated.append(item)
     return updated
 
@@ -2088,7 +2131,7 @@ def _value_matches(draft: _Draft, evidence: VerificationEvidence) -> bool:
     if draft.unit == "ratio" and evidence.unit == "percent":
         return _values_equal(claimed * 100, actual, _draft_decimals(draft))
     if draft.unit == "money" or evidence.unit == "money":
-        rub_column = draft.currency == "RUB" and _RUB_LABEL_RE.search(evidence.label or "")
+        rub_column = draft.currency == "RUB" and _RUB_SOURCE in (evidence.label or "")
         if draft.unit not in ("money", "unknown") or (
             evidence.unit not in ("money", "unknown") and not rub_column
         ):
@@ -2189,9 +2232,9 @@ _DAY_BEFORE_MONTH_RE = re.compile(
 )
 _DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
 _PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
-# Внешний SELECT по CTE сохраняет только алиас подсчёта, не сам COUNT(*).
-_COUNT_ALIAS_RE = re.compile(r"(?:^|[\s_])(?:cnt|count|num)(?:$|[\s_])", re.IGNORECASE)
-_RUB_LABEL_RE = re.compile(r"(?:^|[\s_])(?:rub|руб)(?:$|[\s_.])", re.IGNORECASE)
+_POPULATION_SKIP = {"среди", "без", "из", "кроме", "не"}
+_RUB_SOURCE = "source_rub"
+_FILTERED_COUNT = "filtered_count"
 
 
 @dataclass(frozen=True)
@@ -2208,12 +2251,11 @@ class _QueryContext:
     question_keys: frozenset[str] = frozenset()
     sql_numbers: frozenset[Decimal] = frozenset()
     active: bool = False
-    filtered: bool = False
 
     def names_population(self, population: str | None) -> bool:
-        # Граница популяции в тексте размыта: сверяем слово, которое её называет.
-        first = next((word for word in _words(population or "") if word != "среди"), None)
-        return bool(first) and bool(_label_keys(first)) and _label_keys(first) <= self.question_keys
+        # Граница популяции в тексте размыта: сверяем первые слова условия целиком.
+        words = [word for word in _words(population or "") if word not in _POPULATION_SKIP][:2]
+        return bool(words) and all(_label_keys(word) <= self.question_keys for word in words)
 
     def covers(self, period: VerificationPeriod | None) -> bool:
         if period is None or self.period_start is None or self.period_end is None:
@@ -2222,21 +2264,36 @@ class _QueryContext:
         return bool(start and end and self.period_start <= start and end <= self.period_end)
 
 
-def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryContext:
-    thresholds: set[Decimal] = set()
+def _sql_conditions(sql: str) -> tuple[list[date], set[Decimal]]:
+    """Даты из применённых условий и делители расчёта: комментарии и LIMIT сюда не входят."""
+    try:
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        return [], set()
     bounds: list[date] = []
-    for text in [question or "", *sql]:
-        claims = _date_claims(text)
-        for claim in claims:
-            bounds += [d for d in (_date(claim.period.start), _date(claim.period.end)) if d]
-    sql_numbers = {
-        token.value * token.scale
-        for text in sql
-        for token in _tokens(_ISO_DATETIME_RE.sub(" ", text))
-        if token.scale == 1
-    }
+    for scope in parsed.find_all(exp.Where, exp.Having, exp.If):
+        for literal in scope.find_all(exp.Literal):
+            if literal.is_string and (parsed_date := _date(literal.this[:10])):
+                bounds.append(parsed_date)
+    divisors: set[Decimal] = set()
+    for division in parsed.find_all(exp.Div):
+        for literal in division.expression.find_all(exp.Literal):
+            if not literal.is_string:
+                with suppress(InvalidOperation):
+                    divisors.add(Decimal(literal.this))
+    return bounds, divisors
+
+
+def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryContext:
+    bounds: list[date] = []
+    divisors: set[Decimal] = set()
+    for text in sql:
+        text_bounds, text_divisors = _sql_conditions(text)
+        bounds += text_bounds
+        divisors |= text_divisors
     question_text = question or ""
     spans = [(claim.start, claim.end) for claim in _date_claims(question_text)]
+    thresholds: set[Decimal] = set()
     for token in _tokens(question_text):
         inside_date = any(token.start >= start and token.end <= end for start, end in spans)
         if not inside_date and _year_value(token.value) is None:
@@ -2246,9 +2303,8 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
         min(bounds, default=None),
         max(bounds, default=None),
         frozenset(_label_keys(question_text)),
-        frozenset(sql_numbers),
+        frozenset(divisors),
         active=True,
-        filtered=any(re.search(r"\b(?:where|group\s+by)\b", text, re.I) for text in sql),
     )
 
 
@@ -2310,8 +2366,8 @@ def _match_quantity(
             # Имя колонки модели (p90_hours) не обязано совпасть с подписью в ответе.
             # Дробное значение ячейки одного результата случайно не совпадает.
             candidates = _exact_fractional_cell(draft, candidates)
-        elif context.active and _filtered_count_cell(draft, candidates, context):
-            candidates = _filtered_count_cell(draft, candidates, context)
+        elif context.active and _filtered_count_cell(draft, candidates):
+            candidates = _filtered_count_cell(draft, candidates)
         elif any(_same_label(draft.label, item.label) for item in evidence):
             return [], "unrelated_result"
         elif len({item.result_id for item in candidates}) > 1:
@@ -2329,7 +2385,7 @@ def _match_quantity(
             or (
                 item.currency is None
                 and draft.currency == "RUB"
-                and _RUB_LABEL_RE.search(item.label or "")
+                and _RUB_SOURCE in (item.label or "")
             )
         ]
         if not with_currency:
@@ -2386,16 +2442,13 @@ def _exact_fractional_cell(
 
 
 def _filtered_count_cell(
-    draft: _Draft, candidates: Sequence[VerificationEvidence], context: _QueryContext
+    draft: _Draft, candidates: Sequence[VerificationEvidence]
 ) -> list[VerificationEvidence]:
-    """COUNT(*) с WHERE или GROUP BY считает уже отобранные сущности, а не строки таблицы."""
-    if not context.filtered or draft.currency or draft.unit == "percent":
+    """COUNT(*) с собственным WHERE или GROUP BY считает отобранные сущности, а не таблицу."""
+    if draft.currency or draft.unit == "percent":
         return []
     return [
-        item
-        for item in candidates
-        if item.cell_address
-        and ("__rows__" in _label_keys(item.label) or _COUNT_ALIAS_RE.search(item.label or ""))
+        item for item in candidates if item.cell_address and _FILTERED_COUNT in (item.label or "")
     ]
 
 
