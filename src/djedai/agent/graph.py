@@ -1507,9 +1507,8 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     sys_prompt = load_prompt("verify").format(
         facts=json.dumps(facts_and_data, ensure_ascii=False, indent=2, default=str)
-        + _policy_note(facts_and_data)
-        + "\nDataset fields:\n"
-        + (state.get("catalog_fields") or ""),
+        + _policy_note(facts_and_data),
+        catalog=state.get("catalog_fields") or "",
         draft=draft,
     )
     response = client.generate_typed_response(

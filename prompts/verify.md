@@ -28,7 +28,7 @@ Rules:
 9. Ensure `corrected_markdown` still respects the user's requested answer format (for example, if they asked for just a number, do not add conversational filler).
 10. If the facts contain kind "data_quality" with severity "warning" or "blocking" and the draft calls the result complete, full, or a total over all records, set `is_valid` to false and remove that claim in `corrected_markdown`.
 11. If a result has "truncation_note", "rows_truncated" or "truncated" and the draft says that data ends or a value is absent based on the shown rows alone, set `is_valid` to false and remove that claim in `corrected_markdown`.
-8. Hours from fact values under "durations" are supported numbers: do not reject them as a change of unit.
-9. If the draft says the data has no such field or information, but the dataset fields list a column for it, set `is_valid` to false and in `corrected_markdown` say instead that the calculation was not completed.
+12. Hours from fact values under "durations" are supported numbers: do not reject them as a change of unit.
+13. If the draft says the data has no such field or information, but the dataset fields list a column for it, set `is_valid` to false and in `corrected_markdown` say instead that the calculation was not completed.
 
 Output strictly valid JSON matching the schema.
