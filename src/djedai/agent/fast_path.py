@@ -26,12 +26,12 @@ _TABLE_PREFIX = re.compile(
     r"(?:таблица|таблице|таблицы|таблицу|table)\s+",
     re.IGNORECASE,
 )
-_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "`": "`"}
+_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "‘": "’", "`": "`"}
 
 _COUNT_PREFIX = (
     r"(?:сколько(?:\s+всего)?|какое\s+количество|каково\s+количество|число)\s+"
     r"(?:строк|записей)"
-    r"|how\s+many\s+(?:rows|records)"
+    r"|how\s+many\s+(?:rows|records)(?:\s+are)?"
     r"|(?:what\s+is\s+)?(?:the\s+)?(?:row\s+count|number\s+of\s+rows)"
 )
 _COUNT_RE = re.compile(
@@ -106,7 +106,7 @@ def _normalize(text: str) -> str:
     text = text.strip()
     # Пробелы внутри явно указанного имени принадлежат имени, а не грамматике.
     text = re.sub(
-        r""""[^"]*"|'[^']*'|«[^»]*»|“[^”]*”|`[^`]*`|\s+""",
+        r""""[^"]*"|'[^']*'|«[^»]*»|“[^”]*”|‘[^’]*’|`[^`]*`|\s+""",
         lambda match: " " if match.group().isspace() else match.group(),
         text,
     )

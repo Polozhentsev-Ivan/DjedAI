@@ -36,6 +36,7 @@ def one_table(catalog: DatasetCatalog) -> DatasetCatalog:
         ("Сколько записей в clients?", "row_count", "clients"),
         ("Какое количество строк в таблице clients?", "row_count", "clients"),
         ("How many rows in table clients?", "row_count", "clients"),
+        ("How many rows are in the table clients?", "row_count", "clients"),
         ("What is the row count of table clients?", "row_count", "clients"),
         ("Какова структура таблицы orders?", "structure", "orders"),
         ("Покажи структуру таблицы clients, пожалуйста?", "structure", "clients"),
@@ -93,7 +94,9 @@ def test_single_table_allows_omitting_its_name(one_table):
 @pytest.mark.parametrize(
     "template", ["Сколько строк в таблице {}?", "Покажи структуру таблицы {}?"]
 )
-@pytest.mark.parametrize("quotes", [('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("`", "`")])
+@pytest.mark.parametrize(
+    "quotes", [('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("‘", "’"), ("`", "`")]
+)
 @pytest.mark.parametrize("name", ["table orders.csv", "таблица orders.csv", "table", "a  b.csv"])
 def test_quoted_table_names_are_preserved(catalog, template, quotes, name):
     target = catalog.tables[1].model_copy(update={"original_name": name})
