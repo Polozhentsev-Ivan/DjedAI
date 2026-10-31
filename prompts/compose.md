@@ -36,3 +36,5 @@ Dataset fields (names only, not a source of numbers):
 
 Facts and Data:
 {facts}
+
+Calculation output format: a Markdown table of the supplied inputs and computed results, followed by the calculation explained in words. Never write a numerical substitution or LaTeX. For each period, show its own total, denominators and normalized result when available; name the winning entity with both its identifier and descriptive name.
