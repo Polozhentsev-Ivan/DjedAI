@@ -43,6 +43,17 @@ class Message(BaseModel):
     content: str
 
 
+class FastPath(BaseModel):
+    """Узкий детерминированный маршрут без вызова модели.
+
+    ``table_id`` уже проверен по текущему каталогу датасета: имя таблицы
+    разрешено однозначно, а не угадано по тексту вопроса.
+    """
+
+    kind: Literal["row_count", "structure"]
+    table_id: str
+
+
 class PlannedCall(BaseModel):
     tool: str
     args: dict[str, Any]
@@ -116,6 +127,8 @@ class AgentState(TypedDict, total=False):
     history_summary: str | None
     user_context: str | None
     understanding: Understanding | None
+    # Узкий быстрый маршрут текущего хода; None — обычный маршрут с моделью.
+    fast_path: FastPath | None
     plan: list[PlannedCall]
     results: list[ToolResult]
     # Results saved by previous turns; kept aside so a view change can reuse them

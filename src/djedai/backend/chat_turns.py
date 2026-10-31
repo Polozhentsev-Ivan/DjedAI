@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 STATUS_TEXT = {
     "load_ctx": "Загружаю контекст чата…",
+    "fast_route": "Проверяю быстрый маршрут…",
+    "fast_compose": "Формирую точный ответ…",
     "understand": "Разбираю вопрос…",
     "plan": "Строю план анализа…",
     "execute": "Выполняю расчёты…",

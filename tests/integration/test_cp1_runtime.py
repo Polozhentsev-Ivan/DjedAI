@@ -47,9 +47,9 @@ def account_password_hash() -> str:
 
 
 @contextmanager
-def _client(settings: Settings) -> Iterator[TestClient]:
+def _client(settings: Settings, username: str = "local") -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as client:
-        login = client.post("/api/auth/login", json={"username": "local", "password": PASSWORD})
+        login = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
         assert login.status_code == 200, login.text
         client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
         yield client
@@ -294,6 +294,76 @@ def test_production_runtime_binds_each_dataset_and_persists_results_across_resta
             assert restarted.get(f"/api/chats/{chat_id}").json() == history
 
 
+def test_fast_path_count_and_structure_skip_model_and_survive_reload(
+    configured, monkeypatch
+) -> None:
+    settings, _ = configured
+    model = _model(monkeypatch)
+    with _client(settings) as client:
+        _, chat_id = _upload(client, "fast_sales", (10, 20, 30))
+        count_events = _events(
+            client.post(
+                f"/api/chats/{chat_id}/messages",
+                json={"text": "Сколько строк в таблице fast_sales?"},
+            ).text
+        )
+        assert count_events[-1][0] == "done"
+        assert "error" not in [event for event, _ in count_events]
+        result_id = next(
+            data["result_id"] for event, data in count_events if event == "tool_result"
+        )
+        blocks = [data for event, data in count_events if event == "block"]
+        assert blocks[0] == {"type": "text", "markdown": "Строк в таблице `fast_sales`: 3."}
+        assert blocks[1]["type"] == "text"
+        assert "**Как посчитано.**" in blocks[1]["markdown"]
+        assert model.calls == []
+
+        metadata = client.get(f"/api/results/{result_id}").json()
+        assert metadata["sql"] == 'SELECT COUNT(*) AS row_count FROM "fast_sales"'
+        assert client.get(f"/api/results/{result_id}/data").json()["rows"] == [[3]]
+        history = client.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert history[-1]["result_ids"] == [result_id]
+
+        structure_events = _events(
+            client.post(
+                f"/api/chats/{chat_id}/messages",
+                json={"text": "Покажи структуру таблицы fast_sales"},
+            ).text
+        )
+        assert structure_events[-1][0] == "done"
+        assert "tool_result" not in [event for event, _ in structure_events]
+        structure_blocks = [data for event, data in structure_events if event == "block"]
+        assert "**Структура таблицы `fast_sales`**" in structure_blocks[0]["markdown"]
+        assert "`amount`" in structure_blocks[0]["markdown"]
+        assert model.calls == []
+
+        _, second_chat = _upload(client, "other_sales", (1, 2, 3, 4))
+        other_events = _events(
+            client.post(
+                f"/api/chats/{second_chat}/messages",
+                json={"text": "Сколько строк в таблице other_sales?"},
+            ).text
+        )
+        assert other_events[-1][0] == "done"
+        other_blocks = [data for event, data in other_events if event == "block"]
+        assert other_blocks[0] == {
+            "type": "text",
+            "markdown": "Строк в таблице `other_sales`: 4.",
+        }
+        assert model.calls == []
+
+    with _client(settings, username="runtime-other") as foreign:
+        for suffix in ("", "/data"):
+            assert foreign.get(f"/api/results/{result_id}{suffix}").status_code == 404
+        assert foreign.get(f"/api/chats/{chat_id}").status_code == 404
+
+    with _client(settings) as restarted:
+        assert restarted.get(f"/api/results/{result_id}/data").json()["rows"] == [[3]]
+        reloaded = restarted.get(f"/api/chats/{chat_id}").json()["messages"]
+        assert reloaded[-3]["result_ids"] == [result_id]
+        assert "**Структура таблицы `fast_sales`**" in reloaded[-1]["blocks"][0]["markdown"]
+
+
 @pytest.mark.parametrize("failure", ["empty", "timeout", "timeout_after_rejection"])
 def test_unverified_numbers_are_neither_published_nor_saved(
     configured, monkeypatch, failure
@@ -455,7 +525,7 @@ def test_dataset_connection_closes_for_failed_and_interrupted_turns(
             stream = chat_service.stream_chat_turn(
                 db,
                 chat_id,
-                "Сколько строк?",
+                "Сколько строк и какова сумма amount?",
                 runtime,
                 is_cancelled=lambda: cancelled,
                 owner_id="runtime-local",
