@@ -1364,6 +1364,7 @@ def evaluate_case(
         "answer_blocks": _plain(blocks),
         "intent": _intent(result),
         "understanding": _plain(result.get("understanding")),
+        "verification": _plain(result.get("verification")),
         "safety_checks": {
             "forbidden_tools": sorted(forbidden),
             "called_forbidden": called_forbidden,

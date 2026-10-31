@@ -536,6 +536,47 @@ def test_count_nullable_column_does_not_confirm_all_rows() -> None:
     assert _report("В таблице 3 строки.", evidence, results).status == "verified"
 
 
+def test_distinct_count_is_not_ambiguous_with_equal_catalog_row_count() -> None:
+    catalog = ToolResult(
+        result_id="r_catalog",
+        tool="describe_dataset",
+        status="ok",
+        facts=[Fact(text="Таблица jobs: 5 строк", values={"row_count": 5})],
+        data=ToolResultData(columns=["table_name", "row_count"], rows=[["jobs", 5]]),
+    )
+    results, _ = _sql_evidence(
+        "SELECT COUNT(DISTINCT kod_zapuska) AS total_launches FROM jobs", "total_launches", 5
+    )
+    results.insert(0, catalog)
+    checked = _report("Всего в таблице 5 уникальных запусков.", _evidence(results), results)
+    assert checked.status == "verified"
+    assert {item.result_id for item in checked.assertions[0].evidence} == {"r_sql_semantics"}
+    # The same row count without COUNT(DISTINCT) cannot establish uniqueness.
+    assert (
+        _report("Всего в таблице 5 уникальных запусков.", _evidence([catalog]), [catalog]).status
+        == "failed"
+    )
+
+
+def test_distinct_alias_does_not_turn_an_ordinary_count_into_unique_values() -> None:
+    for alias in ("unique_launches", "distinct_launches"):
+        results, evidence = _sql_evidence(f"SELECT COUNT(*) AS {alias} FROM jobs", alias, 5)
+        assert _report("Всего 5 уникальных запусков.", evidence, results).status == "failed"
+        assert _report("Всего 5 строк.", evidence, results).status == "verified"
+
+
+def test_two_unrelated_distinct_counts_remain_ambiguous() -> None:
+    results, _ = _sql_evidence("SELECT COUNT(DISTINCT id) AS n FROM jobs", "n", 5)
+    results.append(
+        results[0].model_copy(
+            update={"result_id": "r_other", "sql": "SELECT COUNT(DISTINCT id) AS n FROM users"}
+        )
+    )
+    checked = _report("Всего 5 уникальных значений.", _evidence(results), results)
+    assert checked.status == "failed"
+    assert checked.assertions[0].reason_code == "ambiguous_number"
+
+
 def test_count_nonnull_literals_count_all_rows_through_real_duckdb() -> None:
     with duckdb.connect() as connection:
         connection.execute(

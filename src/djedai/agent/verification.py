@@ -1416,6 +1416,7 @@ def _sql_compatible_caption(caption: str, semantics: str) -> str:
         "__total__",
         "__count__",
         "__rows__",
+        "__distinct__",
     }
     actual = _label_keys(semantics) & aggregate_keys
     return " ".join(
@@ -2146,6 +2147,14 @@ def _match_quantity(
         if draft.denominator is not None:
             return [], "denominator_mismatch"
         return [], "number_not_found"
+
+    # Equal COUNT(*) and COUNT(DISTINCT ...) values are different evidence.
+    # A uniqueness claim must select the latter, even when a generic caption
+    # such as "total" also matches the catalog's row count.
+    if "__distinct__" in _label_keys(draft.label):
+        candidates = [item for item in candidates if "__distinct__" in _label_keys(item.label)]
+        if not candidates:
+            return [], "unrelated_result"
 
     if draft.label and _label_keys(draft.label):
         labelled = [item for item in candidates if _same_label(draft.label, item.label)]
