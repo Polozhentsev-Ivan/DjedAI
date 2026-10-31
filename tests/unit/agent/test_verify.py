@@ -274,6 +274,9 @@ def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_
     kept = verify(state("Всего 500 000 строк."), config)
     assert kept["verification"].status == "verified"
     assert "answer_blocks" not in kept
+    retried = verify({**state("Всего 500 000 запусков."), "compose_retries": 1}, config)
+    assert retried["is_verified"] is False
+    assert "terminal_error" not in retried
     dropped = verify(state("Всего 500 000 запусков."), config)
     assert dropped["verification"].status == "failed"
     assert dropped["terminal_error"] == "OUTPUT_LIMIT"

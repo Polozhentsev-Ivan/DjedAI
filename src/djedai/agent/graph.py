@@ -1578,6 +1578,19 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
             ),
         }
 
+    # Код уже отклонил черновик: повторный compose полезнее, чем ответ об ошибке.
+    if (
+        response.error_type == "OUTPUT_LIMIT"
+        and state.get("compose_retries", 0) < 2
+        and enough_time
+    ):
+        return {
+            "is_verified": False,
+            "verification": _finished_verification(
+                deterministic, status="failed", rejected=_previous_rejected(state)
+            ),
+        }
+
     if response.status != "success" or not response.data:
         message = (
             RESTRICTED_CONTEXT_MESSAGE

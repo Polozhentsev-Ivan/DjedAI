@@ -1703,6 +1703,22 @@ def _evidence_key(item: VerificationEvidence) -> tuple[Any, ...]:
     )
 
 
+def _with_total_currency(evidence: list[VerificationEvidence]) -> list[VerificationEvidence]:
+    """Итог колонки наследует рубли от исходной колонки её ячеек."""
+    rub_columns = {
+        (item.result_id, item.cell_address.rsplit(".", 1)[-1])
+        for item in evidence
+        if item.cell_address and _RUB_LABEL_RE.search(item.label or "")
+    }
+    updated = []
+    for item in evidence:
+        match = re.search(r"column_totals\.(\S+)", item.label or "")
+        if match and (item.result_id, match.group(1)) in rub_columns:
+            item = item.model_copy(update={"label": f"{item.label} rub"})
+        updated.append(item)
+    return updated
+
+
 def build_evidence(
     results: Sequence[ToolResult], payload: Sequence[Mapping[str, Any]]
 ) -> list[VerificationEvidence]:
@@ -1751,7 +1767,7 @@ def build_evidence(
     unique: dict[tuple[Any, ...], VerificationEvidence] = {}
     for item in evidence:
         unique.setdefault(_evidence_key(item), item)
-    return list(unique.values())
+    return _with_total_currency(list(unique.values()))
 
 
 # --- Разбор утверждений ---

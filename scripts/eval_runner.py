@@ -365,6 +365,9 @@ def _reused_results(
     return [], source, [f"Context result '{source}' was not found to verify reuse"]
 
 
+CALCULATION_CONSTANTS = {Decimal(day) for day in (28, 29, 30, 31, 100)}
+
+
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     """Numbers in the answer must originate in tool results; user constants are exempt."""
     expect = case.get("expect") or {}
@@ -375,7 +378,8 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     # Unique values, preserving order (summary facts usually at the end)
     uniq = list(dict.fromkeys(numbers))
 
-    constants = set(_claim_numbers(case.get("question") or ""))
+    # Дни месяца и множитель процента пересказывают расчёт, а не его результат.
+    constants = set(_claim_numbers(case.get("question") or "")) | CALCULATION_CONSTANTS
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
@@ -477,7 +481,8 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
             issues.append(f"Answer does not state the required unit: {pattern}")
     # Decimal separators must not split sentences.
     lines = re.split(
-        r"\n|;|(?<!\d)(?<!шт)(?<!руб)(?<!тыс)(?<!млн)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain
+        r"\n|;|(?<![\d)])(?<!шт)(?<!руб)(?<!тыс)(?<!млн)(?<![Сс]р)[.!?]\s+|,\s+(?=[^,:;\n]+:)",
+        plain,
     )
     unit_patterns = {
         "hours": r"(?:ч(?:ас\w*)?\.?|hours?|h)\b",

@@ -813,3 +813,20 @@ def test_sql_constants_confirm_a_formula_and_day_counts_but_not_results() -> Non
     assert _checked("За февраль (28 дней)", results, "Сколько?").status != "failed"
     assert _checked("Итого: 1 732 / 28 = 70,00", results, "Сколько?").status == "failed"
     assert _checked("Продаж 28.", results, "Сколько?").status == "failed"
+
+
+def test_column_total_inherits_rubles_from_its_source_column() -> None:
+    results = _query_result(
+        "SELECT dept, SUM(amount_rub) AS total FROM t WHERE d <= '2025-03-31' GROUP BY dept",
+        ["dept", "total"],
+        [["A", "10.50"], ["B", "20.25"]],
+    )
+    results[0].facts.append(
+        Fact(
+            text="Суммы числовых колонок по всем строкам результата",
+            kind="summary",
+            values={"column_totals": {"total": 30.75}},
+        )
+    )
+    assert _checked("Итого на сумму 30,75 руб.", results, "Сколько?").status == "verified"
+    assert _checked("Итого на сумму 30,75 USD.", results, "Сколько?").status == "failed"
