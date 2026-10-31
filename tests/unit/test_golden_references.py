@@ -31,6 +31,20 @@ def suite():
     return golden.load_suite()
 
 
+@pytest.mark.parametrize("number", range(1, 7))
+def test_organizer_manifest_identity_matches_pinned_catalog(number):
+    manifest = json.loads(
+        (ROOT / f"eval/datasets/organizer/q{number}.json").read_text(encoding="utf-8")
+    )
+    catalog = json.loads((ROOT / "eval/hk_datasets_manifest.json").read_text(encoding="utf-8"))
+    source = manifest["source"]
+    table = next(table for table in catalog["tables"] if table["file"] == source["file_name"])
+
+    assert source["revision"] == catalog["revision"]
+    assert source["size_bytes"] == table["size"]
+    assert source["git_blob_sha1"] == table["blob"]
+
+
 def write_suite(tmp_path, cases, manifest):
     questions_path = tmp_path / "questions.yaml"
     manifest_path = tmp_path / "manifest.json"

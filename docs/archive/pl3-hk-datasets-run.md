@@ -11,7 +11,7 @@
 
 Прогон сделан без LLM. Сценарии с моделью проверит MLE. Ниже приведена теоретическая оценка, какие из них закрываются инструментами платформы.
 
-Повторяет прогон скрипт [check_hk_datasets.py](../scripts/check_hk_datasets.py), эталонные типы лежат в манифесте [hk_datasets_manifest.json](../eval/hk_datasets_manifest.json). Синтетика в прогоне не используется: все цифры ниже получены на опубликованных файлах.
+Повторяет прогон скрипт [check_hk_datasets.py](../../scripts/check_hk_datasets.py), эталонные типы лежат в манифесте [hk_datasets_manifest.json](../../eval/hk_datasets_manifest.json). Синтетика в прогоне не используется: все цифры ниже получены на опубликованных файлах.
 
 ## Данные
 
@@ -183,7 +183,7 @@
 | 5 | GitVerse рвёт соединение при долгой загрузке, и скачивание падало | Скачивание 1,5 ГБ | Исправлено в загрузчике скрипта: повтор фрагмента |
 | 6 | Связи внутри таблицы (возврат → исходная продажа, обращение → предыдущее) не находятся | 01, 02 | Исправлено в [#204](https://github.com/Polozhentsev-Ivan/DjedAI/issues/204) (`feat(data): find references to a key of the same table`). Повторный прогон `--tables 01,02 --stages download,reference,csv`: обе самоссылки найдены, N:1, overlap 1,0, уверенность high; в промпте `FK → 01_prodazhi.kod_pozitsii` и `FK → 02_tekhnicheskaya_podderzhka.kod_obrascheniya`. Предупреждение INNER JOIN: остаётся 5 819 из 500 000 строк в 01 и 199 439 в 02 (пустая ссылка) |
 | 7 | Тип `category` и роль `dimension` не назначаются (спецификация §B1-2 п. 4). Текстовые коды остаются `text`, а не `id` | 61 из 88 текстовых колонок с ≤ 50 значениями | Исправлено в [#205](https://github.com/Polozhentsev-Ivan/DjedAI/issues/205) (`fix(data): type low-cardinality text as category and text codes as id`, пороги `CATEGORY_MAX_DISTINCT=50`, `CATEGORY_MAX_RATIO=0.5`). Повторный прогон `--stages download,reference,csv` по всем файлам: из 88 текстовых колонок 60 стали `category`/`dimension`, 23 кода — `id` (всего `id` 25), 5 остались `text`. «Канал продажи», «Статус», «Город» — `dimension`, «Код заказа» — `id`. Связей по-прежнему 2 (самоссылки #204); каталог в промпте вырос с 12 037 до 13 148 символов |
-| 8 | При нехватке места во временном каталоге загрузка отвечает `400` без причины, временные файлы держатся до перезапуска процесса | `POST /api/datasets/upload` при `/tmp` 1,6 ГБ на tmpfs | Исправлено в [#206](https://github.com/Polozhentsev-Ivan/DjedAI/issues/206) (`fix(backend): close every multipart temp file and report lack of space`). Причина: при ENOSPC Starlette закрывал временные файлы одним циклом, и ошибка flush первого файла оставляла остальные открытыми. Теперь каждый файл закрывается отдельно, ответ — `507 insufficient_storage` «Недостаточно места для загрузки…»; то же при нехватке места в `raw/`. Проверено тестами с подменой временных файлов на ENOSPC, повторный прогон на tmpfs не выполнялся. Требование к месту и `TMPDIR` — в [infra/README.md](../infra/README.md#место-на-диске-для-загрузки-csv) |
+| 8 | При нехватке места во временном каталоге загрузка отвечает `400` без причины, временные файлы держатся до перезапуска процесса | `POST /api/datasets/upload` при `/tmp` 1,6 ГБ на tmpfs | Исправлено в [#206](https://github.com/Polozhentsev-Ivan/DjedAI/issues/206) (`fix(backend): close every multipart temp file and report lack of space`). Причина: при ENOSPC Starlette закрывал временные файлы одним циклом, и ошибка flush первого файла оставляла остальные открытыми. Теперь каждый файл закрывается отдельно, ответ — `507 insufficient_storage` «Недостаточно места для загрузки…»; то же при нехватке места в `raw/`. Проверено тестами с подменой временных файлов на ENOSPC, повторный прогон на tmpfs не выполнялся. Требование к месту и `TMPDIR` — в [infra/README.md](../../infra/README.md#место-на-диске-для-загрузки-csv) |
 
 Мелкие наблюдения без отдельной задачи:
 - «Скидка, %» хранит целые проценты (28 значит 28 %, как в README) и типизируется как `integer`, а не `percent`;
@@ -357,7 +357,7 @@ uv run --locked python <dir>/scripts/check_hk_datasets.py --cache artifacts/hk-d
 
 Загрузка через API:
 1. `uv run --locked alembic upgrade head`;
-2. `uv run --locked uvicorn --app-dir src djedai.backend.app:app`, переменная `TMPDIR` должна указывать на раздел, где свободно не меньше 1,5 ГБ, а всего на диске нужно около 3,1 ГБ ([infra/README.md](../infra/README.md#место-на-диске-для-загрузки-csv));
+2. `uv run --locked uvicorn --app-dir src djedai.backend.app:app`, переменная `TMPDIR` должна указывать на раздел, где свободно не меньше 1,5 ГБ, а всего на диске нужно около 3,1 ГБ ([infra/README.md](../../infra/README.md#место-на-диске-для-загрузки-csv));
 3. регистрация и вход через `/api/auth/register` и `/api/auth/login`;
 4. `POST /api/datasets/upload` с девятью полями `files`;
 5. опрос `GET /api/datasets/{id}` до статуса `ready`.
