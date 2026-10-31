@@ -46,7 +46,7 @@ jobs:
     needs: repository
     if: needs.repository.outputs.python-enabled == 'true' && needs.repository.outputs.run-tests == 'true'
     runs-on: [self-hosted, linux, x64, djedai-ci]
-    # Coverage and live database checks take about 14 minutes on this local host.
+    # Include coverage and real PostgreSQL/ClickHouse checks on the self-hosted runner.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,7 +76,8 @@ jobs:
           uv run --locked python scripts/local-runner-maintenance.test.py
           uv run --locked python scripts/test-compose.test.py
       - name: Test Python application
-        run: uv run --locked pytest --strict-markers -m "not integration and not llm" --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        # Bound concurrency on the shared host; keep module fixtures in one worker.
+        run: uv run --locked pytest --strict-markers -m "not integration and not llm" -n 2 --dist loadfile --durations=30 --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Test auth migrations and persistence
         run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py tests/integration/test_chat_turn_migrations.py tests/integration/test_memory_metric_migrations.py
       - name: Test CP1 CSV and runtime integration
