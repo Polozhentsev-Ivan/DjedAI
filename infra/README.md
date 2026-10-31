@@ -21,7 +21,7 @@ docker compose up --build -d --wait
 | `frontend` | Отдельный Node-этап с `npm ci` и `npm run build`; готовую статику раздаёт nginx. `/api/` проксируется в backend без изменения пути. |
 | `app-data` | Именованный том `/app/var`: app.db, CSV, DuckDB, каталог и результаты Parquet. Сохраняется после `restart`/`down`. |
 
-App-db — файл SQLite в том же backend; отдельный сервер БД не требуется. Модель — согласованный внешний DeepInfra/Qwen3.6-35B-A3B. Демо-БД PostgreSQL/ClickHouse — в профиле `demo` ([ниже](#демо-бд-postgresql-и-clickhouse)); итоговая приёмка конфигурации относится к #99.
+App-db — файл SQLite в том же backend; отдельный сервер БД не требуется. Модель — согласованный внешний DeepInfra/Qwen3.6-27B. Демо-БД PostgreSQL/ClickHouse — в профиле `demo` ([ниже](#демо-бд-postgresql-и-clickhouse)); итоговая приёмка конфигурации относится к #99.
 
 Compose задаёт `CP1_LOCAL_MODE=false`: bootstrap прежнего CP1-владельца пропускается, все ресурсные API требуют Bearer-сессии. Старые данные в томе сохраняются за прежним владельцем. В Compose все пути данных закреплены внутри `/app/var`; изменения локальных `APP_DATABASE_URL`/`*_DATA_DIR` из `.env` на них не влияют. PostgreSQL DSN шифруется серверным `SOURCE_ENCRYPTION_KEY` из `.env`; сохраняйте ключ отдельно от резервной копии тома, иначе подключения нельзя восстановить. Формы регистрации и входа доступны в UI; автоматический smoke использует API-вход и переменные `DJEDAI_SMOKE_USERNAME`/`DJEDAI_SMOKE_PASSWORD`.
 

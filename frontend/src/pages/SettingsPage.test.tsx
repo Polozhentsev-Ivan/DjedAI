@@ -9,8 +9,8 @@ const api = (path: string) => `http://localhost:3000/api${path}`;
 
 const serverSettings: Schemas['ModelSettingsRead'] = {
   base_url: 'https://api.deepinfra.com/v1/openai',
-  model_name: 'Qwen/Qwen3.6-35B-A3B',
-  allowed_models: ['Qwen/Qwen3.6-35B-A3B', 'Qwen/Qwen3-235B-A22B'],
+  model_name: 'Qwen/Qwen3.6-27B',
+  allowed_models: ['Qwen/Qwen3.6-27B', 'Qwen/Qwen3-235B-A22B'],
   api_key_set: true,
   api_key_from_ui: false,
   editable_connection: false,

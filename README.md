@@ -38,8 +38,8 @@ MODEL_BASE_URL=http://host.docker.internal:8001/v1
 MODEL_NAME=Qwen/Qwen3.6-27B
 MODEL_API_KEY=local-no-auth
 MODEL_SETTINGS_FROM_UI=false
-MODEL_TIMEOUT_SECONDS=180
-AGENT_TURN_TIMEOUT_SECONDS=400
+MODEL_TIMEOUT_SECONDS=120
+AGENT_TURN_TIMEOUT_SECONDS=120
 MODEL_REASONING_SUPPORTED=false
 MODEL_REASONING_UNDERSTAND=provider_default
 MODEL_REASONING_PLAN=provider_default
@@ -47,6 +47,10 @@ MODEL_REASONING_VISUALIZE=provider_default
 MODEL_REASONING_COMPOSE=provider_default
 MODEL_REASONING_VERIFY=provider_default
 ```
+
+Для итоговых прогонов и видео общий бюджет ответа — 120 с, включая стадии,
+инструменты и повторы. Каждая HTTP-попытка дополнительно ограничена остатком этого
+бюджета; увеличение таймаутов не подтверждает выполнение требования организаторов.
 
 Адрес, порт и `MODEL_NAME` должны совпадать с сервером организаторов; указанное
 имя модели — пример. `local-no-auth` подходит только серверу без авторизации:
@@ -73,3 +77,7 @@ docker compose -f compose.yaml -f infra/compose.model-host.yaml up -d --build --
 <a id="запуск-cp1-через-compose"></a>
 
 Запуск из исходников через Docker Compose описан в [руководстве установки](docs/administrator/local-build.md).
+
+## Лицензия
+
+[MIT](LICENSE). Лицензии использованных компонентов — в [отдельной сводке](docs/developer/licenses.md).

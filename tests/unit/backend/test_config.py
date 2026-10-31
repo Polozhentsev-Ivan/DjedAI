@@ -50,7 +50,7 @@ def test_settings_empty_env_values(monkeypatch) -> None:
     assert settings.tool_timeout_seconds == 30.0
     assert settings.app_database_url == "sqlite:///./var/app.db"
     assert settings.model_base_url == "https://api.deepinfra.com/v1/openai"
-    assert settings.model_name == "Qwen/Qwen3.6-35B-A3B"
+    assert settings.model_name == "Qwen/Qwen3.6-27B"
     assert settings.model_revision is None
     assert settings.session_secret == "dev-session-secret-change-in-production"
 

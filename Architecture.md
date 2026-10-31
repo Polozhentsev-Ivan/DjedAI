@@ -43,8 +43,8 @@ flowchart TD
 Точные версии зависимостей закреплены в [uv.lock](uv.lock) и
 [frontend/package-lock.json](frontend/package-lock.json), образы — в
 [compose.yaml](compose.yaml) и Dockerfile в [infra](infra/).
-Прогоны из [Criteria.md](Criteria.md) выполнены на DeepInfra `Qwen/Qwen3.6-27B`, а `.env.example`
-по умолчанию указывает `Qwen/Qwen3.6-35B-A3B`; параметры и ограничения измерений приведены в [конфигурации](docs/administrator/configuration.md#профиль-организаторов-pl-9).
+Прогоны из [Criteria.md](Criteria.md) выполнены на DeepInfra `Qwen/Qwen3.6-27B`, эта же модель
+указана по умолчанию в `.env.example`; параметры и ограничения измерений приведены в [конфигурации](docs/administrator/configuration.md#профиль-организаторов-pl-9).
 Compose не разворачивает сервер модели. Для сервера организаторов задаются URL,
 ID модели и ключ; совместимость этого конкретного сервера ещё нужно подтвердить.
 

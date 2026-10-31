@@ -517,9 +517,10 @@ def test_check_has_a_total_deadline_and_closes_the_slow_response(
         model = BIModelClient("fixture-key", endpoint.base_url, "fixture", max_retries=3)
         monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", lambda _: model)
         monkeypatch.setattr("djedai.backend.model_settings.CHECK_TIMEOUT_SECONDS", 0.25)
+        service = model_settings_for(make_app())
         started = time.monotonic()
         try:
-            result = model_settings_for(make_app()).check(ModelSettingsUpdate())
+            result = service.check(ModelSettingsUpdate())
             elapsed = time.monotonic() - started
             assert not result.ok and result.code == "unreachable"
             assert elapsed < 1.25
