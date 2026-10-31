@@ -94,9 +94,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     cfg = app.state.settings
 
-    def description_context() -> tuple[ModelClient, bool]:
+    def description_context(owner_id: str) -> tuple[ModelClient, bool]:
         # The permission and the recipient must come from the same UI snapshot.
-        override = model_settings_for(app).override()
+        override = model_settings_for(app, owner_id).override()
         return get_agent_client(override), data_sharing_allowed(override)
 
     app.state.dataset_service = DatasetService(
@@ -243,13 +243,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             413: "payload_too_large",
             429: "rate_limit",
             503: "unavailable",
+            507: "insufficient_storage",
         }
         payload = ErrorResponse(
             error=ToolError(
                 code=getattr(error, "code", None)
                 or codes.get(error.status_code, f"http_{error.status_code}"),
                 message=str(error.detail)
-                if error.status_code < 500
+                if error.status_code < 500 or error.status_code == 507
                 else "Сервис временно недоступен",
             )
         )

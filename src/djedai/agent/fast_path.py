@@ -26,12 +26,12 @@ _TABLE_PREFIX = re.compile(
     r"(?:таблица|таблице|таблицы|таблицу|table)\s+",
     re.IGNORECASE,
 )
-_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "`": "`"}
+_QUOTE_PAIRS = {'"': '"', "'": "'", "«": "»", "“": "”", "‘": "’", "`": "`"}
 
 _COUNT_PREFIX = (
     r"(?:сколько(?:\s+всего)?|какое\s+количество|каково\s+количество|число)\s+"
     r"(?:строк|записей)"
-    r"|how\s+many\s+(?:rows|records)"
+    r"|how\s+many\s+(?:rows|records)(?:\s+are)?"
     r"|(?:what\s+is\s+)?(?:the\s+)?(?:row\s+count|number\s+of\s+rows)"
 )
 _COUNT_RE = re.compile(
@@ -110,38 +110,72 @@ def _normalize(text: str) -> str:
     return text.strip().casefold()
 
 
-def _clean_table_token(token: str | None) -> str:
-    """Убирает кавычки и слова «таблица/table», не меняя само имя."""
-    if not token:
-        return ""
+def _strip_quotes(token: str) -> tuple[str, bool]:
+    """Убирает обрамляющие кавычки и сообщает, были ли они."""
     cleaned = token.strip().strip("?!. ")
     if len(cleaned) >= 2:
         opener = cleaned[0]
         closer = _QUOTE_PAIRS.get(opener)
         if closer is not None and cleaned[-1] == closer:
-            cleaned = cleaned[1:-1].strip()
-    if _GENERIC_TABLE.fullmatch(cleaned):
-        return ""
+            return cleaned[1:-1].strip(), True
+    return cleaned, False
+
+
+def _matching_table_ids(catalog: DatasetCatalog, name: str) -> list[str]:
+    folded = name.casefold()
+    return [
+        table.table_id
+        for table in catalog.tables
+        if table.table_id.casefold() == folded or table.original_name.casefold() == folded
+    ]
+
+
+def _without_table_prefix(name: str) -> str:
     previous = None
-    while cleaned != previous:
-        previous = cleaned
-        cleaned = _TABLE_PREFIX.sub("", cleaned).strip()
-    return cleaned
+    while name != previous:
+        previous = name
+        name = _TABLE_PREFIX.sub("", name).strip()
+    return name
+
+
+def _only_table_id(catalog: DatasetCatalog) -> str | None:
+    """Без имени таблицы выбор допустим только при единственной таблице."""
+    return catalog.tables[0].table_id if len(catalog.tables) == 1 else None
 
 
 def _resolve_table(catalog: DatasetCatalog, token: str | None) -> str | None:
-    """Разрешает имя таблицы по table_id или original_name, только если оно одно."""
-    cleaned = _clean_table_token(token)
-    if cleaned:
-        folded = cleaned.casefold()
-        matches = [
-            table
-            for table in catalog.tables
-            if table.table_id.casefold() == folded or table.original_name.casefold() == folded
-        ]
-        return matches[0].table_id if len(matches) == 1 else None
-    # Без имени таблицы выбор допустим только при единственной таблице.
-    return catalog.tables[0].table_id if len(catalog.tables) == 1 else None
+    """Разрешает имя таблицы по table_id или original_name, только если оно одно.
+
+    Сначала проверяется точное имя из вопроса. Это важно, когда само имя
+    начинается с «table » или «таблица »: снимать такой префикс можно только
+    как запасной вариант. Имя в кавычках считается буквальным и не очищается.
+    """
+    if not token:
+        return _only_table_id(catalog)
+
+    cleaned, quoted = _strip_quotes(token)
+    if quoted:
+        candidates = [cleaned] if cleaned else []
+    else:
+        if _GENERIC_TABLE.fullmatch(cleaned):
+            return _only_table_id(catalog)
+        candidates = [cleaned]
+        stripped = _without_table_prefix(cleaned)
+        if stripped and stripped != cleaned:
+            candidates.append(stripped)
+            # Префикс может стоять вне кавычек: table "orders.csv".
+            unquoted, inner_quoted = _strip_quotes(stripped)
+            if inner_quoted and unquoted and unquoted != stripped:
+                candidates.append(unquoted)
+
+    for candidate in candidates:
+        matches = _matching_table_ids(catalog, candidate)
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            # Неоднозначное точное имя нельзя «уточнять» ещё одним разбором.
+            return None
+    return None
 
 
 def _structure_match(text: str) -> str | None:

@@ -85,6 +85,7 @@ const resultData = {
     rows: [['Электроника', 4100000], ['Бытовая техника', 2600000], ['Одежда', 1900000], ['Дом и сад', 1400000], ['Спорт', 900000]],
     row_count: 5, truncated: false,
   },
+  r_top: { columns: [{ name: 'month', type: 'date', label: 'Дата оплаты' }, { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' }], rows: [['2026-07-01', 4200000], ['2026-08-01', 3900000], ['2026-09-01', 3600000]], row_count: 3, truncated: false },
   r_kpi: { columns: [
     { name: 'revenue', type: 'money', label: 'Сумма с НДС, руб' },
     { name: 'target', type: 'money', label: 'Цель квартала' },
@@ -110,6 +111,17 @@ ORDER  BY month;`,
     started_at: '2026-10-18T14:05:00Z', finished_at: '2026-10-18T14:05:01Z',
     freshness: { state: 'fresh', profiled_at: '2026-10-18T13:53:00Z', checked_at: null, changes: [], reason: null },
   },
+};
+
+/** Second step of a chain: computed from r_rev, so a widget made from it keeps a two-step recipe. */
+const topMonthsResult: ToolResultMeta = {
+  data: resultData.r_top,
+  result_id: 'r_top', tool: 'top_n', params: { source_result_id: 'r_rev', by: 'revenue', n: 3 }, source_result_id: 'r_rev', status: 'ok',
+  sql: `SELECT month, revenue
+FROM   source_result
+ORDER  BY revenue DESC
+LIMIT  3;`,
+  facts: [],
 };
 
 const regionsResult: ToolResultMeta = {
@@ -206,7 +218,7 @@ export function createDb(): MockDb {
         error: { code: 'empty_file', message: 'Не удалось построить профиль таблицы', suggestion: 'Файл пуст или повреждён (marketing.csv). Проверьте файл и загрузите его заново.' },
       },
     ],
-    results: { r_rev: revenueResult, r_reg: regionsResult, r_cat: categoriesResult, r_kpi: kpiResult },
+    results: { r_rev: revenueResult, r_top: topMonthsResult, r_reg: regionsResult, r_cat: categoriesResult, r_kpi: kpiResult },
     resultData,
     dashboards: [quarterly('d_q', 'Квартальная статистика продаж'), quarterly('d_m', 'Маркетинг Q3'), quarterly('d_r', 'Регионы')],
     chats: [

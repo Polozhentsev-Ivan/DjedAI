@@ -8,6 +8,10 @@
 Значения читаются на каждый ход, поэтому изменение действует со следующего хода без
 перезапуска. Ключ хранится зашифрованным ``SOURCE_ENCRYPTION_KEY`` и не попадает
 ни в ответы, ни в логи.
+
+Оператор может назначить отдельный ключ в ``user_model_keys``. Он имеет приоритет
+для владельца, привязан шифрованием к его ID и применяется только к адресу из .env.
+Публичный API не позволяет назначать, получать или удалять такие ключи.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from djedai.agent.transport import attempt_lease
 from djedai.backend.config import Settings
 from djedai.backend.db.models import ModelSettingsModel
 from djedai.backend.source_secrets import SourceSecretError, SourceSecrets
+from djedai.backend.user_model_keys import UserModelKeys
 from djedai.contracts.settings import (
     ModelCheckCode,
     ModelCheckResult,
@@ -65,15 +70,21 @@ class _Stored:
 
 
 class ModelSettingsService:
-    def __init__(self, session_factory: sessionmaker[Session], settings: Settings) -> None:
+    def __init__(
+        self, session_factory: sessionmaker[Session], settings: Settings, user_id: str | None = None
+    ) -> None:
         self.session_factory = session_factory
         self.settings = settings
         key = settings.source_encryption_key
         self.secrets = SourceSecrets(key.get_secret_value() if key else None)
+        self.user_id = user_id
+        # One immutable credential snapshot per request/job. Never combine a newly
+        # assigned operator key with a URL accepted before that assignment.
+        self.assigned_ciphertext = UserModelKeys(session_factory, self.secrets).ciphertext(user_id)
 
     @property
     def editable_connection(self) -> bool:
-        return self.settings.model_settings_from_ui
+        return self.settings.model_settings_from_ui and self.assigned_ciphertext is None
 
     def _stored(self) -> _Stored:
         """Только те сохранённые значения, которые конфигурация разрешает применить."""
@@ -101,6 +112,11 @@ class ModelSettingsService:
             if stored.api_key_ciphertext
             else None
         )
+        if self.assigned_ciphertext is not None:
+            assert self.user_id is not None
+            api_key = self.secrets.decrypt_user_model_key(self.user_id, self.assigned_ciphertext)
+            # Operator credentials may only reach the operator's configured endpoint.
+            return ModelValues(env_model_values().base_url, stored.model_name, api_key)
         values = ModelValues(stored.base_url, stored.model_name, api_key)
         return None if values == ModelValues() else values
 
@@ -129,7 +145,7 @@ class ModelSettingsService:
             base_url=current.base_url,
             model_name=current.name,
             allowed_models=list(self.settings.model_allowed_names),
-            api_key_set=bool(stored.api_key_ciphertext or env.api_key),
+            api_key_set=bool(self.assigned_ciphertext or stored.api_key_ciphertext or env.api_key),
             api_key_from_ui=bool(stored.api_key_ciphertext),
             editable_connection=self.editable_connection,
             matches_env=current.same_endpoint(env),
@@ -193,7 +209,15 @@ class ModelSettingsService:
         values = self._validated(change)
         stored = self._stored()
         saved_key = None
-        if values.api_key is None and stored.api_key_ciphertext:
+        if self.assigned_ciphertext is not None:
+            try:
+                assert self.user_id is not None
+                saved_key = self.secrets.decrypt_user_model_key(
+                    self.user_id, self.assigned_ciphertext
+                )
+            except SourceSecretError:
+                return _check_result("not_configured")
+        elif values.api_key is None and stored.api_key_ciphertext:
             try:
                 saved_key = self.secrets.decrypt_model_key(stored.api_key_ciphertext)
             except SourceSecretError:
@@ -245,9 +269,9 @@ class ModelSettingsService:
         return _check_result("ok")
 
 
-def model_settings_for(app: FastAPI) -> ModelSettingsService:
+def model_settings_for(app: FastAPI, user_id: str | None = None) -> ModelSettingsService:
     """Сервис поверх текущих хранилища и настроек приложения; создание дешёвое."""
-    return ModelSettingsService(app.state.session_factory, app.state.settings)
+    return ModelSettingsService(app.state.session_factory, app.state.settings, user_id)
 
 
 def _check_result(code: ModelCheckCode) -> ModelCheckResult:

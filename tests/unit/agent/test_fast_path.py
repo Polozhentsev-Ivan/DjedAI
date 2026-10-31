@@ -28,6 +28,23 @@ def one_table(catalog: DatasetCatalog) -> DatasetCatalog:
     return catalog.model_copy(update={"tables": [catalog.tables[0]], "relations": []})
 
 
+@pytest.fixture
+def prefixed_table_names(catalog: DatasetCatalog) -> DatasetCatalog:
+    """`orders.csv` and `table orders.csv` must stay distinct."""
+    base = catalog.tables[0]
+    plain = base.model_copy(
+        update={"table_id": "orders.csv", "original_name": "orders.csv", "row_count": 2}
+    )
+    prefixed = base.model_copy(
+        update={
+            "table_id": "table orders.csv",
+            "original_name": "table orders.csv",
+            "row_count": 5,
+        }
+    )
+    return catalog.model_copy(update={"tables": [plain, prefixed], "relations": []})
+
+
 @pytest.mark.parametrize(
     ("question", "kind", "table_id"),
     [
@@ -82,6 +99,43 @@ def test_supported_queries_are_recognized(catalog, question, kind, table_id):
 )
 def test_negative_questions_stay_on_the_general_route(catalog, question):
     assert classify_fast_query(question, catalog) is None
+
+
+@pytest.mark.parametrize("opening,closing", [("'", "'"), ("«", "»"), ("“", "”"), ("‘", "’")])
+def test_quoted_table_name_keeps_its_table_prefix(prefixed_table_names, opening, closing):
+    token = f"{opening}table orders.csv{closing}"
+
+    count = classify_fast_query(f"How many rows are in the table {token}?", prefixed_table_names)
+    structure = classify_fast_query(f"Show structure of table {token}", prefixed_table_names)
+
+    assert (count.kind, count.table_id) == ("row_count", "table orders.csv")
+    assert (structure.kind, structure.table_id) == ("structure", "table orders.csv")
+
+
+def test_unquoted_exact_name_wins_before_table_prefix_fallback(prefixed_table_names):
+    path = classify_fast_query("Сколько строк в таблице table orders.csv?", prefixed_table_names)
+
+    assert (path.kind, path.table_id) == ("row_count", "table orders.csv")
+
+
+def test_unquoted_table_prefix_fallback_stays_available(prefixed_table_names):
+    plain_only = prefixed_table_names.model_copy(
+        update={"tables": [prefixed_table_names.tables[0]], "relations": []}
+    )
+
+    path = classify_fast_query("Покажи структуру таблицы table orders.csv", plain_only)
+
+    assert (path.kind, path.table_id) == ("structure", "orders.csv")
+
+
+def test_quoted_name_is_literal_and_does_not_fall_back_to_prefix_stripping(
+    prefixed_table_names,
+):
+    plain_only = prefixed_table_names.model_copy(
+        update={"tables": [prefixed_table_names.tables[0]], "relations": []}
+    )
+
+    assert classify_fast_query("Сколько строк в таблице ‘table orders.csv’?", plain_only) is None
 
 
 def test_single_table_allows_omitting_its_name(one_table):

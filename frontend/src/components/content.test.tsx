@@ -7,7 +7,7 @@ import { HowCalculated } from './HowCalculated';
 import { Markdown } from './Markdown';
 import { WidgetCard } from './WidgetCard';
 
-const how = { tool: "time_aggregate(table='orders')", columns: [{ label: 'Сумма', name: 'amount' }], sql: 'SELECT 1', stats: '120 000 строк' };
+const how = { tool: 'time_aggregate', params: [{ name: 'table', value: "'orders'" }], columns: [{ label: 'Сумма', name: 'amount' }], sql: 'SELECT 1', stats: '120 000 строк' };
 
 describe('DataTable', () => {
   it('renders every cell type', async () => {
@@ -66,7 +66,15 @@ describe('HowCalculated', () => {
   it('shows the panel variant without a toggle', () => {
     render(<HowCalculated variant="panel" {...how} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    expect(screen.getByText("time_aggregate(table='orders')")).toBeInTheDocument();
+    expect(screen.getByText('time_aggregate')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Параметры' })).toHaveTextContent("table = 'orders'");
+    expect(screen.queryByText('Источник результата')).not.toBeInTheDocument();
+  });
+
+  it('links the source result of a chained calculation', () => {
+    render(<HowCalculated variant="panel" {...how} origin="r_parent" />);
+    expect(screen.getByText('Источник результата')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'r_parent' })).toHaveAttribute('href', 'http://localhost:3000/api/results/r_parent');
   });
 });
 

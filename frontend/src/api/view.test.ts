@@ -1,8 +1,8 @@
 import { createDb, ordersCatalog } from '@/mocks/db';
 import {
-  calculation, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
+  calculation, callParams, catalogSummary, columnNote, countOrDash, dashboardMeta, datasetMeta, formatMeasure, humanFormat,
   journal, kpiView, limitations, missingCell, needsRefresh, readSource, relationGraph, relationViews, revisionSummary, sourceLabel,
-  tableMeta, toolCall, typeLabel,
+  tableMeta, toolCall, typeLabel, widgetRecipe,
 } from './view';
 
 // Intl separates digit groups with no-break spaces; \s matches them.
@@ -209,9 +209,29 @@ describe('result views', () => {
   it('writes the tool call and calculation', () => {
     expect(toolCall('top_n', { table: 'orders', n: 5 })).toBe("top_n(table='orders', n=5)");
     const how = calculation(db.results.r_rev!);
-    expect(how.tool).toBe("time_aggregate(table='orders', freq='month')");
+    expect(how.tool).toBe('time_aggregate');
+    expect(how.params).toEqual([{ name: 'table', value: "'orders'" }, { name: 'freq', value: "'month'" }]);
+    expect(how.origin).toBeUndefined();
     expect(how.columns).toEqual([{ label: 'Дата оплаты', name: 'month' }, { label: 'Сумма с НДС, руб', name: 'revenue' }]);
     expect(calculation({ ...db.results.r_rev!, sql: null, data: null }).sql).toBe('—');
+  });
+
+  it('shows the parent result as the source, not as a parameter', () => {
+    const derived = { ...db.results.r_rev!, tool: 'top_n', params: { source_result_id: 'r_rev', n: 3, by: ['revenue'] }, source_result_id: 'r_rev' };
+    const how = calculation(derived);
+    expect(how.origin).toBe('r_rev');
+    expect(how.params).toEqual([{ name: 'n', value: '3' }, { name: 'by', value: '["revenue"]' }]);
+    expect(callParams({})).toEqual([]);
+  });
+
+  it('lists the calls a widget repeats on refresh', () => {
+    expect(widgetRecipe({ tool_call: { tool: 'top_n', params: { n: 5 } } })).toEqual(['top_n(n=5)']);
+    const recipe = { output_step_id: 'step_2', steps: [
+      { step_id: 'step_1', call: { tool: 'run_sql', params: { sql: 'SELECT 1' } } },
+      { step_id: 'step_2', call: { tool: 'top_n' }, source_step_id: 'step_1' },
+    ] };
+    expect(widgetRecipe({ recipe })).toEqual(["run_sql(sql='SELECT 1')", 'top_n()']);
+    expect(widgetRecipe({})).toEqual([]);
   });
 
   it('lists data limitations of a result', () => {

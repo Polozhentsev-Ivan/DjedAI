@@ -15,7 +15,7 @@ import httpx
 import openai
 import pytest
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -113,6 +113,112 @@ def test_env_only_keeps_previous_behaviour(make_app: AppFactory) -> None:
     assert runtime.client.model == ENV_MODEL
     assert runtime.client.reasoning_for("plan") == "high"
     assert runtime.tariff is not None and runtime.tariff.input_usd == Decimal("0.1")
+
+
+def _assign(app: FastAPI, user_id: str, key: str | None) -> None:
+    from djedai.backend.user_model_keys import UserModelKeys
+
+    service = model_settings_for(app)
+    UserModelKeys(app.state.session_factory, service.secrets).assign(user_id, key)
+
+
+def test_operator_keys_are_isolated_encrypted_and_fall_back_only_when_removed(
+    make_app: AppFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    from djedai.backend.db.models import UserModelKeyModel
+    from djedai.backend.source_secrets import SourceSecretError
+
+    app = make_app()
+    with app.state.session_factory() as db:
+        get_or_create_user(db, "u_second", "second")
+        db.commit()
+    _assign(app, "u_admin", UI_KEY)
+    _assign(app, "u_second", "second-key-marker")
+    with app.state.session_factory() as db:
+        first = db.get(UserModelKeyModel, "u_admin")
+        second = db.get(UserModelKeyModel, "u_second")
+        assert UI_KEY not in first.api_key_ciphertext
+        # Copying another user's ciphertext must fail even under the same server key.
+        first.api_key_ciphertext = second.api_key_ciphertext
+        db.commit()
+    with pytest.raises(SourceSecretError):
+        model_settings_for(app, "u_admin").override()
+    app.state.dataset_service = SimpleNamespace(get_context=None)
+    assert get_agent_runtime(Request({"type": "http", "app": app}), "u_admin").unavailable
+    _assign(app, "u_admin", UI_KEY)
+    for user, expected in [("u_admin", UI_KEY), ("u_second", "second-key-marker")]:
+        runtime = get_agent_runtime(Request({"type": "http", "app": app}), user)
+        assert runtime.client.client.api_key == expected
+        runtime.client.client.close()
+    _assign(app, "u_admin", None)
+    runtime = get_agent_runtime(Request({"type": "http", "app": app}), "u_admin")
+    assert runtime.client.client.api_key == ENV_KEY
+    runtime.client.client.close()
+    assert UI_KEY not in caplog.text and "second-key-marker" not in caplog.text
+
+
+def test_assigned_key_never_uses_a_global_user_supplied_endpoint(make_app: AppFactory) -> None:
+    app = make_app(model_settings_from_ui=True)
+    _update(app, base_url="https://other.example/v1", api_key="global-ui-key")
+    _assign(app, "u_admin", UI_KEY)
+    service = model_settings_for(app, "u_admin")
+    assert service.override().base_url == ENV_URL
+    assert service.override().api_key == UI_KEY
+    assert service.view().editable_connection is False
+    with pytest.raises(HTTPException) as rejected:
+        service.update(ModelSettingsUpdate(base_url="https://third.example/v1"), "u_admin")
+    assert rejected.value.status_code == 403
+
+
+def test_http_model_checks_use_authenticated_users_assigned_keys(
+    api: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = api()
+    with client.app.state.session_factory() as db:
+        second_user = get_or_create_user(db, "u_second", "second")
+        second_user.password_hash = PASSWORD_HASH
+        db.commit()
+        second_token = create_session(db, "u_second")
+    _assign(client.app, "u_admin", UI_KEY)
+    _assign(client.app, "u_second", "second-key-marker")
+    seen = []
+
+    def build(values):
+        seen.append(values)
+        return _FailingClient(None)
+
+    monkeypatch.setattr("djedai.backend.model_settings.get_agent_client", build)
+    first = client.post("/api/settings/model/check", json={})
+    second = client.post(
+        "/api/settings/model/check", json={}, headers={"Authorization": f"Bearer {second_token}"}
+    )
+    assert first.json()["ok"] and second.json()["ok"]
+    assert [value.api_key for value in seen] == [UI_KEY, "second-key-marker"]
+    for url in ("/api/settings/model", "/api/auth/me"):
+        assert UI_KEY not in client.get(url).text
+    assert client.put("/api/settings/model", json={"api_key": "replace"}).status_code == 403
+    assert client.put("/api/settings/model", json={"user_id": "u_second"}).status_code == 422
+
+
+def test_catalog_description_job_uses_its_owner_key(
+    api: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    used = []
+
+    def describe(database, catalog, model, **kwargs):
+        used.append(model.client.api_key)
+        model.client.close()
+        return catalog
+
+    monkeypatch.setattr("djedai.backend.dataset_service.describe_dataset", describe)
+    client = api(catalog_descriptions=True, datasets_data_dir=str(tmp_path / "catalogs"))
+    _assign(client.app, "u_admin", UI_KEY)
+    upload = client.post(
+        "/api/datasets/upload", files={"files": ("data.csv", b"city,count\nA,5\nB,7\n", "text/csv")}
+    )
+    assert upload.status_code == 202
+    events = client.get(f"/api/datasets/{upload.json()['dataset_id']}/events")
+    assert "event: done" in events.text and used == [UI_KEY]
 
 
 def test_ui_values_apply_to_the_next_turn_without_restart(make_app: AppFactory) -> None:

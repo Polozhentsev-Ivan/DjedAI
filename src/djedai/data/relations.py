@@ -15,6 +15,14 @@
 полностью по меньшему множеству. Поэтому связь без совпадения имён колонок принимается
 только при почти полном покрытии и высоком Jaccard, а ``N:M`` — только с совпадением имён.
 
+Внутри одной таблицы связь — ссылка на её ключ (самоссылка: возврат → исходная продажа,
+обращение → предыдущее обращение). Пара рассматривается, если ровно одна сторона —
+кандидат в первичный ключ, а имя ссылки содержит основу имени ключа и ещё что-то
+(``kod_iskhodnoy_pozitsii`` → ``kod_pozitsii``, ``previous_ticket_id`` → ``ticket_id``):
+без этого плотные ``store_id`` и ``sale_id`` одной таблицы пересекаются полностью.
+Такая связь всегда ``N:1`` к ключу и принимается при почти полном покрытии без условия
+на Jaccard: ссылок обычно намного меньше, чем строк (5 819 возвратов на 500 000 позиций).
+
 Каждая связь проверяется JOIN-ом (``join_impact``): число строк ``from`` до и после
 ``LEFT JOIN``, строки без пары и суммы числовых колонок ``from``. Размножение строк и
 строки без пары понижают ``confidence`` и дают предупреждения для каталога.
@@ -63,7 +71,7 @@ STRONG_OVERLAP = 0.95  # почти полное покрытие: high при �
 MEDIUM_OVERLAP = 0.8
 MIN_JACCARD = 0.5  # без совпадения имён множества значений должны быть близки
 MIN_DISTINCT = 2  # колонка из одного значения не ключ
-KEY_TYPES = ("integer", "text")  # кроме ``id``: такие колонки — кандидаты по имени или ключу
+KEY_TYPES = ("integer", "category", "text")  # кроме ``id``: кандидаты по имени или ключу
 _ID_TOKENS = ("id", "kod")
 
 
@@ -160,7 +168,7 @@ def find_relations(connection: duckdb.DuckDBPyConnection) -> RelationReport:
         keys = _keys(connection, read_profiles(connection))
         relations, pair_warnings = [], []
         for a, b in combinations(keys, 2):
-            if a.table.view_name == b.table.view_name:
+            if a.table.view_name == b.table.view_name and _self_reference(a, b) is None:
                 continue
             if _key_family(a) != _key_family(b):
                 warning = _type_warning(connection, a, b)
@@ -479,6 +487,25 @@ def _intersection(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> in
     ).fetchone()[0]
 
 
+def _self_reference(a: _Key, b: _Key) -> tuple[_Key, _Key] | None:
+    """``(ссылка, ключ)`` для пары колонок одной таблицы, если по именам это самоссылка."""
+    keys = a.table.primary_key_candidates
+    if (a.column.name in keys) == (b.column.name in keys):  # два ключа — не ссылка
+        return None
+    source, target = (b, a) if a.column.name in keys else (a, b)
+    return (source, target) if _self_name_match(source, target) else None
+
+
+def _self_name_match(source: _Key, target: _Key) -> bool:
+    """Имя ссылки — имя ключа с уточнением: ``kod_iskhodnoy_pozitsii`` → ``kod_pozitsii``,
+    ``parent_category_id`` → ``categories.id``."""
+    tokens = set(_stem(source.column.name).split("_")) - {""}
+    stem = _stem(target.column.name)
+    if stem:
+        return set(stem.split("_")) < tokens
+    return len(tokens) > 1 and bool(tokens & _table_stems(target.entity))
+
+
 def _orient(a: _Key, b: _Key) -> tuple[_Key, _Key, str]:
     """``(from, to, кратность)``: ``to`` — уникальная сторона (ключ)."""
     if a.unique != b.unique:
@@ -527,6 +554,13 @@ def _match(connection: duckdb.DuckDBPyConnection, a: _Key, b: _Key) -> tuple | N
     common = _intersection(connection, a, b)
     if not common:
         return None
+    if a.table.view_name == b.table.view_name:  # самоссылка: имена уже сверены
+        source, target = _self_reference(a, b)
+        overlap = common / source.distinct
+        jaccard = common / (a.distinct + b.distinct - common)
+        if overlap < STRONG_OVERLAP:
+            return None
+        return source, target, "N:1", common, overlap, jaccard, True
     source, target, cardinality = _orient(a, b)
     base = source.distinct if cardinality != "N:M" else min(a.distinct, b.distinct)
     overlap = common / base

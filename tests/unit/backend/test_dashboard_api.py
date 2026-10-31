@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1151,11 +1150,11 @@ def test_generated_dashboard_does_not_commit_after_budget_abort(dashboard_env, l
     cancelled = threading.Event()
     budget = ExecutionBudget(0.15 if abort == "timeout" else 5, cancelled.is_set)
     cancel_timer = threading.Timer(0.1, cancelled.set)
-    unlock_timer = threading.Timer(0.65, blocker.rollback)
+    # Срабатывает, только если сохранение ждёт блокировку вместо прерывания по бюджету
+    unlock_timer = threading.Timer(30, blocker.rollback)
     if abort == "cancel":
         cancel_timer.start()
     unlock_timer.start()
-    started = time.monotonic()
     try:
         with factory() as db, pytest.raises(TurnTimeout if abort == "timeout" else TurnCancelled):
             with budget.activate():
@@ -1167,10 +1166,12 @@ def test_generated_dashboard_does_not_commit_after_budget_abort(dashboard_env, l
                     widgets=widgets,
                     source_chat_id="chat_alice",
                 )
-        assert time.monotonic() - started < 0.55
+        assert unlock_timer.is_alive()  # прервалось раньше, чем блокировку отпустили
     finally:
         cancel_timer.cancel()
+        unlock_timer.cancel()
         unlock_timer.join()
+        blocker.rollback()
         blocker.close()
     with factory() as db:
         assert db.query(DashboardModel).count() == 0

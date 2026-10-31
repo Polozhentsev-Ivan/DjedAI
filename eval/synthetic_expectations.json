@@ -128,6 +128,13 @@
         "overlap": 0.012,
         "jaccard": 0.012,
         "description": "Похожие ID без связи: product_id 1..50 целиком входит в sale_id 1..4168, но покрывает лишь 1.2% продаж."
+      },
+      {
+        "from": {"table": "sales", "column": "product_id"},
+        "to": {"table": "sales", "column": "sale_id"},
+        "overlap": 1.0,
+        "jaccard": 0.012,
+        "description": "Не самоссылка: product_id целиком входит в ключ своей таблицы sale_id, но ссылается на товар, а не на продажу (#204)."
       }
     ]
   }

@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { useScenario } from '@/test/server';
+import { createDb } from '@/mocks/db';
+import { createHandlers } from '@/mocks/handlers';
+import { server, useScenario } from '@/test/server';
 import { ApiError } from './client';
 import {
   createQueryClient, useChats, useConnectDatabase, useDashboard, useDashboards, useDataset, useDatasets, useDeleteDataset,
@@ -144,6 +146,40 @@ describe('chat, result and dashboard queries', () => {
     await waitFor(() => { expect(result.current.data?.widgets).toHaveLength(5); });
     act(() => { result.current.mutate({ dataset_id: 'ds_orders', result_id: 'r_rev', chart, title: 'Новый' }); });
     await waitFor(() => { expect(result.current.data?.title).toBe('Новый'); });
+  });
+
+  it('keeps a chained result as a recipe and a single call as a tool call, without temporary ids', async () => {
+    const { wrapper } = setup();
+    const { result } = renderHook(() => useSaveToDashboard(), { wrapper });
+    const chart = { chart_id: 'chart_top', result_id: 'r_top', type: 'bar', title: 'Лучшие месяцы', subtitle: 'Топ-3 по выручке' } as const;
+    act(() => { result.current.mutate({ dataset_id: 'ds_orders', result_id: 'r_top', chart }); });
+    await waitFor(() => { expect(result.current.data?.title).toBe('Лучшие месяцы'); });
+    const [chained] = result.current.data!.widgets;
+    expect(chained).toMatchObject({ caption: 'Топ-3 по выручке', result_id: 'r_top', layout: { x: 0, y: 0, w: 6, h: 4 } });
+    expect(chained?.tool_call).toBeUndefined();
+    expect(chained?.recipe).toEqual({ schema_version: 1, output_step_id: 'step_2', steps: [
+      { step_id: 'step_1', source_step_id: null, call: { tool: 'time_aggregate', params: { table: 'orders', freq: 'month' } } },
+      { step_id: 'step_2', source_step_id: 'step_1', call: { tool: 'top_n', params: { by: 'revenue', n: 3 } } },
+    ] });
+    const id = result.current.data!.dashboard_id;
+    act(() => { result.current.mutate({ dataset_id: 'ds_orders', dashboard_id: id, result_id: 'r_rev', chart: { ...chart, result_id: 'r_rev' } }); });
+    await waitFor(() => { expect(result.current.data?.widgets).toHaveLength(2); });
+    expect(result.current.data?.widgets[1]).toMatchObject({ tool_call: { tool: 'time_aggregate' }, layout: { y: 4 } });
+  });
+
+  it('refuses a missing result, a broken chain and a dashboard of another dataset', async () => {
+    const db = createDb();
+    db.results.r_top = { ...db.results.r_top!, source_result_id: 'r_gone' };
+    server.resetHandlers(...createHandlers({ db, tick: 0 }));
+    const { wrapper } = setup();
+    const { result } = renderHook(() => useSaveToDashboard(), { wrapper });
+    const chart = { chart_id: 'c', result_id: 'r_none', type: 'bar', title: 'График' } as const;
+    act(() => { result.current.mutate({ dataset_id: 'ds_orders', result_id: 'r_none', chart }); });
+    await waitFor(() => { expect(result.current.error?.status).toBe(404); });
+    act(() => { result.current.mutate({ dataset_id: 'ds_orders', result_id: 'r_top', chart: { ...chart, result_id: 'r_top' } }); });
+    await waitFor(() => { expect(result.current.error?.status).toBe(422); });
+    act(() => { result.current.mutate({ dataset_id: 'ds_other', dashboard_id: 'd_q', result_id: 'r_rev', chart: { ...chart, result_id: 'r_rev' } }); });
+    await waitFor(() => { expect(result.current.error?.message).toBe('Дашборд не найден'); });
   });
 
   it('reports a missing dashboard', async () => {

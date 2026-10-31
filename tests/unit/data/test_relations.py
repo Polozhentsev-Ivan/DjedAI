@@ -18,6 +18,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from djedai.config import get_limits
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.data.csv_ingest import load_raw_csv, load_raw_csvs
 from djedai.data.profiler import profile_tables, read_profiles
@@ -141,7 +142,13 @@ def test_synthetic_catalog_shows_relations(con, synthetic):
     assert "- sales.product_id → products.product_id (N:1, уверенность high)" in prompt
 
 
-ROLES = {"id": "id", "date": "time", "datetime": "time", "text": "text"}
+ROLES = {
+    "id": "id",
+    "date": "time",
+    "datetime": "time",
+    "category": "dimension",
+    "text": "text",
+}
 
 
 def catalog_table(profile) -> Table:
@@ -348,6 +355,24 @@ def test_non_key_columns_are_not_compared(con, tmp_path):
         },
     )
     assert report.relations == ()
+
+
+def test_category_key_is_still_compared(con, tmp_path, monkeypatch):
+    # При CATEGORY_MAX_RATIO=1 уникальный справочник из восьми названий — category и
+    # кандидат в PK; связь по нему не должна пропасть из-за смены типа
+    monkeypatch.setenv("CATEGORY_MAX_RATIO", "1")
+    get_limits.cache_clear()
+    regions = [f"Регион {i}" for i in range(8)]
+    try:
+        report = relations_of(
+            con, tmp_path, {"regions": {"region": regions}, "offices": {"region": regions}}
+        )
+        types = {c.semantic_type for p in read_profiles(con) for c in p.columns}
+    finally:
+        get_limits.cache_clear()
+    assert types == {"category"}
+    assert len(report.relations) == 1
+    assert report.relations[0].cardinality == "1:1"
 
 
 def test_relations_are_stored_and_replaced(con, tmp_path):
@@ -621,3 +646,115 @@ def test_key_values_are_read_once_per_key_and_dropped(con, tmp_path):
         "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '_djedai_key_values_%'"
     ).fetchone()[0]
     assert left == 0
+
+
+def test_reference_to_key_of_same_table(con, tmp_path):
+    # #204: возврат ссылается на исходную позицию той же таблицы, как в HK_Datasets 01.
+    codes = [f"P-{i:03}" for i in range(1, 41)]
+    sources = [""] * 30 + codes[:10]
+    amounts = [str(i * 10) for i in range(1, 41)]
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "positions": {
+                "kod_pozitsii": codes,
+                "kod_iskhodnoy_pozitsii": sources,
+                "summa": amounts,
+            }
+        },
+    )
+    referenced = {s for s in sources if s}
+    (relation,) = report.relations
+    assert (relation.from_column, relation.to_column) == ("kod_iskhodnoy_pozitsii", "kod_pozitsii")
+    assert relation.from_table == relation.to_table == "positions"
+    assert (relation.cardinality, relation.confidence) == ("N:1", "high")
+    assert relation.overlap == len(referenced & set(codes)) / len(referenced)
+    assert relation.jaccard == round(len(referenced) / len(set(codes)), 4)
+    impact = relation.impact
+    assert impact.rows_before == impact.rows_after == len(codes)
+    assert (impact.rows_inner, impact.null_key_rows, impact.unmatched_rows) == (
+        len(referenced),
+        sources.count(""),
+        0,
+    )
+    assert report.warnings == (
+        "INNER JOIN positions.kod_iskhodnoy_pozitsii → positions.kod_pozitsii теряет строки "
+        "positions (с пустым ключом 30): остаётся 10 из 40 (75.0% потеряно); суммы меняются: "
+        f"summa {sum(map(int, amounts))} → {sum(int(a) for a in amounts[30:])}",
+    )
+    catalog = DatasetCatalog(
+        dataset_id="ds_positions",
+        name="Позиции",
+        created_at=datetime(2026, 10, 29, tzinfo=UTC),
+        source=DatasetSource(kind="csv_upload"),
+        tables=[catalog_table(profile) for profile in read_profiles(con)],
+        relations=[relation.to_contract()],
+    )
+    prompt = catalog.to_prompt()
+    assert "FK → positions.kod_pozitsii" in prompt
+    assert "- positions.kod_iskhodnoy_pozitsii → positions.kod_pozitsii (N:1" in prompt
+
+
+def test_repeated_reference_to_same_table_does_not_multiply_rows(con, tmp_path):
+    tickets = ids(range(1, 21))
+    previous = [""] * 10 + ["1", "1", "2", "3", "3", "3", "4", "5", "6", "7"]
+    report = relations_of(
+        con, tmp_path, {"tickets": {"ticket_id": tickets, "previous_ticket_id": previous}}
+    )
+    assert pairs(report) == {("tickets", "previous_ticket_id", "tickets", "ticket_id")}
+    (relation,) = report.relations
+    assert relation.cardinality == "N:1"
+    assert relation.impact.rows_after == relation.impact.rows_before == len(tickets)
+    assert relation.impact.max_fanout == 1
+
+
+def test_key_named_id_is_referenced_by_entity_name(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "categories": {
+                "id": ids(range(1, 11)),
+                "parent_category_id": ["", "", *ids(range(1, 9))],
+            }
+        },
+    )
+    assert pairs(report) == {("categories", "parent_category_id", "categories", "id")}
+
+
+def test_lookalike_ids_of_same_table_are_not_linked(con, tmp_path):
+    # Как в синтетике PL-2: store_id и product_id лежат внутри диапазона sale_id.
+    rng = random.Random(4)
+    sales = range(1, 101)
+    report = relations_of(
+        con,
+        tmp_path,
+        {
+            "sales": {
+                "sale_id": ids(sales),
+                "store_id": ids(rng.randint(1, 5) for _ in sales),
+                "product_id": ids(rng.randint(1, 10) for _ in sales),
+            }
+        },
+    )
+    assert report.relations == ()
+
+
+def test_two_keys_of_same_table_are_not_a_reference(con, tmp_path):
+    report = relations_of(
+        con,
+        tmp_path,
+        {"items": {"item_id": ids(range(1, 11)), "parent_item_id": ids(range(1, 11))}},
+    )
+    assert report.relations == ()
+
+
+def test_reference_to_same_table_with_orphans_is_not_linked(con, tmp_path):
+    previous = [""] * 10 + ids(range(1, 9)) + ["98", "99"]  # 80% ссылок находят ключ
+    report = relations_of(
+        con,
+        tmp_path,
+        {"tickets": {"ticket_id": ids(range(1, 21)), "previous_ticket_id": previous}},
+    )
+    assert report.relations == ()

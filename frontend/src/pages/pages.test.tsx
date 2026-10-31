@@ -387,7 +387,8 @@ describe('DashboardsPage', () => {
     expect(screen.getByText('+18% к цели')).toBeInTheDocument();
     expect(await screen.findByText('Санкт-Петербург')).toBeInTheDocument();
     await userEvent.click(screen.getAllByRole('button', { name: 'Как посчитано' })[0]!);
-    expect(await screen.findByText("time_aggregate(table='orders', freq='month')")).toBeInTheDocument();
+    expect(await screen.findByText('time_aggregate')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Параметры' })).toHaveTextContent("freq = 'month'");
     await userEvent.click(screen.getByRole('link', { name: 'Маркетинг Q3' }));
     expect(await screen.findByRole('heading', { name: 'Дашборд: Маркетинг Q3' })).toBeInTheDocument();
   });
