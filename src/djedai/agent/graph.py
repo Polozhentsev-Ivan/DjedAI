@@ -1626,18 +1626,6 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     llm_rejected = not v_data.is_valid
     at_last_attempt = state.get("compose_retries", 0) >= 2
-    if not at_last_attempt:
-        report = _finished_verification(
-            deterministic,
-            status="failed",
-            rejected=_previous_rejected(state),
-            issues=[
-                *deterministic.issues,
-                *([_verification_issue("llm_reported")] if llm_rejected else []),
-            ],
-        )
-        return {"is_verified": False, "verification": report}
-
     corrected = (v_data.corrected_markdown or "").strip()
     if corrected and corrected != draft:
         corrected_report = verify_numeric_text(
@@ -1662,13 +1650,26 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
                     issues=issues,
                 ),
             }
-        return _verification_failure(
-            state,
-            blocks,
-            corrected_report,
-            extra_rejected=[*deterministic.rejected_assertions],
-            extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+        if at_last_attempt:
+            return _verification_failure(
+                state,
+                blocks,
+                corrected_report,
+                extra_rejected=[*deterministic.rejected_assertions],
+                extra_issues=[*deterministic.issues, _verification_issue("invalid_correction")],
+            )
+
+    if not at_last_attempt:
+        report = _finished_verification(
+            deterministic,
+            status="failed",
+            rejected=_previous_rejected(state),
+            issues=[
+                *deterministic.issues,
+                *([_verification_issue("llm_reported")] if llm_rejected else []),
+            ],
         )
+        return {"is_verified": False, "verification": report}
 
     return _verification_failure(
         state,
