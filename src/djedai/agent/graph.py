@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from collections.abc import Callable, Collection
 from contextlib import nullcontext
@@ -485,7 +486,17 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, PlanResponse, stage="plan"
         )
         if response.status == "success" and response.data:
-            return {"plan": response.data.plan, "retries": state.get("retries", 0) + 1}
+            steps = response.data.plan
+            understanding = state.get("understanding")
+            # Обзор данных не зависит от выбора модели: пустой план дал бы «нет данных».
+            if (
+                not steps
+                and not state.get("results")
+                and understanding is not None
+                and understanding.intent == "data_overview"
+            ):
+                steps = [PlannedCall(tool="describe_dataset", args={})]
+            return {"plan": steps, "retries": state.get("retries", 0) + 1}
         message = (
             RESTRICTED_CONTEXT_MESSAGE
             if response.error_type == "POLICY_RESTRICTED"
@@ -1172,6 +1183,23 @@ def _fill_missing_axes(
     return chart.model_copy(update=update) if update else chart
 
 
+# Подпись оси time показывает только дату: почасовые значения остаются категориями.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]00:00:00(?:\.0+)?)?")
+
+
+def _time_axis_for_date_line(chart: ChartSpec, result: ToolResult, columns: dict) -> ChartSpec:
+    """Линия по датам — временной ряд, даже если модель назвала ось категорией."""
+    column = columns.get(chart.x.field) if chart.x else None
+    if chart.type != "line" or column is None or chart.x.kind != "category":
+        return chart
+    rows = result.data.rows or []
+    if rows and all(
+        _DATE_ONLY_RE.fullmatch(str(row[column[0]])) for row in rows if column[0] < len(row)
+    ):
+        return chart.model_copy(update={"x": chart.x.model_copy(update={"kind": "time"})})
+    return chart
+
+
 def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[ChartSpec]:
     """Оставляет только графики, совместимые с сохранённым результатом.
 
@@ -1195,6 +1223,7 @@ def sanitize_charts(charts: list[ChartSpec], results: list[ToolResult]) -> list[
                 columns[name] = (index, column_type)
 
         chart = _fill_missing_axes(chart, res, columns)
+        chart = _time_axis_for_date_line(chart, res, columns)
         is_valid = True
 
         # Проверка оси X (наличие и совместимость типа)
@@ -1309,6 +1338,22 @@ def _verification_feedback(report: VerificationReport, policy: DataTransferPolic
     )
 
 
+_CHART_CODE_RE = re.compile(r"```\s*(?:mermaid|vega\S*|chart)\b.*?(?:```|$)\s*", re.I | re.S)
+
+
+def _without_chart_code(blocks: list[Block]) -> list[Block]:
+    """График рисует visualize: код диаграммы в тексте пользователю не нужен."""
+    cleaned = []
+    for block in blocks:
+        if block.type == "text" and block.markdown and _CHART_CODE_RE.search(block.markdown):
+            markdown = _CHART_CODE_RE.sub("", block.markdown).strip()
+            if not markdown:
+                continue
+            block = block.model_copy(update={"markdown": markdown})
+        cleaned.append(block)
+    return cleaned
+
+
 def compose(state: AgentState, config: RunnableConfig) -> dict:
     client = config.get("configurable", {}).get("client")
     focus = updated_focus_result_ids(state)
@@ -1363,7 +1408,16 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
             sys_prompt, user_prompt, ComposeResponse, stage="compose"
         )
         if response.status == "success" and response.data:
-            blocks = response.data.answer_blocks
+            blocks = _without_chart_code(response.data.answer_blocks)
+            had_text = any(block.type == "text" for block in response.data.answer_blocks)
+            if had_text and not any(block.type == "text" for block in blocks):
+                # От текста остался только код диаграммы: пустой ответ пользователю не отдаём.
+                markdown = (
+                    "Результат показан на графике."
+                    if state.get("charts")
+                    else "Расчёт выполнен, но текст ответа не сформирован. Повторите запрос."
+                )
+                blocks.append(Block(type="text", markdown=markdown))
         else:
             message = (
                 RESTRICTED_CONTEXT_MESSAGE

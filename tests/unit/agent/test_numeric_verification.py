@@ -877,6 +877,33 @@ def test_absent_number_and_conflicting_aggregate_still_block() -> None:
     assert _checked("Сумма 4 515 USD.", results, "Сколько?").status == "failed"
 
 
+def test_chart_code_and_names_with_numbers_are_not_claims() -> None:
+    results = _query_result("SELECT s, COUNT(*) AS n FROM t GROUP BY s", ["s", "n"], [["A", 71655]])
+    text = "Топ-5 сервисов: A — 71 655.\n```mermaid\nxychart\n y-axis 0 --> 72000\n```"
+    assert _checked(text, results, "Покажи топ").status != "failed"
+    assert _checked("Топ-5: A — 71 656.", results, "Покажи топ").status == "failed"
+
+
+def test_value_and_period_pair_is_confirmed_by_a_bucket_of_the_result() -> None:
+    results = [
+        ToolResult(
+            result_id="r_series",
+            tool="time_aggregate",
+            status="ok",
+            params={"freq": "month"},
+            facts=[Fact(text="Минимум: 19094", values={"min": 19094})],
+            data=ToolResultData(
+                columns=["time_bucket", "value"],
+                rows=[["2025-02-01T00:00:00", 19094], ["2025-03-01T00:00:00", 21458]],
+                row_count=2,
+            ),
+        )
+    ]
+    assert _checked("Минимум: 19 094 (февраль 2025)", results, "Покажи").status != "failed"
+    assert _checked("Минимум: 19 094 (март 2025)", results, "Покажи").status == "failed"
+    assert _checked("Минимум: 19 094 (май 2025)", results, "Покажи").status == "failed"
+
+
 def test_review_bypasses_stay_rejected() -> None:
     # Алиас cnt не делает MAX подсчётом.
     results = _query_result(
@@ -961,6 +988,19 @@ def test_model_rephrasing_does_not_confirm_constants() -> None:
         "compose_retries": 2,
     }
     assert verify(state, {"configurable": {}})["verification"].status == "failed"
+
+
+def test_bucket_keeps_its_measure_and_range_does_not_confirm_a_month() -> None:
+    results = _query_result("SELECT m, revenue FROM t", ["m", "revenue"], [["2023-01-01", 100]])
+    results += _query_result(
+        "SELECT m, profit FROM p", ["m", "profit"], [["2024-01-01", 100]], "r2"
+    )
+    assert _checked("2024-01-01: Revenue 100.", results, "Сколько?").status == "failed"
+    results = _query_result("SELECT SUM(a) AS revenue FROM t", ["revenue"], [[300]])
+    results += _query_result(
+        "SELECT m, a FROM t", ["m", "a"], [["2023-01-01", 100], ["2024-01-01", 200]], "r2"
+    )
+    assert _checked("В июне 2023 Revenue 300.", results, "Сколько?").status == "failed"
 
 
 def test_as_of_caption_requires_its_own_sql_cutoffs() -> None:

@@ -75,6 +75,9 @@ _VERSION_RE = re.compile(
     r"(?<![\w])(?P<raw>(?:v|версия|version)\s*\d+(?:\.\d+)*)(?![\w])", re.IGNORECASE
 )
 _CODE_RE = re.compile(r"`[^`\n]*`")
+_FENCE_RE = re.compile(r"```.*?(?:```|$)", re.S)
+# «Топ-5»: дефис в названии, а не отрицательное число.
+_NAME_NUMBER_RE = re.compile(r"(?<=[^\W\d_])-\d+(?![\d.,]*\d)")
 _URL_RE = re.compile(r"https?://\S+")
 _TIME_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)")
 _ORDINAL_RE = re.compile(r"(?<!\d)\d{1,2}-(?:й|я|е|го|му|м|х)(?![а-яё])", re.IGNORECASE)
@@ -1833,6 +1836,10 @@ _DENOMINATOR_BEFORE_RE = re.compile(
 
 def _suppressed_spans(text: str) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
+    for match in _FENCE_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
+    for match in _NAME_NUMBER_RE.finditer(text):
+        spans.append((match.start(), match.end(), "constant"))
     for match in _CODE_RE.finditer(text):
         spans.append((match.start(), match.end(), "constant"))
     for match in _URL_RE.finditer(text):
@@ -2267,6 +2274,7 @@ _DAY_BEFORE_MONTH_RE = re.compile(
 _DAYS_AFTER_RE = re.compile(r"^\s*(?:дн[яе]\w*|день)(?!\w)", re.IGNORECASE)
 _PERCENT_FACTOR_BEFORE_RE = re.compile(r"[*×·]\s*$")
 _POPULATION_SKIP = {"среди", "без", "из", "кроме", "не"}
+_GENERIC_MEASURE_COLUMNS = {"value", "cnt", "count", "n", "total", "yhat"}
 _RUB_SOURCE = "source_rub"
 _FILTERED_COUNT = "filtered_count"
 
@@ -2620,12 +2628,24 @@ def _match_quantity(
             for item in candidates
             if item.period is not None and _period_covered(draft.period, [item.period])
         ]
+        if not covered:
+            # Подпись могла сузить выбор до «Минимум» без бакета: пара значение–период
+            # подтверждается и другой ячейкой того же результата.
+            covered = [
+                item
+                for item in evidence
+                if _value_matches(draft, item)
+                and _same_measure(draft, item)
+                and item.period is not None
+                and _period_covered(draft.period, [item.period])
+            ]
         if covered:
             candidates = covered
         elif not (
             context.covers(draft.period, {item.result_id for item in candidates})
+            or _spans_whole_result(draft.period, candidates, evidence)
             or context.as_of(draft, {item.result_id for item in candidates})
-        ) or any(item.period for item in candidates):
+        ) or any(item.period for item in evidence if _value_matches(draft, item)):
             return [], "period_mismatch"
 
     denominator_reason = next(
@@ -2640,6 +2660,32 @@ def _match_quantity(
     if len(result_ids) > 1 and not (context.active and _exact_fractional_cell(draft, candidates)):
         return [], "ambiguous_number"
     return candidates, None
+
+
+def _spans_whole_result(
+    period: VerificationPeriod | None,
+    candidates: Sequence[VerificationEvidence],
+    evidence: Sequence[VerificationEvidence],
+) -> bool:
+    """«За весь период»: утверждение охватывает все даты результата, откуда взято число."""
+    if period is None:
+        return False
+    start, end = _date(period.start), _date(period.end)
+    result_ids = {item.result_id for item in candidates}
+    bounds = [
+        day
+        for item in evidence
+        if item.period is not None and item.result_id in result_ids
+        for day in (_date(item.period.start), _date(item.period.end))
+        if day
+    ]
+    return bool(start and end and bounds) and start <= min(bounds) and max(bounds) <= end
+
+
+def _same_measure(draft: _Draft, item: VerificationEvidence) -> bool:
+    """Колонка без названия показателя не спорит с подписью, а Profit не подтверждает Revenue."""
+    column = (item.cell_address or "").rsplit(".", 1)[-1].lower()
+    return column in _GENERIC_MEASURE_COLUMNS or _same_label(draft.label, item.label)
 
 
 def _exact_fractional_cell(
@@ -2698,7 +2744,9 @@ def _match_date(
     if not candidates:
         if context is not None and context.as_of(draft):
             return [], None
-        if context is not None and context.covers(draft.period):
+        if context is not None and (
+            context.covers(draft.period) or _spans_whole_result(draft.period, evidence, evidence)
+        ):
             return [], None
         return [], "period_mismatch"
     return candidates, None
