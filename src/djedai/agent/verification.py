@@ -1735,6 +1735,21 @@ _CONSTANT_PREFIX_RE = re.compile(
     r"(?<!\w)(?:№|No\.?|п\.|пункт|шаг|этап|рис\.?|figure|table)\s*(?P<num>\d{1,4})(?!\d)",
     re.IGNORECASE,
 )
+# Число из вопроса или SQL — это параметр/порог/коэффициент, а не результат
+# расчёта, только если подпись в ответе прямо называет его константой.
+_QUERY_CONSTANT_RE = re.compile(
+    r"(?:"
+    r"порог|коэффициент|множител|констант|параметр|лимит|допуск|"
+    r"услови|критери|фильтр|настройк|ставк|тариф|"
+    r"больше|меньше|более|менее|дольше|быстрее|старше|младше|"
+    r"превыша|в течение|за последн|на период|срок|"
+    r"дели|раздели|из расчета|исходя из|"
+    r"(?<![a-z])(?:threshold|cutoff|cut-off|coefficient|multiplier|factor|"
+    r"constant|parameter|limit|tolerance|condition|criteria|filter|"
+    r"setting|rate|step|top|first|divide)(?![a-z])"
+    r")",
+    re.IGNORECASE,
+)
 _DENOMINATOR_AFTER_RE = re.compile(
     r"^\s*(?:%|процент[а-яё]*|п\.п\.)?\s*(?:от|среди)\s+(?P<body>[^,.;:()\n]{2,60})",
     re.IGNORECASE,
@@ -1909,6 +1924,32 @@ def _year_value(value: Decimal) -> int | None:
     return None
 
 
+def _query_texts(query: str | Sequence[str] | None) -> list[str]:
+    if query is None:
+        return []
+    if isinstance(query, str):
+        return [query] if query.strip() else []
+    return [text for text in query if text and text.strip()]
+
+
+def query_constant_values(query: str | Sequence[str] | None) -> frozenset[Decimal]:
+    """Числа вопроса и SQL, которые могут быть параметром, а не результатом.
+
+    Даты и годы исключаются: ``2024`` в вопросе — календарный период, а не
+    количество, которым можно подтвердить произвольное число ответа.
+    """
+    values: set[Decimal] = set()
+    for text in _query_texts(query):
+        date_spans = [(claim.start, claim.end) for claim in _date_claims(text)]
+        for token in _tokens(text):
+            if any(token.start >= start and token.end <= end for start, end in date_spans):
+                continue
+            if _year_value(token.value) is not None and token.scale == 1:
+                continue
+            values.add(token.value * token.scale)
+    return frozenset(values)
+
+
 def _extract_drafts(text: str) -> list[_Draft]:
     tokens = _tokens(text)
     date_claims = _date_claims(text)
@@ -2026,6 +2067,27 @@ _SCALAR_UNITS = {"number", "count", "percent", "ratio", "unknown"}
 
 def _canonical(value: Decimal | None, scale: Decimal) -> Decimal | None:
     return value * scale if value is not None else None
+
+
+def has_constant_caption(text: str) -> bool:
+    """Подпись называет число параметром, а не результатом расчёта."""
+    return bool(_QUERY_CONSTANT_RE.search(text))
+
+
+def _is_query_constant(draft: _Draft, query_constants: frozenset[Decimal]) -> bool:
+    """Число ответа — явно названная константа вопроса или SQL.
+
+    Совпадения значения недостаточно: подпись должна называть его порогом,
+    коэффициентом, лимитом или другим параметром. Иначе «Выручка: 3600» при
+    упоминании 3600 в условии остаётся аналитическим утверждением.
+    """
+    if not query_constants or draft.value is None:
+        return False
+    if draft.unit not in ("unknown", "number") or draft.currency:
+        return False
+    if _canonical(draft.value, draft.scale) not in query_constants:
+        return False
+    return bool(draft.label and has_constant_caption(draft.label))
 
 
 def _values_equal(left: Decimal, right: Decimal, decimals: int = 0) -> bool:
@@ -2225,11 +2287,15 @@ def _accept(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
     draft.evidence = list(evidence)
 
 
-def _resolve_draft(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_draft(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    query_constants: frozenset[Decimal] = frozenset(),
+) -> None:
     if draft.status == "ignored":
         return
     if draft.kind == "formula":
-        _resolve_formula(draft, evidence)
+        _resolve_formula(draft, evidence, query_constants)
         return
     if draft.kind in ("date", "period"):
         matched, reason = _match_date(draft, evidence)
@@ -2237,6 +2303,12 @@ def _resolve_draft(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> N
             _reject(draft, reason)
         else:
             _accept(draft, matched)
+        return
+    if _is_query_constant(draft, query_constants):
+        draft.kind = "constant"
+        draft.status = "ignored"
+        draft.reason_code = "non_analytical"
+        draft.reason = _REASON_TEXT["non_analytical"]
         return
     matched, reason = _match_quantity(draft, evidence)
     if reason:
@@ -2378,7 +2450,11 @@ def _formula_result_matches(
     return _values_equal(claimed, calculated, _draft_decimals(draft))
 
 
-def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> None:
+def _resolve_formula(
+    draft: _Draft,
+    evidence: Sequence[VerificationEvidence],
+    query_constants: frozenset[Decimal] = frozenset(),
+) -> None:
     spec = _formula_specs(draft.text, _tokens(draft.text))
     raw_spec = next(
         (item for item in spec if item.raw == draft.raw_text or item.expression == draft.formula),
@@ -2415,13 +2491,16 @@ def _resolve_formula(draft: _Draft, evidence: Sequence[VerificationEvidence]) ->
         reason = None
         matched, reason = _match_quantity(operand_draft, evidence)
         if reason:
+            constant = token.value * token.scale
             if (
                 reason == "number_not_found"
-                and token.value * token.scale in _FORMULA_CONSTANTS
                 and token.unit in ("unknown", "number")
+                and not token.currency
+                and (constant in _FORMULA_CONSTANTS or constant in query_constants)
             ):
-                # Постоянные коэффициенты (0, 1, 100, 1000) не требуют
-                # происхождения; совпавшее значение всё равно сохраняем.
+                # Постоянные коэффициенты (0, 1, 100, 1000) и параметры,
+                # явно названные в вопросе или SQL, не требуют происхождения;
+                # совпавшее значение всё равно сохраняем.
                 matched, reason = [], None
             else:
                 _reject(draft, reason)
@@ -2509,12 +2588,15 @@ def verify_numeric_text(
     evidence: Sequence[VerificationEvidence],
     *,
     result_ids: Sequence[str] | None = None,
+    query: str | Sequence[str] | None = None,
 ) -> VerificationReport:
     """Проверяет числа текста по заранее собранному происхождению.
 
     Проверка не ищет числа в других результатах, не масштабирует их неявно и не
     угадывает связи между таблицами. ``result_ids`` — границы ответа: в отчёте
     перечисляются только результаты, по которым действительно проверяли текст.
+    ``query`` — вопрос и SQL текущего хода: явно названные там параметры не
+    требуют evidence, но только если подпись в ответе называет их константой.
     """
     scope = (
         list(result_ids)
@@ -2522,12 +2604,13 @@ def verify_numeric_text(
         else list(dict.fromkeys(item.result_id for item in evidence))
     )
     scoped = [item for item in evidence if item.result_id in scope]
+    query_constants = query_constant_values(query)
     drafts = _extract_drafts(text)
     assertions: list[NumericAssertion] = []
     rejected: list[NumericAssertion] = []
     issues: list[VerificationIssue] = []
     for draft in drafts:
-        _resolve_draft(draft, scoped)
+        _resolve_draft(draft, scoped, query_constants)
         assertion = _assertion(draft, len(assertions))
         assertions.append(assertion)
         if draft.status == "rejected":

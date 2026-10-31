@@ -11,7 +11,7 @@ from djedai.contracts.agent import (
     Understanding,
     VerifyResponse,
 )
-from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.tool_result import ToolResult, ToolResultData
 
 
 def test_compose_verify_loop_and_strip():
@@ -164,6 +164,63 @@ def test_llm_cannot_confirm_a_number_missing_from_facts():
     assert any(
         assertion.raw_text == "2000" for assertion in result["verification"].rejected_assertions
     )
+
+
+def test_query_threshold_reaches_deterministic_verification():
+    """Порог из вопроса и SQL не считается выдуманным числом в ответе."""
+    graph = build_agent_graph()
+    sql = "SELECT COUNT(*) AS n FROM orders WHERE duration_sec > 3600"
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(status="success", data=Understanding(intent="data_question")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(plan=[PlannedCall(tool="run_sql", args={"sql": sql})]),
+        ),
+        ModelResponse(
+            status="success",
+            data=ComposeResponse(
+                answer_blocks=[Block(type="text", markdown="Порог 3600 секунд; строк 3")]
+            ),
+        ),
+        ModelResponse(status="success", data=VerifyResponse(is_valid=True, corrected_markdown="")),
+    ]
+
+    def dispatcher(tool: str, args: dict) -> ToolResult:
+        return ToolResult(
+            result_id="r_threshold",
+            status="ok",
+            tool=tool,
+            sql=sql,
+            params=args,
+            data=ToolResultData(columns=["n"], rows=[[3]], row_count=1),
+            facts=[{"text": "Количество строк: 3"}],
+        )
+
+    config = {
+        "configurable": {
+            "thread_id": "test_verify_query_constant",
+            "client": client,
+            "tool_dispatcher": dispatcher,
+        }
+    }
+    result = graph.invoke(
+        {
+            "chat_id": "c1",
+            "messages": [
+                Message(role="user", content="Сколько заказов длится дольше 3600 секунд?")
+            ],
+        },
+        config=config,
+    )
+
+    assert result["compose_retries"] == 1
+    assert result["verification"].status == "verified"
+    threshold = next(
+        assertion for assertion in result["verification"].assertions if assertion.raw_text == "3600"
+    )
+    assert threshold.kind == "constant"
+    assert threshold.status == "ignored"
 
 
 def test_invalid_final_correction_is_replaced_by_an_explicit_error():

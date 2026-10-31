@@ -1369,6 +1369,28 @@ def compose(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
+def _verification_queries(state: AgentState, entries: list[dict]) -> list[str]:
+    """Вопрос и SQL текущего хода — источник явно названных констант.
+
+    Вопрос берётся в разрешённой форме, исходное сообщение — как страховка от
+    потери числа при переформулировке, SQL — уже очищенный политикой из
+    ``_answer_payload``. Даты в этих текстах не становятся константами.
+    """
+    queries: list[str] = []
+    understanding = state.get("understanding")
+    if understanding is not None and understanding.resolved_question:
+        queries.append(understanding.resolved_question)
+    for message in reversed(state.get("messages", [])):
+        if message.role == "user" and message.content:
+            queries.append(message.content)
+            break
+    for entry in entries:
+        sql = entry.get("query")
+        if sql:
+            queries.append(str(sql))
+    return list(dict.fromkeys(queries))
+
+
 def _verification_issue(code: str) -> VerificationIssue:
     messages = {
         "llm_reported": "Модель отметила утверждение как неподтверждённое.",
@@ -1493,9 +1515,10 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
         return {"is_verified": True, "answer_blocks": new_blocks, "verification": report}
 
     evidence = build_evidence(results, facts_and_data)
-    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids)
+    queries = _verification_queries(state, facts_and_data)
+    deterministic = verify_numeric_text(draft, evidence, result_ids=result_ids, query=queries)
     deterministic_ok = deterministic.status != "failed"
-    unsupported = unsupported_numbers(draft, facts_and_data)
+    unsupported = unsupported_numbers(draft, facts_and_data, query=queries)
     budget = current_budget()
     enough_time = budget is None or budget.remaining > COMPOSE_RETRY_MIN_SECONDS
     if unsupported and state.get("compose_retries", 0) < 2 and enough_time and client:
@@ -1580,7 +1603,9 @@ def verify(state: AgentState, config: RunnableConfig) -> dict:
 
     corrected = (v_data.corrected_markdown or "").strip()
     if corrected and corrected != draft:
-        corrected_report = verify_numeric_text(corrected, evidence, result_ids=result_ids)
+        corrected_report = verify_numeric_text(
+            corrected, evidence, result_ids=result_ids, query=queries
+        )
         if corrected_report.status != "failed":
             new_blocks = _publish_corrected(blocks, corrected)
             issues = [

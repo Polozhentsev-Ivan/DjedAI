@@ -38,8 +38,16 @@ def _evidence(results: list[ToolResult], *, policy: DataTransferPolicy | None = 
     return build_evidence(results, payload)
 
 
-def _report(text: str, evidence, results: list[ToolResult]):
-    return verify_numeric_text(text, evidence, result_ids=[r.result_id for r in results])
+def _report(
+    text: str,
+    evidence,
+    results: list[ToolResult],
+    *,
+    query: str | list[str] | None = None,
+):
+    return verify_numeric_text(
+        text, evidence, result_ids=[r.result_id for r in results], query=query
+    )
 
 
 def _assertion_by_raw(report, raw: str):
@@ -279,6 +287,103 @@ def test_list_numbers_and_identifiers_are_not_analytical_assertions() -> None:
     assert {item.kind for item in ignored} >= {"list_number", "constant"}
     assert all(item.reason_code == "non_analytical" for item in ignored)
     assert not any(item.raw_text == "2" and item.status != "ignored" for item in report.assertions)
+
+
+def _threshold_result() -> ToolResult:
+    sql = "SELECT COUNT(*) AS n FROM orders WHERE duration_sec > 3600"
+    return ToolResult(
+        result_id="r_threshold",
+        status="ok",
+        tool="run_sql",
+        sql=sql,
+        params={"sql": sql},
+        data=ToolResultData(columns=["n"], rows=[[3]], row_count=1),
+        facts=[Fact(text="Количество строк: 3", kind="summary", values={"n": 3})],
+    )
+
+
+def test_query_threshold_is_a_constant_not_an_analytical_claim() -> None:
+    results = [_threshold_result()]
+    evidence = _evidence(results)
+    report = _report(
+        "Порог 3600 секунд; строк 3",
+        evidence,
+        results,
+        query=["Сколько заказов длится дольше 3600 секунд?", results[0].sql],
+    )
+    assert report.status == "verified"
+    constant = _assertion_by_raw(report, "3600")
+    assert constant.kind == "constant"
+    assert constant.status == "ignored"
+    assert constant.reason_code == "non_analytical"
+
+
+def test_query_constant_without_a_constant_caption_is_still_analytical() -> None:
+    results = [_threshold_result()]
+    report = _report(
+        "Выручка: 3600",
+        _evidence(results),
+        results,
+        query="Сколько заказов длится дольше 3600 секунд?",
+    )
+    assert report.status == "failed"
+    assert _assertion_by_raw(report, "3600").reason_code == "number_not_found"
+
+
+def test_threshold_number_absent_from_query_is_still_rejected() -> None:
+    results = [_threshold_result()]
+    report = _report(
+        "Порог 3600 секунд; строк 3",
+        _evidence(results),
+        results,
+        query="Сколько заказов длится дольше часа?",
+    )
+    assert report.status == "failed"
+    assert _assertion_by_raw(report, "3600").reason_code == "number_not_found"
+
+
+def test_query_year_is_not_a_quantity_constant() -> None:
+    results = [_threshold_result()]
+    report = _report(
+        "Порог 2024; строк 3",
+        _evidence(results),
+        results,
+        query="Сколько заказов в 2024 году?",
+    )
+    assert report.status == "failed"
+    assert _assertion_by_raw(report, "2024").status == "rejected"
+
+
+def test_query_constant_with_currency_or_percent_is_not_exempt() -> None:
+    results = [_threshold_result()]
+    for text, query in (
+        ("Порог 3600 RUB; строк 3", "порог 3600 RUB"),
+        ("Порог 30 %; строк 3", "порог 30 %"),
+    ):
+        report = _report(text, _evidence(results), results, query=query)
+        assert report.status == "failed"
+        assert any(item.status == "rejected" for item in report.assertions)
+
+
+def test_formula_operand_can_be_a_query_constant() -> None:
+    results = [
+        ToolResult(
+            result_id="r_seconds",
+            status="ok",
+            tool="run_sql",
+            data=ToolResultData(columns=["duration_sec"], rows=[[7200]], row_count=1),
+        )
+    ]
+    for query in (
+        "Раздели 7200 секунд на 3600",
+        "SELECT 7200 AS duration FROM orders WHERE duration_sec > 3600",
+    ):
+        report = _report("7200 / 3600 = 2", _evidence(results), results, query=query)
+        assert report.status == "verified"
+        (assertion,) = report.assertions
+        assert assertion.kind == "formula"
+        assert assertion.operands[0].evidence
+        assert assertion.operands[1].evidence == []
 
 
 def _table_result() -> ToolResult:

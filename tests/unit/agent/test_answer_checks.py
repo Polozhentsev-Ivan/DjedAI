@@ -22,6 +22,24 @@ def test_duration_hints_ignore_other_columns():
     assert duration_hints(["second_hand", "sector"], [[900000, 900000]]) == []
 
 
+def test_query_constant_is_not_reported_as_an_invented_number():
+    draft = "Порог 3600 секунд; всего 2 строки"
+    assert unsupported_numbers(draft, ENTRIES) == ["3600"]
+    assert (
+        unsupported_numbers(draft, ENTRIES, query="Сколько заказов длится дольше 3600 секунд?")
+        == []
+    )
+    assert (
+        unsupported_numbers(
+            draft, ENTRIES, query="SELECT COUNT(*) FROM orders WHERE duration > 3600"
+        )
+        == []
+    )
+    assert unsupported_numbers(
+        "Выручка: 3600", ENTRIES, query="Сколько заказов длится дольше 3600 секунд?"
+    ) == ["3600"]
+
+
 def test_numbers_from_data_pass_with_rounding_grouping_and_percent():
     draft = "a: 4 158 заявок на 851 088 269,49 руб., рост 30,32 %; b 5,24 %"
     assert unsupported_numbers(draft, ENTRIES) == []

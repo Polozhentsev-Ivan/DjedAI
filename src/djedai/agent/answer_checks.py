@@ -1,8 +1,10 @@
 """Проверки ответа кодом: не зависят от силы модели и не требуют её вызова."""
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from decimal import Decimal, InvalidOperation
+
+from djedai.agent.verification import has_constant_caption, query_constant_values
 
 _SECONDS_COLUMN_RE = re.compile(r"(?:^|_)(?:secs?|seconds?|sekund\w*)$", re.IGNORECASE)
 _MIN_SECONDS_TO_CONVERT = 3600
@@ -127,17 +129,41 @@ def _matches(shown: Decimal, known: Decimal) -> bool:
     return any(abs(abs(shown) - abs(candidate)) <= step / 2 for candidate in (known, known * 100))
 
 
-def unsupported_numbers(draft: str, entries: list[dict]) -> list[str]:
-    """Числа черновика, которых нет в данных результата: модель досчитала их сама."""
+def _clause_around(text: str, start: int, end: int) -> str:
+    left = max((text.rfind(separator, 0, start) for separator in ";,\n"), default=-1) + 1
+    right = min(
+        (position for separator in ";,\n" if (position := text.find(separator, end)) >= 0),
+        default=len(text),
+    )
+    return text[left:right]
+
+
+def unsupported_numbers(
+    draft: str,
+    entries: list[dict],
+    query: str | Sequence[str] | None = None,
+) -> list[str]:
+    """Числа черновика, которых нет в данных результата: модель досчитала их сама.
+
+    ``query`` — вопрос и SQL текущего хода. Явно названные там константы не
+    считаются выдуманными: их окончательно проверяет ``verify_numeric_text``,
+    которая требует ещё и подпись-константу в самом ответе.
+    """
     known = _known_values(entries)
     if not known:
         return []
+    query_constants = query_constant_values(query)
     text = _DATE_RE.sub(" ", _CODE_RE.sub(" ", draft))
     unsupported = []
     for match in _NUMBER_RE.finditer(text):
         shown = _parse(match[0])
         if shown is None or (shown == shown.to_integral_value() and abs(shown) <= _SMALL_INTEGER):
             continue
-        if not any(_matches(shown, value) for value in known):
-            unsupported.append(match[0])
+        if any(_matches(shown, value) for value in known):
+            continue
+        if any(_matches(shown, value) for value in query_constants) and has_constant_caption(
+            _clause_around(text, match.start(), match.end())
+        ):
+            continue
+        unsupported.append(match[0])
     return list(dict.fromkeys(unsupported))

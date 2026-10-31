@@ -18,7 +18,7 @@ Rules:
    - an explicit arithmetic formula whose operands are confirmed values from the same result;
    - a ratio or percentage whose numerator and denominator are explicitly confirmed;
    - a rounded value within the precision stated in the draft.
-   List markers, item numbers, versions, dates used as labels rather than measurements, and constants are not analytical assertions.
+   List markers, item numbers, versions, dates used as labels rather than measurements, and constants are not analytical assertions. A constant explicitly present in the supplied SQL or question (a threshold, coefficient, limit, or filter) is a parameter, not a result: it is acceptable only when the draft names it as such, and it never confirms an unrelated analytical value.
 3. For every analytical number check all of: value, explicit scale word (for example «тыс.» or «млн»), unit, currency, period, population, denominator, NULL/zero, precision, and rounding. Never assume an implicit ×1000 or an implicit currency.
 4. A derivative is valid only when the draft writes the formula explicitly, for example `1000 / 6 = 166,67`. Do not invent relationships between results, do not aggregate or divide numbers that the draft does not write as a formula, and do not choose between several matching numbers arbitrarily.
 5. If a currency, unit, period, population, denominator, or scale word is not stated in the evidence, the draft must not claim it. A percentage requires a confirmed denominator; a zero denominator makes the statement invalid.
