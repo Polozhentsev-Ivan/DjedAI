@@ -35,6 +35,8 @@ class Understanding(BaseModel):
     resolved_question: str | None = None
     entities: Entities = Field(default_factory=Entities)
     references: list[str] = Field(default_factory=list)
+    # Сохранённая панель, которую пользователь просит открыть или обновить.
+    dashboard_id: str | None = None
     clarification: Clarification | None = None
 
 

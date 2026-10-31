@@ -30,7 +30,7 @@ from djedai.analytics.registry import execute_tool
 from djedai.backend.auth.dependencies import current_owner_id
 from djedai.backend.chat_turns import ERRORS, STATUS_TEXT, finish_error, write_turn
 from djedai.backend.dashboard_service import DashboardService
-from djedai.backend.dataset_service import DatasetContext
+from djedai.backend.dataset_service import DatasetContext, DatasetService
 from djedai.backend.db.models import ChatModel, DashboardModel, DatasetModel, MessageModel
 from djedai.backend.db.repositories import (
     get_chat as get_chat_record,
@@ -109,6 +109,7 @@ class AgentRuntime:
     dataset_context: Callable[[str, str], DatasetContext] | None = None
     metric_service: MetricService | None = None
     dashboard_service: DashboardService | None = None
+    dataset_service: DatasetService | None = None
     results_storage_dir: Path | str | None = None
     turn_timeout_seconds: float | None = None
     diagnostics: DiagnosticJournal | None = None
@@ -174,6 +175,7 @@ def get_agent_runtime(
         dataset_context=request.app.state.dataset_service.get_context,
         metric_service=getattr(request.app.state, "metric_service", None),
         dashboard_service=getattr(request.app.state, "dashboard_service", None),
+        dataset_service=getattr(request.app.state, "dataset_service", None),
         results_storage_dir=settings.results_data_dir,
         turn_timeout_seconds=settings.agent_turn_timeout_seconds,
         diagnostics=request.app.state.diagnostics,
@@ -712,6 +714,30 @@ def stream_chat_turn(
 
             configurable["dashboard_saver"] = save_generated_dashboard
 
+            if runtime.dataset_service is not None and runtime.metric_service is not None:
+                dataset_service = runtime.dataset_service
+                metric_service = runtime.metric_service
+                dashboard_service = runtime.dashboard_service
+
+                def refresh_saved_dashboard(dashboard_id: str):
+                    dashboard = db.get(DashboardModel, dashboard_id)
+                    if (
+                        dashboard is None
+                        or dashboard.owner_id != owner_id
+                        or dashboard.dataset_id != chat_model.dataset_id
+                    ):
+                        raise ValueError("Дашборд не относится к датасету чата")
+                    return dashboard_service.refresh_dashboard(
+                        db,
+                        dataset_service,
+                        metric_service,
+                        owner_id,
+                        dashboard_id,
+                        chat_id=chat_model.chat_id,
+                    )
+
+                configurable["dashboard_refresher"] = refresh_saved_dashboard
+
         trace: list[TraceStep] = []
         results: list[ToolResult] = []
         seen_results: set[str] = set()
@@ -792,6 +818,7 @@ def stream_chat_turn(
                     "cite_metrics",
                     "plan_dashboard",
                     "save_dashboard",
+                    "refresh_dashboard",
                 ):
                     node_update = data if isinstance(data, dict) else {}
                     if node in (
@@ -800,6 +827,7 @@ def stream_chat_turn(
                         "fast_compose",
                         "clarify",
                         "save_dashboard",
+                        "refresh_dashboard",
                     ) and ("focus_result_ids" in node_update):
                         stream_focus = list(node_update["focus_result_ids"] or [])
                     if "answer_blocks" in node_update:
@@ -870,6 +898,14 @@ def stream_chat_turn(
         known_result_ids = {
             result.result_id for result in [*history_results, *results] if result.status == "ok"
         }
+        # Refresh persists its results directly through DashboardService rather than
+        # execute. Resolve the final block references through the same ownership and
+        # provenance checks before allowing those new results into the saved focus.
+        for result_id in referenced_result_ids:
+            if result_id not in known_result_ids:
+                referenced = load_result(result_id)
+                if referenced is not None and referenced.status == "ok":
+                    known_result_ids.add(result_id)
         if stream_focus is not None:
             next_focus = [result_id for result_id in stream_focus if result_id in known_result_ids]
         elif result_ids:

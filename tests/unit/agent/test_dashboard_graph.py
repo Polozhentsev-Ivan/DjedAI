@@ -13,14 +13,20 @@ from djedai.agent.graph import build_agent_graph, execute_dashboard, understand
 from djedai.agent.reasoning import REASONING_STAGES
 from djedai.config import get_limits
 from djedai.contracts.agent import (
+    Block,
     DashboardPlanResponse,
     DashboardStepPlan,
     DashboardWidgetPlan,
     Message,
     Understanding,
 )
-from djedai.contracts.chart import ChartTemplate, XAxis, YMeasure
-from djedai.contracts.dashboard import DashboardSnapshot
+from djedai.contracts.chart import ChartSpec, ChartTemplate, XAxis, YMeasure
+from djedai.contracts.dashboard import (
+    DashboardSnapshot,
+    WidgetLayout,
+    WidgetSnapshot,
+    WidgetToolCall,
+)
 from djedai.contracts.tool_result import Fact, ToolError, ToolResult, ToolResultData
 
 
@@ -383,6 +389,123 @@ def test_dashboard_branch_reports_unavailable_saver():
     assert result["dashboard_snapshot"] is None
     assert result["answer_blocks"][0].type == "error"
     assert "Сохранение дашбордов" in result["answer_blocks"][0].markdown
+
+
+def _saved_snapshot(dashboard_id: str = "d_prev") -> DashboardSnapshot:
+    widgets = []
+    for index, kind in enumerate(("kpi", "bar", "pie"), start=1):
+        result_id = f"r_refreshed_{index}"
+        widgets.append(
+            WidgetSnapshot(
+                widget_id=f"w_{index}",
+                chart=ChartSpec(
+                    chart_id=f"ch_{index}",
+                    type=kind,
+                    title=f"Виджет {index}",
+                    result_id=result_id,
+                    x=None if kind == "kpi" else XAxis(field="category"),
+                    y=[YMeasure(field="value")],
+                ),
+                layout=WidgetLayout(x=0, y=index, w=6, h=4),
+                tool_call=WidgetToolCall(tool="run_sql", params={"sql": "SELECT 1"}),
+                result_id=result_id,
+                status="ok",
+            )
+        )
+    return DashboardSnapshot(
+        dashboard_id=dashboard_id,
+        dataset_id="ds_test",
+        title="Обзор фоновых заданий",
+        widgets=widgets,
+        created_at=datetime.now(UTC),
+        refreshed_at=datetime.now(UTC),
+    )
+
+
+def test_saved_dashboard_is_refreshed_by_id_without_creating_a_new_one():
+    client = FakeClient({"understand": [Understanding(intent="dashboard", dashboard_id="d_prev")]})
+    calls: list[str] = []
+
+    def refresher(dashboard_id: str) -> DashboardSnapshot:
+        calls.append(dashboard_id)
+        return _saved_snapshot(dashboard_id)
+
+    result = build_agent_graph().invoke(
+        {
+            "chat_id": "chat_refresh",
+            "dataset_id": "ds_test",
+            "messages": [Message(role="user", content="Открой созданную панель и обнови её")],
+            "previous_blocks": [
+                Block(type="dashboard_link", dashboard_id="d_prev", title="Обзор фоновых заданий")
+            ],
+        },
+        config={
+            "configurable": {
+                "thread_id": "chat_refresh",
+                "client": client,
+                "dashboard_refresher": refresher,
+            }
+        },
+    )
+
+    # The refresh branch must not plan a second dashboard.
+    assert client.stages == ["understand"]
+    assert calls == ["d_prev"]
+    assert result["dashboard_snapshot"].dashboard_id == "d_prev"
+    assert [block.type for block in result["answer_blocks"]] == [
+        "text",
+        "chart",
+        "chart",
+        "chart",
+        "dashboard_link",
+    ]
+    assert "обновлён" in result["answer_blocks"][0].markdown
+    assert result["answer_blocks"][-1].dashboard_id == "d_prev"
+    assert result["focus_result_ids"] == ["r_refreshed_1", "r_refreshed_2", "r_refreshed_3"]
+
+
+def test_dashboard_refresh_failure_is_explicit_and_does_not_reuse_old_snapshot():
+    client = FakeClient(
+        {"understand": [Understanding(intent="dashboard", dashboard_id="d_missing")]}
+    )
+
+    def refresher(_dashboard_id: str) -> DashboardSnapshot:
+        raise ValueError("Дашборд не найден")
+
+    result = build_agent_graph().invoke(
+        {
+            "chat_id": "chat_refresh_error",
+            "dataset_id": "ds_test",
+            "messages": [Message(role="user", content="Обнови панель")],
+        },
+        config={
+            "configurable": {
+                "thread_id": "chat_refresh_error",
+                "client": client,
+                "dashboard_refresher": refresher,
+            }
+        },
+    )
+
+    assert result.get("dashboard_snapshot") is None
+    assert result["answer_blocks"][0].type == "error"
+    assert "Не удалось обновить дашборд" in result["answer_blocks"][0].markdown
+
+
+def test_dashboard_refresh_without_service_is_explicit():
+    client = FakeClient({"understand": [Understanding(intent="dashboard", dashboard_id="d_prev")]})
+
+    result = build_agent_graph().invoke(
+        {
+            "chat_id": "chat_refresh_unavailable",
+            "dataset_id": "ds_test",
+            "messages": [Message(role="user", content="Обнови панель")],
+        },
+        config={"configurable": {"thread_id": "chat_refresh_unavailable", "client": client}},
+    )
+
+    assert result["answer_blocks"][0].type == "error"
+    assert "недоступно" in result["answer_blocks"][0].markdown
 
 
 SECRET_VALUE = "ordinaryCredential9!"
