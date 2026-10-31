@@ -62,39 +62,48 @@ async function login(username, register = false) {
   await expect(submit).toBeVisible();
   await page.getByLabel('Имя пользователя', { exact: true }).fill(username);
   await page.getByLabel('Пароль', { exact: true }).fill(password);
-  const response = page.waitForResponse((r) => r.url().endsWith('/api/auth/login'));
-  await submit.click();
-  const received = await response;
+  const [received] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith('/api/auth/login')),
+    submit.click(),
+  ]);
   assert.equal(received.status(), 200);
   token = (await received.json()).access_token;
   await expect(page.getByText(username, { exact: true })).toBeVisible();
 }
 async function logout() {
-  const response = page.waitForResponse((r) => r.url().endsWith('/api/auth/logout'));
-  await page.getByRole('button', { name: 'Выйти', exact: true }).click();
-  assert.equal((await response).status(), 204);
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith('/api/auth/logout')),
+    page.getByRole('button', { name: 'Выйти', exact: true }).click(),
+  ]);
+  assert.equal(response.status(), 204);
   await expect(page).toHaveURL(/\/login$/);
   assert.equal(await page.evaluate(() => sessionStorage.getItem('djedai.access_token')), null);
 }
 async function source(kind, otherOwner = false) {
   await page.goto('/sources');
-  const accepted = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith(kind === 'csv' ? '/datasets/upload' : '/datasets/connect'));
+  let response;
   if (kind === 'csv') {
     const orders = await readFile(path.join(root, 'tests/fixtures/journey/orders.csv'), 'utf8');
-    await page.getByTestId('csv-input').setInputFiles([
+    const files = [
       { name: 'orders.csv', mimeType: 'text/csv', buffer: Buffer.from(otherOwner ? orders.replace(',12\n', ',112\n') : orders) },
       { name: 'targets.csv', mimeType: 'text/csv', buffer: await readFile(path.join(root, 'tests/fixtures/journey/targets.csv')) },
+    ];
+    [response] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/datasets/upload')),
+      page.getByTestId('csv-input').setInputFiles(files),
     ]);
   } else {
     await page.getByRole('tab', { name: 'Подключить БД', exact: true }).click();
     await page.getByLabel('Строка подключения (DSN)', { exact: true }).fill('postgresql://journey_reader:journey-test-only@journey-postgres:5432/journey');
     await page.getByRole('button', { name: 'Проверить соединение', exact: true }).click();
     await expect(page.getByText(/Соединение установлено:/)).toBeVisible();
-    await page.getByRole('button', { name: /^public\.orders\b/ }).click();
-    await page.getByRole('button', { name: /^public\.targets\b/ }).click();
-    await page.getByRole('button', { name: 'Подключить', exact: true }).click();
+    await page.getByRole('button', { name: 'orders', exact: true }).click();
+    await page.getByRole('button', { name: 'targets', exact: true }).click();
+    [response] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/datasets/connect')),
+      page.getByRole('button', { name: 'Подключить', exact: true }).click(),
+    ]);
   }
-  const response = await accepted;
   assert.equal(response.status(), 202, await response.text());
   const { dataset_id: id } = await response.json();
   await expect.poll(async () => (await json(`/api/datasets/${id}`)).status, { timeout: 120_000 }).toBe('ready');
@@ -134,9 +143,10 @@ async function save(chart, dashboardId) {
   await card.getByRole('button', { name: 'Как посчитано', exact: true }).click();
   await expect(card.locator('pre')).toContainText('SELECT');
   await card.getByRole('button', { name: 'В дашборд', exact: true }).click();
-  const response = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/api/dashboards'));
-  await page.getByRole('menuitem', { name: dashboardId ? 'Сумма по группам' : /Новый дашборд/ }).click();
-  const saved = await response;
+  const [saved] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/api/dashboards')),
+    page.getByRole('menuitem', { name: dashboardId ? 'Сумма по группам' : /Новый дашборд/ }).click(),
+  ]);
   assert.equal(saved.status(), 200, await saved.text());
   const dashboard = await saved.json();
   assert(dashboard.widgets.some((w) => w.result_id === chart.result_id));
@@ -144,9 +154,10 @@ async function save(chart, dashboardId) {
   return dashboard;
 }
 async function refresh(id) {
-  const response = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith(`/dashboards/${id}/refresh`));
-  await page.getByRole('button', { name: 'Обновить данные', exact: true }).click();
-  const received = await response;
+  const [received] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith(`/dashboards/${id}/refresh`)),
+    page.getByRole('button', { name: 'Обновить данные', exact: true }).click(),
+  ]);
   assert.equal(received.status(), 200, await received.text());
   await expect(page.getByRole('button', { name: 'Обновить данные', exact: true })).toBeEnabled();
   return received.json();
