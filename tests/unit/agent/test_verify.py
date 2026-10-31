@@ -161,6 +161,9 @@ def test_llm_cannot_confirm_a_number_missing_from_facts():
     assert result["compose_retries"] == 2
     assert [block.markdown for block in result["answer_blocks"]] == ["Revenue: 1000 RUB"]
     assert result["verification"].status == "verified"
+    assert any(
+        assertion.raw_text == "2000" for assertion in result["verification"].rejected_assertions
+    )
 
 
 def test_invalid_final_correction_is_replaced_by_an_explicit_error():

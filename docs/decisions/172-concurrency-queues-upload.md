@@ -47,20 +47,19 @@
 ## 4. Потоковый контроль загрузки и дисковые квоты
 
 1. **Периметр сети (Nginx)**:
-   - В `infra/nginx.conf` задана директива `client_max_body_size 150m;`, отсекающая аномальные тела до бэкенда.
+   - В `infra/nginx.conf` задана директива `client_max_body_size 2100m;`, отсекающая аномальные тела до бэкенда.
 
 2. **Защита от DoS на уровне ASGI (`StreamingUploadLimitMiddleware`)**:
    - Проверяет входящий поток байтов **до** парсера `python-multipart`.
-   - Если `Content-Length` или сумма фактических потоковых чанков превышает `MAX_UPLOAD_REQUEST_BYTES` (100 МБ) + 64 КБ (запас на multipart-границы), запрос немедленно прерывается с **HTTP 413 Payload Too Large** без сохранения временных файлов в `/tmp`.
+   - Если `Content-Length` или сумма фактических потоковых чанков превышает `MAX_UPLOAD_REQUEST_BYTES` (2 ГБ) + 64 КБ (запас на multipart-границы), запрос немедленно прерывается с **HTTP 413 Payload Too Large** без сохранения временных файлов в `/tmp`.
 
-3. **Лимиты на файл и запрос**:
-   - `MAX_UPLOAD_FILE_BYTES` (50 МБ) — максимальный размер одного CSV-файла.
-   - `MAX_UPLOAD_REQUEST_BYTES` (100 МБ) — максимальный суммарный размер файлов в запросе.
+3. **Лимит на запрос**:
+   - `MAX_UPLOAD_REQUEST_BYTES` (2 ГБ) — максимальный суммарный размер файлов в запросе. Отдельного лимита на файл нет: первоначальные 50 МБ на файл и 100 МБ на запрос отклоняли все CSV организаторов (98–223 МБ), поэтому #229 убрал первый и поднял второй.
    - Потоковое копирование чанками по 64 КБ с немедленным удалением созданного каталога датасета при ошибке (`shutil.rmtree`).
    - Явное закрытие `UploadFile.close()` в блоке `finally` роутера для удаления файлов из `/tmp`.
 
 4. **Атомарный менеджер дисковой квоты (`StorageQuotaManager`)**:
-   - `MAX_OWNER_STORAGE_BYTES` (500 МБ) — дисковая квота владельца в `DATASETS_DATA_DIR`.
+   - `MAX_OWNER_STORAGE_BYTES` (5 ГБ) — дисковая квота владельца в `DATASETS_DATA_DIR`.
    - Атомарное in-flight резервирование байтов под блокировкой (`threading.Lock`). Если `used_disk + reserved + incoming > quota` — отказ **HTTP 413**.
    - Резерв освобождается в `finally`. При успешной записи файлы учитываются на диске, при ошибке каталог удаляется. Исключена гонка (TOCTOU) при двух одновременных загрузках одного пользователя.
 
@@ -99,9 +98,8 @@
 | `MAX_CONCURRENT_DATASET_JOBS_PER_OWNER` | `max_concurrent_dataset_jobs_per_owner` | `1` | Лимит параллельных задач датасетов на пользователя |
 | `MAX_QUEUED_DATASET_JOBS` | `max_queued_dataset_jobs` | `10` | Глобальная очередь задач датасетов |
 | `MAX_QUEUED_DATASET_JOBS_PER_OWNER` | `max_queued_dataset_jobs_per_owner` | `2` | Очередь задач датасетов на пользователя |
-| `MAX_UPLOAD_FILE_BYTES` | `max_upload_file_bytes` | `50000000` | Лимит размера одного файла (байт) |
-| `MAX_UPLOAD_REQUEST_BYTES` | `max_upload_request_bytes` | `100000000` | Лимит суммарного размера файлов в запросе (байт) |
-| `MAX_OWNER_STORAGE_BYTES` | `max_owner_storage_bytes` | `500000000` | Квота хранилища пользователя (байт) |
+| `MAX_UPLOAD_REQUEST_BYTES` | `max_upload_request_bytes` | `2000000000` | Лимит суммарного размера файлов в запросе (байт) |
+| `MAX_OWNER_STORAGE_BYTES` | `max_owner_storage_bytes` | `5000000000` | Квота хранилища пользователя (байт) |
 
 ## 8. Проверка и воспроизведение
 

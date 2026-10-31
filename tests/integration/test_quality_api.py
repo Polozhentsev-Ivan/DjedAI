@@ -15,7 +15,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi import Request
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect
+from sqlalchemy import MetaData, Table, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from djedai.agent.client import ModelResponse
@@ -190,11 +190,9 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
         ok(PlanResponse(plan=[])),
         ok(VisualizeResponse(charts=[])),
         ok(
-            ComposeResponse(
-                answer_blocks=[Block(type="text", markdown="Кратко: результат без изменений.")]
-            )
+            ComposeResponse(answer_blocks=[Block(type="text", markdown="Кратко: сумма — 5 376,0.")])
         ),
-        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: результат без изменений.")),
+        ok(VerifyResponse(is_valid=True, corrected_markdown="Кратко: сумма — 5 376,0.")),
     ]
     with _client(configured) as client:
         upload = client.post("/api/datasets/upload", files=_files())
@@ -220,7 +218,8 @@ def test_losses_remain_visible_when_followup_reuses_saved_result(configured) -> 
         assert "event: tool_call" not in followup.text
         assert "4 из 100" in followup.text
         answer = client.get(f"/api/chats/{chat_id}").json()["messages"][-1]
-        assert "Кратко: результат без изменений." in _markdown(answer)
+        assert "Кратко: сумма — 5 376,0." in _markdown(answer)
+        assert answer["verification"]["status"] == "verified"
         assert "**Ограничения данных.**" in _markdown(answer)
         assert "4 из 100" in _markdown(answer)
 
@@ -297,11 +296,15 @@ def test_losses_survive_restart_and_ambiguity_is_clarified(configured) -> None:
 def test_quality_migration_upgrades_and_downgrades(tmp_path: Path, starting_revision: str) -> None:
     url = f"sqlite:///{(tmp_path / 'q.db').as_posix()}"
     cfg = _alembic(url)
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["f167verify01"]
+    heads = ScriptDirectory.from_config(cfg).get_heads()
+    assert len(heads) == 1
     command.upgrade(cfg, starting_revision)
     command.upgrade(cfg, "head")
     engine = create_db_engine(url)
     try:
+        with engine.connect() as db:
+            versions = Table("alembic_version", MetaData(), autoload_with=db)
+            assert db.scalars(select(versions.c.version_num)).all() == heads
         assert "quality" in {c["name"] for c in inspect(engine).get_columns("results")}
         assert {"summary", "focus_result_ids"} <= {
             c["name"] for c in inspect(engine).get_columns("chats")

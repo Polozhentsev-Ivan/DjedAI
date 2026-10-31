@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ NODES = frozenset(
 )
 _call: ContextVar[ModelCall | None] = ContextVar("diagnostic_model_call", default=None)
 _run: ContextVar[RunDiagnostics | None] = ContextVar("diagnostic_run", default=None)
+# Ключи args пишет модель: всё, что не похоже на имя поля, в журнал не попадает.
+_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 
 def _tokens(value: Any) -> int | None:
@@ -255,6 +258,19 @@ def retry_wait(seconds: float) -> None:
 def retry_started() -> None:
     if call := _call.get():
         call.emit("model_retry_started")
+
+
+def invalid_plan_step(tool: str, step_keys: Iterable[str], arg_keys: Iterable[str]) -> None:
+    """Content-free shape of a rejected plan step: names only, never argument values."""
+    if run := _run.get():
+        run.emit(
+            "invalid_plan_step",
+            tool=tool,
+            step_keys=sorted(step_keys),
+            arg_keys=sorted(
+                {key if _FIELD_NAME_RE.fullmatch(key) else "<other>" for key in arg_keys}
+            ),
+        )
 
 
 class DiagnosticHttpClient(CancellableHttpClient):

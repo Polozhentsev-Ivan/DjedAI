@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from djedai.agent.client import ModelResponse
 from djedai.agent.data_policy import DataTransferPolicy
-from djedai.agent.graph import build_agent_graph
+from djedai.agent.graph import build_agent_graph, sanitize_charts
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -479,3 +479,50 @@ def test_partial_plan_rerun_keeps_successful_results_for_compose_and_verify():
     for prompt in (compose_prompt, verify_prompt):
         assert "SUM(amount) = 30" in prompt
         assert "COUNT(*) = 2" in prompt
+
+
+def _chart_without_axes(chart_type: str) -> ChartSpec:
+    return ChartSpec(chart_id="ch_1", result_id="r_1", type=chart_type, title="Без осей")
+
+
+def test_sanitize_charts_fills_missing_axes_from_tool_hint():
+    chart = sanitize_charts([_chart_without_axes("bar")], [_saved_result()])[0]
+
+    assert chart.x is not None and chart.x.field == "category"
+    assert [measure.field for measure in chart.y] == ["value"]
+
+
+def test_sanitize_charts_fills_missing_axes_from_columns_without_hint():
+    result = _saved_result().model_copy(update={"chart_hint": None})
+
+    chart = sanitize_charts([_chart_without_axes("pie")], [result])[0]
+
+    assert chart.x is not None and chart.x.field == "category"
+    assert [measure.field for measure in chart.y] == ["value"]
+
+
+def test_sanitize_charts_fills_heatmap_color_and_keeps_model_axes():
+    result = ToolResult(
+        result_id="r_1",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(
+            columns=["env", "status", "cnt"], rows=[["prod", "ok", 1], ["test", "ok", 2]]
+        ),
+    )
+    heatmap = _chart_without_axes("heatmap").model_copy(update={"x": XAxis(field="status")})
+
+    chart = sanitize_charts([heatmap], [result])[0]
+
+    assert chart.x is not None and chart.x.field == "status"
+    assert chart.color is not None and chart.color.field == "env"
+    assert [measure.field for measure in chart.y] == ["cnt"]
+
+
+def test_sanitize_charts_fills_only_measure_for_kpi_and_leaves_table_alone():
+    kpi, table = sanitize_charts(
+        [_chart_without_axes("kpi"), _chart_without_axes("table")], [_saved_result()]
+    )
+
+    assert kpi.x is None and [measure.field for measure in kpi.y] == ["value"]
+    assert table.x is None and table.y == []

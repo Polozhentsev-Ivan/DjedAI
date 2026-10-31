@@ -24,5 +24,6 @@ Rules:
 8. If `is_valid` is false, provide a `corrected_markdown` where ONLY the unconfirmed numbers, formulas, or qualifiers are removed or replaced with safe general statements. Keep the rest of the valid context intact. The corrected text must pass exactly the same rules; do not introduce new numbers or qualifiers.
 9. Ensure `corrected_markdown` still respects the user's requested answer format (for example, if they asked for just a number, do not add conversational filler).
 10. If the facts contain kind "data_quality" with severity "warning" or "blocking" and the draft calls the result complete, full, or a total over all records, set `is_valid` to false and remove that claim in `corrected_markdown`.
+11. If a result has "truncation_note", "rows_truncated" or "truncated" and the draft says that data ends or a value is absent based on the shown rows alone, set `is_valid` to false and remove that claim in `corrected_markdown`.
 
 Output strictly valid JSON matching the schema.

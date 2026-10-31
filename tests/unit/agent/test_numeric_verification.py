@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import duckdb
+
 from djedai.agent.data_policy import DataTransferPolicy
 from djedai.agent.graph import _answer_payload
 from djedai.agent.verification import build_evidence, verify_numeric_text
+from djedai.analytics.tools import run_sql
 from djedai.contracts.metrics import MetricFilter, MetricGrain, MetricProvenance
 from djedai.contracts.tool_result import Fact, ToolResult, ToolResultData
 
@@ -505,3 +508,20 @@ def test_formula_constant_cannot_override_an_operand_period_mismatch() -> None:
     results[0].data.rows[0][1] = 1000
     report = _report("2024-11: 1000 / 1000 = 1", _evidence(results), results)
     assert report.status == "failed"
+
+
+def test_real_sql_aggregates_preserve_their_meaning() -> None:
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE orders(amount INTEGER)")
+        connection.execute("INSERT INTO orders VALUES (10), (100), (NULL)")
+        scenarios = (
+            ("SELECT MAX(amount) AS mean FROM orders", "Среднее 100", "Максимум 100"),
+            ("SELECT COUNT(amount) AS n FROM orders", "В таблице 2 строки", "Количество 2"),
+            ("SELECT COUNT(*) AS n FROM orders", "В таблице 2 строки", "В таблице 3 строки"),
+        )
+        for sql, wrong, correct in scenarios:
+            results = [run_sql(sql, connection=connection)]
+            assert results[0].status == "ok"
+            evidence = _evidence(results)
+            assert _report(wrong, evidence, results).status == "failed"
+            assert _report(correct, evidence, results).status == "verified"

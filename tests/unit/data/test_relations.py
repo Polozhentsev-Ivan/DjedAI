@@ -18,6 +18,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from djedai.config import get_limits
 from djedai.contracts.catalog import Column, DatasetCatalog, DatasetSource, Table
 from djedai.data.csv_ingest import load_raw_csv, load_raw_csvs
 from djedai.data.profiler import profile_tables, read_profiles
@@ -141,7 +142,13 @@ def test_synthetic_catalog_shows_relations(con, synthetic):
     assert "- sales.product_id → products.product_id (N:1, уверенность high)" in prompt
 
 
-ROLES = {"id": "id", "date": "time", "datetime": "time", "text": "text"}
+ROLES = {
+    "id": "id",
+    "date": "time",
+    "datetime": "time",
+    "category": "dimension",
+    "text": "text",
+}
 
 
 def catalog_table(profile) -> Table:
@@ -348,6 +355,24 @@ def test_non_key_columns_are_not_compared(con, tmp_path):
         },
     )
     assert report.relations == ()
+
+
+def test_category_key_is_still_compared(con, tmp_path, monkeypatch):
+    # При CATEGORY_MAX_RATIO=1 уникальный справочник из восьми названий — category и
+    # кандидат в PK; связь по нему не должна пропасть из-за смены типа
+    monkeypatch.setenv("CATEGORY_MAX_RATIO", "1")
+    get_limits.cache_clear()
+    regions = [f"Регион {i}" for i in range(8)]
+    try:
+        report = relations_of(
+            con, tmp_path, {"regions": {"region": regions}, "offices": {"region": regions}}
+        )
+        types = {c.semantic_type for p in read_profiles(con) for c in p.columns}
+    finally:
+        get_limits.cache_clear()
+    assert types == {"category"}
+    assert len(report.relations) == 1
+    assert report.relations[0].cardinality == "1:1"
 
 
 def test_relations_are_stored_and_replaced(con, tmp_path):

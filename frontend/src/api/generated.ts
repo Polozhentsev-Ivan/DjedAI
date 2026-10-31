@@ -1050,10 +1050,10 @@ export interface components {
             sort?: components["schemas"]["SortSpec"] | null;
             /**
              * Limit
-             * @description Лимит отображаемых категорий/точек
-             * @default 20
+             * @description Лимит точек, только если пользователь просил ограничить; иначе весь ряд
+             * @default null
              */
-            limit?: number;
+            limit?: number | null;
             /**
              * Annotations
              * @description Текстовые метки на точках
@@ -1127,10 +1127,10 @@ export interface components {
             sort?: components["schemas"]["SortSpec"] | null;
             /**
              * Limit
-             * @description Лимит отображаемых категорий/точек
-             * @default 20
+             * @description Лимит точек, только если пользователь просил ограничить; иначе весь ряд
+             * @default null
              */
-            limit?: number;
+            limit?: number | null;
             /**
              * Annotations
              * @description Текстовые метки на точках

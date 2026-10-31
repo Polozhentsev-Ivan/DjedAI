@@ -360,7 +360,7 @@ class DatasetService:
         *,
         source_encryption_key: str | None = None,
         description_client: Callable[[], ModelClient] | None = None,
-        description_context: Callable[[], tuple[ModelClient, bool]] | None = None,
+        description_context: Callable[[str], tuple[ModelClient, bool]] | None = None,
         clickhouse_limits: ClickHouseLimits | None = None,
         catalog_max_age_hours: float = 24,
         limits: LimitSettings | None = None,
@@ -732,7 +732,6 @@ class DatasetService:
         stream: Any,
         target: Path,
         owner_id: str,
-        name: str,
         current_request_bytes: int,
     ) -> tuple[int, int]:
         file_bytes = 0
@@ -746,14 +745,6 @@ class DatasetService:
                         break
                     chunk_len = len(chunk)
                     file_bytes += chunk_len
-                    if file_bytes > self.limits.max_upload_file_bytes:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=(
-                                f"Размер файла '{name}' превышает допустимый "
-                                f"лимит ({self.limits.max_upload_file_bytes} байт)"
-                            ),
-                        )
                     if current_request_bytes + file_bytes > self.limits.max_upload_request_bytes:
                         raise HTTPException(
                             status_code=413,
@@ -778,9 +769,8 @@ class DatasetService:
 
     def _persist_upload(self, owner_id: str, files: Sequence[UploadFile]) -> str:
         def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
-            name = files[index].filename or "upload.csv"
             return self._stream_copy_file(
-                files[index].file, target, owner_id, name, current_request_bytes
+                files[index].file, target, owner_id, current_request_bytes
             )
 
         return self._persist_sources(
@@ -789,9 +779,8 @@ class DatasetService:
 
     def _persist_csv_sources(self, owner_id: str, sources: Sequence[CsvSource]) -> str:
         def copy_source(index: int, target: Path, current_request_bytes: int) -> tuple[int, int]:
-            name = sources[index].original_name
             with Path(sources[index].path).open("rb") as stream:
-                return self._stream_copy_file(stream, target, owner_id, name, current_request_bytes)
+                return self._stream_copy_file(stream, target, owner_id, current_request_bytes)
 
         return self._persist_sources(
             owner_id, [source.original_name for source in sources], copy_source
@@ -1003,7 +992,7 @@ class DatasetService:
                 0.0,
                 "Описание данных",
             )
-            catalog = self._describe(dataset_id, working, catalog)
+            catalog = self._describe(owner_id, dataset_id, working, catalog)
         working.replace(target)
         return catalog, relative
 
@@ -1099,11 +1088,13 @@ class DatasetService:
                     ).model_dump(mode="json")
                     db.commit()
 
-    def _describe(self, dataset_id: str, database: Path, catalog: DatasetCatalog) -> DatasetCatalog:
+    def _describe(
+        self, owner_id: str, dataset_id: str, database: Path, catalog: DatasetCatalog
+    ) -> DatasetCatalog:
         """Descriptions are optional: any failure publishes the statistical catalog."""
         try:
             if self._description_context is not None:
-                client, share = self._description_context()
+                client, share = self._description_context(owner_id)
             else:
                 client, share = self._description_client(), True
             return describe_dataset(database, catalog, client, share_values=share)
