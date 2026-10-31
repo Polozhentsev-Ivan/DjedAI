@@ -2205,6 +2205,8 @@ class _QueryContext:
     period_end: date | None = None
     question_keys: frozenset[str] = frozenset()
     sql_numbers: frozenset[Decimal] = frozenset()
+    active: bool = False
+    filtered: bool = False
 
     def names_population(self, population: str | None) -> bool:
         # Граница популяции в тексте размыта: сверяем слово, которое её называет.
@@ -2243,6 +2245,8 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
         max(bounds, default=None),
         frozenset(_label_keys(question_text)),
         frozenset(sql_numbers),
+        active=True,
+        filtered=any(re.search(r"\b(?:where|group\s+by)\b", text, re.I) for text in sql),
     )
 
 
@@ -2300,10 +2304,12 @@ def _match_quantity(
         labelled = [item for item in candidates if _same_label(draft.label, item.label)]
         if labelled:
             candidates = labelled
-        elif context.period_start is not None and _exact_fractional_cell(draft, candidates):
+        elif context.active and _exact_fractional_cell(draft, candidates):
             # Имя колонки модели (p90_hours) не обязано совпасть с подписью в ответе.
             # Дробное значение ячейки одного результата случайно не совпадает.
             candidates = _exact_fractional_cell(draft, candidates)
+        elif context.active and _filtered_count_cell(draft, candidates, context):
+            candidates = _filtered_count_cell(draft, candidates, context)
         elif any(_same_label(draft.label, item.label) for item in evidence):
             return [], "unrelated_result"
         elif len({item.result_id for item in candidates}) > 1:
@@ -2358,7 +2364,8 @@ def _match_quantity(
         return [], denominator_reason
 
     result_ids = {item.result_id for item in candidates}
-    if len(result_ids) > 1:
+    # Одно и то же дробное значение в запросах одного хода — один показатель.
+    if len(result_ids) > 1 and not (context.active and _exact_fractional_cell(draft, candidates)):
         return [], "ambiguous_number"
     return candidates, None
 
@@ -2369,13 +2376,22 @@ def _exact_fractional_cell(
     value = _canonical(draft.value, draft.scale)
     if value is None or value == value.to_integral_value():
         return []
-    cells = [
+    return [
         item
         for item in candidates
-        if item.cell_address
-        and not (_aggregate_keys(draft.label) and not _aggregates_agree(draft.label, item.label))
+        if not (_aggregate_keys(draft.label) and not _aggregates_agree(draft.label, item.label))
     ]
-    return cells if len({item.result_id for item in cells}) == 1 else []
+
+
+def _filtered_count_cell(
+    draft: _Draft, candidates: Sequence[VerificationEvidence], context: _QueryContext
+) -> list[VerificationEvidence]:
+    """COUNT(*) с WHERE или GROUP BY считает уже отобранные сущности, а не строки таблицы."""
+    if not context.filtered or draft.currency or draft.unit == "percent":
+        return []
+    return [
+        item for item in candidates if item.cell_address and "__rows__" in _label_keys(item.label)
+    ]
 
 
 def _aggregate_keys(label: str | None) -> set[str]:

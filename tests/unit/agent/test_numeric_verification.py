@@ -791,8 +791,16 @@ def test_fractional_cell_keeps_a_conflicting_aggregate_rejected() -> None:
     assert _checked("Максимум 72,49.", results, "Какой максимум?").status == "verified"
 
 
-def test_integer_cell_with_another_caption_stays_rejected() -> None:
-    assert _checked("Всего 4 515 заказов.", P90_RESULTS, P90_QUESTION).status == "failed"
+def test_filtered_count_names_its_entity_but_other_integers_stay_rejected() -> None:
+    assert _checked("Всего 4 515 обращений.", P90_RESULTS, P90_QUESTION).status == "verified"
+    results = _query_result(
+        "SELECT team, SUM(qty) AS qty FROM t WHERE d >= '2025-03-01' GROUP BY team",
+        ["team", "qty"],
+        [["Склад", 4515]],
+    )
+    assert _checked("Всего 4 515 заказов.", results, P90_QUESTION).status == "failed"
+    plain = _query_result("SELECT COUNT(*) AS n FROM t", ["n"], [[500000]])
+    assert _checked("Всего 500 000 запусков.", plain, "Сколько?").status == "failed"
 
 
 def test_rub_source_column_confirms_rubles_only() -> None:
@@ -830,3 +838,10 @@ def test_column_total_inherits_rubles_from_its_source_column() -> None:
     )
     assert _checked("Итого на сумму 30,75 руб.", results, "Сколько?").status == "verified"
     assert _checked("Итого на сумму 30,75 USD.", results, "Сколько?").status == "failed"
+
+
+def test_equal_fractional_value_in_two_queries_of_a_turn_is_one_measure() -> None:
+    results = _query_result("SELECT 1 AS x, 2.32 AS v", ["x", "v"], [[1, 2.32]])
+    results.append(results[0].model_copy(update={"result_id": "r_second"}))
+    assert _checked("Значение 2,32.", results, "Сколько?").status == "verified"
+    assert _checked("Значение 2,33.", results, "Сколько?").status == "failed"

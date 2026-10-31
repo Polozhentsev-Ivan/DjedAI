@@ -587,7 +587,13 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                     return False
             return True
 
-        if not any(labelled(line) and states_values(line) for line in lines):
+        # Единственную группу и её значения можно назвать в соседних предложениях,
+        # если следующее не подписано другой группой.
+        next_sentence = len(expect.get("answer_rows") or []) == 1 and any(
+            labelled(line) and ":" not in following and states_values(following)
+            for line, following in zip(lines, lines[1:], strict=False)
+        )
+        if not next_sentence and not any(labelled(line) and states_values(line) for line in lines):
             issues.append(f"Answer is missing or misstates values for '{reference['label']}'")
         if not any(
             any(labelled(str(cell)) for cell in row) and has_values(row)
