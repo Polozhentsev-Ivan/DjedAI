@@ -1980,9 +1980,16 @@ def _parameter_unit(text: str) -> str | None:
     return None if word in _STOPWORDS else word
 
 
+_QUERY_DATE_RE = re.compile(
+    r"(?<!\w)(?:\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}"
+    r"|\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{4})(?!\w)"
+)
+
+
 def _query_number_tokens(text: str) -> list[_NumberToken]:
     excluded = [
         *((claim.start, claim.end) for claim in _date_claims(text)),
+        *((match.start(), match.end()) for match in _QUERY_DATE_RE.finditer(text)),
         *((start, end) for start, end, _ in _suppressed_spans(text)),
         *((match.start("num"), match.end("num")) for match in _LIST_MARKER_RE.finditer(text)),
     ]
@@ -2010,13 +2017,16 @@ def _query_parameters(query: str | Sequence[str] | None) -> list[_QueryParameter
                 limit = literal.find_ancestor(exp.Limit)
                 if predicate is None and limit is None:
                     continue
-                operand = literal.parent if isinstance(literal.parent, exp.Neg) else literal
+                operand = literal
+                sign = 1
+                while isinstance(operand.parent, (exp.Paren, exp.Neg)):
+                    operand = operand.parent
+                    if isinstance(operand, exp.Neg):
+                        sign *= -1
                 if operand.parent is not predicate and operand.parent is not limit:
                     # A literal inside qty > (150 + 50) is not the threshold 200.
                     continue
-                value = Decimal(literal.this)
-                if isinstance(literal.parent, exp.Neg):
-                    value = -value
+                value = sign * Decimal(literal.this)
                 if _year_value(value) is not None:
                     continue
                 columns = list(predicate.find_all(exp.Column)) if predicate is not None else []
@@ -2086,11 +2096,65 @@ def query_parameter_spans(text: str, query: str | Sequence[str] | None) -> dict[
     return spans
 
 
-def _query_arithmetic_values(query: str | Sequence[str] | None) -> frozenset[Decimal]:
-    """Only an explicit user arithmetic instruction authorizes a scalar operand.
+def _arithmetic_literals(expression: str, *, scalar: bool = False) -> set[Decimal] | None:
+    """Parse a complete arithmetic expression, never a matching operator fragment."""
+    if _QUERY_DATE_RE.search(expression):
+        return None
+    # The answer parser accepts decimal commas and grouped digits; normalize only
+    # those numeric tokens before handing the complete syntax to SQLGlot.
+    for token in reversed(_tokens(expression)):
+        if (
+            ("," in token.raw or any(char.isspace() for char in token.raw))
+            and token.unit in ("unknown", "number")
+            and not token.currency
+            and token.scale == 1
+        ):
+            sign = "+" if expression[token.start : token.start + 1] == "+" else ""
+            expression = (
+                expression[: token.start] + sign + str(token.value) + expression[token.end :]
+            )
+    try:
+        statements = sqlglot.parse(expression.replace("×", "*").replace("÷", "/"), read="duckdb")
+    except Exception:
+        return None
+    if len(statements) != 1 or statements[0] is None:
+        return None
+    if any(node.comments for node in statements[0].walk()):
+        return None
 
-    SQL constants are never global formula coefficients: a literal may belong
-    to another result, projection, filter or LIMIT.
+    def values(node: exp.Expression) -> set[Decimal] | None:
+        if isinstance(node, exp.Paren):
+            return values(node.this)
+        if isinstance(node, exp.Neg):
+            operand = node.this
+            while isinstance(operand, exp.Paren):
+                operand = operand.this
+            if not isinstance(operand, (exp.Neg, exp.Literal)):
+                return None
+            inner = values(node.this)
+            # Unary minus must apply to a scalar, not change the signs of a sum's operands.
+            return {-value for value in inner} if inner is not None else None
+        if isinstance(node, exp.Literal) and not node.is_string:
+            value = Decimal(node.this)
+            return {value} if value.is_finite() else None
+        if not scalar and isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+            left, right = values(node.this), values(node.expression)
+            return left | right if left is not None and right is not None else None
+        return None
+
+    root = statements[0]
+    while isinstance(root, exp.Paren):
+        root = root.this
+    if not scalar and not isinstance(root, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        return None
+    return values(root)
+
+
+def _query_arithmetic_values(query: str | Sequence[str] | None) -> frozenset[Decimal]:
+    """Only a complete user arithmetic expression/instruction authorizes scalar operands.
+
+    SQL constants never become global formula coefficients. Dates, operator fragments,
+    units and other non-arithmetic syntax cannot be mistaken for an expression.
     """
     values: set[Decimal] = set()
     for text in _query_texts(query):
@@ -2099,52 +2163,44 @@ def _query_arithmetic_values(query: str | Sequence[str] | None) -> frozenset[Dec
                 continue
         except Exception:
             pass
-        tokens = _query_number_tokens(text)
-        whole_expression = re.fullmatch(r"[-+\d.,\s*/×÷]+[?!]?", text.strip()) is not None
-        for token in tokens:
-            instruction = re.search(
-                r"(?<!\w)(?:раздели(?:те)?|дели(?:те)?|умножь(?:те)?|divide|multiply)"
-                r"\s+(?:(?:результат|значение|его|the result|result|it)\s+)?(?:на|by)\s*$",
-                text[: token.start],
-                re.IGNORECASE,
-            )
-            if (
-                instruction
-                and token.unit in ("unknown", "number")
-                and not token.currency
-                and token.scale == 1
-                and _parameter_unit(text[token.end :]) is None
-                and _year_value(token.value) is None
-            ):
-                values.add(token.value)
-        for left, right in zip(tokens, tokens[1:], strict=False):
-            gap = text[left.end : right.start]
-            expression_instruction = re.search(
-                r"(?<!\w)(?:вычисли(?:те)?|посчитай(?:те)?|calculate|compute|формула|"
-                r"сколько будет|чему равно)\s*[:=]?\s*$",
-                text[: left.start],
-                re.IGNORECASE,
-            )
-            symbols = (whole_expression or expression_instruction) and re.fullmatch(
-                r"\s*[+*/×÷]\s*", gap
-            )
-            instruction = re.search(
-                r"(?<!\w)(?:раздели(?:те)?|дели(?:те)?|умножь(?:те)?|divide|multiply)\s*$",
-                text[: left.start],
-                re.IGNORECASE,
-            ) and re.fullmatch(r"\s*(?:секунд\w*|seconds?)?\s*(?:на|by)\s*", gap, re.IGNORECASE)
-            if not (symbols or instruction):
-                continue
-            for token in (left, right):
-                if token.unit not in ("unknown", "number") or token.currency or token.scale != 1:
-                    continue
-                if (
-                    _parameter_unit(text[token.end :]) is not None
-                    or _year_value(token.value) is not None
-                ):
-                    continue
-                values.add(token.value)
-    return frozenset(values)
+        clean = text.strip().rstrip("?!").strip()
+        candidates = [clean]
+        for instruction in re.finditer(
+            r"(?<!\w)(?:вычисли(?:те)?|посчитай(?:те)?|calculate|compute|формула|"
+            r"сколько будет|чему равно)\s*[:=]?\s*",
+            clean,
+            re.IGNORECASE,
+        ):
+            candidates.append(clean[instruction.end() :])
+        for expression in candidates:
+            if (literals := _arithmetic_literals(expression)) is not None:
+                values.update(literals)
+
+        spoken = re.fullmatch(
+            r"(?:раздели(?:те)?|дели(?:те)?|умножь(?:те)?|divide|multiply)\s+"
+            r"(?P<left>.*?)\s*(?:на|by)\s+(?P<right>.+?)"
+            r"(?:\s*,?\s+(?:please|пожалуйста))?",
+            clean,
+            re.IGNORECASE,
+        )
+        if spoken is None:
+            continue
+        right = _arithmetic_literals(spoken["right"], scalar=True)
+        if right is None:
+            continue
+        left = spoken["left"].strip()
+        if not left or re.fullmatch(
+            r"результат|значение|его|the result|result|it", left, re.IGNORECASE
+        ):
+            values.update(right)
+            continue
+        unqualified = re.sub(r"\s*(?:секунд\w*|seconds?)$", "", left, flags=re.IGNORECASE)
+        left_values = _arithmetic_literals(unqualified, scalar=True)
+        if left_values is not None:
+            values.update(right)
+            if unqualified == left:
+                values.update(left_values)
+    return frozenset(value for value in values if _year_value(value) is None)
 
 
 def _extract_drafts(text: str, query: str | Sequence[str] | None = None) -> list[_Draft]:

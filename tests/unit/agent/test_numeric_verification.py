@@ -472,6 +472,18 @@ def test_dates_urls_and_code_in_the_question_are_not_arithmetic_operands() -> No
     ]
     for query in (
         "Вопрос от 31/10/2024",
+        "2024/10/31",
+        "10/31/2024",
+        "31/10/2024",
+        "2024-10-31",
+        "Вычисли 2024/10/31",
+        "Вычисли 10/31/2024",
+        "*/31/5",
+        "Вычисли */31/5",
+        "Вычисли 77 / 31 +",
+        "Вычисли 77 / 31 -- 5",
+        "77 / 31 /* trailing operator */",
+        "(31)",
         "Проверь https://example.org/31/5",
         "См. `31/5`",
         "Прочитай example.org/31/5",
@@ -479,6 +491,51 @@ def test_dates_urls_and_code_in_the_question_are_not_arithmetic_operands() -> No
     ):
         report = _report("77 / 31 = 2,48", _evidence(results), results, query=query)
         assert report.status == "failed", query
+
+
+def test_complete_user_arithmetic_supports_subtraction_and_rejects_fragments() -> None:
+    results, evidence = _sql_evidence("SELECT MAX(qty) AS n FROM orders", "n", 77)
+    for query, answer in (
+        ("77 - 5", "77 - 5 = 72"),
+        ("Вычисли 77 - 5", "77 - 5 = 72"),
+        ("Compute (77 - 5)", "77 - 5 = 72"),
+        ("Вычисли 77 + 5", "77 + 5 = 82"),
+        ("Вычисли 77 - 5,5", "77 - 5,5 = 71,5"),
+    ):
+        report = _report(answer, evidence, results, query=query)
+        assert report.status == "verified", (query, report)
+        assert report.assertions[0].operands[0].evidence
+        assert report.assertions[0].operands[1].evidence == []
+    for query in ("77 - 5 +", "*/77-5", "Compute */77-5", "Divide result by 5*/31"):
+        assert _report("77 - 5 = 72", evidence, results, query=query).status == "failed", query
+
+
+def test_sql_parameter_parentheses_are_neutral_but_arithmetic_is_not() -> None:
+    results = [_threshold_result()]
+    evidence = _evidence(results)
+    for scalar in ("3600", "(3600)", "(((3600)))", "-(-3600)"):
+        report = _report(
+            "Порог 3600 секунд; строк 3",
+            evidence,
+            results,
+            query=f"SELECT COUNT(*) AS n FROM orders WHERE duration_sec > {scalar}",
+        )
+        assert report.status == "verified", scalar
+    for expression in ("150 + 50", "(150 + 50)", "((150) + (50))"):
+        report = _report(
+            "Порог 150; строк 3",
+            evidence,
+            results,
+            query=f"SELECT COUNT(*) AS n FROM orders WHERE qty > {expression}",
+        )
+        assert report.status == "failed", expression
+    report = _report(
+        "Лимит 150 строк; строк 3",
+        evidence,
+        results,
+        query="SELECT n FROM orders LIMIT ((150))",
+    )
+    assert report.status == "verified"
 
 
 def _table_result() -> ToolResult:

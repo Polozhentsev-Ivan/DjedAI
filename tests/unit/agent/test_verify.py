@@ -1,7 +1,11 @@
 from unittest.mock import MagicMock
 
+import duckdb
+import pytest
+
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import build_agent_graph, compose, verify
+from djedai.analytics.tools import run_sql
 from djedai.contracts.agent import (
     Block,
     ComposeResponse,
@@ -307,6 +311,75 @@ def test_supported_user_arithmetic_does_not_trigger_an_unnecessary_compose_retry
     assert result["verification"].status == "verified"
     client.generate_typed_response.assert_called_once()
     assert "Not found in the data" not in client.generate_typed_response.call_args.args[1]
+
+
+@pytest.mark.parametrize(
+    "question,draft,corrected,status",
+    [
+        ("Вычисли 77 - 5", "77 - 5 = 9999", "77 - 5 = 72", "corrected"),
+        ("2024/10/31", "77 / 31 = 9999", "77 / 31 = 2.48", "failed"),
+        ("10/31/2024", "77 / 31 = 9999", "77 / 31 = 2.48", "failed"),
+        ("*/31/5", "77 / 31 = 9999", "77 / 31 = 2.48", "failed"),
+    ],
+)
+def test_real_graph_final_formula_correction_uses_validated_original_arithmetic(
+    question, draft, corrected, status
+):
+    client = MagicMock()
+    client.generate_typed_response.side_effect = [
+        ModelResponse(status="success", data=Understanding(intent="data_question")),
+        ModelResponse(
+            status="success",
+            data=PlanResponse(
+                plan=[PlannedCall(tool="run_sql", args={"sql": "SELECT MAX(qty) AS n FROM orders"})]
+            ),
+        ),
+        *[
+            ModelResponse(
+                status="success",
+                data=ComposeResponse(answer_blocks=[Block(type="text", markdown=draft)]),
+            )
+            for _ in range(2)
+        ],
+        ModelResponse(
+            status="success", data=VerifyResponse(is_valid=False, corrected_markdown=corrected)
+        ),
+    ]
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE orders AS SELECT * FROM (VALUES (77), (20), (30)) t(qty)")
+
+        def dispatch(tool, args):
+            assert tool == "run_sql"
+            return run_sql(**args, connection=connection, allowed_tables={"orders"})
+
+        result = build_agent_graph().invoke(
+            {
+                "chat_id": "formula",
+                "dataset_id": "arithmetic",
+                "messages": [Message(role="user", content=question)],
+            },
+            {
+                "configurable": {
+                    "thread_id": question,
+                    "client": client,
+                    "tool_dispatcher": dispatch,
+                }
+            },
+        )
+
+    assert result["results"][0].data.rows == [[77]]
+    assert result["compose_retries"] == 2
+    assert result["verification"].status == status
+    assert result["verification"].rejected_assertions
+    if status == "corrected":
+        assert result["answer_blocks"][-1].markdown == corrected
+        assertion = result["verification"].assertions[0]
+        assert assertion.operands[0].evidence[0].result_id == result["results"][0].result_id
+        assert assertion.operands[1].evidence == []
+    else:
+        assert result["answer_blocks"][-1].type == "error"
+        assert all(block.markdown != corrected for block in result["answer_blocks"])
+        assert "invalid_correction" in {issue.code for issue in result["verification"].issues}
 
 
 def test_invalid_final_correction_is_replaced_by_an_explicit_error():
