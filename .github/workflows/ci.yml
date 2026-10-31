@@ -77,7 +77,7 @@ jobs:
           uv run --locked python scripts/test-compose.test.py
       - name: Test Python application
         # Bound concurrency on the shared host; keep module fixtures in one worker.
-        run: uv run --locked pytest --strict-markers -m "not integration and not llm" -n 2 --dist loadfile --durations=30 --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: uv run --locked pytest --strict-markers -m "not integration and not llm" -n 4 --dist loadfile --durations=30 --cov --cov-config=pyproject.toml --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Test auth migrations and persistence
         run: uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py tests/integration/test_chat_turn_migrations.py tests/integration/test_memory_metric_migrations.py
       - name: Test CP1 CSV and runtime integration
