@@ -37,13 +37,18 @@ from eval_values import collection_matches  # noqa: E402
 from verify_golden import check_identity, download_file  # noqa: E402
 
 from djedai.agent.config import get_agent_client  # noqa: E402
+from djedai.agent.dashboard import chart_for_result  # noqa: E402
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
 from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
 from djedai.contracts.catalog import DatasetCatalog  # noqa: E402
-from djedai.contracts.dashboard import DashboardSnapshot, WidgetSnapshot  # noqa: E402
+from djedai.contracts.chart import ChartSpec, ChartTemplate  # noqa: E402
+from djedai.contracts.dashboard import (  # noqa: E402
+    DashboardSnapshot,
+    WidgetSnapshot,
+)
 from djedai.contracts.tool_result import ToolResult  # noqa: E402
 from djedai.data.service import CsvSource, ingest_csv_dataset  # noqa: E402
 from djedai.execution import ExecutionBudget  # noqa: E402
@@ -325,6 +330,29 @@ def _tolerance(fact: dict) -> Decimal:
     if fact["comparison"] != "approx":
         return Decimal(0)
     return Decimal(str(fact["abs_tolerance"]))
+
+
+def _reused_results(
+    expect: dict,
+    context_results: Sequence[dict] | None,
+) -> tuple[list[Any], str | None, list[str]]:
+    """Tool results of the prerequisite that ``reuse_result_from`` names.
+
+    A follow-up may legitimately answer from the previous turn without calling a tool
+    again.  Only the explicitly declared prerequisite is evidence; other context
+    results stay out so one case cannot borrow numbers from an unrelated question.
+    """
+    source = expect.get("reuse_result_from")
+    if not source:
+        return [], None, []
+    for context in context_results or []:
+        if _field(context, "id") != source:
+            continue
+        reused = list(_field(context, "tool_results") or [])
+        if not reused:
+            return [], source, [f"Context result '{source}' has no tool results to verify reuse"]
+        return reused, source, []
+    return [], source, [f"Context result '{source}' was not found to verify reuse"]
 
 
 def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
@@ -827,10 +855,53 @@ def _check_dashboard(
 
     actual_widgets = _field(snapshot, "widgets") or []
     check_details["widget_count"] = len(actual_widgets)
+    check_details["widget_ids"] = sorted(
+        widget_id for widget in actual_widgets if (widget_id := _field(widget, "widget_id"))
+    )
     if len(actual_widgets) < 3 or len(actual_widgets) > 8:
         issues.append(f"Dashboard has {len(actual_widgets)} widgets; expected between 3 and 8")
 
-    all_available = list(results)
+    reuse_dashboard = expect.get("reuse_dashboard_from")
+    if reuse_dashboard:
+        prior = next(
+            (cr for cr in context_results or [] if _field(cr, "id") == reuse_dashboard),
+            None,
+        )
+        checks = _field(prior, "dashboard_checks") if prior is not None else None
+        prior_id = _field(checks, "dashboard_id")
+        if prior_id is None:
+            issues.append(
+                f"Cannot verify dashboard reuse: prerequisite '{reuse_dashboard}' "
+                "has no saved dashboard"
+            )
+        elif dashboard_id != prior_id:
+            issues.append(
+                f"dashboard_link '{dashboard_id}' does not reuse prerequisite "
+                f"dashboard '{prior_id}'"
+            )
+        prior_widgets = set(_field(checks, "widget_ids") or [])
+        if prior_widgets and prior_widgets != set(check_details["widget_ids"]):
+            issues.append("Refreshed dashboard does not keep the widgets of the reused dashboard")
+
+    # Recompute the widgets before matching them. A chat refresh creates new result
+    # ids that are not part of this turn's `results`; the recipe replay is the only
+    # independent backing available to the runner.
+    recompute = getattr(dataset, "recompute_widget", None)
+    refreshed_results: list[Any] = []
+    refreshed_by_widget: dict[Any, Any] = {}
+    if recompute is not None:
+        for aw in actual_widgets:
+            wid = _field(aw, "widget_id")
+            try:
+                refreshed = recompute(aw)
+            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
+                issues.append(f"Widget '{wid}' refresh failed: {exc}")
+                continue
+            refreshed_results.append(refreshed)
+            if wid:
+                refreshed_by_widget[wid] = refreshed
+
+    all_available = [*results, *refreshed_results]
     for cr in context_results or []:
         all_available.extend(_field(cr, "tool_results") or [])
 
@@ -862,6 +933,8 @@ def _check_dashboard(
             if not aw_res_id:
                 continue
             aw_res = next((r for r in all_available if _field(r, "result_id") == aw_res_id), None)
+            if aw_res is None:
+                aw_res = refreshed_by_widget.get(aw_wid)
             if aw_res is None or _field(aw_res, "status") not in ("ok", "empty"):
                 continue
             if exp_facts:
@@ -886,18 +959,19 @@ def _check_dashboard(
     # with tests/integration/test_dashboard_chat.py and test_owner_isolation.py.
     # Widget facts are checked against the whole result, not the axes its chart draws.
     check_details["not_evaluated"] = ["restart", "foreign_owner", "widget_chart_axes"]
+    check_details["recomputed_tools"] = sorted(
+        {str(tool) for result in refreshed_results if (tool := _field(result, "tool"))}
+    )
+    check_details["_refreshed_results"] = refreshed_results
 
-    recompute = getattr(dataset, "recompute_widget", None)
     if recompute is None:
         check_details["not_evaluated"].append("refresh")
     else:
         for aw in actual_widgets:
             wid = _field(aw, "widget_id")
-            try:
-                refreshed = recompute(aw)
-            except Exception as exc:  # noqa: BLE001 - a broken recipe is the finding
-                issues.append(f"Widget '{wid}' refresh failed: {exc}")
-                continue
+            refreshed = refreshed_by_widget.get(wid)
+            if refreshed is None:
+                continue  # the recipe failure is already reported above
             if _field(refreshed, "status") != "ok":
                 issues.append(f"Widget '{wid}' refresh returned '{_field(refreshed, 'status')}'")
             if _field(refreshed, "result_id") == _field(aw, "result_id"):
@@ -1104,6 +1178,9 @@ def evaluate_case(
     plan = list(result.get("plan") or [])
     text = _block_text(blocks)
     used_tools = [tool for item in results if (tool := _field(item, "tool"))]
+    reused_results, reuse_source, reuse_issues = _reused_results(expect, context_results)
+    evidence_results = [*results, *reused_results]
+    reused_tools = [tool for item in reused_results if (tool := _field(item, "tool"))]
     forbidden = set(expect.get("tools_forbidden") or [])
     if {"run_sql", "describe_dataset", "describe_column", "value_counts"} <= forbidden:
         forbidden |= SUPPORTED_TOOLS
@@ -1127,8 +1204,19 @@ def evaluate_case(
         "diagnostics": result.get("_eval_diagnostics", []),
     }
 
-    automated_issues = _terminal_issues(blocks, results, plan)
-    if automated_issues:
+    if reuse_source is not None:
+        details["reuse"] = {
+            "from": reuse_source,
+            "result_ids": [
+                result_id
+                for result_id in (_field(item, "result_id") for item in reused_results)
+                if result_id
+            ],
+            "tools": list(dict.fromkeys(reused_tools)),
+        }
+    terminal_issues = _terminal_issues(blocks, results, plan)
+    automated_issues = [*terminal_issues, *reuse_issues]
+    if terminal_issues:
         semantics = _evaluate_semantics(case, "", [])
         details["automated_status"] = "failed"
         details["automated_issues"] = automated_issues
@@ -1152,29 +1240,68 @@ def evaluate_case(
         tools_any = set(expect.get("tools_any") or []) | (
             set(expect.get("tools_planned") or []) & SUPPORTED_TOOLS
         )
-        if tools_any and not set(tools_any).intersection(used_tools):
-            automated_issues.append(
-                f"Did not use any expected tools {tools_any}. Used: {used_tools}"
-            )
         if not any(
             _field(block, "type") == "text" and (_field(block, "markdown") or "").strip()
             for block in blocks
         ):
             automated_issues.append("The answer contains no text block")
 
+        # A dashboard refresh has no ordinary tool results: its widget recipes are
+        # replayed by the dashboard check, and those results become the evidence.
+        dash_issues, dash_details = _check_dashboard(
+            case,
+            blocks,
+            result,
+            results,
+            dataset=dataset,
+            context_results=context_results,
+            column_aliases=column_aliases,
+        )
+        dashboard_evidence = list(dash_details.pop("_refreshed_results", []))
+        automated_issues.extend(dash_issues)
+        if dash_details:
+            details["dashboard_checks"] = dash_details
+        reuse_dashboard = expect.get("reuse_dashboard_from")
+        if reuse_dashboard:
+            evidence_results = [*results, *reused_results, *dashboard_evidence]
+
         reference_facts = expect.get("facts") or []
+        facts_from_context = False
+        facts_from_dashboard = False
         for fact in reference_facts:
             result_ok = check_fact(
                 fact, results, column_aliases=column_aliases, reference_facts=reference_facts
             )
+            fact_source = "current"
+            if not result_ok and reused_results:
+                result_ok = check_fact(
+                    fact,
+                    reused_results,
+                    column_aliases=column_aliases,
+                    reference_facts=reference_facts,
+                )
+                if result_ok:
+                    fact_source = f"context:{reuse_source}"
+                    facts_from_context = True
+            if not result_ok and dashboard_evidence:
+                result_ok = check_fact(
+                    fact,
+                    dashboard_evidence,
+                    column_aliases=column_aliases,
+                    reference_facts=reference_facts,
+                )
+                if result_ok:
+                    fact_source = f"dashboard:{dash_details.get('dashboard_id')}"
+                    facts_from_dashboard = True
             fact_check = {
                 "key": fact["key"],
                 "comparison": fact["comparison"],
                 "expected": fact["value"],
                 "result": result_ok,
                 "passed": result_ok,
+                "source": fact_source,
             }
-            derived = _verified_percentage(fact, results, reference_facts, column_aliases)
+            derived = _verified_percentage(fact, evidence_results, reference_facts, column_aliases)
             if derived is not None:
                 fact_check["derivation"] = derived
                 if not _percentage_in_answer(text, Decimal(derived["value"]), _tolerance(fact)):
@@ -1187,7 +1314,42 @@ def evaluate_case(
                     f"Fact '{fact['key']}' (value: {fact['value']}) "
                     "is not confirmed by tool results"
                 )
-        automated_issues.extend(_answer_issues(case, text, results))
+
+        expected_from_current = set(tools_any).intersection(used_tools)
+        expected_from_context = set(tools_any).intersection(reused_tools)
+        expected_from_dashboard = set(tools_any).intersection(
+            dash_details.get("recomputed_tools") or []
+        )
+        facts_passed = all(check["passed"] for check in details["fact_checks"])
+        # A memory-only answer is accepted only when the declared prerequisite really
+        # contains the expected tool and every reference fact is confirmed there.
+        memory_satisfies_tools = bool(
+            reuse_source and reused_results and expected_from_context and facts_from_context
+        )
+        # A dashboard refresh runs its recipes inside the backend; the replayed
+        # widget results are the equivalent evidence of those tool calls.
+        dashboard_satisfies_tools = bool(
+            reuse_dashboard
+            and dashboard_evidence
+            and expected_from_dashboard
+            and facts_from_dashboard
+        )
+        if reuse_source:
+            details["reuse"]["accepted"] = bool(memory_satisfies_tools and facts_passed)
+        if reuse_dashboard:
+            details["dashboard_checks"]["reuse_accepted"] = bool(
+                dashboard_satisfies_tools and facts_passed
+            )
+        if (
+            tools_any
+            and not expected_from_current
+            and not (memory_satisfies_tools and facts_passed)
+            and not (dashboard_satisfies_tools and facts_passed)
+        ):
+            automated_issues.append(
+                f"Did not use any expected tools {tools_any}. Used: {used_tools}"
+            )
+        automated_issues.extend(_answer_issues(case, text, evidence_results))
         automated_issues.extend(_missing_answer_values(case, blocks, text))
 
         # Chart checks
@@ -1203,22 +1365,8 @@ def evaluate_case(
         if chart_details:
             details["chart_checks"] = chart_details
 
-        # Dashboard checks
-        dash_issues, dash_details = _check_dashboard(
-            case,
-            blocks,
-            result,
-            results,
-            dataset=dataset,
-            context_results=context_results,
-            column_aliases=column_aliases,
-        )
-        automated_issues.extend(dash_issues)
-        if dash_details:
-            details["dashboard_checks"] = dash_details
-
         # Correlation tool checks
-        automated_issues.extend(_check_correlation_results(case, results))
+        automated_issues.extend(_check_correlation_results(case, evidence_results))
 
     elif outcome == "clarify":
         intent = _intent(result)
@@ -1252,7 +1400,7 @@ def evaluate_case(
     else:
         automated_issues.append(f"Unsupported expected outcome '{outcome}'")
 
-    semantics = _evaluate_semantics(case, text, results)
+    semantics = _evaluate_semantics(case, text, evidence_results)
     automated_passed = not automated_issues
 
     details["automated_status"] = "passed" if automated_passed else "failed"
@@ -1269,6 +1417,83 @@ def evaluate_case(
     else:
         status = "needs_review"  # Automated checks hold; the rubrics still need a person.
     return status, all_issues, details
+
+
+class EvalDashboardStore:
+    """Saved dashboards of one evaluation chat, with an autonomous refresh.
+
+    The real application stores dashboards in its database. The eval runner has no
+    application database, but a follow-up may need the dashboard created by its
+    prerequisite, so the same contract is kept in memory for one chat.
+    """
+
+    def __init__(self, dataset: Any) -> None:
+        self.dataset = dataset
+        self._snapshots: dict[str, DashboardSnapshot] = {}
+
+    def save(
+        self, title: str, description: str | None, widgets: list[WidgetSnapshot]
+    ) -> DashboardSnapshot:
+        snapshot = DashboardSnapshot(
+            dashboard_id=f"d_eval_{uuid4().hex[:12]}",
+            dataset_id=self.dataset.catalog.dataset_id,
+            title=title,
+            description=description,
+            widgets=widgets,
+            consistency="immutable",
+            created_at=datetime.now(UTC),
+            refreshed_at=datetime.now(UTC),
+        )
+        self._snapshots[snapshot.dashboard_id] = snapshot
+        return snapshot
+
+    def refresh(self, dashboard_id: str) -> DashboardSnapshot:
+        """Recompute every widget recipe and return the same saved dashboard."""
+        snapshot = self._snapshots.get(dashboard_id)
+        if snapshot is None:
+            raise ValueError("Dashboard not found in this chat")
+        recompute = getattr(self.dataset, "recompute_widget", None)
+        if recompute is None:
+            raise ValueError("Dashboard refresh is unavailable")
+
+        widgets: list[WidgetSnapshot] = []
+        for widget in snapshot.widgets:
+            template = (
+                ChartTemplate(**widget.chart.model_dump(exclude={"result_id"}))
+                if isinstance(widget.chart, ChartSpec)
+                else widget.chart
+            )
+            result = recompute(widget)
+            if result.status not in ("ok", "empty"):
+                widgets.append(
+                    widget.model_copy(
+                        update={
+                            "chart": template,
+                            "result_id": None,
+                            "status": "error",
+                            "error": result.error,
+                        }
+                    )
+                )
+                continue
+            read = result.read
+            widgets.append(
+                widget.model_copy(
+                    update={
+                        "chart": chart_for_result(template, result),
+                        "result_id": result.result_id,
+                        "status": result.status,
+                        "error": None,
+                        "read_started_at": read.started_at if read is not None else None,
+                        "read_finished_at": read.finished_at if read is not None else None,
+                    }
+                )
+            )
+        refreshed = snapshot.model_copy(
+            update={"widgets": widgets, "refreshed_at": datetime.now(UTC)}
+        )
+        self._snapshots[dashboard_id] = refreshed
+        return refreshed
 
 
 class GoldenDataset:
@@ -1409,6 +1634,8 @@ def _invoke(
     thread_id: str,
     history: Sequence[Message],
     question: str,
+    *,
+    dashboards: EvalDashboardStore | None = None,
 ) -> dict:
     state = {
         "chat_id": thread_id,
@@ -1425,31 +1652,19 @@ def _invoke(
     )
     budget = ExecutionBudget(get_limits().agent_turn_timeout_seconds)
 
-    def saver(
-        title: str, description: str | None, widgets: list[WidgetSnapshot]
-    ) -> DashboardSnapshot:
-        return DashboardSnapshot(
-            dashboard_id=f"d_eval_{uuid4().hex[:12]}",
-            dataset_id=dataset.catalog.dataset_id,
-            title=title,
-            description=description,
-            widgets=widgets,
-            consistency="immutable",
-            created_at=datetime.now(UTC),
-            refreshed_at=datetime.now(UTC),
-        )
-
     config = {
         "configurable": {
             "thread_id": thread_id,
             "client": client,
             "catalog_loader": dataset.load_catalog,
             "tool_dispatcher": dataset.dispatch,
-            "dashboard_saver": saver,
             "budget": budget,
             "diagnostics": diagnostics,
         }
     }
+    if dashboards is not None:
+        config["configurable"]["dashboard_saver"] = dashboards.save
+        config["configurable"]["dashboard_refresher"] = dashboards.refresh
     try:
         with budget.activate():
             result = graph.invoke(state, config=config)
@@ -1496,6 +1711,7 @@ def process_case(
     history: list[Message] = []
     executed_context: list[str] = []
     context_results: list[dict] = []
+    dashboards = EvalDashboardStore(dataset)
     column_aliases = {
         column.original_name: column.name
         for table in getattr(dataset.catalog, "tables", [])
@@ -1537,6 +1753,7 @@ def process_case(
                 thread_id,
                 history,
                 dependency.get("question", ""),
+                dashboards=dashboards,
             )
         except Exception as error:  # noqa: BLE001 - a prerequisite failure blocks the case
             partial = error.result if isinstance(error, EvalInvocationError) else {}
@@ -1601,7 +1818,15 @@ def process_case(
 
     start_time = time.perf_counter()
     try:
-        result = _invoke(graph, dataset, client, thread_id, history, case.get("question", ""))
+        result = _invoke(
+            graph,
+            dataset,
+            client,
+            thread_id,
+            history,
+            case.get("question", ""),
+            dashboards=dashboards,
+        )
     except Exception as error:  # noqa: BLE001 - report the failed run, not a crash
         partial = error.result if isinstance(error, EvalInvocationError) else {}
         _, _, details = evaluate_case(

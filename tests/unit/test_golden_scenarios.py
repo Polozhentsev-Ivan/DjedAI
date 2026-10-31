@@ -100,6 +100,15 @@ def test_exact_nested_count_never_accepts_boolean_substitution():
     )
 
 
+def test_dashboard_reuse_requires_a_dashboard_prerequisite(tmp_path, suite):
+    cases, manifest = copy.deepcopy(suite)
+    case = next(case for case in cases if case["id"] == "s6_refresh_previous_dashboard_01")
+    case["context"]["previous_cases"] = ["s3_top_services_01"]
+    case["expect"]["reuse_dashboard_from"] = "s3_top_services_01"
+    with pytest.raises(golden.GoldenError, match="prerequisite dashboard"):
+        golden.load_suite(*write_suite(tmp_path, cases, manifest))
+
+
 def test_full_reference_report_is_valid_json_in_a_legacy_windows_console(
     tmp_path, suite, monkeypatch
 ):

@@ -26,6 +26,7 @@ STATUS_TEXT = {
     "plan_dashboard": "Планирую дашборд…",
     "execute_dashboard": "Считаю виджеты дашборда…",
     "save_dashboard": "Сохраняю дашборд…",
+    "refresh_dashboard": "Обновляю дашборд…",
     "visualize": "Подбираю визуализацию…",
     "compose": "Формулирую ответ…",
     "verify": "Проверяю числа в ответе…",

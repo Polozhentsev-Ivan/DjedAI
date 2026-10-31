@@ -14,6 +14,7 @@ Rules for follow-up questions:
 - Put the exact result IDs the question refers to into `references`. Use the numbered focus results and previous answer blocks to resolve "the first/second item".
 - If the user only changes the representation of an already calculated result (another chart type, more or less detail), use `modify_previous`, set `references`, and do not ask to recalculate the same data.
 - If the user needs a new calculation over the same period/filters, keep the period and filters in `resolved_question` and leave `references` empty unless the calculation must reuse a previous result.
+- If the user asks to open, refresh or update a dashboard created earlier, use `dashboard` and put its exact ID from the previous answer blocks into `dashboard_id`. Do not create a new dashboard and never invent a dashboard ID.
 
 Rules for Intents:
 - `data_overview`: The user asks what the data is about, its structure, or what's inside.
