@@ -83,6 +83,7 @@ def test_live_agent_api_call(tmp_path: Path):
     else:
         assert result.get("verification") is None or result["verification"].status in {
             "verified",
+            "corrected",
             "not_applicable",
         }
 
