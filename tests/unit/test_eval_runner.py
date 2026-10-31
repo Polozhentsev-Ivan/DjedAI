@@ -249,6 +249,36 @@ def test_calendar_exemptions_do_not_hide_wrong_measured_values(wrong_count):
     assert f"Number {wrong_count} in the answer is not backed by tool results" in issues
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_status"),
+    [
+        ("Лидер — Калининград. Рост составил 62,29 %.", "passed"),
+        ("Калининград показал стабильность. Рост Москвы составляет 62,29 %.", "failed"),
+    ],
+)
+def test_following_sentence_keeps_the_subject_of_the_required_answer_row(text, expected_status):
+    case = answer_case(
+        "city_growth",
+        answer_rows=[
+            {
+                "label": "Калининград",
+                "values": [{"value": 62.29, "abs_tolerance": 0.01, "unit": "percent"}],
+            }
+        ],
+    )
+    result = {
+        "results": [tool_result(rows=[["Калининград", 62.29]])],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", text)],
+    }
+
+    status, issues, _ = evaluate_case(case, result)
+
+    assert status == expected_status, issues
+    if expected_status == "failed":
+        assert "Answer is missing or misstates values for 'Калининград'" in issues
+
+
 def test_correct_tool_result_does_not_hide_wrong_answer_number():
     case = answer_case(
         "s1_overview_01",

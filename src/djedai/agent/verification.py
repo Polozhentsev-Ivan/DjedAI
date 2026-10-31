@@ -2243,6 +2243,7 @@ class _ResultConditions:
     start: date | None = None
     end: date | None = None
     divisors: frozenset[Decimal] = frozenset()
+    cutoffs: frozenset[tuple[str, str, date]] = frozenset()
 
     def covers(self, period: VerificationPeriod) -> bool:
         first, last = _date(period.start), _date(period.end)
@@ -2298,6 +2299,36 @@ class _QueryContext:
     def has_dates(self) -> bool:
         return any(conditions.start is not None for conditions in self.results.values())
 
+    def as_of(self, draft: _Draft, result_ids: Iterable[str] | None = None) -> bool:
+        requested = _as_of_day(self.question)
+        if requested is None:
+            return False
+        cutoff = requested + timedelta(days=1)
+        ids = self.results if result_ids is None else result_ids
+        conditions = [self.results[result_id] for result_id in ids if result_id in self.results]
+        if not any(
+            any(operator == "lt" and value == cutoff for _, operator, value in condition.cutoffs)
+            for condition in conditions
+        ):
+            return False
+        stated = _as_of_day(draft.text)
+        if stated is not None:
+            return stated == requested
+        # A separate explanation can repeat the exclusive SQL boundary, but
+        # cannot turn that boundary into an analytical measurement period.
+        if draft.raw_text != cutoff.isoformat():
+            return False
+        captions = re.findall(
+            rf"(ранее|позже|до|после)\s+{re.escape(draft.raw_text)}(?!\d)",
+            draft.text,
+            re.I,
+        )
+        required = {"lt" if caption.lower() in ("ранее", "до") else "gte" for caption in captions}
+        return bool(required) and any(
+            required <= {operator for _, operator, value in condition.cutoffs if value == cutoff}
+            for condition in conditions
+        )
+
 
 def _direct_divisors(expression: exp.Expression) -> set[Decimal]:
     """Литералы, на которые действительно делят: `x / 28.0`, `x / (28.0 * n)`, но не `(2 + 5)`."""
@@ -2318,8 +2349,20 @@ def _sql_conditions(sql: str) -> _ResultConditions:
     except Exception:
         return _ResultConditions()
     bounds: list[date] = []
+    cutoffs: set[tuple[str, str, date]] = set()
     for scope in parsed.find_all(exp.Where, exp.Having, exp.If):
         for comparison in scope.find_all(exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.Between):
+            if isinstance(comparison, (exp.LT, exp.GTE)) and isinstance(
+                comparison.this, exp.Column
+            ):
+                literal = comparison.expression
+                if (
+                    isinstance(literal, exp.Literal)
+                    and literal.is_string
+                    and re.fullmatch(r"\d{4}-\d{2}-\d{2}", literal.this)
+                    and (cutoff := _date(literal.this))
+                ):
+                    cutoffs.add((comparison.this.name.lower(), comparison.key, cutoff))
             for literal in comparison.find_all(exp.Literal):
                 if literal.is_string and (parsed_date := _date(literal.this[:10])):
                     bounds.append(parsed_date)
@@ -2327,7 +2370,10 @@ def _sql_conditions(sql: str) -> _ResultConditions:
     for division in parsed.find_all(exp.Div):
         divisors |= _direct_divisors(division.expression)
     return _ResultConditions(
-        min(bounds, default=None), max(bounds, default=None), frozenset(divisors)
+        min(bounds, default=None),
+        max(bounds, default=None),
+        frozenset(divisors),
+        frozenset(cutoffs),
     )
 
 
@@ -2380,16 +2426,41 @@ _MONTH_DAYS = (
 )
 
 
+def _as_of_day(text: str) -> date | None:
+    for month, (pattern, _) in enumerate(_MONTH_DAYS, 1):
+        match = re.search(rf"на\s+конец\s+(\d{{1,2}})\s+{pattern}\w*\s+(\d{{4}})", text, re.I)
+        if match:
+            with suppress(ValueError):
+                return date(int(match[2]), month, int(match[1]))
+    return None
+
+
 def is_calendar_days(text: str, start: int, end: int, value: Decimal) -> bool:
     """«в феврале 2025 (28 дней)»: длина названного месяца, а не измеренная длительность."""
     if not _DAYS_AFTER_RE.match(text[end:]) or re.search(
         r"длительн|средн|срок|duration", text[max(0, start - 60) : start], re.I
     ):
         return False
-    window = text[max(0, start - 40) : start] + " " + text[end : end + 25]
+    # Each calendar caption belongs to its own clause. In particular, February
+    # must not capture the following March caption after a semicolon.
+    left = max(text.rfind(";", 0, start), text.rfind("\n", 0, start)) + 1
+    right = min(
+        (position for separator in (";", "\n") if (position := text.find(separator, end)) >= 0),
+        default=len(text),
+    )
+    window_start = max(left, start - 40)
+    window = text[window_start:start] + " " + text[end : min(right, end + 25)]
+    months = []
     for pattern, days in _MONTH_DAYS:
-        if re.search(rf"(?<!\w){pattern}", window, re.I):
-            return value == days or (days == 28 and value == 29)
+        for match in re.finditer(rf"(?<!\w){pattern}", window, re.I):
+            distance = min(
+                abs(match.start() - (start - window_start)),
+                abs(match.end() - (start - window_start)),
+            )
+            months.append((distance, days))
+    if months:
+        days = min(months)[1]
+        return value == days or (days == 28 and value == 29)
     return False
 
 
@@ -2498,9 +2569,10 @@ def _match_quantity(
         ]
         if covered:
             candidates = covered
-        elif not context.covers(draft.period, {item.result_id for item in candidates}) or any(
-            item.period for item in candidates
-        ):
+        elif not (
+            context.covers(draft.period, {item.result_id for item in candidates})
+            or context.as_of(draft, {item.result_id for item in candidates})
+        ) or any(item.period for item in candidates):
             return [], "period_mismatch"
 
     denominator_reason = next(
@@ -2571,6 +2643,8 @@ def _match_date(
         if item.period is not None and _period_covered(draft.period, [item.period])
     ]
     if not candidates:
+        if context is not None and context.as_of(draft):
+            return [], None
         if context is not None and context.covers(draft.period):
             return [], None
         return [], "period_mismatch"
