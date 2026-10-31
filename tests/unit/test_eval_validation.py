@@ -10,6 +10,7 @@ import duckdb
 import pytest
 import yaml
 
+from djedai.agent.dashboard import dashboard_preview_blocks, dashboard_refresh_blocks
 from djedai.contracts.agent import Block
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.dashboard import (
@@ -754,6 +755,90 @@ def _make_dashboard_widget(widget_id, chart_type="line", result_id="r1", tool_pa
         layout=WidgetLayout(x=0, y=0, w=4, h=2),
         tool_call=WidgetToolCall(tool="run_sql", params=tool_params or {"query": "SELECT 1"}),
     )
+
+
+def dashboard_answer(preview=dashboard_preview_blocks, *, title="Показатели", count=3):
+    snapshot = DashboardSnapshot(
+        dashboard_id="dash_counts",
+        dataset_id="ds_validation",
+        title=title,
+        created_at=datetime.now(UTC),
+        widgets=[_make_dashboard_widget(f"w{i}", result_id=f"r{i}") for i in range(count)],
+    )
+    return {
+        "results": [
+            result([["ready", 123]], columns=["date", "cnt"], result_id=f"r{i}")
+            for i in range(count)
+        ],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": preview(snapshot),
+        "dashboard_snapshot": snapshot,
+    }
+
+
+@pytest.mark.parametrize("preview", [dashboard_preview_blocks, dashboard_refresh_blocks])
+@pytest.mark.parametrize("count", [3, 8])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_dashboard_service_counts_are_verified_by_snapshot(preview, count, serialized):
+    s = dashboard_answer(preview, count=count)
+    original = s["answer_blocks"][0].markdown
+    if serialized:
+        s["dashboard_snapshot"] = s["dashboard_snapshot"].model_dump(mode="json")
+        s["answer_blocks"] = [block.model_dump(mode="json") for block in s["answer_blocks"]]
+    status, issues, details = evaluate_case(case(dashboard={}), s)
+    assert status == "passed", issues
+    assert details["answer"] == original
+    assert details["dashboard_checks"]["widget_count"] == count
+
+
+@pytest.mark.parametrize("number", [3, 999])
+@pytest.mark.parametrize("separate_block", [False, True])
+def test_dashboard_service_count_never_justifies_an_analytical_number(number, separate_block):
+    s = dashboard_answer()
+    claim = f"Всего {number} строк."
+    if separate_block:
+        s["answer_blocks"].append(Block(type="text", markdown=claim))
+    else:
+        s["answer_blocks"][0].markdown += " " + claim
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_dashboard_summary_keeps_correct_analytical_prose_and_checks_title():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown += " Всего 123 строки."
+    assert evaluate_case(case(dashboard={}), s)[0] == "passed"
+    status, issues, _ = evaluate_case(case(dashboard={}), dashboard_answer(title="Всего 999 строк"))
+    assert status == "failed"
+    assert "Number 999 in the answer is not backed by tool results" in issues
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing_snapshot", "invalid_snapshot", "wrong_link", "wrong_count"]
+)
+def test_dashboard_count_exemption_requires_matching_saved_evidence(defect):
+    s = dashboard_answer()
+    if defect == "missing_snapshot":
+        s.pop("dashboard_snapshot")
+    elif defect == "invalid_snapshot":
+        s["dashboard_snapshot"] = {"widgets": []}
+    elif defect == "wrong_link":
+        s["answer_blocks"][-1].dashboard_id = "another_dashboard"
+    else:
+        s["answer_blocks"][0].markdown = s["answer_blocks"][0].markdown.replace("3", "7")
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    number = 7 if defect == "wrong_count" else 3
+    assert f"Number {number} in the answer is not backed by tool results" in issues
+
+
+def test_ordinary_widget_mentions_are_still_numeric_claims():
+    s = dashboard_answer()
+    s["answer_blocks"][0].markdown = "Виджетов: 3."
+    status, issues, _ = evaluate_case(case(dashboard={}), s)
+    assert status == "failed"
+    assert "Number 3 in the answer is not backed by tool results" in issues
 
 
 def test_dashboard_missing_link_or_snapshot_fails():
