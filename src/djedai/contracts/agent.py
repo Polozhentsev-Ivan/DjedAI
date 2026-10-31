@@ -121,6 +121,8 @@ class AgentState(TypedDict, total=False):
     dataset_id: str
     messages: list[Message]
     catalog_prompt: str
+    # Только имена колонок: compose и verify не берут из каталога числа для ответа.
+    catalog_fields: str
     # Normalized column names whose original header is sensitive; keeps
     # `dbPasswordText` sensitive after normalization to `dbpasswordtext`.
     sensitive_columns: tuple[str, ...]

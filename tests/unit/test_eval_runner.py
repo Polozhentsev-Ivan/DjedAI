@@ -336,6 +336,29 @@ def test_answer_rounding_and_user_constants_are_allowed():
     assert status == "passed", issues
 
 
+def test_hour_conversion_reaches_answer_evidence_without_dashboard():
+    case = answer_case(
+        "duration_hours",
+        result_duration_unit="hours",
+        answer_contains_value={"from_result": True},
+    )
+    computed = ToolResult(
+        result_id="r_seconds",
+        status="ok",
+        tool="run_sql",
+        data=ToolResultData(columns=["p90_sec"], rows=[[260964.0]], row_count=1),
+    )
+    result = {
+        "results": [computed],
+        "plan": [SimpleNamespace(tool="run_sql")],
+        "answer_blocks": [Block("text", "Duration: 72.49 hours")],
+    }
+    status, issues, _ = evaluate_case(case, result)
+    assert status == "passed", issues
+    assert computed.data.columns == ["p90_sec"]
+    assert computed.data.rows == [[260964.0]]
+
+
 def test_answer_may_derive_share_from_tool_counts():
     case = answer_case("s2_status_01", answer_contains_value={"from_result": True})
     result = {

@@ -13,9 +13,11 @@ from djedai.agent.guards import (
     MUTATION_QUESTION,
     WRITE_REJECTION,
     _has_money_words,
+    asks_state_on_date,
     find_reversed_period,
     guard_question,
     lacks_money_fields,
+    unitless_how_much,
 )
 from djedai.backend.chat_service import _agent_error, _block_to_message_block
 from djedai.contracts.agent import Message, Understanding
@@ -483,6 +485,45 @@ def test_model_refusal_without_clarification_is_text_not_turn_failure():
     assert [block.type for block in result["answer_blocks"]] == ["text"]
     assert _agent_error(result["answer_blocks"]) is None
     assert "вопрос по выбранным данным" in result["answer_blocks"][0].markdown
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Сколько было согласовано, но ещё не оплачено?",
+        "Сколько всего потрачено на закупки?",
+        "сколько осталось по подразделениям",
+    ],
+)
+def test_how_much_without_unit(text):
+    assert unitless_how_much(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Сколько заявок было согласовано?",
+        "Сколько попыток завершилось ошибкой?",
+        "Какая сумма согласована?",
+        "",
+        None,
+    ],
+)
+def test_how_much_with_unit_or_other_question(text):
+    assert not unitless_how_much(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Сколько открыто на конец 31 марта 2025?", "Остаток на 1 апреля", "Balance as of March 31"],
+)
+def test_state_on_a_date(text):
+    assert asks_state_on_date(text)
+
+
+@pytest.mark.parametrize("text", ["Выручка за март 2025", "Сколько на складе?", None])
+def test_not_a_state_on_a_date(text):
+    assert not asks_state_on_date(text)
 
 
 _FILTER_AFTER_RUN_VERB = [
