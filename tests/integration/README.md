@@ -15,7 +15,7 @@ uv run --locked pytest --strict-markers tests/integration/test_analytics_tools_r
 Это отдельный обязательный шаг Python CI для всех зарегистрированных инструментов:
 реальные авторизация, CSV, граф, SQL и сохранение с управляемым планом модели.
 Внешние сервисы и ключ модели не нужны. Матрица доступа, проверки чувствительности
-и порядок добавления инструмента описаны в [аналитических инструментах](../../docs/analytics-tools.md#защищённый-runtime-gate--171).
+и порядок добавления инструмента описаны в [аналитических инструментах](../../docs/developer/analytics.md#защищённый-runtime-gate--171).
 
 `uv run --locked pytest --strict-markers tests/integration/test_auth_migrations.py`
 проверяет миграции AUTH-1 на временной SQLite: ограничения пользователей/сессий,

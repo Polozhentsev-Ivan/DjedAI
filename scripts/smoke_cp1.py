@@ -56,7 +56,7 @@ from djedai.data.typed_views import create_typed_view  # noqa: E402
 
 DATASET = manifest_files(load_manifest())["08_Фоновые_задания.csv"]
 BASE_URL = "https://api.deepinfra.com/v1/openai"
-MODEL = "Qwen/Qwen3.6-35B-A3B"
+MODEL = "Qwen/Qwen3.6-27B"
 
 
 class SmokeFailure(RuntimeError):

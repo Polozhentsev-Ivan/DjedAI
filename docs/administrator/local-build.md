@@ -2,7 +2,7 @@
 
 Инструкция сборки DjedAI **из исходников через Docker Compose**. Docker собирает Python backend и React frontend, nginx открывает приложение на `http://localhost:8080`. SQLite и файлы данных хранятся в постоянном томе. Для основного сценария на компьютере нужны Git, Docker и браузер; устанавливать Python, uv, Node.js, npm и локальную модель отдельно не требуется.
 
-Сначала пройдите разделы 1–5 с CSV. Свои БД и необязательный демо-профиль описаны дальше. Работа в интерфейсе — в [руководстве пользователя](user-guide.md), все серверные параметры — в [конфигурации](configuration.md), резервирование и обновление — в [эксплуатации](operations.md). Разработка с hot reload — в [development.md](development.md).
+Сначала пройдите разделы 1–5 с CSV. Свои БД и необязательный демо-профиль описаны дальше. Работа в интерфейсе — в [руководстве пользователя](../user/user-guide.md), все серверные параметры — в [конфигурации](configuration.md), резервирование и обновление — в [эксплуатации](operations.md). Разработка с hot reload — в [development.md](../developer/development.md).
 
 ## 1. Подготовить окружение
 
@@ -51,20 +51,36 @@ test -f .env || cp .env.example .env
 
 ```dotenv
 MODEL_BASE_URL=https://api.deepinfra.com/v1/openai
-MODEL_NAME=Qwen/Qwen3.6-35B-A3B
+MODEL_NAME=Qwen/Qwen3.6-27B
 MODEL_API_KEY=ваш_ключ_провайдера
 MODEL_SETTINGS_FROM_UI=false
+MODEL_TIMEOUT_SECONDS=120
+AGENT_TURN_TIMEOUT_SECONDS=120
+MODEL_REASONING_SUPPORTED=true
+MODEL_REASONING_UNDERSTAND=none
+MODEL_REASONING_PLAN=provider_default
+MODEL_REASONING_VISUALIZE=none
+MODEL_REASONING_COMPOSE=none
+MODEL_REASONING_VERIFY=none
 ALLOW_DATA_SHARING=false
 DJEDAI_PORT=8080
 ```
 
 Замените `ваш_ключ_провайдера` действительным ключом. `.env` исключён из Git и Docker build context. `MODEL_BASE_URL` — полный базовый URL OpenAI-совместимого API, включая путь провайдера; для другой модели нужны совместимый endpoint и точный ID. Ключи не помещаются в `VITE_*`: эти переменные видны браузеру.
 
+Это профиль DeepInfra/Qwen3.6-27B с лимитом 120 с на весь ответ. При обновлении
+существующего `.env` перенесите указанные значения явно: копирование образца не
+меняет старый файл. Для неизвестного сервера организаторов используйте профиль
+из [README](../../README.md#подключить-модель-организаторов): поддержка reasoning
+зависит от конкретного endpoint. Политика `ALLOW_DATA_SHARING=false` ограничивает
+передаваемый контекст; финальные прогоны публичных CSV выполнялись с `true`, что отдельно
+указано в [конфигурации](configuration.md#таймауты-и-reasoning).
+
 Для первых CSV-проверок остальные настройки можно оставить из `.env.example`. `SOURCE_ENCRYPTION_KEY` пока может быть пустым: он нужен для сохранённых подключений БД и ключа модели из UI, а не для CSV. `SESSION_SECRET` для используемых серверных Bearer-сессий не требуется.
 
 Без ключа провайдера можно открыть UI, зарегистрироваться и загрузить CSV, но ответ модели не получится. В `.env.example` включено `CATALOG_DESCRIPTIONS=true`: при подготовке каталога тоже вызывается модель. Для каталога без этих вызовов задайте `CATALOG_DESCRIPTIONS=false`; типы и статистический профиль останутся доступны.
 
-`ALLOW_DATA_SHARING=false` ограничивает контекст внешней модели, но **не отключает внешний inference**: передаются вопрос, метаданные, факты, агрегаты и разрешённые значения текущего результата. Подробности — в [политике передачи данных](decisions/173-data-transfer-policy.md). Настройка `ALLOWED_OUTBOUND_HOSTS` сама по себе не является сетевым фильтром.
+`ALLOW_DATA_SHARING=false` ограничивает контекст внешней модели, но **не отключает внешний inference**: передаются вопрос, метаданные, факты, агрегаты и разрешённые значения текущего результата. Подробности — в [политике передачи данных](../decisions/173-data-transfer-policy.md). Настройка `ALLOWED_OUTBOUND_HOSTS` сама по себе не является сетевым фильтром.
 
 ## 3. Собрать и запустить
 
@@ -111,7 +127,7 @@ curl --fail http://localhost:8080/api/health
 
 6. Убедитесь, что аккаунт, датасет, каталог, история и сохранённый результат доступны. Если сессия истекла, войдите в тот же аккаунт.
 
-Это минимальная проверка установки. Качество свободных вопросов, графиков и дашбордов подтверждается отдельными [golden/eval-проверками](../eval/README.md). Если модель недоступна или результат неправильный, зафиксируйте ошибку: успешный health не заменяет этот шаг.
+Это минимальная проверка установки. Качество свободных вопросов, графиков и дашбордов подтверждается отдельными [golden/eval-проверками](../../eval/README.md). Если модель недоступна или результат неправильный, зафиксируйте ошибку: успешный health не заменяет этот шаг.
 
 ## 5. Остановка, повторный запуск и данные
 
@@ -136,7 +152,7 @@ docker compose up -d --force-recreate --wait --wait-timeout 180
 
 По умолчанию `MODEL_SETTINGS_FROM_UI=false`: ключ и адрес берутся из `.env`, а в UI можно выбирать модель из `MODEL_ALLOWED_NAMES` (исходный `MODEL_NAME` разрешён всегда). Действующие настройки модели общие для установки, а не личные для каждого пользователя.
 
-Для локального запуска одним пользователем можно включить `MODEL_SETTINGS_FROM_UI=true`. Тогда адрес, модель и ключ задаются в разделе «Настройки»; сохранённые значения имеют приоритет над `.env`. Для шифрования ключа сначала нужен `SOURCE_ENCRYPTION_KEY`. Если установкой пользуются другие люди, оставьте флаг выключенным. Особенности переключения моделей — в [infra/README.md](../infra/README.md#настройка-модели).
+Для локального запуска одним пользователем можно включить `MODEL_SETTINGS_FROM_UI=true`. Тогда адрес, модель и ключ задаются в разделе «Настройки»; сохранённые значения имеют приоритет над `.env`. Для шифрования ключа сначала нужен `SOURCE_ENCRYPTION_KEY`. Если установкой пользуются другие люди, оставьте флаг выключенным. Особенности переключения моделей — в [infra/README.md](../../infra/README.md#настройка-модели).
 
 Чтобы подключить PostgreSQL/ClickHouse или хранить ключ модели из интерфейса, сгенерируйте Fernet key в уже запущенном backend:
 
@@ -154,7 +170,7 @@ docker compose exec backend uv run --locked --no-sync python -c "from cryptograp
 | На компьютере с Docker Desktop | `host.docker.internal` и порт хоста. `localhost` внутри контейнера обозначает сам контейнер. |
 | На отдельной машине | Доступные backend DNS/IP и порт БД. |
 
-В Docker Engine на Linux имя `host.docker.internal` может требовать отдельной настройки; для первого запуска проще использовать демо-профиль ниже. PostgreSQL использует DSN `postgresql://user:password@host:5432/database`; ClickHouse — HTTP URL `http://user:password@host:8123/database`. Спецсимволы пароля в URL нужно percent-encode. Подключайте роль с правами чтения. PostgreSQL читается как внешний источник; ClickHouse копирует выбранные таблицы в ограниченный локальный снимок ([решение #61](decisions/61-clickhouse.md)).
+В Docker Engine на Linux имя `host.docker.internal` может требовать отдельной настройки; для первого запуска проще использовать демо-профиль ниже. PostgreSQL использует DSN `postgresql://user:password@host:5432/database`; ClickHouse — HTTP URL `http://user:password@host:8123/database`. Спецсимволы пароля в URL нужно percent-encode. Подключайте роль с правами чтения. PostgreSQL читается как внешний источник; ClickHouse копирует выбранные таблицы в ограниченный локальный снимок ([решение #61](../decisions/61-clickhouse.md)).
 
 ## 7. Необязательно: демо-PostgreSQL и ClickHouse
 
@@ -191,7 +207,7 @@ docker compose --profile demo run --rm --no-deps --volume "${PWD}/scripts:/app/s
 docker compose --profile demo run --rm --no-deps --volume "${PWD}/scripts:/app/scripts:ro" --volume "${PWD}/tests/fixtures/synthetic:/app/tests/fixtures/synthetic:ro" --volume "${PWD}/eval:/app/eval:ro" --entrypoint uv backend run --locked --no-sync python /app/scripts/verify_demo_db.py
 ```
 
-Ожидается `status: passed`; `sales` содержит 4 376 строк, сумма `total_amount` — 1 268 254 502,40 RUB. Проверяются таблицы и агрегаты в обеих БД, а также отказ читателю в записи. Остальные эталоны — в [infra/README.md](../infra/README.md#контрольные-значения).
+Ожидается `status: passed`; `sales` содержит 4 376 строк, сумма `total_amount` — 1 268 254 502,40 RUB. Проверяются таблицы и агрегаты в обеих БД, а также отказ читателю в записи. Остальные эталоны — в [infra/README.md](../../infra/README.md#контрольные-значения).
 
 В UI подключите роль `djedai_reader` с соответствующим паролем: PostgreSQL — `postgresql://djedai_reader:ПАРОЛЬ@demo-postgres:5432/djedai_demo`, ClickHouse — `http://djedai_reader:ПАРОЛЬ@demo-clickhouse:8123/djedai_demo`. Порты хоста 55432/58123 нужны для клиентов на компьютере, а из backend используются контейнерные 5432/8123.
 

@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_NO_DEV=1
 
-COPY pyproject.toml uv.lock .python-version README.md ./
+COPY pyproject.toml uv.lock .python-version README.md LICENSE ./
 RUN test "$(python --version)" = "Python $(cat .python-version)" \
     && uv sync --locked --no-dev \
     && uv cache clean

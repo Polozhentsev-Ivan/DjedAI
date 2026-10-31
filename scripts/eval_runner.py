@@ -44,6 +44,7 @@ from djedai.agent.dashboard import (  # noqa: E402
 )
 from djedai.agent.diagnostics import RunDiagnostics  # noqa: E402
 from djedai.agent.graph import build_agent_graph  # noqa: E402
+from djedai.agent.verification import is_calendar_days  # noqa: E402
 from djedai.analytics.registry import TOOLS_REGISTRY, execute_tool  # noqa: E402
 from djedai.config import get_limits  # noqa: E402
 from djedai.contracts.agent import Message  # noqa: E402
@@ -365,7 +366,77 @@ def _reused_results(
     return [], source, [f"Context result '{source}' was not found to verify reuse"]
 
 
-def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
+# Предложение продолжает мысль о той же группе, а не называет другую.
+ANAPHORIC_SENTENCE_RE = re.compile(
+    r"\s*(?:значение|показатель|величина|перцентиль|рост|он|она|оно|это)"
+    r"(?!\w)(?!(?-i:\s+[А-ЯЁA-Z]))",
+    re.I,
+)
+PERCENT_FACTOR_RE = re.compile(r"[*×·]\s*100(?!\d|[.,]\d)")
+CALENDAR_DAYS_RE = re.compile(r"(?<![\d.,])(?:2[89]|3[01])(?![\d.,])")
+
+
+def _without_calculation_constants(text: str) -> str:
+    """Длина названного месяца и множитель процента пересказывают расчёт, а не результат."""
+    kept = PERCENT_FACTOR_RE.sub(" ", text)
+    return CALENDAR_DAYS_RE.sub(
+        lambda m: (
+            " " if is_calendar_days(kept, m.start(), m.end(), Decimal(m.group())) else m.group()
+        ),
+        kept,
+    )
+
+
+def _without_runtime_calculations(text: str, report: Any, results: Sequence[Any]) -> str:
+    """Keep runtime-proven arithmetic out of the independent scalar lookup.
+
+    Only the exact verified expression is exempt: its SQL-backed constants do
+    not authorize the same numbers in an unrelated measurement elsewhere.
+    """
+    if _field(report, "status") not in {"verified", "corrected"}:
+        return text
+    current_ids = {_field(item, "result_id") for item in results}
+    report_ids = set(_field(report, "result_ids", []) or [])
+    if not report_ids or not report_ids <= current_ids:
+        return text
+    scoped_ids = current_ids & report_ids
+    for assertion in _field(report, "assertions", []) or []:
+        if (
+            _field(assertion, "kind") == "constant"
+            and _field(assertion, "status") == "ignored"
+            and _field(assertion, "reason_code") == "non_analytical"
+            and _decimal(_field(assertion, "value")) == 100
+        ):
+            source = _field(assertion, "text")
+            if source and source in text:
+                # Only the proven percentage multiplier, never another 100 in
+                # this sentence or elsewhere in the answer.
+                masked = re.sub(
+                    r"(умноженн\w*\s+на\s+)100(?![\d.,])",
+                    r"\g<1>   ",
+                    source,
+                    flags=re.I,
+                )
+                text = text.replace(source, masked)
+            continue
+        if _field(assertion, "kind") != "formula" or _field(assertion, "status") != "verified":
+            continue
+        evidence = _field(assertion, "evidence", []) or []
+        operands = _field(assertion, "operands", []) or []
+        if not evidence or not operands:
+            continue
+        references = [*evidence, *(item for op in operands for item in _field(op, "evidence", []))]
+        if any(_field(item, "result_id") not in scoped_ids for item in references):
+            continue
+        raw = _field(assertion, "raw_text")
+        if raw:
+            text = text.replace(raw, " " * len(raw))
+    return text
+
+
+def _answer_issues(
+    case: dict, text: str, results: Sequence[Any], verification: Any = None
+) -> list[str]:
     """Numbers in the answer must originate in tool results; user constants are exempt."""
     expect = case.get("expect") or {}
     if not (expect.get("answer_contains_value") or {}).get("from_result"):
@@ -376,6 +447,9 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
     uniq = list(dict.fromkeys(numbers))
 
     constants = set(_claim_numbers(case.get("question") or ""))
+    text = _without_calculation_constants(
+        _without_runtime_calculations(text, verification, results)
+    )
     claims = list(dict.fromkeys(_measurements(text)))
 
     issues = []
@@ -397,7 +471,7 @@ def _answer_issues(case: dict, text: str, results: Sequence[Any]) -> list[str]:
         # Direct rounding check
         found = False
         for n in uniq:
-            if _matches(n):
+            if _matches(n) or (policy == "percent" and abs(n) <= 1 and _matches(n * 100)):
                 found = True
                 break
 
@@ -476,7 +550,10 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
         if not re.search(pattern, plain, re.I):
             issues.append(f"Answer does not state the required unit: {pattern}")
     # Decimal separators must not split sentences.
-    lines = re.split(r"\n|;|(?<!\d)[.!?]\s+|,\s+(?=[^,:;\n]+:)", plain)
+    lines = re.split(
+        r"\n|;|(?<![\d)])(?<!шт)(?<!руб)(?<!тыс)(?<!млн)(?<![Сс]р)[.!?]\s+|,\s+(?=[^,:;\n]+:)",
+        plain,
+    )
     unit_patterns = {
         "hours": r"(?:ч(?:ас\w*)?\.?|hours?|h)\b",
         "seconds": r"(?:сек\w*|seconds?|secs?|s)\b",
@@ -488,6 +565,13 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
     def stated_unit(suffix: str) -> str | None:
         for unit, pattern in unit_patterns.items():
             if re.match(r"\s*" + pattern, suffix, re.I):
+                return unit
+        return None
+
+    def unit_before(prefix: str) -> str | None:
+        # «среднее число попыток 2,28»: единица названа прямо перед числом.
+        for unit, pattern in unit_patterns.items():
+            if re.search(pattern + r"\s*:?\s*$", prefix, re.I):
                 return unit
         return None
 
@@ -520,7 +604,8 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
 
         def labelled(line: str, labels=labels) -> bool:
             return any(
-                re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line, re.I) for label in labels
+                re.search(r"(?<!\w)" + re.escape(label) + r"\w{0,2}(?!\w)", line, re.I)
+                for label in labels
             )
 
         def has_values(values: Sequence[Any], required=reference["values"]) -> bool:
@@ -535,6 +620,12 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                 any(
                     abs(number - Decimal(str(wanted["value"])))
                     <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    # Результат может хранить долю, а эталон задан в процентах.
+                    or (
+                        wanted.get("unit") == "percent"
+                        and abs(number * 100 - Decimal(str(wanted["value"])))
+                        <= Decimal(str(wanted.get("abs_tolerance", 0)))
+                    )
                     for number in numbers
                 )
                 for wanted in required
@@ -554,7 +645,9 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                         str(wanted.get("abs_tolerance", 0))
                     ):
                         continue
-                    explicit = stated_unit(line[match.end() :])
+                    explicit = stated_unit(line[match.end() :]) or unit_before(
+                        line[: match.start()]
+                    )
                     # Units may be inherited from a table header, but an explicit
                     # contradictory suffix always wins over unrelated text.
                     inherited = table_headers.get(line, {}).get(line[: match.start()].count("|"))
@@ -564,7 +657,13 @@ def _required_answer_rows(case: dict, text: str, results: Sequence[Any]) -> list
                     return False
             return True
 
-        if not any(labelled(line) and states_values(line) for line in lines):
+        # Единственную группу и её значения можно назвать в соседних предложениях,
+        # если следующее не подписано другой группой.
+        next_sentence = len(expect.get("answer_rows") or []) == 1 and any(
+            labelled(line) and ANAPHORIC_SENTENCE_RE.match(following) and states_values(following)
+            for line, following in zip(lines, lines[1:], strict=False)
+        )
+        if not next_sentence and not any(labelled(line) and states_values(line) for line in lines):
             issues.append(f"Answer is missing or misstates values for '{reference['label']}'")
         if not any(
             any(labelled(str(cell)) for cell in row) and has_values(row)
@@ -1554,7 +1653,7 @@ def evaluate_case(
         if reuse_source:
             details["reuse"]["accepted"] = bool(memory_satisfies_tools and facts_passed)
         if reuse_dashboard:
-            details["dashboard_checks"]["reuse_accepted"] = bool(
+            details.setdefault("dashboard_checks", {})["reuse_accepted"] = bool(
                 dashboard_satisfies_tools and facts_passed
             )
         if (
@@ -1566,7 +1665,9 @@ def evaluate_case(
             automated_issues.append(
                 f"Did not use any expected tools {tools_any}. Used: {used_tools}"
             )
-        automated_issues.extend(_answer_issues(case, claim_text, evidence_results))
+        automated_issues.extend(
+            _answer_issues(case, claim_text, evidence_results, result.get("verification"))
+        )
         automated_issues.extend(_missing_answer_values(case, blocks, claim_text))
         automated_issues.extend(_required_answer_rows(case, claim_text, results))
 

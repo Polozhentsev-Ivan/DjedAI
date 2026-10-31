@@ -3,7 +3,7 @@
 ## Минимальный сквозной прогон CP1 без UI
 
 Описание проверок и результат запуска на 500 000 записей — в
-[протоколе прогона](../docs/cp1-smoke-run.md).
+[протоколе прогона](../docs/archive/cp1-smoke-run.md).
 
 `smoke_cp1.py` требует код API чата из PR #139. Он вызывает `stream_chat_turn()`
 напрямую: CSV → типизация → профиль/каталог → LangGraph с реальной моделью →
@@ -20,7 +20,7 @@ HTTP-сервер, UI, Compose и регистрация не нужны; исп
 Секрет в командную строку передавать не требуется. Используются
 [DeepInfra Chat Completions](https://docs.deepinfra.com/chat/overview):
 `https://api.deepinfra.com/v1/openai`, модель
-[`Qwen/Qwen3.6-35B-A3B`](https://deepinfra.com/Qwen/Qwen3.6-35B-A3B) (35B суммарных параметров).
+[`Qwen/Qwen3.6-27B`](https://deepinfra.com/Qwen/Qwen3.6-27B) (27B суммарных параметров).
 Модель возвращает типизированные JSON-ответы; ключ безуспешным ответом заглушки не заменяется.
 Адрес и модель можно изменить через `--base-url` и `--model`; из `.env` скрипт берёт ключ,
 `MODEL_TIMEOUT_SECONDS` и `MODEL_MAX_OUTPUT_TOKENS`.
@@ -71,7 +71,7 @@ Python-команды запускаем в среде проекта через
 
 ## Прогон данных организаторов HK_Datasets без LLM
 
-Протокол и результаты — в [отчёте PL-3](../docs/pl3-hk-datasets-run.md).
+Протокол и результаты — в [отчёте PL-3](../docs/archive/pl3-hk-datasets-run.md).
 `hk_datasets.py` скачивает девять CSV закреплённой ревизии по манифесту
 [`eval/hk_datasets_manifest.json`](../eval/hk_datasets_manifest.json): докачка по HTTP Range,
 повтор при обрыве соединения, проверка Git blob. Файлы кэшируются в `artifacts/hk-datasets/`.
@@ -110,11 +110,11 @@ uv run --locked python scripts/check_hk_datasets.py --compare before.json after.
   - Кэш CSV и JSON-отчёт должны находиться вне checkout. Статусы `structure_valid`, `verified` и `reference_mismatch` различаются; `agent_evaluation` остаётся `not_run`. Эта команда проверяет эталоны и не заменяет будущий eval агента #81.
 
 - `benchmark_model_profiles.py` — серия стадийных запросов и полных ходов через API без пользовательских данных. Отдельно считает валидность схемы, смысл, исполнение SQL, итоговые числа, время стадии и полного хода, токены. Поддерживает профили `baseline`/`proposed`, сравнение регрессий и запрет включения ускорения при ухудшении. JSON-отчёт сохраняется локально в `artifacts/model-profiles/`.
-  - Текущий профиль: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-35B-A3B --reasoning-profile baseline --repeats 3 --turn-repeats 3 --context-lines 200`.
+  - Текущий профиль: `uv run --locked python scripts/benchmark_model_profiles.py --model Qwen/Qwen3.6-27B --reasoning-profile baseline --repeats 3 --turn-repeats 3 --context-lines 200`.
   - Сравнение: добавить `--reasoning-profile proposed --reasoning-supported`; без явного подтверждения поддержки клиент откажется запускаться с ненулевым режимом, а не проигнорирует его. Команда сохраняет `baseline` и `proposed` в одном отчёте и помечает регрессии.
   - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
-  - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`). Поддержка `reasoning_effort` подтверждена для DeepInfra Qwen3.6-35B-A3B 25.10.2026; `MODEL_REASONING_SUPPORTED=false` остаётся безопасным значением шаблона при смене модели/endpoint.
-  - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
+  - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`). Поддержка `reasoning_effort` подтверждена для DeepInfra Qwen3.6-27B прогонами 31.10.2026; при смене модели/endpoint верните `MODEL_REASONING_SUPPORTED=false` и `provider_default` на всех стадиях.
+  - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/archive/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
   - [Контракт checker v2](../docs/decisions/159-benchmark-validation.md): связанные числа/валюты, источники графика, per-case gate, полные трассы и SHA, атомарное сохранение прогресса. Для общего deadline графа есть `--turn-timeout` (по умолчанию 120 с); исторические оценки v1 отмечены как ограниченные.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.

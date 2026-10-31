@@ -69,7 +69,7 @@ class Settings(LimitSettings):
     model_base_url: str = Field(
         default="https://api.deepinfra.com/v1/openai", alias="MODEL_BASE_URL"
     )
-    model_name: str = Field(default="Qwen/Qwen3.6-35B-A3B", alias="MODEL_NAME")
+    model_name: str = Field(default="Qwen/Qwen3.6-27B", alias="MODEL_NAME")
     model_revision: str | None = Field(default=None, alias="MODEL_REVISION")
     # Ключ и адрес API из интерфейса (#209): только для локального запуска. На сервере
     # false: ключ не идёт через браузер, а данные — на произвольный хост.

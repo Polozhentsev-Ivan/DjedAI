@@ -13,6 +13,7 @@ DjedAI помогает исследовать табличные данные �
 
 ## Документация
 
+- **Материалы к сдаче:** [архитектура](Architecture.md), [сценарии и технические критерии](Criteria.md), [шесть вопросов и статус видео](TestCases.md).
 - **[Руководство пользователя](docs/user/README.md)** — работа в браузере, от первого файла до дашборда.
 - **[Документация разработчика](docs/developer/README.md)** — устройство проекта, принятые решения, код, API и проверки.
 - **[Установка и эксплуатация](docs/administrator/README.md)** — развёртывание, настройка и обслуживание приложения.
@@ -21,11 +22,11 @@ DjedAI помогает исследовать табличные данные �
 
 ## Начать работу
 
-Для установки из исходников нужны Git, Docker с Linux engine, Compose v2 и браузер. Сборка backend и frontend выполняется в контейнерах. Порядок настройки и запуска — в [инструкции установки](docs/local-build.md).
+Для установки из исходников нужны Git, Docker с Linux engine, Compose v2 и браузер. Сборка backend и frontend выполняется в контейнерах. Порядок настройки и запуска — в [инструкции установки](docs/administrator/local-build.md).
 
-Если приложение уже установлено, начните с [небольшого CSV-примера](docs/user-guide.md#первый-анализ-на-небольшом-примере): его результат можно проверить вручную.
+Если приложение уже установлено, начните с [небольшого CSV-примера](docs/user/user-guide.md#первый-анализ-на-небольшом-примере): его результат можно проверить вручную.
 
-Основное хранение и вычисления находятся на машине установки. Если используется внешняя модель, ей передаётся разрешённый контекст; состав передачи описан в [конфигурации](docs/configuration.md#политика-отправки-данных).
+Основное хранение и вычисления находятся на машине установки. Если используется внешняя модель, ей передаётся разрешённый контекст; состав передачи описан в [конфигурации](docs/administrator/configuration.md#политика-отправки-данных).
 
 ## Подключить модель организаторов
 
@@ -37,8 +38,8 @@ MODEL_BASE_URL=http://host.docker.internal:8001/v1
 MODEL_NAME=Qwen/Qwen3.6-27B
 MODEL_API_KEY=local-no-auth
 MODEL_SETTINGS_FROM_UI=false
-MODEL_TIMEOUT_SECONDS=180
-AGENT_TURN_TIMEOUT_SECONDS=400
+MODEL_TIMEOUT_SECONDS=120
+AGENT_TURN_TIMEOUT_SECONDS=120
 MODEL_REASONING_SUPPORTED=false
 MODEL_REASONING_UNDERSTAND=provider_default
 MODEL_REASONING_PLAN=provider_default
@@ -46,6 +47,10 @@ MODEL_REASONING_VISUALIZE=provider_default
 MODEL_REASONING_COMPOSE=provider_default
 MODEL_REASONING_VERIFY=provider_default
 ```
+
+Для итоговых прогонов и видео общий бюджет ответа — 120 с, включая стадии,
+инструменты и повторы. Каждая HTTP-попытка дополнительно ограничена остатком этого
+бюджета; увеличение таймаутов не подтверждает выполнение требования организаторов.
 
 Адрес, порт и `MODEL_NAME` должны совпадать с сервером организаторов; указанное
 имя модели — пример. `local-no-auth` подходит только серверу без авторизации:
@@ -63,12 +68,16 @@ docker compose -f compose.yaml -f infra/compose.model-host.yaml up -d --build --
 
 Подробности маршрутизации, подтверждённый профиль DeepInfra/Qwen3.6-27B,
 контрольные вопросы и команда проверки с JSON-отчётом — в
-[профиле организаторов](docs/configuration.md#профиль-организаторов-pl-9).
+[профиле организаторов](docs/administrator/configuration.md#профиль-организаторов-pl-9).
 
 ## Устройство проекта
 
-Монорепозиторий объединяет Python/FastAPI backend, данные и аналитику на DuckDB, агент на LangGraph и frontend на React/TypeScript. Pydantic-контракты используются для согласования API и генерации типов frontend. Карта компонентов и причины решений — в [архитектуре](docs/architecture.md).
+Монорепозиторий объединяет Python/FastAPI backend, данные и аналитику на DuckDB, агент на LangGraph и frontend на React/TypeScript. Pydantic-контракты используются для согласования API и генерации типов frontend. Карта компонентов и причины решений — в [архитектуре](docs/developer/architecture.md).
 
 <a id="запуск-cp1-через-compose"></a>
 
-Запуск из исходников через Docker Compose описан в [руководстве установки](docs/local-build.md).
+Запуск из исходников через Docker Compose описан в [руководстве установки](docs/administrator/local-build.md).
+
+## Лицензия
+
+[MIT](LICENSE). Лицензии использованных компонентов — в [отдельной сводке](docs/developer/licenses.md).
