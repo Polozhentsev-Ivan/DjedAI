@@ -10,7 +10,6 @@ import duckdb
 import pytest
 import yaml
 
-from djedai.agent.graph import MODEL_ERROR_MARKDOWN
 from djedai.contracts.agent import Block
 from djedai.contracts.chart import ChartSpec, XAxis, YMeasure
 from djedai.contracts.dashboard import (
@@ -1509,7 +1508,10 @@ def test_chart_without_limit_shows_the_whole_series():
     assert not [issue for issue in evaluate_case(c, s)[1] if "truncates" in issue]
 
 
-@pytest.mark.parametrize("message", [MODEL_ERROR_MARKDOWN, "Changed wording"])
+@pytest.mark.parametrize(
+    "message",
+    ["Не удалось получить ответ модели. Попробуйте повторить запрос.", "Changed wording"],
+)
 def test_typed_terminal_error_fails_even_with_matching_facts(message):
     s = state(result([[123]]), "123")
     s["answer_blocks"].append(Block(type="error", markdown=message))
