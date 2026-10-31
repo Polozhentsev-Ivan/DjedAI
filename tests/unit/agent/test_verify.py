@@ -209,7 +209,7 @@ def test_invalid_final_correction_is_replaced_by_an_explicit_error():
 
 
 def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
-    draft = "Всего в данных 500 000 запусков."
+    draft = "Всего в данных 500 001 запусков."
     corrected = "Всего 500 000 строк."
     state = {
         "messages": [Message(role="user", content="Что передо мной?")],
@@ -226,12 +226,11 @@ def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
     }
     rejected = verify(state, {"configurable": {}})["verification"]
     assert rejected.status == "failed"
-    assert rejected.rejected_assertions[0].reason_code == "unrelated_result"
+    assert rejected.rejected_assertions[0].reason_code == "number_not_found"
     client = MagicMock()
 
     def respond(system_prompt, user_prompt, schema, **kwargs):
-        assert "Всего в данных 500 000 запусков" in user_prompt
-        assert "Подпись числа относится к другому результату" in user_prompt
+        assert "Всего в данных 500 001 запусков" in user_prompt
         if schema is ComposeResponse:
             data = ComposeResponse(answer_blocks=[Block(type="text", markdown=corrected)])
         else:
@@ -245,7 +244,7 @@ def test_retry_and_final_verifier_receive_the_exact_rejected_claim():
     final = verify(state, config)
     assert final["verification"].status == "corrected"
     assert final["answer_blocks"][0].markdown == corrected
-    assert final["verification"].rejected_assertions[0].reason_code == "unrelated_result"
+    assert final["verification"].rejected_assertions[0].reason_code == "number_not_found"
 
 
 def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_one():
@@ -274,9 +273,9 @@ def test_output_limit_keeps_an_answer_the_code_confirmed_but_not_an_unconfirmed_
     kept = verify(state("Всего 500 000 строк."), config)
     assert kept["verification"].status == "verified"
     assert "answer_blocks" not in kept
-    retried = verify({**state("Всего 500 000 запусков."), "compose_retries": 1}, config)
+    retried = verify({**state("Всего 500 001 запусков."), "compose_retries": 1}, config)
     assert retried["is_verified"] is False
     assert "terminal_error" not in retried
-    dropped = verify(state("Всего 500 000 запусков."), config)
+    dropped = verify(state("Всего 500 001 запусков."), config)
     assert dropped["verification"].status == "failed"
     assert dropped["terminal_error"] == "OUTPUT_LIMIT"

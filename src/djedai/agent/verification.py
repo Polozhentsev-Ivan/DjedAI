@@ -2252,6 +2252,19 @@ def _query_context(question: str | None, sql: Sequence[str] = ()) -> _QueryConte
     )
 
 
+def _label_only_rejection(draft: _Draft, evidence: Sequence[VerificationEvidence]) -> bool:
+    """Отклонено только из-за подписи: значение есть в результате и агрегат не спорит."""
+    if draft.status != "rejected" or draft.kind != "quantity":
+        return False
+    if draft.reason_code not in ("unrelated_result", "ambiguous_number"):
+        return False
+    return any(
+        _value_matches(draft, item)
+        and (not _aggregate_keys(draft.label) or _aggregates_agree(draft.label, item.label))
+        for item in evidence
+    )
+
+
 def _is_query_condition(draft: _Draft, context: _QueryContext) -> bool:
     """Число ответа пересказывает условие вопроса, а не результат расчёта."""
     if draft.value is None or draft.currency:
@@ -2772,6 +2785,10 @@ def verify_numeric_text(
     context = _query_context(question, sql) if question or sql else None
     for draft in drafts:
         _resolve_draft(draft, scoped, context)
+        if context is not None and _label_only_rejection(draft, scoped):
+            # Число есть в результате, спорна только подпись: ответ не блокируем,
+            # причина остаётся в отчёте у этого утверждения.
+            draft.status = "ignored"
         assertion = _assertion(draft, len(assertions))
         assertions.append(assertion)
         if draft.status == "rejected":

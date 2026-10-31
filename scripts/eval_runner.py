@@ -1583,7 +1583,7 @@ def evaluate_case(
         if reuse_source:
             details["reuse"]["accepted"] = bool(memory_satisfies_tools and facts_passed)
         if reuse_dashboard:
-            details["dashboard_checks"]["reuse_accepted"] = bool(
+            details.setdefault("dashboard_checks", {})["reuse_accepted"] = bool(
                 dashboard_satisfies_tools and facts_passed
             )
         if (
