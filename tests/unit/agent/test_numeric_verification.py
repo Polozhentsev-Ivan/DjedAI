@@ -899,3 +899,41 @@ def test_value_and_period_pair_is_confirmed_by_a_bucket_of_the_result() -> None:
     assert _checked("Минимум: 19 094 (февраль 2025)", results, "Покажи").status != "failed"
     assert _checked("Минимум: 19 094 (март 2025)", results, "Покажи").status == "failed"
     assert _checked("Минимум: 19 094 (май 2025)", results, "Покажи").status == "failed"
+def test_review_bypasses_stay_rejected() -> None:
+    # Алиас cnt не делает MAX подсчётом.
+    results = _query_result(
+        "SELECT MAX(amount) AS cnt FROM orders WHERE amount > 0", ["cnt"], [[100]]
+    )
+    assert _checked("Среднее 100", results, "Сколько?").status == "failed"
+    # LIMIT не делитель, а фильтр по ID не длительность.
+    results = _query_result("SELECT 77 AS value LIMIT 5", ["value"], [[77]])
+    assert _checked("77 / 5 = 15,4", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT COUNT(*) AS n, AVG(days) AS d FROM t WHERE id > 28", ["n", "d"], [[3, 2]]
+    )
+    assert _checked("Средняя длительность 28 дней; строк 3", results, "Сколько?").status == "failed"
+    # Дата из комментария не условие запроса.
+    results = _query_result("SELECT COUNT(*) AS n FROM orders -- 2024-01-01", ["n"], [[2]])
+    assert _checked("2024-01-01: строк 2", results, "Сколько?").status == "failed"
+    # Условие отбора, которого нет в вопросе.
+    results = _query_result("SELECT SUM(amount) AS revenue FROM orders", ["revenue"], [[110]])
+    text = "Выручка 110 без тестовых клиентов"
+    assert _checked(text, results, "Выручка без отменённых заказов?").status == "failed"
+    # Значение группы rub не валюта колонки.
+    results = _query_result(
+        "SELECT dept, SUM(qty) AS total FROM q GROUP BY dept", ["dept", "total"], [["rub", 10]]
+    )
+    assert _checked("Сумма 10 RUB", results, "Сколько?").status == "failed"
+
+
+def test_disputed_caption_does_not_bypass_currency_period_or_aggregate() -> None:
+    results = _query_result("SELECT SUM(revenue_usd) AS revenue FROM t", ["revenue"], [[1000]])
+    assert _checked("Profit 1000 EUR", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT m, profit FROM t", ["m", "profit"], [["2023-01-01", 1000], ["2024-01-01", 2000]]
+    )
+    assert _checked("2024-01-01: Profit 1000", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT MAX(amount / 1000.0) AS m, COUNT(*) AS n FROM orders", ["m", "n"], [[2.0, 2]]
+    )
+    assert _checked("Average 2.", results, "Сколько?").status == "failed"

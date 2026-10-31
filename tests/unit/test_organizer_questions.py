@@ -217,3 +217,13 @@ def test_percentile_number_in_header_does_not_disable_unit_inheritance():
     text = text.replace("Группа | часы", "Группа | 90-й перцентиль, часы")
     status, issues, _ = _evaluate("organizer_q3", result, text)
     assert status == "passed", issues
+
+
+def test_calculation_constants_and_next_sentence_do_not_hide_wrong_answers():
+    result = _result(["city", "growth"], [["Калининград", 62.29]])
+    good = "Калининград | 62.29 %."
+    assert _evaluate("organizer_q2", result, good)[0] == "passed"
+    assert _evaluate("organizer_q2", result, f"{good} Всего 100 заказов.")[0] == "failed"
+    assert _evaluate("organizer_q2", result, f"{good} Всего 31 заказ.")[0] == "failed"
+    text = "Калининград показал стабильность. Москва выросла на 62,29 %."
+    assert _evaluate("organizer_q2", result, text)[0] == "failed"
