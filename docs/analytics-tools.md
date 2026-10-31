@@ -110,11 +110,10 @@ JOIN и WHERE. Если это невозможно, берётся профил
 ## Защищённый runtime gate — #171
 
 `tests/integration/test_analytics_tools_runtime.py` сверяет явные сценарии с
-`TOOLS_REGISTRY`. В текущей main их 11: `run_sql`, `describe_dataset`,
+`TOOLS_REGISTRY`. Их 14: `run_sql`, `describe_dataset`,
 `describe_column`, `value_counts`, `time_aggregate`, `find_duplicates`,
-`detect_anomalies`, `seasonality`, `segment_profile`, `compare_segments` и
-`compute_metric`. Корреляция и прогнозирование попадут в gate при включении в
-реестр; незакрытые PR не считаются частью текущего покрытия.
+`detect_anomalies`, `seasonality`, `segment_profile`, `compare_segments`,
+`compute_metric`, `correlation`, `lagged_correlation` и `forecast`.
 
 Положительные сценарии проходят настоящие регистрацию и вход, загрузку CSV,
 выбор датасета в чате, граф агента, диспетчеризацию, SQLite и Parquet; выполняемые

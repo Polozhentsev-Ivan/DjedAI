@@ -114,7 +114,7 @@ uv run --locked python scripts/check_hk_datasets.py --compare before.json after.
   - Сравнение: добавить `--reasoning-profile proposed --reasoning-supported`; без явного подтверждения поддержки клиент откажется запускаться с ненулевым режимом, а не проигнорирует его. Команда сохраняет `baseline` и `proposed` в одном отчёте и помечает регрессии.
   - Ключ: `DEEPINFRA_API_KEY` либо `MODEL_API_KEY` из окружения/локального `.env`; в отчёт он не включается.
   - Настройки стадий: `MODEL_REASONING_UNDERSTAND`, `_PLAN`, `_VISUALIZE`, `_COMPOSE`, `_VERIFY` (`provider_default|none|low|medium|high`). Поддержка `reasoning_effort` подтверждена для DeepInfra Qwen3.6-35B-A3B 25.10.2026; `MODEL_REASONING_SUPPORTED=false` остаётся безопасным значением шаблона при смене модели/endpoint.
-  - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
+  - Результаты, ограничения и статус реального сравнения: [протокол PL-1](../docs/archive/model-profile-pl1.md#сравнение-режимов-reasoning-159). Это минимальная диагностика, не полный eval #81.
   - [Контракт checker v2](../docs/decisions/159-benchmark-validation.md): связанные числа/валюты, источники графика, per-case gate, полные трассы и SHA, атомарное сохранение прогресса. Для общего deadline графа есть `--turn-timeout` (по умолчанию 120 с); исторические оценки v1 отмечены как ограниченные.
 
 - `generate_synthetic_data.py` — воспроизводимая генерация CSV магазинов, товаров, продаж и ежедневной рекламной активности с seed=42 в `tests/fixtures/synthetic/`.
