@@ -124,6 +124,10 @@ def test_unknown_quoted_generic_word_is_not_an_implicit_single_table(one_table):
         "Сколько строк в таблицаorders.csv?",
         "Какова структура таблицаorders.csv?",
         "Какие колонки в таблицаorders.csv?",
+        "Покажи структуру таблицаorders.csv?",
+        "Структура таблицаorders.csv?",
+        "Опиши структуру таблицаorders.csv?",
+        "Колонки таблицаorders.csv?",
     ],
 )
 def test_table_keyword_requires_a_word_boundary(catalog, question):
