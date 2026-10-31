@@ -732,10 +732,15 @@ def check_fact(
 
 
 def _terminal_issues(
-    blocks: Sequence[Any], results: Sequence[Any], plan: Sequence[Any]
+    blocks: Sequence[Any],
+    results: Sequence[Any],
+    plan: Sequence[Any],
+    terminal_error: str | None = None,
 ) -> list[str]:
     """Terminal API, verification and tool failures invalidate any outcome."""
     issues = []
+    if terminal_error:
+        issues.append(f"Terminal model error before answer verification: {terminal_error}")
     for block in blocks:
         if _field(block, "type") != "error":
             continue
@@ -1408,6 +1413,7 @@ def evaluate_case(
             "passed": not (called_forbidden or planned_forbidden),
         },
         "diagnostics": result.get("_eval_diagnostics", []),
+        "terminal_error": result.get("terminal_error"),
     }
 
     if reuse_source is not None:
@@ -1420,7 +1426,7 @@ def evaluate_case(
             ],
             "tools": list(dict.fromkeys(reused_tools)),
         }
-    terminal_issues = _terminal_issues(blocks, results, plan)
+    terminal_issues = _terminal_issues(blocks, results, plan, result.get("terminal_error"))
     automated_issues = [*terminal_issues, *reuse_issues]
     if terminal_issues:
         semantics = _evaluate_semantics(case, "", [])
@@ -1890,10 +1896,14 @@ def _invoke(
             pass
         raise EvalInvocationError(error, {**partial, "_eval_diagnostics": events}) from error
     terminal = _terminal_issues(
-        result.get("answer_blocks", []), result.get("results", []), result.get("plan", [])
+        result.get("answer_blocks", []),
+        result.get("results", []),
+        result.get("plan", []),
+        result.get("terminal_error"),
     )
     diagnostics.finish(
-        "error" if terminal else "success", diagnostics.last_error if terminal else None
+        "error" if terminal else "success",
+        (result.get("terminal_error") or diagnostics.last_error) if terminal else None,
     )
     return {**result, "_eval_diagnostics": events}
 
@@ -2160,7 +2170,7 @@ def run_eval(
         "status": "running",
         "started_at": started_at,
         "summary": {
-            "total": len(runnable),
+            "total": len(cases),
             "passed": 0,
             "failed": 0,
             "needs_review": 0,

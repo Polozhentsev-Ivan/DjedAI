@@ -452,7 +452,7 @@ def test_run_eval_skips_unsupported(mock_yaml_load, mock_build_graph, tmp_path):
 
     mock_build_graph.assert_not_called()
     assert report["summary"]["skipped"] == 1
-    assert report["summary"]["total"] == 0
+    assert report["summary"]["total"] == 1
     assert report["cases"][0]["status"] == "skipped"
 
 
@@ -484,7 +484,7 @@ def test_run_eval_skips_input_validation(
     mock_build_graph.assert_not_called()
     mock_get_client.assert_not_called()
     assert report["summary"]["skipped"] == 1
-    assert report["summary"]["total"] == 0
+    assert report["summary"]["total"] == 1
 
 
 @patch("scripts.eval_runner.build_agent_graph")

@@ -1591,3 +1591,85 @@ def test_chart_without_limit_shows_the_whole_series():
     s = state(result(rows, columns=["date", "val"], result_id="r_chart"), "24")
     s["answer_blocks"].append(Block(type="chart", chart=spec.model_dump()))
     assert not [issue for issue in evaluate_case(c, s)[1] if "truncates" in issue]
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Не удалось получить ответ модели. Попробуйте повторить запрос.", "Changed wording"],
+)
+def test_typed_terminal_error_fails_even_with_matching_facts(message):
+    s = state(result([[123]]), "123")
+    s["answer_blocks"].append(Block(type="error", markdown=message))
+    s["terminal_error"] = "SERVER_ERROR"
+    c = case(facts=[{"key": "count", "comparison": "exact", "value": 123}])
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    graph = SimpleNamespace(invoke=lambda *a, **k: s)
+    report = process_case(c, {c["id"]: c}, None, graph, dataset)
+    assert report["status"] == "failed"
+    assert report["fact_checks"] == []
+    assert report["terminal_error"] == "SERVER_ERROR"
+    assert report["diagnostics"][-1]["status"] == "error"
+    assert report["diagnostics"][-1]["error_type"] == "SERVER_ERROR"
+
+
+def test_recovered_model_error_does_not_fail_successful_turn():
+    def invoke(input_state, config):
+        config["configurable"]["diagnostics"].last_error = "SERVER_ERROR"
+        return state(result([[123]]), "123")
+
+    c = case()
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = process_case(c, {c["id"]: c}, None, SimpleNamespace(invoke=invoke), dataset)
+    assert report["status"] == "passed"
+    assert report["diagnostics"][-1]["status"] == "success"
+    assert report["diagnostics"][-1]["error_type"] is None
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_total_includes_every_outcome_in_partial_and_completed_reports(
+    tmp_path, monkeypatch, blocked
+):
+    skipped = case(outcome="input_error")
+    skipped["id"] = "skipped"
+    questions, manifest = suite_files(tmp_path, [case(), skipped])
+    output = tmp_path / "report.json"
+    outcomes = ("passed", "failed", "needs_review", "skipped", "blocked", "pending")
+
+    def assert_counts(report):
+        summary = report["summary"]
+        assert summary["total"] == len(report["cases"]) == 2
+        assert summary["total"] == sum(summary[key] for key in outcomes)
+
+    def invoke(*args, **kwargs):
+        partial = json.loads(output.read_text("utf-8"))
+        assert_counts(partial)
+        assert partial["summary"]["pending"] == 1
+        assert partial["summary"]["skipped"] == 1
+        return state(result([[123]]), "123")
+
+    def client():
+        if blocked:
+            raise ValueError("Unavailable")
+        return None
+
+    monkeypatch.setattr("scripts.eval_runner.get_agent_client", client)
+    monkeypatch.setattr(
+        "scripts.eval_runner.build_agent_graph", lambda: SimpleNamespace(invoke=invoke)
+    )
+    dataset = SimpleNamespace(
+        catalog=SimpleNamespace(dataset_id="ds_validation"),
+        load_catalog=lambda _: None,
+        dispatch=lambda *a: None,
+    )
+    report = run_eval(questions, output, manifest_path=manifest, dataset=dataset)
+    assert_counts(report)
+    assert report["summary"]["pending"] == 0
+    assert report["summary"]["blocked" if blocked else "passed"] == 1

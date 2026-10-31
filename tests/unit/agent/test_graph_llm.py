@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock
 
+import pytest
+
+from djedai.agent import graph as graph_nodes
 from djedai.agent.client import ModelResponse
 from djedai.agent.graph import MODEL_ERROR_MARKDOWN, build_agent_graph
 from djedai.agent.prompts import load_prompt
@@ -104,3 +107,42 @@ def test_graph_api_error_fallback():
     assert result["answer_blocks"][0].type == "error"
     assert result["answer_blocks"][0].markdown == MODEL_ERROR_MARKDOWN
     assert "401 Unauthorized" not in result["answer_blocks"][0].markdown
+
+
+@pytest.mark.parametrize("node", ["understand", "plan", "plan_dashboard", "compose", "verify"])
+@pytest.mark.parametrize("error_type", ["SERVER_ERROR", "TIMEOUT", "INVALID_JSON"])
+def test_terminal_model_error_code_is_preserved_by_each_node(node, error_type):
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type=error_type
+    )
+    state = {
+        "messages": [Message(role="user", content="Show job duration")],
+        "results": [
+            ToolResult(result_id="r1", status="ok", facts=[{"text": "Duration available"}])
+        ],
+        "answer_blocks": [Block(type="text", markdown="Duration available")],
+    }
+    update = getattr(graph_nodes, node)(state, {"configurable": {"client": client}})
+    assert update["terminal_error"] == error_type
+    assert any(block.type == "error" for block in update["answer_blocks"])
+    if node == "verify":
+        assert update["verification"].status == "failed"
+        assert any(issue.code == "llm_unavailable" for issue in update["verification"].issues)
+
+
+def test_terminal_error_is_reset_on_next_chat_turn():
+    graph = build_agent_graph()
+    client = MagicMock()
+    client.generate_typed_response.return_value = ModelResponse(
+        status="error", error_type="TIMEOUT"
+    )
+    config = {"configurable": {"thread_id": "recover_after_failure", "client": client}}
+    first = graph.invoke({"messages": [Message(role="user", content="Show job duration")]}, config)
+    assert first["terminal_error"] == "TIMEOUT"
+    client.generate_typed_response.return_value = ModelResponse(
+        status="success", data=Understanding(intent="off_topic")
+    )
+    second = graph.invoke({"messages": [Message(role="user", content="Tell me a joke")]}, config)
+    assert second["terminal_error"] is None
+    assert second["understanding"].intent == "off_topic"
