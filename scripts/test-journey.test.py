@@ -104,7 +104,7 @@ class JourneyOrchestrationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         mutations = [args for name, args, *_ in calls if name == "docker" and "exec" in args]
         self.assertEqual(len(mutations), 1)
-        self.assertNotIn("ALTER TABLE", str(mutations))
+        self.assertNotIn("amount = -1", str(mutations))
 
     def test_failed_cleanup_is_not_success(self):
         result, _ = self.execute("cleanup")

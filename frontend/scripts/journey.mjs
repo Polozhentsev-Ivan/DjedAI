@@ -90,6 +90,8 @@ async function source(kind, otherOwner = false) {
     await page.getByLabel('Строка подключения (DSN)', { exact: true }).fill('postgresql://journey_reader:journey-test-only@journey-postgres:5432/journey');
     await page.getByRole('button', { name: 'Проверить соединение', exact: true }).click();
     await expect(page.getByText(/Соединение установлено:/)).toBeVisible();
+    await page.getByRole('button', { name: /^public\.orders\b/ }).click();
+    await page.getByRole('button', { name: /^public\.targets\b/ }).click();
     await page.getByRole('button', { name: 'Подключить', exact: true }).click();
   }
   const response = await accepted;
@@ -270,7 +272,7 @@ try {
     assert.equal((await model('/observations')).calls.length, callsBefore);
     report.partial_refresh = updated;
     await page.screenshot({ path: path.join(output, 'postgres-partial-failure.png'), fullPage: true });
-    check('Real PostgreSQL schema failure affects one widget, stale chart hidden, neighbour fresh');
+    check('Real PostgreSQL view failure affects one widget, stale chart hidden, neighbour fresh');
     report.status = 'passed';
   }
 } catch (error) {

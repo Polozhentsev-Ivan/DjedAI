@@ -37,10 +37,10 @@ git status --porcelain > "$output/worktree-status.txt"
 printf 'project=%s\n' "$COMPOSE_PROJECT_NAME" > "$output/compose-run.txt"
 run_browser prepare
 # Change the live source, then restart with the same app-data and source state.
-"${compose[@]}" exec -T journey-postgres psql -U postgres -d journey -v ON_ERROR_STOP=1 -c 'UPDATE orders SET amount = amount + 10 WHERE id = 1;'
+"${compose[@]}" exec -T journey-postgres psql -U postgres -d journey -v ON_ERROR_STOP=1 -c 'UPDATE order_rows SET amount = amount + 10 WHERE id = 1;'
 "${compose[@]}" restart
 "${compose[@]}" up -d --wait --wait-timeout 180
 run_browser verify
 # Genuine source failure of one recipe; the independent targets recipe must still work.
-"${compose[@]}" exec -T journey-postgres psql -U postgres -d journey -v ON_ERROR_STOP=1 -c 'ALTER TABLE orders RENAME COLUMN amount TO unavailable_amount;'
+"${compose[@]}" exec -T journey-postgres psql -U postgres -d journey -v ON_ERROR_STOP=1 -c 'UPDATE order_rows SET amount = -1 WHERE id = 1;'
 run_browser partial
