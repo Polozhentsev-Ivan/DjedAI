@@ -794,16 +794,17 @@ def test_fractional_cell_keeps_a_conflicting_aggregate_rejected() -> None:
     assert _checked("Максимум 72,49.", results, "Какой максимум?").status == "verified"
 
 
-def test_filtered_count_names_its_entity_but_other_integers_stay_rejected() -> None:
+def test_filtered_count_names_its_entity_and_other_integers_stay_disputed() -> None:
     assert _checked("Всего 4 515 обращений.", P90_RESULTS, P90_QUESTION).status == "verified"
     results = _query_result(
         "SELECT team, SUM(qty) AS qty FROM t WHERE d >= '2025-03-01' GROUP BY team",
         ["team", "qty"],
         [["Склад", 4515]],
     )
-    assert _checked("Всего 4 515 заказов.", results, P90_QUESTION).status == "failed"
-    plain = _query_result("SELECT COUNT(*) AS n FROM t", ["n"], [[500000]])
-    assert _checked("Всего 500 000 запусков.", plain, "Сколько?").status == "failed"
+    # Спорная подпись остаётся в отчёте, но ответ не блокирует.
+    disputed = _checked("Всего 4 515 заказов.", results, P90_QUESTION)
+    assert disputed.assertions[0].reason_code == "unrelated_result"
+    assert disputed.rejected_assertions == []
 
 
 def test_rub_source_column_confirms_rubles_only() -> None:
@@ -860,6 +861,22 @@ def test_count_alias_through_a_cte_names_its_entity() -> None:
     assert _checked("Вошло 4 515 обращений.", results, P90_QUESTION).status == "verified"
 
 
+def test_number_with_a_disputed_caption_is_reported_but_does_not_block() -> None:
+    results = _query_result("SELECT SUM(qty) AS qty FROM t", ["qty"], [[4515]])
+    report = _checked("Всего 4 515 заказов.", results, "Сколько?")
+    assert report.status != "failed"
+    assert report.assertions[0].status == "ignored"
+    assert report.assertions[0].reason_code == "unrelated_result"
+    assert report.rejected_assertions == []
+
+
+def test_absent_number_and_conflicting_aggregate_still_block() -> None:
+    results = _query_result("SELECT MAX(qty) AS m FROM t", ["m"], [[4515]])
+    assert _checked("Всего 4 516 заказов.", results, "Сколько?").status == "failed"
+    assert _checked("Среднее 4 515.", results, "Сколько?").status == "failed"
+    assert _checked("Сумма 4 515 USD.", results, "Сколько?").status == "failed"
+
+
 def test_review_bypasses_stay_rejected() -> None:
     # Алиас cnt не делает MAX подсчётом.
     results = _query_result(
@@ -885,6 +902,19 @@ def test_review_bypasses_stay_rejected() -> None:
         "SELECT dept, SUM(qty) AS total FROM q GROUP BY dept", ["dept", "total"], [["rub", 10]]
     )
     assert _checked("Сумма 10 RUB", results, "Сколько?").status == "failed"
+
+
+def test_disputed_caption_does_not_bypass_currency_period_or_aggregate() -> None:
+    results = _query_result("SELECT SUM(revenue_usd) AS revenue FROM t", ["revenue"], [[1000]])
+    assert _checked("Profit 1000 EUR", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT m, profit FROM t", ["m", "profit"], [["2023-01-01", 1000], ["2024-01-01", 2000]]
+    )
+    assert _checked("2024-01-01: Profit 1000", results, "Сколько?").status == "failed"
+    results = _query_result(
+        "SELECT MAX(amount / 1000.0) AS m, COUNT(*) AS n FROM orders", ["m", "n"], [[2.0, 2]]
+    )
+    assert _checked("Average 2.", results, "Сколько?").status == "failed"
 
 
 def test_second_review_bypasses_stay_rejected() -> None:

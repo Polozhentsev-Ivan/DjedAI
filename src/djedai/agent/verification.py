@@ -2436,6 +2436,23 @@ def _query_context(question: str | None, sql: Mapping[str, str] | None = None) -
     )
 
 
+def _label_only_rejection(
+    draft: _Draft, evidence: Sequence[VerificationEvidence], context: _QueryContext
+) -> bool:
+    """Спорна только подпись: без неё проходят валюта, период, популяция и знаменатель."""
+    if draft.status != "rejected" or draft.kind != "quantity":
+        return False
+    if draft.reason_code not in ("unrelated_result", "ambiguous_number"):
+        return False
+    requested = _aggregate_keys(draft.label)
+    matching = [item for item in evidence if _value_matches(draft, item)]
+    # Подпись называет агрегат: подтвердить её может только значение этого агрегата.
+    if requested and not any(requested & _aggregate_keys(item.label) for item in matching):
+        return False
+    _, reason = _match_quantity(replace(draft, label=None), matching, context)
+    return reason in (None, "ambiguous_number")
+
+
 _MONTH_DAYS = (
     ("январ", 31),
     ("феврал", 28),
@@ -3066,6 +3083,10 @@ def verify_numeric_text(
     context = _query_context(question, sql) if question or sql else None
     for draft in drafts:
         _resolve_draft(draft, scoped, context)
+        if context is not None and _label_only_rejection(draft, scoped, context):
+            # Число есть в результате, спорна только подпись: ответ не блокируем,
+            # причина остаётся в отчёте у этого утверждения.
+            draft.status = "ignored"
         assertion = _assertion(draft, len(assertions))
         assertions.append(assertion)
         if draft.status == "rejected":
