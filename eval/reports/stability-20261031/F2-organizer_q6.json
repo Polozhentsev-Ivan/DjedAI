@@ -1,0 +1,3896 @@
+{
+ "schema_version": 2,
+ "dataset": "hk_background_jobs_v1",
+ "capabilities": {
+  "tools": [
+   "compare_segments",
+   "compute_metric",
+   "correlation",
+   "describe_column",
+   "describe_dataset",
+   "detect_anomalies",
+   "find_duplicates",
+   "forecast",
+   "lagged_correlation",
+   "run_sql",
+   "seasonality",
+   "segment_profile",
+   "time_aggregate",
+   "value_counts"
+  ],
+  "requirements": [
+   "charts",
+   "correlation",
+   "dashboards",
+   "forecast",
+   "memory",
+   "seasonality",
+   "segments"
+  ]
+ },
+ "evaluation_scope": {
+  "semantic_rubrics": "code_checks_only_rest_not_evaluated",
+  "transport": "direct_graph",
+  "turn_timeout_seconds": 120.0
+ },
+ "status": "completed",
+ "started_at": "2026-10-31T12:19:02.767880+00:00",
+ "summary": {
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "needs_review": 0,
+  "skipped": 0,
+  "blocked": 0,
+  "pending": 0,
+  "automated_passed": 1,
+  "automated_failed": 0,
+  "semantic_passed": 1,
+  "semantic_failed": 0,
+  "semantic_partial": 0,
+  "semantic_not_evaluated": 0,
+  "timed_out": 0,
+  "rubrics_passed": 0,
+  "rubrics_failed": 0,
+  "rubrics_not_evaluated": 0
+ },
+ "cases": [
+  {
+   "answer": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Доля цепочек (%) | Ср. число попыток |\n|---|---|---|\n| Архивирование журналов | 4,65 % | 2,28 |\n| Выгрузка документов в ЭДО | 4,89 % | 2,32 |\n| Загрузка событий приложения | 5,03 % | 2,31 |\n| Загрузка цен поставщиков | 4,84 % | 2,29 |\n| Обновление остатков | 4,83 % | 2,31 |\n| Обновление поискового индекса | 4,92 % | 2,30 |\n| Обновление статусов доставки | 4,93 % | 2,30 |\n| Обработка заявок на возврат | 4,85 % | 2,31 |\n| Отправка уведомлений о заказах | 4,92 % | 2,32 |\n| Очистка временных файлов | 5,24 % | 2,32 |\n| Пересчёт доступности товаров | 5,02 % | 2,32 |\n| Подготовка отчёта по продажам | 4,71 % | 2,28 |\n| Проверка качества данных | 4,87 % | 2,32 |\n| Проверка сроков действия сертификатов | 5,17 % | 2,25 |\n| Расчёт бонусов за покупки | 4,92 % | 2,32 |\n| Резервное копирование справочников | 4,96 % | 2,32 |\n| Сверка платёжных операций | 4,77 % | 2,29 |\n| Формирование электронных чеков | 4,78 % | 2,31 |\n\n**Итого по всем заданиям:**\n- Сумма долей: 88,31 %\n- Среднее число попыток: 41,47",
+   "used_tools": [
+    "value_counts",
+    "run_sql"
+   ],
+   "fact_checks": [
+    {
+     "key": "cleanup.avg_attempts",
+     "comparison": "approx",
+     "expected": 2.3201,
+     "result": true,
+     "passed": true,
+     "source": "current"
+    },
+    {
+     "key": "archive.avg_attempts",
+     "comparison": "approx",
+     "expected": 2.279,
+     "result": true,
+     "passed": true,
+     "source": "current"
+    }
+   ],
+   "plan": [
+    {
+     "tool": "run_sql",
+     "args": {
+      "sql": "WITH chain_stats AS (\n  SELECT\n    kod_tsepochki_zapuskov,\n    zadanie,\n    COUNT(*) as attempts_in_chain,\n    MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) as has_success,\n    MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) as first_success_attempt\n  FROM \"08_fonovye_zadaniya\"\n  GROUP BY kod_tsepochki_zapuskov, zadanie\n)\nSELECT\n  zadanie,\n  COUNT(*) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) * 1.0 / COUNT(*) as share_chains_retry_success,\n  AVG(attempts_in_chain) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) as avg_attempts_retry_success\nFROM chain_stats\nGROUP BY zadanie\nORDER BY zadanie"
+     }
+    }
+   ],
+   "tool_results": [
+    {
+     "result_id": "r_7ba1350c0b554435a6ef4f0d06a9c00c",
+     "status": "ok",
+     "data": {
+      "columns": [
+       "status",
+       "count"
+      ],
+      "rows": [
+       [
+        "Успешно",
+        454882
+       ],
+       [
+        "Ошибка",
+        40414
+       ],
+       [
+        "Отменено",
+        4704
+       ]
+      ],
+      "row_count": 3,
+      "truncated": false
+     },
+     "data_ref": null,
+     "facts": [
+      {
+       "text": "Значение 'Успешно' встречается 454882 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Успешно",
+        "count": 454882
+       }
+      },
+      {
+       "text": "Значение 'Ошибка' встречается 40414 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Ошибка",
+        "count": 40414
+       }
+      },
+      {
+       "text": "Значение 'Отменено' встречается 4704 раз.",
+       "kind": "freq",
+       "values": {
+        "value": "Отменено",
+        "count": 4704
+       }
+      },
+      {
+       "text": "Суммы числовых колонок по всем строкам результата",
+       "kind": "summary",
+       "values": {
+        "column_totals": {
+         "count": 500000
+        }
+       }
+      }
+     ],
+     "chart_hint": {
+      "type": "bar",
+      "x": "status",
+      "y": [
+       "count"
+      ],
+      "color": null
+     },
+     "error": null,
+     "tool": "value_counts",
+     "params": {
+      "table": "08_fonovye_zadaniya",
+      "column": "status",
+      "top_n": 10
+     },
+     "sql": null,
+     "source_result_id": null,
+     "sensitive_columns": [],
+     "duration_ms": null,
+     "metric": null,
+     "quality": null,
+     "read": null
+    },
+    {
+     "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+     "status": "ok",
+     "data": {
+      "columns": [
+       "zadanie",
+       "share_chains_retry_success",
+       "avg_attempts_retry_success"
+      ],
+      "rows": [
+       [
+        "Архивирование журналов",
+        0.04654696132596685,
+        2.27893175074184
+       ],
+       [
+        "Выгрузка документов в ЭДО",
+        0.048856479946967186,
+        2.320217096336499
+       ],
+       [
+        "Загрузка событий приложения",
+        0.05034546395696892,
+        2.3124720607957086
+       ],
+       [
+        "Загрузка цен поставщиков",
+        0.0483646641841267,
+        2.292207792207792
+       ],
+       [
+        "Обновление остатков",
+        0.04830170921497118,
+        2.3072372999304105
+       ],
+       [
+        "Обновление поискового индекса",
+        0.049210023145818654,
+        2.3006134969325154
+       ],
+       [
+        "Обновление статусов доставки",
+        0.049317265497961824,
+        2.303974706413731
+       ],
+       [
+        "Обработка заявок на возврат",
+        0.04846312155613092,
+        2.3123287671232875
+       ],
+       [
+        "Отправка уведомлений о заказах",
+        0.049174716099361505,
+        2.317493946731235
+       ],
+       [
+        "Очистка временных файлов",
+        0.05242262925200758,
+        2.3201376936316693
+       ],
+       [
+        "Пересчёт доступности товаров",
+        0.05019072475406545,
+        2.320888888888889
+       ],
+       [
+        "Подготовка отчёта по продажам",
+        0.04710341093665403,
+        2.281609195402299
+       ],
+       [
+        "Проверка качества данных",
+        0.048684092338093954,
+        2.3154981549815496
+       ],
+       [
+        "Проверка сроков действия сертификатов",
+        0.051714752313554706,
+        2.2526315789473683
+       ],
+       [
+        "Расчёт бонусов за покупки",
+        0.04923472118163331,
+        2.3163043478260867
+       ],
+       [
+        "Резервное копирование справочников",
+        0.04962243797195254,
+        2.3206521739130435
+       ],
+       [
+        "Сверка платёжных операций",
+        0.04769091457893148,
+        2.289029535864979
+       ],
+       [
+        "Формирование электронных чеков",
+        0.047839971079110685,
+        2.3079345088161207
+       ]
+      ],
+      "row_count": 18,
+      "truncated": false
+     },
+     "data_ref": null,
+     "facts": [
+      {
+       "text": "Запрос выполнен успешно, получено строк: 18",
+       "kind": "summary",
+       "values": {
+        "row_count": 18
+       }
+      },
+      {
+       "text": "Суммы числовых колонок по всем строкам результата",
+       "kind": "summary",
+       "values": {
+        "column_totals": {
+         "share_chains_retry_success": 0.8830840593342775,
+         "avg_attempts_retry_success": 41.470162995485026
+        }
+       }
+      }
+     ],
+     "chart_hint": null,
+     "error": null,
+     "tool": "run_sql",
+     "params": {
+      "sql": "WITH chain_stats AS (\n  SELECT\n    kod_tsepochki_zapuskov,\n    zadanie,\n    COUNT(*) as attempts_in_chain,\n    MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) as has_success,\n    MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) as first_success_attempt\n  FROM \"08_fonovye_zadaniya\"\n  GROUP BY kod_tsepochki_zapuskov, zadanie\n)\nSELECT\n  zadanie,\n  COUNT(*) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) * 1.0 / COUNT(*) as share_chains_retry_success,\n  AVG(attempts_in_chain) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) as avg_attempts_retry_success\nFROM chain_stats\nGROUP BY zadanie\nORDER BY zadanie"
+     },
+     "sql": "WITH chain_stats AS (\n  SELECT\n    kod_tsepochki_zapuskov,\n    zadanie,\n    COUNT(*) as attempts_in_chain,\n    MAX(CASE WHEN status = 'Успешно' THEN 1 ELSE 0 END) as has_success,\n    MIN(CASE WHEN status = 'Успешно' THEN nomer_popytki END) as first_success_attempt\n  FROM \"08_fonovye_zadaniya\"\n  GROUP BY kod_tsepochki_zapuskov, zadanie\n)\nSELECT\n  zadanie,\n  COUNT(*) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) * 1.0 / COUNT(*) as share_chains_retry_success,\n  AVG(attempts_in_chain) FILTER (WHERE has_success = 1 AND first_success_attempt > 1) as avg_attempts_retry_success\nFROM chain_stats\nGROUP BY zadanie\nORDER BY zadanie",
+     "source_result_id": null,
+     "sensitive_columns": [],
+     "duration_ms": null,
+     "metric": null,
+     "quality": null,
+     "read": null
+    }
+   ],
+   "answer_blocks": [
+    {
+     "type": "text",
+     "markdown": "Доля цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках по заданиям:\n\n| Задание | Доля цепочек (%) | Ср. число попыток |\n|---|---|---|\n| Архивирование журналов | 4,65 % | 2,28 |\n| Выгрузка документов в ЭДО | 4,89 % | 2,32 |\n| Загрузка событий приложения | 5,03 % | 2,31 |\n| Загрузка цен поставщиков | 4,84 % | 2,29 |\n| Обновление остатков | 4,83 % | 2,31 |\n| Обновление поискового индекса | 4,92 % | 2,30 |\n| Обновление статусов доставки | 4,93 % | 2,30 |\n| Обработка заявок на возврат | 4,85 % | 2,31 |\n| Отправка уведомлений о заказах | 4,92 % | 2,32 |\n| Очистка временных файлов | 5,24 % | 2,32 |\n| Пересчёт доступности товаров | 5,02 % | 2,32 |\n| Подготовка отчёта по продажам | 4,71 % | 2,28 |\n| Проверка качества данных | 4,87 % | 2,32 |\n| Проверка сроков действия сертификатов | 5,17 % | 2,25 |\n| Расчёт бонусов за покупки | 4,92 % | 2,32 |\n| Резервное копирование справочников | 4,96 % | 2,32 |\n| Сверка платёжных операций | 4,77 % | 2,29 |\n| Формирование электронных чеков | 4,78 % | 2,31 |\n\n**Итого по всем заданиям:**\n- Сумма долей: 88,31 %\n- Среднее число попыток: 41,47",
+     "result_id": null,
+     "columns": [],
+     "limit": 20,
+     "chart": null,
+     "options": [],
+     "dashboard_id": null,
+     "title": null,
+     "items": [],
+     "metric_candidates": []
+    }
+   ],
+   "intent": "data_question",
+   "understanding": {
+    "intent": "data_question",
+    "resolved_question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+    "entities": {
+     "tables": [],
+     "columns": []
+    },
+    "references": [],
+    "dashboard_id": null,
+    "clarification": null
+   },
+   "verification": {
+    "status": "verified",
+    "assertions": [
+     {
+      "assertion_id": "a1",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Архивирование журналов | 4,65 % | 2,28 |",
+      "raw_text": "4,65",
+      "value": "4.65",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Архивирование журналов | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[0].share_chains_retry_success",
+        "value": "0.04654696132596685",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a2",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Архивирование журналов | 4,65 % | 2,28 |",
+      "raw_text": "2,28",
+      "value": "2.28",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_retry_success",
+        "value": "2.27893175074184",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_retry_success",
+        "value": "2.281609195402299",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a3",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Подготовка отчёта по продажам | 4,71 % | 2,28 |",
+      "raw_text": "2,28",
+      "value": "2.28",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[0].avg_attempts_retry_success",
+        "value": "2.27893175074184",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Архивирование журналов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[11].avg_attempts_retry_success",
+        "value": "2.281609195402299",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a4",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Выгрузка документов в ЭДО | 4,89 % | 2,32 |",
+      "raw_text": "4,89",
+      "value": "4.89",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Выгрузка документов в ЭДО | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].share_chains_retry_success",
+        "value": "0.048856479946967186",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a5",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Выгрузка документов в ЭДО | 4,89 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a6",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Отправка уведомлений о заказах | 4,92 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a7",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Очистка временных файлов | 5,24 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a8",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Пересчёт доступности товаров | 5,02 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a9",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка качества данных | 4,87 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a10",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Расчёт бонусов за покупки | 4,92 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a11",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Резервное копирование справочников | 4,96 % | 2,32 |",
+      "raw_text": "2,32",
+      "value": "2.32",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[1].avg_attempts_retry_success",
+        "value": "2.320217096336499",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Выгрузка документов в ЭДО",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].avg_attempts_retry_success",
+        "value": "2.317493946731235",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].avg_attempts_retry_success",
+        "value": "2.3201376936316693",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].avg_attempts_retry_success",
+        "value": "2.320888888888889",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].avg_attempts_retry_success",
+        "value": "2.3154981549815496",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].avg_attempts_retry_success",
+        "value": "2.3163043478260867",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].avg_attempts_retry_success",
+        "value": "2.3206521739130435",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a12",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка событий приложения | 5,03 % | 2,31 |",
+      "raw_text": "5,03",
+      "value": "5.03",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Загрузка событий приложения | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[2].share_chains_retry_success",
+        "value": "0.05034546395696892",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a13",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка событий приложения | 5,03 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_retry_success",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_retry_success",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_retry_success",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_retry_success",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a14",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление остатков | 4,83 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_retry_success",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_retry_success",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_retry_success",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_retry_success",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a15",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обработка заявок на возврат | 4,85 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_retry_success",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_retry_success",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_retry_success",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_retry_success",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a16",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Формирование электронных чеков | 4,78 % | 2,31 |",
+      "raw_text": "2,31",
+      "value": "2.31",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[2].avg_attempts_retry_success",
+        "value": "2.3124720607957086",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка событий приложения",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[4].avg_attempts_retry_success",
+        "value": "2.3072372999304105",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[7].avg_attempts_retry_success",
+        "value": "2.3123287671232875",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[17].avg_attempts_retry_success",
+        "value": "2.3079345088161207",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a17",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка цен поставщиков | 4,84 % | 2,29 |",
+      "raw_text": "4,84",
+      "value": "4.84",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Загрузка цен поставщиков | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[3].share_chains_retry_success",
+        "value": "0.0483646641841267",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a18",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Загрузка цен поставщиков | 4,84 % | 2,29 |",
+      "raw_text": "2,29",
+      "value": "2.29",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_retry_success",
+        "value": "2.292207792207792",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[16].avg_attempts_retry_success",
+        "value": "2.289029535864979",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a19",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Сверка платёжных операций | 4,77 % | 2,29 |",
+      "raw_text": "2,29",
+      "value": "2.29",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[3].avg_attempts_retry_success",
+        "value": "2.292207792207792",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Загрузка цен поставщиков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[16].avg_attempts_retry_success",
+        "value": "2.289029535864979",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a20",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление остатков | 4,83 % | 2,31 |",
+      "raw_text": "4,83",
+      "value": "4.83",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление остатков | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[4].share_chains_retry_success",
+        "value": "0.04830170921497118",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Обновление остатков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a21",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление поискового индекса | 4,92 % | 2,30 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление поискового индекса | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[5].share_chains_retry_success",
+        "value": "0.049210023145818654",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a22",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Отправка уведомлений о заказах | 4,92 % | 2,32 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Отправка уведомлений о заказах | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[8].share_chains_retry_success",
+        "value": "0.049174716099361505",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Отправка уведомлений о заказах",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a23",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Расчёт бонусов за покупки | 4,92 % | 2,32 |",
+      "raw_text": "4,92",
+      "value": "4.92",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Расчёт бонусов за покупки | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[14].share_chains_retry_success",
+        "value": "0.04923472118163331",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Расчёт бонусов за покупки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a24",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление поискового индекса | 4,92 % | 2,30 |",
+      "raw_text": "2,30",
+      "value": "2.30",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[5].avg_attempts_retry_success",
+        "value": "2.3006134969325154",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_retry_success",
+        "value": "2.303974706413731",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a25",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление статусов доставки | 4,93 % | 2,30 |",
+      "raw_text": "2,30",
+      "value": "2.30",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[5].avg_attempts_retry_success",
+        "value": "2.3006134969325154",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление поискового индекса",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       },
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[6].avg_attempts_retry_success",
+        "value": "2.303974706413731",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a26",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обновление статусов доставки | 4,93 % | 2,30 |",
+      "raw_text": "4,93",
+      "value": "4.93",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обновление статусов доставки | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[6].share_chains_retry_success",
+        "value": "0.049317265497961824",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Обновление статусов доставки",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a27",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Обработка заявок на возврат | 4,85 % | 2,31 |",
+      "raw_text": "4,85",
+      "value": "4.85",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Обработка заявок на возврат | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[7].share_chains_retry_success",
+        "value": "0.04846312155613092",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Обработка заявок на возврат",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a28",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Очистка временных файлов | 5,24 % | 2,32 |",
+      "raw_text": "5,24",
+      "value": "5.24",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Очистка временных файлов | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[9].share_chains_retry_success",
+        "value": "0.05242262925200758",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Очистка временных файлов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a29",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Пересчёт доступности товаров | 5,02 % | 2,32 |",
+      "raw_text": "5,02",
+      "value": "5.02",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Пересчёт доступности товаров | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[10].share_chains_retry_success",
+        "value": "0.05019072475406545",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Пересчёт доступности товаров",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a30",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Подготовка отчёта по продажам | 4,71 % | 2,28 |",
+      "raw_text": "4,71",
+      "value": "4.71",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Подготовка отчёта по продажам | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[11].share_chains_retry_success",
+        "value": "0.04710341093665403",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Подготовка отчёта по продажам",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a31",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка качества данных | 4,87 % | 2,32 |",
+      "raw_text": "4,87",
+      "value": "4.87",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Проверка качества данных | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[12].share_chains_retry_success",
+        "value": "0.048684092338093954",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Проверка качества данных",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a32",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка сроков действия сертификатов | 5,17 % | 2,25 |",
+      "raw_text": "5,17",
+      "value": "5.17",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Проверка сроков действия сертификатов | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[13].share_chains_retry_success",
+        "value": "0.051714752313554706",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Проверка сроков действия сертификатов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a33",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Проверка сроков действия сертификатов | 5,17 % | 2,25 |",
+      "raw_text": "2,25",
+      "value": "2.25",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[13].avg_attempts_retry_success",
+        "value": "2.2526315789473683",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "avg_attempts_retry_success Проверка сроков действия сертификатов",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a34",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Резервное копирование справочников | 4,96 % | 2,32 |",
+      "raw_text": "4,96",
+      "value": "4.96",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Резервное копирование справочников | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[15].share_chains_retry_success",
+        "value": "0.04962243797195254",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Резервное копирование справочников",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a35",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Сверка платёжных операций | 4,77 % | 2,29 |",
+      "raw_text": "4,77",
+      "value": "4.77",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Сверка платёжных операций | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[16].share_chains_retry_success",
+        "value": "0.04769091457893148",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Сверка платёжных операций",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a36",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "| Формирование электронных чеков | 4,78 % | 2,31 |",
+      "raw_text": "4,78",
+      "value": "4.78",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "| Формирование электронных чеков | |",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": null,
+        "cell_address": "data.rows[17].share_chains_retry_success",
+        "value": "0.047839971079110685",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "share_chains_retry_success Формирование электронных чеков",
+        "source": "data_cell",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a37",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "- Сумма долей: 88,31 %",
+      "raw_text": "88,31",
+      "value": "88.31",
+      "scale": "1",
+      "unit": "percent",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "Сумма долей",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636:fact:1",
+        "cell_address": null,
+        "value": "0.8830840593342775",
+        "scale": "1",
+        "unit": "ratio",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "column_totals.share_chains_retry_success Суммы числовых колонок по всем строкам результата",
+        "source": "fact",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     },
+     {
+      "assertion_id": "a38",
+      "kind": "quantity",
+      "status": "verified",
+      "text": "- Среднее число попыток: 41,47",
+      "raw_text": "41,47",
+      "value": "41.47",
+      "scale": "1",
+      "unit": "unknown",
+      "currency": null,
+      "period": null,
+      "population": null,
+      "denominator": null,
+      "label": "Среднее число попыток",
+      "evidence": [
+       {
+        "result_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636",
+        "fact_id": "r_e3ae60225f8c4fc49a1ef5558ef1f636:fact:1",
+        "cell_address": null,
+        "value": "41.470162995485026",
+        "scale": "1",
+        "unit": "number",
+        "currency": null,
+        "period": null,
+        "population": null,
+        "denominator": null,
+        "label": "column_totals.avg_attempts_retry_success Суммы числовых колонок по всем строкам результата",
+        "source": "fact",
+        "unknown": [
+         "period",
+         "population",
+         "denominator",
+         "currency"
+        ]
+       }
+      ],
+      "formula": null,
+      "operands": [],
+      "reason_code": null,
+      "reason": null
+     }
+    ],
+    "rejected_assertions": [],
+    "issues": [],
+    "result_ids": [
+     "r_7ba1350c0b554435a6ef4f0d06a9c00c",
+     "r_e3ae60225f8c4fc49a1ef5558ef1f636"
+    ]
+   },
+   "safety_checks": {
+    "forbidden_tools": [],
+    "called_forbidden": [],
+    "planned_forbidden": [],
+    "passed": true
+   },
+   "diagnostics": [
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.788159+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "run_started",
+     "node": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.789385+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "load_ctx"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.793106+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "load_ctx",
+     "duration_ms": 3.718,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.793461+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "fast_route"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.793514+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "fast_route",
+     "duration_ms": 0.052,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.794036+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "understand"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.794252+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_started",
+     "node": "understand",
+     "call_id": "call_3ace9019f0984f2397e3328c6c56f3c5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:02.797761+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_started",
+     "node": "understand",
+     "call_id": "call_3ace9019f0984f2397e3328c6c56f3c5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.708163+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_finished",
+     "node": "understand",
+     "call_id": "call_3ace9019f0984f2397e3328c6c56f3c5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 1910.392
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.708736+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_finished",
+     "node": "understand",
+     "call_id": "call_3ace9019f0984f2397e3328c6c56f3c5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "Understanding",
+     "stage": "understand",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 1914.479,
+     "attempts": 1,
+     "input_tokens": 2114,
+     "output_tokens": 67,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.708775+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "understand",
+     "duration_ms": 1914.739,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.709282+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "plan"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.714138+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_started",
+     "node": "plan",
+     "call_id": "call_29f40dbef92f4ad09c69ceef2d6bcb2a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:04.720325+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_started",
+     "node": "plan",
+     "call_id": "call_29f40dbef92f4ad09c69ceef2d6bcb2a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.684354+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_finished",
+     "node": "plan",
+     "call_id": "call_29f40dbef92f4ad09c69ceef2d6bcb2a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 14964.015
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.684917+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_finished",
+     "node": "plan",
+     "call_id": "call_29f40dbef92f4ad09c69ceef2d6bcb2a",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 14970.774,
+     "attempts": 1,
+     "input_tokens": 16779,
+     "output_tokens": 1274,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.684958+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "plan",
+     "duration_ms": 14975.675,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.685368+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "execute"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.698797+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "execute",
+     "duration_ms": 13.424,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.699261+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "plan"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.703844+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_started",
+     "node": "plan",
+     "call_id": "call_3858f500bde9448a84c5c6d64ac0e9b5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:19.706380+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_started",
+     "node": "plan",
+     "call_id": "call_3858f500bde9448a84c5c6d64ac0e9b5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.080168+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_finished",
+     "node": "plan",
+     "call_id": "call_3858f500bde9448a84c5c6d64ac0e9b5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 17373.779
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.080756+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_finished",
+     "node": "plan",
+     "call_id": "call_3858f500bde9448a84c5c6d64ac0e9b5",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "PlanResponse",
+     "stage": "plan",
+     "reasoning_effort": null,
+     "reasoning_setting": "provider_default",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 17376.907,
+     "attempts": 1,
+     "input_tokens": 4366,
+     "output_tokens": 1479,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.080775+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "plan",
+     "duration_ms": 17381.513,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.081142+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "execute"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.135694+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "execute",
+     "duration_ms": 54.546,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.136230+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "visualize"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.136256+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "visualize",
+     "duration_ms": 0.025,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.137071+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "compose"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.141870+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_started",
+     "node": "compose",
+     "call_id": "call_c599ce027bc943bbbaeb3576593bb6ac",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:37.146312+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_started",
+     "node": "compose",
+     "call_id": "call_c599ce027bc943bbbaeb3576593bb6ac",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.705524+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_finished",
+     "node": "compose",
+     "call_id": "call_c599ce027bc943bbbaeb3576593bb6ac",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 8559.203
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.706121+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_finished",
+     "node": "compose",
+     "call_id": "call_c599ce027bc943bbbaeb3576593bb6ac",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "ComposeResponse",
+     "stage": "compose",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 8564.246,
+     "attempts": 1,
+     "input_tokens": 3532,
+     "output_tokens": 535,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.706142+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "compose",
+     "duration_ms": 8569.071,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.706522+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_started",
+     "node": "verify"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.734546+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_started",
+     "node": "verify",
+     "call_id": "call_1be459c536ec4b779c70cef275b891a2",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none"
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:45.736565+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_started",
+     "node": "verify",
+     "call_id": "call_1be459c536ec4b779c70cef275b891a2",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:48.208136+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_attempt_finished",
+     "node": "verify",
+     "call_id": "call_1be459c536ec4b779c70cef275b891a2",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "attempt": 1,
+     "http_status": 200,
+     "status": "success",
+     "error_type": null,
+     "exception_type": null,
+     "cause_type": null,
+     "duration_ms": 2471.561
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:48.208678+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "model_call_finished",
+     "node": "verify",
+     "call_id": "call_1be459c536ec4b779c70cef275b891a2",
+     "model": "Qwen/Qwen3.6-27B",
+     "schema": "VerifyResponse",
+     "stage": "verify",
+     "reasoning_effort": "none",
+     "reasoning_setting": "none",
+     "status": "success",
+     "error_type": null,
+     "duration_ms": 2474.129,
+     "attempts": 1,
+     "input_tokens": 3729,
+     "output_tokens": 27,
+     "reasoning_tokens": null,
+     "estimated_cost_usd": null,
+     "tariff": null,
+     "actual_charge_usd": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:48.208726+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "stage_finished",
+     "node": "verify",
+     "duration_ms": 2502.203,
+     "error_type": null,
+     "exception_type": null
+    },
+    {
+     "version": 1,
+     "timestamp": "2026-10-31T12:19:48.211167+00:00",
+     "run_id": "run_5233d7b87f5c48cbb83d92c839ddd019",
+     "owner_id": "eval",
+     "chat_id": "eval_organizer_q6",
+     "dataset_id": "hk_background_jobs_v1",
+     "user_message_id": "eval_ee679244ca1c47d0a8271dded24b56dc",
+     "event": "run_finished",
+     "node": "verify",
+     "status": "success",
+     "error_type": null,
+     "error_node": null,
+     "duration_ms": 45423.006,
+     "trace": [
+      {
+       "node": "load_ctx",
+       "duration_ms": 3.718,
+       "error_type": null
+      },
+      {
+       "node": "fast_route",
+       "duration_ms": 0.052,
+       "error_type": null
+      },
+      {
+       "node": "understand",
+       "duration_ms": 1914.739,
+       "error_type": null
+      },
+      {
+       "node": "plan",
+       "duration_ms": 14975.675,
+       "error_type": null
+      },
+      {
+       "node": "execute",
+       "duration_ms": 13.424,
+       "error_type": null
+      },
+      {
+       "node": "plan",
+       "duration_ms": 17381.513,
+       "error_type": null
+      },
+      {
+       "node": "execute",
+       "duration_ms": 54.546,
+       "error_type": null
+      },
+      {
+       "node": "visualize",
+       "duration_ms": 0.025,
+       "error_type": null
+      },
+      {
+       "node": "compose",
+       "duration_ms": 8569.071,
+       "error_type": null
+      },
+      {
+       "node": "verify",
+       "duration_ms": 2502.203,
+       "error_type": null
+      }
+     ]
+    }
+   ],
+   "terminal_error": null,
+   "automated_status": "passed",
+   "automated_issues": [],
+   "semantic_status": "passed",
+   "semantic_issues": [],
+   "semantic_rubrics": [],
+   "id": "organizer_q6",
+   "status": "passed",
+   "duration_seconds": 45.42,
+   "total_duration_seconds": 45.43,
+   "thread_id": "eval_organizer_q6",
+   "context_cases": [],
+   "context_results": [],
+   "issues": [],
+   "question": "Для каждого задания рассчитай долю цепочек, завершившихся успешно только после повторных попыток, и среднее число попыток в таких цепочках.",
+   "scenario": "organizer"
+  }
+ ],
+ "elapsed_seconds": 45.45,
+ "finished_at": "2026-10-31T12:19:48.221856+00:00"
+}
