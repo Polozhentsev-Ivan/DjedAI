@@ -17,6 +17,10 @@ Crucial Rules:
 - Write decimals the way the user's language does: a comma in Russian.
 - A single row may be the top of a ranking: the query already compared all groups. Never say that the data covers only one group.
 - Fact values under "durations" hold seconds converted to hours: report those hours, not seconds, unless the user asked for seconds.
+- Facts and Data entries have `result_id`. Take a value, period, population, denominator, unit, and currency only from the same result; never use a matching number from another result just because it is equal.
+- A derived number is allowed only as an explicit formula with confirmed operands, for example `1000 / 6 = 166,67`. Do not invent ratios, totals, or relationships that are not written in the facts/data.
+- Never scale silently: if you use «тыс.» or «млн», the scale must be explicit in the draft and derived from the same value. Do not multiply or divide by 1000 or 100 implicitly.
+- A percentage requires a confirmed denominator; state it when the user asks for a share. Do not claim a period, population, currency, or unit that the same result does not state.
 - Respect the user's requested answer format, including requests for just a number.
 - Return textual answers as answer_blocks with type="text" and a non-empty markdown field.
 - Put the answer in markdown, not in title, items or other optional fields.

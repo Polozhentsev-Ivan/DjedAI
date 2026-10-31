@@ -126,6 +126,9 @@ def test_terminal_model_error_code_is_preserved_by_each_node(node, error_type):
     update = getattr(graph_nodes, node)(state, {"configurable": {"client": client}})
     assert update["terminal_error"] == error_type
     assert any(block.type == "error" for block in update["answer_blocks"])
+    if node == "verify":
+        assert update["verification"].status == "failed"
+        assert any(issue.code == "llm_unavailable" for issue in update["verification"].issues)
 
 
 def test_terminal_error_is_reset_on_next_chat_turn():

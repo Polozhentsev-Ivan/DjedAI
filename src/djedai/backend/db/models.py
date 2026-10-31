@@ -202,6 +202,7 @@ class MessageModel(Base):
     content = Column(Text, nullable=True)
     blocks = Column(JSON, nullable=True)  # список словарей MessageBlock
     result_ids = Column(JSON, nullable=True)  # список ID результатов (provenance)
+    verification = Column(JSON, nullable=True)  # проверка чисел ответа (#167)
     trace = Column(JSON, nullable=True)  # шаги выполнения графа
     turn = Column(JSON, nullable=True)  # состояние хода, связанное с вопросом пользователя
     created_at = Column(UTCDateTime, default=_utc_now, nullable=False)

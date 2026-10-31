@@ -6,6 +6,7 @@ from djedai.contracts.chart import ChartSpec, ChartTemplate
 from djedai.contracts.dashboard import DashboardSnapshot
 from djedai.contracts.metrics import MetricDefinition, MetricSpec
 from djedai.contracts.tool_result import ToolResult
+from djedai.contracts.verification import VerificationReport
 
 
 class Entities(BaseModel):
@@ -149,6 +150,8 @@ class AgentState(TypedDict, total=False):
     retries: int
     compose_retries: int
     is_verified: bool
+    # Детерминированная проверка чисел последнего черновика/опубликованного текста (#167).
+    verification: VerificationReport | None
     # Отдельная ветка дашборда: план виджетов, их вычисления и сохранённый снимок.
     dashboard_plan: DashboardPlanResponse | None
     dashboard_widgets: list[Any]

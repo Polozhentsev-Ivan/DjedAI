@@ -237,11 +237,13 @@ def test_percentage_is_derived_from_real_sql_counts_without_a_percentage_cell(tm
                 "abs_tolerance": 0.00005,
             },
         ]
+        # #167: производная допустима только как явная формула из
+        # подтверждённых ячеек; неявное «-50%» детерминированно отклоняется.
         for answer, expected in [
-            ("Изменение: -50%", "passed"),
-            ("Изменение: −50%", "passed"),
-            ("Изменение: 50%", "failed"),
-            ("Изменение: 2%", "failed"),
+            ("Изменение: 1 / 2 - 1 = -50%", "passed"),
+            ("Изменение: 1 / 2 - 1 = −50%", "passed"),
+            ("Изменение: 1 / 2 - 1 = 50%", "failed"),
+            ("Изменение: 1 / 2 - 1 = 2%", "failed"),
         ]:
             report = run(dataset, Model("run_sql", {"sql": sql}, answer), facts)
             assert report["status"] == expected, report["issues"]
